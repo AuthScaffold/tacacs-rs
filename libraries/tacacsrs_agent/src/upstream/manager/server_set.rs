@@ -150,6 +150,12 @@ pub(crate) struct BoundServer<
 }
 
 impl<Connector: EndpointConnector> BoundServer<Connector> {
+    pub(crate) fn observe_failure(
+        &self,
+    ) -> tacacsrs_networking::routed::FailureObservation<Connector> {
+        self.binding.observe_failure()
+    }
+
     /// Returns the configured upstream server selected for this request.
     pub(crate) fn server(&self) -> &TacacsPlusServer {
         &self.server
