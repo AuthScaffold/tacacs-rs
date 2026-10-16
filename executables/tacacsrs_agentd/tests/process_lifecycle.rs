@@ -172,6 +172,62 @@ async fn statistics_export_is_read_only_private_and_generation_bound() {
 }
 
 #[tokio::test]
+async fn diagnostics_rpc_is_read_only_and_generation_bound() {
+    use tacacsrs_ipc::diagnostics::DiagnosticsClient;
+    use tacacsrs_ipc::IpcEndpoint;
+
+    let directory = ProcessDirectory::new();
+    let endpoint = directory.0.join("agent.sock");
+    let mut child = agent()
+        .args([
+            "--server-addr",
+            "192.0.2.10:49",
+            "--shared-secret",
+            "private-test-key",
+            "--host-integration",
+            "none",
+            "--listen-endpoint",
+        ])
+        .arg(&endpoint)
+        .spawn()
+        .unwrap();
+    let client = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            assert!(child.try_wait().unwrap().is_none());
+            if let Ok(client) =
+                DiagnosticsClient::connect(IpcEndpoint::Unix(endpoint.clone())).await
+            {
+                break client;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let first = client.statistics_json(None).await.unwrap();
+    let first: serde_json::Value = serde_json::from_str(&first).unwrap();
+    let root = &first["ietf-system-tacacs-plus:tacacs-plus"];
+    let server = root["server"][0]["name"].as_str().unwrap();
+    for selection in [None, Some(server)] {
+        let data = client.statistics_json(selection).await.unwrap();
+        assert!(!data.contains("private-test-key") && !data.contains("shared-secret"));
+        let json: serde_json::Value = serde_json::from_str(&data).unwrap();
+        let snapshot = &json["ietf-system-tacacs-plus:tacacs-plus"];
+        assert_eq!(snapshot["server"].as_array().unwrap().len(), 1);
+        assert_eq!(snapshot["tacacsrs:runtime-generation"], root["tacacsrs:runtime-generation"]);
+        assert_eq!(
+            snapshot["server"][0]["tacacsrs:counter-epoch"],
+            root["server"][0]["tacacsrs:counter-epoch"]
+        );
+        assert_eq!(snapshot["server"][0]["statistics"]["connection-opens"], "0");
+        assert_eq!(snapshot["server"][0]["statistics"]["messages-sent"], "0");
+    }
+    drop(client);
+    stop(child, "-TERM").await;
+    assert!(!endpoint.exists());
+}
+
+#[tokio::test]
 async fn statistics_export_failure_stops_the_supervised_daemon() {
     let directory = ProcessDirectory::new();
     let endpoint = directory.0.join("agent.sock");

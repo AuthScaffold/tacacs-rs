@@ -36,13 +36,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use tokio::sync::RwLock;
-
 use tacacsrs_protocol::enumerations::TacacsFlags;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
 
 use crate::connection::BoxedDedicatedConnection;
-use crate::single_connect::SingleConnectionState;
+use crate::single_connect::NegotiationState;
 use crate::single_connect::cache::SharedConnectionCache;
 
 const SINGLE_CONNECT_RESPONSE_PENDING: u8 = 0;
@@ -58,22 +56,25 @@ const SINGLE_CONNECT_RESPONSE_SUPPORTED: u8 = 2;
 pub(crate) struct SingleConnectPromotion {
     shared_connection: Arc<SharedConnectionCache>,
     cache_generation: u64,
-    state: Arc<RwLock<SingleConnectionState>>,
+    state: Arc<NegotiationState>,
+    epoch: u64,
     response: AtomicU8,
 }
 
 impl SingleConnectPromotion {
     /// Captures the cache epoch so a later promotion can detect a retirement.
-    pub(crate) fn new(
+    pub(crate) fn begin(
         shared_connection: Arc<SharedConnectionCache>,
-        state: Arc<RwLock<SingleConnectionState>>,
-    ) -> Self {
-        Self {
+        state: Arc<NegotiationState>,
+    ) -> Option<Self> {
+        let epoch = state.begin()?;
+        Some(Self {
             cache_generation: shared_connection.generation(),
             shared_connection,
             state,
+            epoch,
             response: AtomicU8::new(SINGLE_CONNECT_RESPONSE_PENDING),
-        }
+        })
     }
 
     /// Latches the first reply's single-connect flag and ignores later replies.
@@ -107,14 +108,23 @@ impl SingleConnectPromotion {
     pub(crate) async fn promote_if_confirmed(&self, mut connection: BoxedDedicatedConnection) {
         match self.response.load(Ordering::Acquire) {
             SINGLE_CONNECT_RESPONSE_SUPPORTED => {
-                if self.record_server_result(true).await {
-                    self.shared_connection
-                        .publish_if_current(self.cache_generation, move || connection.upgrade())
-                        .await;
-                }
+                self.shared_connection
+                    .publish_if_current(self.cache_generation, move || {
+                        let mut candidate = None;
+                        self.state.settle(self.epoch, true, || {
+                            candidate = Some(connection.upgrade());
+                        });
+                        candidate
+                    })
+                    .await;
             }
             SINGLE_CONNECT_RESPONSE_UNSUPPORTED => {
-                self.record_server_result(false).await;
+                self.shared_connection
+                    .publish_if_current(self.cache_generation, || {
+                        self.state.settle(self.epoch, false, || {});
+                        None
+                    })
+                    .await;
                 connection.shutdown().await;
             }
             SINGLE_CONNECT_RESPONSE_PENDING => {
@@ -123,40 +133,10 @@ impl SingleConnectPromotion {
             _ => unreachable!("invalid single-connect response state"),
         }
     }
+}
 
-    /// Records the negotiated capability, refusing to upgrade a terminal denial.
-    ///
-    /// Returns whether the caller may publish the connection. A `NotSupported`
-    /// state is terminal for the client, so a late support confirmation from a
-    /// different backend is ignored.
-    async fn record_server_result(&self, supported: bool) -> bool {
-        let mut state = self.state.write().await;
-        let new_state = if supported {
-            SingleConnectionState::Supported
-        } else {
-            SingleConnectionState::NotSupported
-        };
-
-        if *state == SingleConnectionState::NotSupported
-            && new_state == SingleConnectionState::Supported
-        {
-            log::debug!(
-                target: "tacacsrs_networking::single_connect",
-                "Ignored late single-connect support confirmation because the state is NotSupported",
-            );
-            return false;
-        }
-
-        if *state != new_state {
-            log::info!(
-                target: "tacacsrs_networking::single_connect",
-                "Single-connection state changed from {:?} to {:?}",
-                *state,
-                new_state,
-            );
-            *state = new_state;
-        }
-
-        supported
+impl Drop for SingleConnectPromotion {
+    fn drop(&mut self) {
+        self.state.abandon(self.epoch);
     }
 }
