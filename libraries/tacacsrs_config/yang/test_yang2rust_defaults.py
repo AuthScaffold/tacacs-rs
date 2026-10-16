@@ -45,6 +45,21 @@ container authorization { leaf limit { type uint32; default 16384; } }
         self.assertIn("limit: default_authentication_limit()", output)
         self.assertIn("limit: default_authorization_limit()", output)
 
+    def test_default_initializer_escapes_keyword_field_names(self):
+        output = self.generate("""
+container settings {
+    leaf type { type uint32; default 1; }
+    leaf match { type string; }
+    leaf-list loop { type string; }
+}
+""")
+        self.assertIn("pub r#type: u32,", output)
+        self.assertIn("pub r#match: Option<String>,", output)
+        self.assertIn("pub r#loop: Vec<String>,", output)
+        self.assertIn("r#type: default_settings_type(),", output)
+        self.assertIn("r#match: None,", output)
+        self.assertIn("r#loop: Vec::new(),", output)
+
     def test_required_fields_do_not_get_invented_defaults(self):
         output = self.generate("""
 container required { leaf name { type string; mandatory true; } }
