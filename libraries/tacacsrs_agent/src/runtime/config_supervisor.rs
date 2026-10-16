@@ -18,6 +18,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures_util::future::BoxFuture;
 use futures_util::StreamExt;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -443,6 +444,7 @@ impl ConfigSupervisor {
         let mut changes = self.health.subscribe();
         let mut deadline: Option<tokio::time::Instant> = None;
         let mut last_revision: Option<crate::MaterializationRevision> = None;
+        let mut last_source_recovery: Option<crate::SourceRevision> = None;
         loop {
             let snapshot = changes.borrow_and_update().clone();
             let stale = match kind {
@@ -461,16 +463,26 @@ impl ConfigSupervisor {
             if !stale || expired {
                 deadline = None;
             }
+            let source_recovered = match kind {
+                MaterialExpiry::Source => {
+                    let recovery = snapshot.source_recovery_revision();
+                    let recovered = last_source_recovery.is_some_and(|last| Some(last) != recovery);
+                    last_source_recovery = recovery;
+                    recovered
+                }
+                MaterialExpiry::Credentials => false,
+            };
+            if source_recovered {
+                deadline = None;
+            }
             if let Some(revision) = snapshot.materialization_revision() {
                 if snapshot.eligible_server_count() == 0 {
                     deadline = None;
                     last_revision = None;
                 } else {
-                    let recovered = last_revision.is_some_and(|last| match kind {
-                        MaterialExpiry::Source => last.source() != revision.source(),
-                        MaterialExpiry::Credentials => last != revision,
-                    });
-                    if recovered {
+                    if matches!(kind, MaterialExpiry::Credentials)
+                        && last_revision.is_some_and(|last| last != revision)
+                    {
                         deadline = None;
                     }
                     last_revision = Some(revision);
@@ -517,37 +529,44 @@ impl ConfigSupervisor {
         }
 
         let mut attempt = 0u32;
+        let mut candidate: Option<BoxFuture<'_, Result<PublicationOutcome, ()>>> = None;
         loop {
-            let event = tokio::select! {
+            tokio::select! {
                 biased;
                 () = cancellation.cancelled() => return,
-                event = self.next_observation_event() => event,
-            };
-            match event {
-                Ok(ConfigChangeEvent::Changed(change)) => {
-                    let _ = tokio::select! {
-                        biased;
-                        () = cancellation.cancelled() => return,
-                        result = self.apply_candidate((*change.config).clone()) => result,
-                    };
-                    attempt = 0;
-                }
-                Ok(ConfigChangeEvent::CandidateRejected) => {
-                    self.materialization_coordinator
-                        .reject_observation(&self.health)
-                        .await;
-                }
-                Ok(ConfigChangeEvent::RestartRequired { required }) => self
-                    .health
-                    .set_degraded(DegradationReason::RestartRequired, required),
-                Err(()) => {
-                    self.observation.lock().await.take();
-                    attempt = attempt.saturating_add(1);
-                    if !self.wait_for_retry(attempt, cancellation).await {
-                        return;
+                event = self.next_observation_event() => match event {
+                    Ok(ConfigChangeEvent::Changed(change)) => {
+                        drop(candidate.take());
+                        candidate = Some(Box::pin(self.apply_candidate((*change.config).clone())));
+                        attempt = 0;
                     }
+                    Ok(ConfigChangeEvent::CandidateRejected) => {
+                        drop(candidate.take());
+                        self.materialization_coordinator
+                            .reject_observation(&self.health)
+                            .await;
+                    }
+                    Ok(ConfigChangeEvent::RestartRequired { required }) => self
+                        .health
+                        .set_degraded(DegradationReason::RestartRequired, required),
+                    Err(()) => {
+                        drop(candidate.take());
+                        self.observation.lock().await.take();
+                        attempt = attempt.saturating_add(1);
+                        if !self.wait_for_retry(attempt, cancellation).await {
+                            return;
+                        }
+                    }
+                },
+                _ = async {
+                    candidate
+                        .as_mut()
+                        .expect("the candidate branch requires pending work")
+                        .await
+                }, if candidate.is_some() => {
+                    drop(candidate.take());
                 }
-            }
+            };
         }
     }
 
@@ -930,13 +949,14 @@ mod tests {
 
         async fn observe(&self) -> anyhow::Result<Box<dyn ConfigObservation>> {
             self.opens.fetch_add(1, Ordering::Relaxed);
+            let events = self
+                .events
+                .lock()
+                .unwrap()
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("the owned observation is unavailable"))?;
             Ok(Box::new(OwnedObservation {
-                events: self
-                    .events
-                    .lock()
-                    .unwrap()
-                    .take()
-                    .expect("one observation owner"),
+                events,
                 dropped: self.dropped.clone(),
             }))
         }
@@ -991,6 +1011,33 @@ mod tests {
         release: tokio::sync::Notify,
     }
 
+    struct StallingResolver {
+        stalled: std::sync::atomic::AtomicBool,
+        entered: tokio::sync::Notify,
+        cancelled: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl CredentialResolver for StallingResolver {
+        async fn resolve(
+            &self,
+            _request: &CredentialRequest,
+        ) -> Result<ResolvedCredential, ResolutionError> {
+            if self.stalled.load(Ordering::Acquire) {
+                let _pending = PendingDrop(Arc::clone(&self.cancelled));
+                self.entered.notify_one();
+                std::future::pending::<()>().await;
+            }
+            Ok(ResolvedCredential::SymmetricKey(
+                tacacsrs_credential_resolution::SymmetricKeyMaterial {
+                    validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
+                    key_format: None,
+                    key: SecretBytes::new(b"stall-test-material-long-enough".to_vec()),
+                },
+            ))
+        }
+    }
+
     #[async_trait]
     impl CredentialResolver for PausingRefreshResolver {
         async fn resolve(
@@ -1031,6 +1078,15 @@ mod tests {
     struct PausingFilter {
         paused: std::sync::atomic::AtomicBool,
         entered: tokio::sync::Notify,
+        cancelled: Arc<AtomicUsize>,
+    }
+
+    struct PendingDrop(Arc<AtomicUsize>);
+
+    impl Drop for PendingDrop {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Release);
+        }
     }
 
     struct ReorderedFilter {
@@ -1064,6 +1120,7 @@ mod tests {
         {
             Box::pin(async move {
                 if !self.paused.swap(true, Ordering::AcqRel) {
+                    let _pending = PendingDrop(Arc::clone(&self.cancelled));
                     self.entered.notify_one();
                     std::future::pending::<()>().await;
                 }
@@ -1754,6 +1811,77 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn failed_source_then_stale_credential_publish_keeps_original_expiry_deadline() {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [],
+            [],
+        ));
+        let (supervisor, health, service) = supervisor(datastore, Duration::ZERO);
+        let resolver = Arc::new(SelectiveResolver {
+            rejected_server: Mutex::new(None),
+        });
+        let supervisor = supervisor.with_credential_resolver(resolver.clone());
+        let policy = tacacsrs_config::policy::parse_runtime_policy(
+            br#"{"tacacsrs:runtime-policy":{"source-stale-timeout-seconds":2}}"#,
+        )
+        .unwrap();
+        service.apply_policy_candidate(Some(&policy)).await.unwrap();
+        supervisor
+            .apply_candidate(central_test_config(1))
+            .await
+            .unwrap();
+        let original_recovery = health.snapshot().source_recovery_revision().unwrap();
+
+        let cancellation = CancellationToken::new();
+        let monitor = supervisor.run_source_expiry(&cancellation);
+        tokio::pin!(monitor);
+        assert!(futures_util::poll!(&mut monitor).is_pending());
+
+        *resolver.rejected_server.lock().unwrap() = Some("server-1".to_owned());
+        assert!(supervisor
+            .apply_candidate(central_test_config(2))
+            .await
+            .is_err());
+        assert!(futures_util::poll!(&mut monitor).is_pending());
+        tokio::time::advance(Duration::from_secs(1)).await;
+
+        supervisor
+            .materialization_coordinator
+            .source_unavailable(&health, true)
+            .await;
+        *resolver.rejected_server.lock().unwrap() = None;
+        assert!(
+            supervisor
+                .apply_credential_change(&CredentialChangeScope::Unknown)
+                .await
+        );
+        assert_eq!(service.server_count(), 2);
+        assert_eq!(health.snapshot().datastore(), DatastoreState::Stale);
+        assert_eq!(health.snapshot().source_recovery_revision(), Some(original_recovery));
+        assert!(
+            health
+                .snapshot()
+                .materialization_revision()
+                .unwrap()
+                .source()
+                .value()
+                > original_recovery.value()
+        );
+        assert!(futures_util::poll!(&mut monitor).is_pending());
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(futures_util::poll!(&mut monitor).is_pending());
+        assert_eq!(
+            service.server_count(),
+            0,
+            "a stale credential publication must not renew the source budget"
+        );
+        cancellation.cancel();
+        monitor.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn stale_source_expiry_does_not_renew_and_valid_source_recovers() {
         let datastore = Arc::new(ScriptedDatastore::new(
             DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
@@ -1865,6 +1993,7 @@ mod tests {
         .unwrap();
         service.apply_policy_candidate(Some(&policy)).await.unwrap();
         supervisor.apply_candidate(test_config(1)).await.unwrap();
+        let first_recovery = health.snapshot().source_recovery_revision().unwrap();
         supervisor
             .materialization_coordinator
             .source_unavailable(&health, true)
@@ -1875,6 +2004,14 @@ mod tests {
         assert!(futures_util::poll!(&mut monitor).is_pending());
         tokio::time::advance(Duration::from_secs(1)).await;
         supervisor.apply_candidate(test_config(2)).await.unwrap();
+        assert!(
+            health
+                .snapshot()
+                .source_recovery_revision()
+                .unwrap()
+                .value()
+                > first_recovery.value()
+        );
         supervisor
             .materialization_coordinator
             .source_unavailable(&health, true)
@@ -2333,6 +2470,7 @@ mod tests {
         let filter = Arc::new(PausingFilter {
             paused: std::sync::atomic::AtomicBool::new(false),
             entered: tokio::sync::Notify::new(),
+            cancelled: Arc::new(AtomicUsize::new(0)),
         });
         supervisor.config_filter = filter.clone();
         {
@@ -2399,6 +2537,164 @@ mod tests {
         assert_eq!(source.opens.load(Ordering::Relaxed), 1);
         assert!(dropped.load(Ordering::Acquire));
         assert!(events.is_closed());
+    }
+
+    #[tokio::test]
+    async fn notification_loop_replaces_pending_source_work_and_cancels_it_on_shutdown() {
+        let dummy = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [],
+            [],
+        ));
+        let (_, health, service) = supervisor(dummy, Duration::ZERO);
+        let (events, receiver) = tokio::sync::mpsc::channel(4);
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let source = Arc::new(OwnedSource {
+            events: Mutex::new(Some(receiver)),
+            dropped: dropped.clone(),
+            opens: AtomicUsize::new(0),
+        });
+        let change = |count| {
+            ConfigChangeEvent::Changed(tacacsrs_config::source::ConfigChange {
+                config: Arc::new(test_config(count)),
+                delta: tacacsrs_config::source::ConfigDelta::default(),
+            })
+        };
+        events.send(change(1)).await.unwrap();
+        let mut supervisor = ConfigSupervisor::new(
+            source,
+            service.clone(),
+            health,
+            Arc::new(NoopTacacsPlusFilter::default()),
+        );
+        supervisor
+            .initialize_until(std::future::pending())
+            .await
+            .unwrap();
+        let filter = Arc::new(PausingFilter {
+            paused: std::sync::atomic::AtomicBool::new(false),
+            entered: tokio::sync::Notify::new(),
+            cancelled: Arc::new(AtomicUsize::new(0)),
+        });
+        supervisor.config_filter = filter.clone();
+        let supervisor = Arc::new(supervisor);
+        let cancellation = CancellationToken::new();
+        let task = {
+            let supervisor = Arc::clone(&supervisor);
+            let cancellation = cancellation.clone();
+            tokio::spawn(async move { supervisor.run_notifications(&cancellation).await })
+        };
+
+        events.send(change(2)).await.unwrap();
+        timeout(Duration::from_secs(1), filter.entered.notified())
+            .await
+            .expect("the older source must enter filtering");
+        events.send(change(3)).await.unwrap();
+        timeout(Duration::from_secs(1), async {
+            while service.server_count() != 3 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the latest source must replace pending work");
+        assert_eq!(filter.cancelled.load(Ordering::Acquire), 1);
+
+        filter.paused.store(false, Ordering::Release);
+        events.send(change(4)).await.unwrap();
+        timeout(Duration::from_secs(1), filter.entered.notified())
+            .await
+            .expect("the final source must enter filtering");
+        cancellation.cancel();
+        timeout(Duration::from_secs(1), task)
+            .await
+            .expect("shutdown must cancel pending source work")
+            .expect("the notification task must join");
+        assert_eq!(filter.cancelled.load(Ordering::Acquire), 2);
+        assert_eq!(service.server_count(), 3);
+        drop(supervisor);
+        assert!(dropped.load(Ordering::Acquire));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn notification_disconnect_cancels_stalled_resolution_and_expires_original_source() {
+        let dummy = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [],
+            [],
+        ));
+        let (_, health, service) = supervisor(dummy, Duration::ZERO);
+        let policy = tacacsrs_config::policy::parse_runtime_policy(
+            br#"{"tacacsrs:runtime-policy":{"source-stale-timeout-seconds":2}}"#,
+        )
+        .unwrap();
+        service.apply_policy_candidate(Some(&policy)).await.unwrap();
+        let (events, receiver) = tokio::sync::mpsc::channel(2);
+        let source = Arc::new(OwnedSource {
+            events: Mutex::new(Some(receiver)),
+            dropped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            opens: AtomicUsize::new(0),
+        });
+        let change = |count| {
+            ConfigChangeEvent::Changed(tacacsrs_config::source::ConfigChange {
+                config: Arc::new(central_test_config(count)),
+                delta: tacacsrs_config::source::ConfigDelta::default(),
+            })
+        };
+        events.send(change(1)).await.unwrap();
+        let resolver = Arc::new(StallingResolver {
+            stalled: std::sync::atomic::AtomicBool::new(false),
+            entered: tokio::sync::Notify::new(),
+            cancelled: Arc::new(AtomicUsize::new(0)),
+        });
+        let mut supervisor = ConfigSupervisor::new(
+            source,
+            service.clone(),
+            health.clone(),
+            Arc::new(NoopTacacsPlusFilter::default()),
+        )
+        .with_credential_resolver(resolver.clone());
+        supervisor
+            .initialize_until(std::future::pending())
+            .await
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let notifications = supervisor.run_notifications(&cancellation);
+        let expiry = supervisor.run_source_expiry(&cancellation);
+        tokio::pin!(notifications, expiry);
+        assert!(futures_util::poll!(&mut expiry).is_pending());
+        assert_eq!(service.server_count(), 1, "the baseline must publish");
+
+        resolver.stalled.store(true, Ordering::Release);
+        events.send(change(2)).await.unwrap();
+        assert!(futures_util::poll!(&mut notifications).is_pending());
+        assert!(
+            futures_util::poll!(std::pin::pin!(resolver.entered.notified())).is_ready(),
+            "the candidate resolution must stall"
+        );
+        drop(events);
+        assert!(futures_util::poll!(&mut notifications).is_pending());
+        assert_eq!(
+            health.snapshot().datastore(),
+            DatastoreState::Stale,
+            "the disconnect must remain observable"
+        );
+        assert_eq!(resolver.cancelled.load(Ordering::Acquire), 1);
+        assert!(futures_util::poll!(&mut expiry).is_pending());
+
+        tokio::time::advance(Duration::from_millis(1_999)).await;
+        assert!(futures_util::poll!(&mut expiry).is_pending());
+        assert_eq!(service.server_count(), 1);
+        tokio::time::advance(Duration::from_millis(1)).await;
+        assert!(futures_util::poll!(&mut expiry).is_pending());
+        assert_eq!(service.server_count(), 0);
+        assert!(health
+            .snapshot()
+            .degradation_reasons()
+            .contains(&DegradationReason::SourceExpired));
+
+        cancellation.cancel();
+        notifications.await;
+        expiry.await.expect("expiry supervision must stop");
     }
 
     #[tokio::test]

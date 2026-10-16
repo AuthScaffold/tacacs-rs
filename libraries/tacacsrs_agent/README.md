@@ -122,10 +122,14 @@ An older filter result cannot replace a newer admitted source or update its heal
 A pending or rejected source cannot trigger credential refresh against an older filtered candidate.
 Credential invalidations during filtering are retained in the revision used for the eventual prepared candidate.
 During source unavailability, credential refresh can use retained configuration without marking the source current.
+Source observation continues while one owned candidate future filters, resolves, or publishes.
+A newer source event cancels and replaces that future, so disconnection and rejection remain observable.
 
 `ConfigSupervisor` enforces canonical `source-stale-timeout-seconds`, which defaults to 300 seconds and rejects zero.
 Its owned monitor captures the applied budget when it first observes a stale published source.
 Repeated failures, credential refreshes, and policy updates do not renew that interval.
+Health records the source revision that last established a current runtime.
+Credential publication during a source outage preserves that recovery identity, even when it applies a different source revision.
 At expiry, a generation-checked transaction withdraws upstreams and marks `SourceExpired`. Readiness stops while liveness and source observation continue.
 Removed endpoints receive an immediate retirement cutoff. A valid source publication can restore service without replacing shared admission or restarting the process.
 Credential refresh cannot revive an expired unavailable source.
