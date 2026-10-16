@@ -139,6 +139,21 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn incomplete_registration_groups_are_rejected() {
+        let mut cli = Cli::try_parse_from(["agentd", "--server-addr", "127.0.0.1"]).unwrap();
+        cli.http_crl_source = vec!["reference".to_owned()];
+        assert!(crl_sources(&cli).await.is_err());
+        cli.http_crl_source.clear();
+        cli.http_crl_certificate = vec!["reference".to_owned()];
+        assert!(crl_sources(&cli).await.is_err());
+        cli.http_ocsp_source = vec!["reference".to_owned()];
+        assert!(ocsp_sources(&cli).await.is_err());
+        cli.http_ocsp_source.clear();
+        cli.http_ocsp_certificate = vec!["reference".to_owned()];
+        assert!(ocsp_sources(&cli).await.is_err());
+    }
+
+    #[tokio::test]
     async fn http_registration_groups_locations_and_rejects_invalid_sources() {
         let cli = Cli::try_parse_from([
             "agentd",

@@ -463,7 +463,7 @@ mod tests {
         };
         assert_eq!(change.config.server[0].address, "192.0.2.12");
         assert_eq!(change.delta.modified_servers, ["primary"]);
-        assert!(change.delta.added_servers.is_empty());
+        assert_eq!(change.delta.added_servers.len(), 0);
         drop(observation);
         fs::remove_file(path).unwrap();
     }
