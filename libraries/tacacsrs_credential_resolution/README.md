@@ -7,7 +7,7 @@ The crate owns:
 
 - deterministic typed request plans
 - an asynchronous resolver trait
-- typed certificate, private-key, symmetric-key, and trust-bag material
+- typed certificate, private-key, symmetric-key, trust-bag, and CRL material
 - a closed result set that validates request/response slots and variants
 - provider-neutral credential change events and subscriptions
 - sanitized typed failures
@@ -39,11 +39,15 @@ The source configuration remains unchanged.
 3. Submit the plan to a `CredentialResolver`.
 4. Consume the validated result set in the calling adapter.
 
-Requests support certificate-with-key, TLS 1.3 symmetric key, CA certificate bag, and end-entity certificate bag usages.
+Requests support certificate-with-key, TLS 1.3 symmetric key, CA certificate bag, end-entity certificate bag, and certificate revocation list usages.
 Result-set construction rejects missing, duplicate, unexpected, and wrong-variant responses.
 For YANG servers, use `tacacsrs_config::prepare::resolution_plan` or its materialization functions instead of constructing requests manually.
 
 Central reference strings stay opaque. The generic API does not impose provider grammar or convert a reference into a path.
+
+`CertificateRevocationListsMaterial` carries complete DER CRLs in `PublicBytes` wrappers and retains the provider's absolute validity limits.
+Configuration materialization installs those values only in derived server data. Native TLS separately validates signed freshness, path coverage, and revocation status.
+Providers report updates through the existing credential change contract. This crate does not fetch CRL distribution points or implement an HTTP client.
 
 It does not inspect path existence, inspect permissions, watch for changes, or retry retrieval. Only sanitized `ProviderErrorKind` values cross this boundary.
 

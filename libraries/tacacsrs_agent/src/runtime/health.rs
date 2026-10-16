@@ -136,7 +136,7 @@ pub struct RuntimeHealthSnapshot {
 }
 
 impl RuntimeHealthSnapshot {
-    /// Returns combined provider and client-certificate validity, independent of stale grace periods.
+    /// Returns provider and prepared-credential validity, independent of stale grace periods.
     #[must_use]
     pub fn credential_validity(
         &self,

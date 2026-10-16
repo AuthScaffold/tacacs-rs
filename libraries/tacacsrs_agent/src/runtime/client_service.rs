@@ -74,6 +74,12 @@ pub struct TacacsClientService {
 }
 
 impl TacacsClientService {
+    /// Captures read-only server counters associated with one published runtime generation.
+    /// Unchanged endpoints retain their counter epoch across reloads. Replacements start a new epoch.
+    #[must_use]
+    pub fn statistics(&self) -> tacacsrs_config::OperationalStatistics {
+        self.runtime.state.statistics()
+    }
     #[cfg(test)]
     pub(crate) fn pause_next_publication(&self) -> Arc<tokio::sync::Notify> {
         self.runtime.state.pause_next_publication()
@@ -229,6 +235,10 @@ impl TacacsClientService {
 
     pub(crate) fn credential_stale_timeout(&self) -> std::time::Duration {
         self.runtime.state.credential_stale_timeout()
+    }
+
+    pub(crate) fn credential_refresh_interval(&self) -> std::time::Duration {
+        self.runtime.state.credential_refresh_interval()
     }
 
     /// Returns the applied graceful shutdown budget for an embedding host.

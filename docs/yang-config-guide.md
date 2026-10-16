@@ -84,7 +84,7 @@ IP addresses are not sent as certificate-TLS SNI names.
 
 The implementation disables CN fallback and partial-label wildcards. A complete leftmost-label wildcard can match one label, not multiple nested labels.
 This follows the DNS/IP identity rules referenced by RFC 9887 Section 3.4.2 and RFC 9525.
-It does not establish full RFC 9887 conformance, including revocation, certificate-chain provisioning, or other profile requirements.
+Full RFC 9887 conformance remains unclaimed. Revocation coverage and other profile requirements remain incomplete.
 
 Migration can require certificates with matching SAN entries. Chain trust alone no longer permits a certificate for a different identity.
 The explicit development-only verification override still bypasses certificate verification and permits server impersonation.
@@ -109,13 +109,14 @@ Configured trust excludes platform roots. Preparation does not modify the author
 
 This replaces the old combined-root behavior. Certificate renewal can require updating an exact `ee-certs` entry.
 Use CA trust only when authorizing other valid certificates issued by that authority is intended.
-Certificate revocation retrieval and client-chain provisioning are not implemented by this change. Full RFC 9887 conformance remains unclaimed.
+Explicit HTTP CRL retrieval is available through a host-attached provider. Certificate-driven discovery and OCSP responder queries remain unimplemented.
+Optional required stapling is described below. Full RFC 9887 conformance remains unclaimed.
 
 ## Certificate Input Boundary
 
 Each `cert-data` value must contain exactly one DER certificate. Concatenated certificates and trailing bytes fail before runtime publication.
 This rule also applies to each CA or end-entity trust-bag entry. Multiple entries remain supported.
-CLI client certificate PEM files must contain exactly one certificate. The native decoder no longer silently ignores trailing DER material.
+CLI client certificate files accept a PEM chain or one DER certificate. Each individual DER value must still contain exactly one certificate.
 The development verification override does not relax certificate framing.
 
 If separate `public-key` metadata is supplied, `public-key-format` must also be present, and vice versa.
@@ -123,9 +124,247 @@ TLS preparation supports `ietf-crypto-types:subject-public-key-info-format` with
 The private key must still match the certificate. SSH public-key encoding is explicitly unsupported for TLS certificate metadata.
 Malformed, incomplete, mismatched, and trailing public-key data fail before publication, including when certificate verification is disabled for development.
 
-The current client-identity contract supports one leaf certificate and its matching private key, not a supplied intermediate chain.
-Stage 4 owns a canonical chain-provisioning contract and its provider and mTLS acceptance tests.
-Until that contract exists, multi-certificate client inputs are rejected. Revocation retrieval is also a named Stage 4 requirement, not a current capability.
+### Client Certificate Chains
+
+During mutual TLS, the TACACS+ server verifies the client's identity. A common certificate hierarchy is:
+
+```text
+Root CA --signs--> Intermediate CA --signs--> Client certificate
+```
+
+The server can trust the root without already having the intermediate certificate.
+The client certificate identifies its issuer, but does not contain that issuer's certificate or public key.
+Sending the intermediate lets the server verify the signatures along the path to its trusted root.
+The client must not assume that the server will download missing certificates.
+
+Supplying an intermediate does not make it trusted. The server still requires a valid path to a trust anchor it already accepts.
+The client sends public certificates, never their private keys. This configuration omits the root because sending it cannot establish trust.
+
+An intermediate chain is optional. A leaf alone can suffice when a trusted root signs it directly or the server already has the intermediates.
+Client-chain provisioning does not affect server-only TLS or PSK authentication.
+
+Inline client identities use the following fields under `certificate/inline-definition`:
+
+| Field | Content |
+| --- | --- |
+| `cert-data` | One base64-encoded DER leaf certificate |
+| `tacacsrs:intermediate-certificate` | An ordered JSON array of base64-encoded DER intermediate certificates |
+| `cleartext-private-key` | The private key that matches the leaf, using the declared key format |
+
+The intermediate list starts with the leaf's issuer and proceeds toward the root. Do not include the leaf again or a self-signed root.
+The same fields work in per-server identities and reusable `client-credentials` bundles. Omit the list when no intermediates are needed.
+Each list entry must be nonempty and unique. Native preparation checks framing, issuer order, signatures, client purpose, and certificate validity.
+Malformed, duplicate, out-of-order, or unrelated intermediates fail before publication. The development peer-verification override does not bypass these local checks.
+
+For CLI PEM files, put the leaf first and append intermediates in issuer order. Do not append the root or concatenate DER certificates.
+The file loader preserves this order in canonical configuration. Native preparation sends the leaf and supplied intermediates to the peer.
+The peer still decides whether the supplied path reaches one of its trust anchors; a missing intermediate can cause handshake rejection.
+
+Credential providers return ordered intermediate bytes with the leaf and key. Materialization installs them only in a derived server value.
+Authoritative snapshots and provider references remain unchanged. The earliest supplied certificate expiry bounds the prepared identity's lifetime.
+Broader revocation retrieval remains a separate Stage 4 requirement.
+
+## Required Stapled OCSP
+
+To require fresh authenticated OCSP evidence, add this member inside `server-authentication` or a reusable `server-credentials` entry:
+
+```json
+{
+  "tacacsrs:require-stapled-ocsp": {
+    "max-response-age-seconds": 300
+  }
+}
+```
+
+The container enables the requirement. Its maximum age defaults to 300 seconds and must be a positive `uint32` value.
+Omitting the container disables the OCSP requirement, not separately configured CRL checks or normal certificate verification.
+Required stapling cannot be combined with PSK authentication or the development certificate-verification override.
+
+The client requests a staple and verifies it during the TLS handshake, before sending its client certificate or TACACS+ data.
+Missing, malformed, incorrectly signed, stale, unknown, revoked, or wrong-certificate evidence rejects the connection. There is no soft-fail fallback.
+The response must be signed by the authenticated leaf's issuer or a responder issued directly by that issuer.
+The issuer must be available from certificate chains or configured CA material. An embedded responder certificate does not become a trust anchor.
+Certificate IDs can use SHA-1 or SHA-256. Responses larger than 64 KiB and trailing DER data are rejected.
+
+Delegated responders must have the `id-kp-OCSPSigning` extended key usage. If key usage is present, it must permit digital signatures.
+They also require either a valid No Check extension or verified CRL evidence supplied through `tacacsrs:require-crls`.
+A present `id-pkix-ocsp-nocheck` extension must occur exactly once, be noncritical, and contain DER NULL.
+That extension permits omission of a separate responder-certificate revocation check during its validity period.
+Malformed, duplicate, or critical No Check extensions fail even when CRLs are available.
+Without No Check, the verifier checks the responder against its direct issuer's configured CRL after the peer path passes CRL verification.
+Missing evidence, invalid signatures, stale lists, and revoked responders fail closed. TLS callbacks perform no retrieval I/O.
+OpenSSL verifies the response signature, delegation, and certificate path. Expired, future, incorrectly issued, or incorrectly constrained responders are rejected.
+
+Freshness ends at the earlier of `nextUpdate` and `thisUpdate` plus the configured maximum age.
+If `nextUpdate` is absent, the maximum age still bounds use. No clock-skew allowance or stale-material grace extends this interval.
+The verified interval bounds the connection lifetime, including idle transports. A later connection must obtain fresh valid evidence.
+The actual signer's certificate validity also bounds this interval. Unused certificates embedded in the response do not shorten it.
+Accurate system time remains necessary; runtime scheduling limits still apply to physical transport closure.
+
+Stapling checks the peer leaf. The full-CRL requirement below can also check the CA-authenticated path and non-exempt delegated responders.
+Host-authorized online OCSP queries are supported separately from mandatory stapling.
+It does not claim complete revocation coverage or full RFC 9887 conformance.
+
+## Fetched OCSP
+
+`tacacsrs:require-ocsp` requires independently supplied evidence for the actual TLS peer.
+It works in per-server authentication and reusable server-credential bundles.
+Supply one inline base64 DER `response` or an opaque `evidence-reference`, not both.
+
+```json
+{
+  "tacacsrs:require-ocsp": {
+    "max-response-age-seconds": 300,
+    "evidence-reference": "primary-ocsp"
+  }
+}
+```
+
+The daemon registers query inputs through its [OCSP provider options](tacacsrs-agentd.md#certificate-discovery-and-ocsp).
+Materialization preserves the canonical reference and installs response bytes only in the derived configuration.
+Preparation requires one successful DER response with one certificate status and a fresh signed interval.
+The interval ends at the earlier of `nextUpdate` and `thisUpdate` plus maximum age. No `nextUpdate` means the maximum age still applies.
+The prepared interval constrains refresh, publication, connection setup, and transport lifetime.
+
+Native TLS verifies actual peer binding, signature, signer authorization, status, and freshness before client authentication.
+Wrong-certificate, forged, revoked, and unknown responses deny authentication. Required staples remain independent and cannot be replaced by fetched evidence.
+Fresh negative evidence can replace an older response and retire its connections immediately. Rejected or unavailable retrieval uses existing failure and expiry rules.
+Signer and peer certificate validity also bound the connection lifetime.
+PSK and disabled certificate verification cannot use this requirement.
+
+## Required Full CRLs
+
+The `tacacsrs:require-crls` presence container selects CRL verification for CA-authenticated TLS servers.
+It accepts full lists and explicitly paired base/delta evidence.
+It works in per-server authentication and reusable `server-credentials` entries.
+Supply either an inline `crl` array of base64-encoded DER lists or one opaque `evidence-reference`, not both.
+
+```json
+{
+  "tacacsrs:require-crls": {
+    "max-age-seconds": 300,
+    "evidence-reference": "primary-ca-crls"
+  }
+}
+```
+
+Provider references require an attached `CredentialResolver` that supports `CertificateRevocationLists`. The stock SONiC resolver does not yet supply this material kind.
+Inline CRL arrays can be supplied through existing canonical JSON sources. An embedding host can register HTTP sources through `tacacsrs-credential-http`.
+
+The maximum age defaults to 300 seconds and must be positive. Each list must contain exactly one complete DER CRL and include `nextUpdate`.
+The complete set is limited to 4 MiB and 128 lists. Empty, stale, future, duplicate, or trailing-DER inputs fail preparation.
+Direct full CRLs can contain an `issuingDistributionPoint` extension.
+The extension must be unique, critical, decodable, and pass a native DER round-trip check during preparation.
+Native verification enforces certificate-type restrictions, distribution-point name matching, and complete revocation-reason coverage.
+A leaf-scoped list does not replace required issuer-path evidence. Scope does not relax signature, revocation, or freshness checks.
+Distribution-point URIs are scope identifiers here, not authorized retrieval destinations. TLS callbacks do not fetch those URIs.
+One issuer can supply separate CA-only and end-entity-only scope sets because their certificate types are disjoint.
+Contradictory certificate-type flags and attribute-certificate scope fail preparation.
+Within each scope set, lists can provide disjoint revocation-reason partitions.
+Partitions must have identical encoded scope after removing `onlySomeReasons`. Overlapping reasons and ambiguous scope combinations fail preparation, regardless of input order.
+Each certificate-type group needs complete reason coverage independently. End-entity reasons cannot fill a gap in CA coverage, or the reverse.
+Issuer names use native X.509 comparison, so equivalent encodings cannot bypass the overlap check.
+Empty reason sets, the unused reason bit, and unknown reason bits fail preparation.
+Native verification requires all reasons for each certificate. Missing partitions, forged evidence, or revocation in any contributing partition reject authentication.
+An unrestricted full CRL covers every reason and cannot be mixed with another full CRL for that issuer.
+The same rules apply to non-exempt delegated OCSP responders. Every supplied partition still contributes to the evidence deadline.
+Indirect CRLs remain rejected. Delta evidence follows the pairing rules below.
+Different distribution-point scopes with overlapping certificate types remain unsupported, even if their reason sets are disjoint.
+
+Native verification checks the accepted certificate path against the supplied lists before client authentication or TACACS+ data.
+Bad signatures, revoked leaves or intermediates, and incomplete evidence reject the TLS connection. Missing CRLs never fall back to unchecked authentication.
+This mode cannot be combined with exact peer pins, PSK authentication, or disabled certificate verification.
+It can be combined with required stapled OCSP in per-server policy or reusable credential bundles.
+Both checks must pass. A good staple cannot override a revoked CRL status, and a good CRL cannot replace a required staple.
+The earliest CRL, OCSP, responder, or peer-path deadline limits transport lifetime.
+
+All supplied lists contribute to the prepared evidence deadline, not only lists later used by a connection.
+The deadline is the earliest `nextUpdate` or `thisUpdate` plus maximum age, further constrained by provider and client-certificate validity.
+Direct clients stop using expired evidence. The supervised agent withdraws expired catalogs while retaining source observation and the canonical configuration.
+Replace the inline source or publish a provider change to trigger fresh materialization. Provider references remain unchanged in the authoritative snapshot.
+New generations use refreshed evidence. A committed CRL policy or evidence change for an existing server installs an immediate cutoff on its replaced endpoints.
+This includes endpoints already draining from older generations. New bindings through those endpoints stop at publication, and owned cleanup tasks close their active transports.
+Such a change can interrupt in-flight requests; an unknown delivery outcome must not be replayed automatically.
+Identical evidence and rejected candidates do not trigger this cutoff. Unrelated configuration changes retain the ordinary drain budget.
+This is conservative retirement after an evidence change, not proof that every old peer was revoked. Physical closure still depends on runtime scheduling.
+
+The supported profile excludes reason-partitioned deltas, indirect CRLs, and broader overlapping-scope combinations.
+This mode does not establish full RFC 9887 conformance.
+
+### Explicit Delta CRLs
+
+A configured base with a noncritical `freshestCRL` extension requires exactly one explicitly supplied compatible delta.
+The extension must decode, contain at least one distribution point, and pass a DER round-trip check.
+Its URLs are not fetch authorization. The host must register both retrieval locations or supply both lists inline.
+Missing bases, missing advertised deltas, duplicate deltas, and ambiguous pairs fail preparation.
+
+The base and delta must have matching issuer names, identical issuing-distribution-point data, and identical authority-key-identifier data or mutual absence.
+Both lists require CRL numbers. The delta indicator must be critical and specify a minimum base number.
+The accepted base number must be at least that minimum and less than the delta's own number.
+Numbers must be nonnegative and fit 20 DER content octets. Duplicate, malformed, incorrectly critical, or trailing metadata fails preparation.
+The delta cannot predate its base or contain its own freshest-CRL extension.
+
+Every contributing list still needs a valid signature and fresh validity interval.
+A clear delta does not erase base revocations. An explicit `removeFromCRL` delta entry can release a certificate hold.
+Removal entries in full CRLs, unsupported entry reasons, and malformed reason extensions fail preparation.
+Native verification applies the pair to the peer path and to non-exempt delegated OCSP responders before client authentication.
+
+The earliest base or delta expiry still limits the prepared catalog and transport lifetime.
+A fresh delta cannot extend an expired base in this implementation. Repeated retrieval does not renew the signed dates.
+Unpartitioned direct scope, including separate CA-only and end-entity-only lists, is supported.
+Reason flags on a delta or its advertised base are rejected pending separate native-selection support.
+The 128-list and 4 MiB bounds count both base and delta objects. HTTP timeout and all-or-error fetch rules are unchanged.
+
+### HTTP CRL Provider
+
+The [HTTP credential provider](../libraries/tacacsrs_credential_http/README.md) maps opaque evidence references to explicit ordered URL sets.
+An embedding host registers trusted public locations and attaches the resolver to materialization or the agent supervisor.
+Canonical references remain unchanged. The daemon accepts repeatable `--http-crl-source REFERENCE URL` pairs at startup.
+Matching references form one ordered set. Registration authorizes locations but does not enable CRL verification by itself.
+URL-map changes require a restart; existing registered references remain usable by live source and credential refresh.
+See [daemon registration](tacacsrs-agentd.md#http-crl-registration) for examples and SONiC provider composition.
+
+Retrieval uses one whole-set timeout, an aggregate byte cap, and a shared concurrency cap.
+Defaults are 10 seconds, 4 MiB, and four active fetches. Each set contains at most 16 locations.
+All locations must succeed. Registered-source failures never fall back to another provider or return partial evidence.
+Redirects, environment proxies, decompression, credentials, query strings, and fragments are disabled or rejected.
+Locations must contain no secrets. Backend diagnostics can expose URLs even though provider errors and debug output omit them.
+Registration authorizes the host and its DNS results; it does not create a network sandbox.
+
+HTTPS verifies platform trust and host identity. Downloaded bytes remain untrusted until native CRL verification succeeds.
+HTTP cache headers cannot extend signed freshness. Unbounded provider validity does not remove native evidence deadlines.
+Cancellation drops active request I/O and releases capacity; blocking system DNS resolution can finish later.
+The provider can select certificate distribution points or AIA responders from host-registered certificates under explicit URL authorization.
+It does not discover destinations from live TLS peers or expand authorization from certificate content.
+
+## Provider Refresh
+
+The agent supervisor periodically revalidates provider-backed credentials, including referenced CRL sets, even without credential notifications.
+The separate canonical runtime-policy resource controls the maximum scheduled interval:
+
+```json
+{
+  "tacacsrs:runtime-policy": {
+    "credential-refresh-interval-seconds": 60
+  }
+}
+```
+
+The value must be positive and defaults to 60 seconds.
+When prepared material has an earlier expiry, the supervisor schedules refresh at half its remaining lifetime, with at least one second between attempts.
+Health updates and longer policy intervals do not postpone an already scheduled refresh. A shorter interval can bring it forward.
+The next interval starts after an attempt completes. This interval is not a provider I/O timeout; providers must bound their own retrieval operations.
+
+A scheduled attempt does not mark still-valid material stale. Failed revalidation uses the existing credential-failure and stale-grace rules.
+Repeated failures do not renew stale grace. Provider or signed validity expiry still withdraws the catalog while a resolver is pending.
+Successful revalidation can recover an expired credential catalog, but cannot revive an expired configuration source.
+Unchanged provider validity bounds retain their earlier monotonic cutoff; rereading the same material cannot extend its lifetime.
+
+Refresh uses the existing credential revision and atomic publication path without changing canonical references or source revisions.
+The supervisor owns the refresh future and cancels it on host stop. It creates no detached refresh worker.
+Without a resolver, or when the accepted source has no provider references, no automatic resolution occurs.
+Inline-only evidence still requires a new source snapshot. An attached HTTP provider participates in this same refresh lifecycle.
+Certificate-driven distribution-point retrieval remains unimplemented.
 
 ## EPSK Presence
 

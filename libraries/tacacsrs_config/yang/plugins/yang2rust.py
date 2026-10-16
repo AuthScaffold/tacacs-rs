@@ -813,9 +813,9 @@ class Collector:
     def _process_node(self, stmt, parent_prefix: str, current_mod: ModuleTypes | None = None) -> Field | None:
         kw = stmt.keyword
         if kw == "container":
-            return self._process_container(stmt, parent_prefix)
+            return self._process_container(stmt, parent_prefix, current_mod)
         if kw == "list":
-            return self._process_list(stmt, parent_prefix)
+            return self._process_list(stmt, parent_prefix, current_mod)
         if kw == "leaf":
             return self._process_leaf(stmt, parent_prefix, current_mod)
         if kw == "leaf-list":
@@ -824,7 +824,7 @@ class Collector:
             return None  # The caller uses _flatten_choice.
         return None
 
-    def _process_container(self, stmt, parent_prefix: str) -> Field:
+    def _process_container(self, stmt, parent_prefix: str, current_mod: ModuleTypes | None = None) -> Field:
         mod, sname, existed = self._struct_name(stmt, parent_prefix)
         if not existed:
             rs = Struct(sname, _get_desc(stmt))
@@ -832,9 +832,10 @@ class Collector:
             mod.structs[sname] = rs
 
         type_ref = self._qualified_type(stmt, sname)
-        return Field(stmt.arg, type_ref, optional=True, doc=_get_desc(stmt))
+        return Field(stmt.arg, type_ref, optional=True, doc=_get_desc(stmt),
+                 serde_name=self._serde_name(stmt, current_mod or mod))
 
-    def _process_list(self, stmt, parent_prefix: str) -> Field:
+    def _process_list(self, stmt, parent_prefix: str, current_mod: ModuleTypes | None = None) -> Field:
         mod, sname, existed = self._struct_name(stmt, parent_prefix)
         if not existed:
             rs = Struct(sname, _get_desc(stmt))
@@ -842,7 +843,8 @@ class Collector:
             mod.structs[sname] = rs
 
         type_ref = self._qualified_type(stmt, sname)
-        return Field(stmt.arg, type_ref, is_vec=True, doc=_get_desc(stmt))
+        return Field(stmt.arg, type_ref, is_vec=True, doc=_get_desc(stmt),
+                 serde_name=self._serde_name(stmt, current_mod or mod))
 
     def _process_leaf(self, stmt, parent_prefix: str, current_mod: ModuleTypes | None = None) -> Field:
         type_stmt = stmt.search_one("type")
@@ -1480,7 +1482,9 @@ class RustEmitter:
             w('        #[serde(deserialize_with = "crate::serde_helpers::deserialize_present_empty")]\n')
 
         if f.rust_type == "Vec<u8>" and f.secret_kind is None:
-            if f.is_vec:
+            if f.is_vec and f.optional:
+                w('        #[serde(with = "crate::serde_helpers::base64_binary::option_vec_bytes")]\n')
+            elif f.is_vec:
                 w('        #[serde(with = "crate::serde_helpers::base64_binary::vec_bytes")]\n')
             elif f.optional:
                 w('        #[serde(with = "crate::serde_helpers::base64_binary::option_bytes")]\n')

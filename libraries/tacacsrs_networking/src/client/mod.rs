@@ -125,7 +125,7 @@ impl TacacsClient {
     ///
     /// Returns an error if the local certificate expired or the configured preflight fails.
     pub async fn connect_prepared(endpoint: PreparedEndpoint) -> anyhow::Result<Self> {
-        if let Some(lifetime) = endpoint.client_identity_lifetime() {
+        if let Some(lifetime) = endpoint.prepared_credential_lifetime() {
             lifetime.check()?;
         }
         let connection = Self::from_prepared(endpoint);
@@ -256,13 +256,13 @@ impl TacacsClient {
         expected: Option<ExpectedResponseHeader>,
     ) -> anyhow::Result<ClientSession> {
         self.lifecycle.ensure_open()?;
-        let operation = self.create_open_session(expected);
-        let session = match self.endpoint.client_identity_lifetime() {
+        let operation = Box::pin(self.create_open_session(expected));
+        let session = match self.endpoint.prepared_credential_lifetime() {
             Some(lifetime) => lifetime.run(operation).await?,
             None => operation.await?,
         };
         self.lifecycle.ensure_open()?;
-        Ok(session)
+        Ok(session.with_counters(self.endpoint.counters()))
     }
 
     async fn create_open_session(
@@ -335,7 +335,7 @@ impl TacacsClient {
     where
         Exchange: FixedExchange,
     {
-        if let Some(lifetime) = self.endpoint.client_identity_lifetime() {
+        if let Some(lifetime) = self.endpoint.prepared_credential_lifetime() {
             return self
                 .execute_classified_until(exchange, lifetime.deadline)
                 .await;
@@ -365,7 +365,7 @@ impl TacacsClient {
     where
         Exchange: FixedExchange,
     {
-        let lifetime = self.endpoint.client_identity_lifetime();
+        let lifetime = self.endpoint.prepared_credential_lifetime();
         if let Some(lifetime) = lifetime {
             lifetime.check().map_err(FixedExchangeError::not_sent)?;
         }
@@ -402,7 +402,7 @@ impl TacacsClient {
     /// Returns an error when a dedicated or shared session cannot be created.
     pub async fn open_conversation(&self) -> anyhow::Result<ClientConversation> {
         self.create_session().await.map(|session| {
-            ClientConversation::new(session, self.endpoint.client_identity_lifetime())
+            ClientConversation::new(session, self.endpoint.prepared_credential_lifetime())
         })
     }
 
@@ -824,9 +824,11 @@ where
         )));
     }
 
-    exchange
+    session.record_terminal_reply(&response);
+    let reply = exchange
         .decode_reply(response.body())
-        .map_err(FixedExchangeError::outcome_unknown)
+        .map_err(FixedExchangeError::outcome_unknown)?;
+    Ok(reply)
 }
 
 fn accounting_watchdog_preflight_request() -> AccountingRequest {
@@ -850,6 +852,97 @@ fn accounting_watchdog_preflight_request() -> AccountingRequest {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn operational_counters_cover_shared_sessions_and_connection_outcomes() {
+        use super::*;
+        use tokio::net::TcpListener;
+        use crate::{PacketReader, PacketReadResult, PacketWriter, PacketWriteResult};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = PreparedEndpoint::tcp(
+            listener.local_addr().unwrap().to_string(),
+            true,
+            None,
+            ConnectOptions::default(),
+        );
+        let counters = endpoint.counters();
+        let peer = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            for status in [
+                TacacsAccountingStatus::TacPlusAcctStatusError,
+                TacacsAccountingStatus::TacPlusAcctStatusSuccess,
+            ] {
+                let PacketReadResult::Success(request) =
+                    PacketReader::new(None).read_packet(&mut stream).await
+                else {
+                    panic!("request must decode");
+                };
+                let body = AccountingReply {
+                    status,
+                    server_msg: String::new(),
+                    data: String::new(),
+                }
+                .to_bytes()
+                .unwrap();
+                let mut header = request.header().clone();
+                header.seq_no += 1;
+                header.flags = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG
+                    | TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG;
+                header.length = u32::try_from(body.len()).unwrap();
+                let packet = Packet::new(header, body).unwrap();
+                assert!(matches!(
+                    PacketWriter::new(None)
+                        .write_packet(&mut stream, packet)
+                        .await,
+                    PacketWriteResult::Success
+                ));
+            }
+        });
+        let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+        for _ in 0..2 {
+            client
+                .execute(AccountingWatchdogExchange(accounting_watchdog_preflight_request()))
+                .await
+                .unwrap();
+        }
+        peer.await.unwrap();
+        if let Err(error) = client
+            .close_and_join(
+                crate::RequestDeadline::after(std::time::Duration::from_secs(1)).unwrap(),
+            )
+            .await
+        {
+            assert!(
+                error.chain().any(|cause| cause
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::UnexpectedEof)),
+                "unexpected shutdown error: {error:#}"
+            );
+        }
+        let snapshot = counters.snapshot();
+        assert_eq!(snapshot.connection_opens, 1);
+        assert_eq!(snapshot.messages_sent, 2);
+        assert_eq!(snapshot.messages_received, 2);
+        assert_eq!(snapshot.errors_received, 1);
+        assert_eq!(snapshot.sessions, 2);
+        assert_eq!(snapshot.connection_closes, 1);
+        assert_eq!(snapshot.connection_aborts, 0);
+        assert_eq!(snapshot.connection_failures, 0);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = PreparedEndpoint::tcp(
+            listener.local_addr().unwrap().to_string(),
+            false,
+            None,
+            ConnectOptions::default(),
+        );
+        let failed = endpoint.counters();
+        drop(listener);
+        assert!(crate::establish::establish_stream(&endpoint).await.is_err());
+        assert_eq!(failed.snapshot().connection_opens, 1);
+        assert_eq!(failed.snapshot().connection_failures, 1);
+        assert_eq!(failed.snapshot().messages_sent, 0);
+    }
+
     #[tokio::test]
     async fn invalid_psk_fails_before_client_construction() {
         let result = crate::PreparedEndpoint::tcp(
@@ -1325,7 +1418,7 @@ mod tests {
         use crate::runtime::MultiplexedConnection;
 
         let client = TacacsClient::from_prepared(server_template());
-        let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+        let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
         let session = connection.create_session().unwrap();
         let (transport, mut peer) = tokio::io::duplex(256);
         let (reader, writer) = tokio::io::split(transport);
@@ -1350,7 +1443,8 @@ mod tests {
 
         let client = TacacsClient::from_prepared(server_template());
         for _cycle in 0..8 {
-            let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+            let connection =
+                Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
             let session = connection.create_session().unwrap();
             let (transport, mut peer) = tokio::io::duplex(256);
             let (reader, writer) = tokio::io::split(transport);
@@ -1406,7 +1500,7 @@ mod tests {
         use crate::runtime::MultiplexedConnection;
 
         let client = TacacsClient::from_prepared(server_template());
-        let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+        let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
         let (transport, mut peer) = tokio::io::duplex(256);
         let (reader, writer) = tokio::io::split(transport);
         connection.run_with_halves(reader, writer);
@@ -1431,7 +1525,7 @@ mod tests {
         use crate::runtime::MultiplexedConnection;
 
         let client = TacacsClient::from_prepared(server_template());
-        let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+        let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
         let session = connection.create_session().unwrap();
         let (transport, mut peer) = tokio::io::duplex(256);
         let (reader, writer) = tokio::io::split(transport);

@@ -46,6 +46,7 @@ pub struct PreparedEndpoint {
     pub(crate) transport: PreparedTransport,
     pub(crate) options: ConnectOptions,
     pub(crate) connection_guard: Option<Arc<dyn ConnectionGuard>>,
+    pub(crate) counters: crate::ServerCounters,
 }
 
 impl PreparedEndpoint {
@@ -102,6 +103,29 @@ impl PreparedEndpoint {
         Ok(self)
     }
 
+    /// Applies stapled OCSP requirements to this certificate TLS endpoint.
+    ///
+    /// # Errors
+    /// Returns an error if required evidence is combined with another transport or disabled verification.
+    pub fn with_certificate_revocation(
+        mut self,
+        policy: crate::CertificateRevocationPolicy,
+    ) -> anyhow::Result<Self> {
+        self.transport = match self.transport {
+            PreparedTransport::Tls(config) => {
+                PreparedTransport::Tls(config.with_revocation_policy(policy)?)
+            }
+            transport => {
+                anyhow::ensure!(
+                    policy.maximum_response_age().is_none(),
+                    "Required OCSP evidence needs certificate TLS"
+                );
+                transport
+            }
+        };
+        Ok(self)
+    }
+
     /// Creates a plain TCP endpoint from explicit runtime values.
     ///
     /// The packet layer applies `obfuscation_key` when present. This constructor
@@ -120,6 +144,7 @@ impl PreparedEndpoint {
             transport: PreparedTransport::Tcp,
             options,
             connection_guard: None,
+            counters: crate::ServerCounters::default(),
         }
     }
 
@@ -134,6 +159,12 @@ impl PreparedEndpoint {
     #[must_use]
     pub fn address(&self) -> &str {
         &self.address
+    }
+
+    /// Returns the counter owner shared by this endpoint's clones and connections.
+    #[must_use]
+    pub fn counters(&self) -> crate::ServerCounters {
+        self.counters.clone()
     }
 
     /// Returns whether this endpoint requests TACACS+ single-connection mode.
@@ -153,11 +184,57 @@ impl PreparedEndpoint {
     /// These bounds do not describe provider metadata or negotiated peer certificates.
     #[must_use]
     pub fn client_certificate_validity(&self) -> Option<crate::CertificateValidity> {
-        self.client_identity_lifetime()
+        match &self.transport {
+            PreparedTransport::Tls(config) => config.client_validity,
+            _ => None,
+        }
+    }
+
+    /// Returns validity shared by prepared client credentials and CRL evidence.
+    #[must_use]
+    pub fn prepared_credential_validity(&self) -> Option<crate::CertificateValidity> {
+        self.prepared_credential_lifetime()
             .map(|lifetime| lifetime.validity)
     }
 
-    pub(crate) fn client_identity_lifetime(
+    /// Requires fresh full CRLs and explicitly paired deltas for the CA-authenticated server path.
+    ///
+    /// # Errors
+    /// Returns an error for invalid evidence, non-certificate transports, pins, or incompatible verification modes.
+    pub fn with_certificate_crls(
+        mut self,
+        lists: &[&[u8]],
+        maximum_age: Duration,
+    ) -> anyhow::Result<Self> {
+        self.transport = match self.transport {
+            PreparedTransport::Tls(config) => {
+                PreparedTransport::Tls(config.with_crls(lists, maximum_age)?)
+            }
+            _ => anyhow::bail!("CRL mode requires certificate TLS"),
+        };
+        Ok(self)
+    }
+
+    /// Requires independently fetched OCSP evidence for the actual TLS peer.
+    ///
+    /// This does not replace a separately configured mandatory staple.
+    /// # Errors
+    /// Rejects invalid, stale, unsuccessful evidence or incompatible transports.
+    pub fn with_certificate_ocsp_response(
+        mut self,
+        response: &[u8],
+        maximum_age: Duration,
+    ) -> anyhow::Result<Self> {
+        self.transport = match self.transport {
+            PreparedTransport::Tls(config) => {
+                PreparedTransport::Tls(config.with_ocsp_response(response, maximum_age)?)
+            }
+            _ => anyhow::bail!("Fetched OCSP requires certificate TLS"),
+        };
+        Ok(self)
+    }
+
+    pub(crate) fn prepared_credential_lifetime(
         &self,
     ) -> Option<crate::transport::tls::CertificateLifetime> {
         match &self.transport {

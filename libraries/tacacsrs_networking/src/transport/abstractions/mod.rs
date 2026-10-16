@@ -11,6 +11,9 @@ use tokio::io::{AsyncRead, AsyncWrite};
 /// Connection code uses this trait for TCP, TLS, and other transports. The code
 /// can read and write concurrently.
 pub(crate) trait Transport: Send + 'static {
+    fn counters(&self) -> Option<crate::ServerCounters> {
+        None
+    }
     /// The read half type after splitting the transport.
     type ReadHalf: AsyncRead + Unpin + Send + 'static;
     /// The write half type after splitting the transport.
