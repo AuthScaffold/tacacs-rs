@@ -229,6 +229,14 @@ Blocking checks include default Clippy, checked numeric conversions, error and p
 Broad pedantic and nursery checks are advisory. Function length is not a design requirement.
 Keep a cohesive state transition together when extraction would hide its sequencing or ownership.
 
+The workspace allows `assert_is_empty` and `chunks_exact_to_as_chunks`.
+Simple emptiness assertions avoid extra type annotations and do not print collection contents or secret bytes on failure.
+Checked chunk iterators keep argument grouping and remainder validation together.
+Keep correctness checks enabled. Add a specific global allowance when a style rule makes the code less clear.
+
+Dependency freshness is a report, not a requirement to adopt unrelated major upgrades.
+Security audits, unused-dependency checks, and tool execution failures remain blocking.
+
 ```bash
 # Run clippy
 cargo clippy --workspace --all-targets --all-features -- -D warnings
