@@ -14,7 +14,6 @@ use crate::upstream::manager::UpstreamManager;
 mod accounting;
 mod authentication;
 mod authorization;
-mod mapping;
 mod routed;
 
 #[cfg(test)]
@@ -47,7 +46,7 @@ mod tests {
     use std::time::Duration;
 
     use tacacsrs_config::TacacsPlusServer;
-    use tacacsrs_agent_client::{AuthenticationResponseStatus, PapAuthenticationOperation};
+    use tacacsrs_protocol::operations::{AuthenticationResponseStatus, PapAuthenticationOperation};
     use tacacsrs_secrets::SecretBytes;
 
     use super::UpstreamBridge;
@@ -136,7 +135,7 @@ mod tests {
                 password: SecretBytes::new(b"secret".to_vec()),
                 port: "tty0".to_owned(),
                 remote_address: "192.0.2.1".to_owned(),
-                privilege_level: 15,
+                privilege_level: tacacsrs_protocol::privilege::PrivilegeLevel::MAX,
             })
             .await
             .unwrap();
@@ -176,7 +175,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.server.as_deref(), Some("primary:49"));
-        assert!(error.retriable);
+        assert!(!error.retriable);
 
         let response = bridge
             .execute_authorization_request(build_authorization_request())

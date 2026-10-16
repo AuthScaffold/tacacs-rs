@@ -1,7 +1,7 @@
-use tacacsrs_messages::constants::{TACACS_HEADER_LENGTH, TACACS_MAX_BODY_LENGTH};
-use tacacsrs_messages::enumerations::TacacsFlags;
-use tacacsrs_messages::packet::PacketTrait;
-use tacacsrs_messages::{header::Header, packet::Packet};
+use tacacsrs_protocol::constants::{TACACS_HEADER_LENGTH, TACACS_MAX_BODY_LENGTH};
+use tacacsrs_protocol::enumerations::TacacsFlags;
+use tacacsrs_protocol::packet::PacketTrait;
+use tacacsrs_protocol::{header::Header, packet::Packet};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 /// Result of reading a packet from a connection.
@@ -146,7 +146,7 @@ impl PacketReader {
 mod tests {
     use super::*;
     use std::io::Cursor;
-    use tacacsrs_messages::enumerations::{
+    use tacacsrs_protocol::enumerations::{
         TacacsFlags, TacacsType, TacacsMajorVersion, TacacsMinorVersion,
     };
 
@@ -215,7 +215,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_packet_body_length_exceeded() {
-        use tacacsrs_messages::constants::TACACS_MAX_BODY_LENGTH;
+        use tacacsrs_protocol::constants::TACACS_MAX_BODY_LENGTH;
 
         // Create a header with a body length that exceeds the maximum.
         let excessive_length = TACACS_MAX_BODY_LENGTH + 1;
@@ -242,7 +242,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_packet_max_allowed_body_length() {
-        use tacacsrs_messages::constants::TACACS_MAX_BODY_LENGTH;
+        use tacacsrs_protocol::constants::TACACS_MAX_BODY_LENGTH;
 
         // Make sure that the maximum body length is accepted.
         let header = create_test_header(

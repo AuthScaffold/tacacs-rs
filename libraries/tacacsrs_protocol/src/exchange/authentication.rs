@@ -1,12 +1,12 @@
 //! Fixed authentication exchanges.
 
-use tacacsrs_messages::authentication::{reply::AuthenticationReply, start::AuthenticationStart};
-use tacacsrs_messages::enumerations::{
+use crate::authentication::{reply::AuthenticationReply, start::AuthenticationStart};
+use crate::enumerations::{
     TacacsAuthenticationAction, TacacsAuthenticationService, TacacsAuthenticationStatus,
     TacacsAuthenticationType, TacacsMinorVersion, TacacsType,
 };
-use tacacsrs_messages::traits::TacacsBodyTrait;
-use tacacsrs_networking::FixedExchange;
+use crate::traits::TacacsBodyTrait;
+use crate::exchange::FixedExchange;
 use tacacsrs_secrets::SecretBytes;
 
 /// One RFC 8907 PAP login START followed by one terminal REPLY.
@@ -77,7 +77,7 @@ impl FixedExchange for PapAuthenticationExchange {
 
 #[cfg(test)]
 mod tests {
-    use tacacsrs_messages::enumerations::TacacsAuthenticationReplyFlags;
+    use crate::enumerations::TacacsAuthenticationReplyFlags;
 
     use super::*;
 

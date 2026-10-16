@@ -141,13 +141,7 @@ mod tests {
     fn deserialisation_good_data() {
         let binary_data = generate_default_packet();
 
-        let header = match Header::from_bytes(&binary_data) {
-            Ok(data) => data,
-            Err(e) => {
-                println!("Failed to parse the TACACS+ header: {e}");
-                return;
-            }
-        };
+        let header = Header::from_bytes(&binary_data).expect("the valid TACACS+ header must parse");
 
         assert_eq!(header.major_version as u8, 0xc_u8, "major versions differ");
         assert_eq!(header.minor_version as u8, 1_u8, "minor versions differ");

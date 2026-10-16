@@ -398,9 +398,8 @@ mod tests {
 
     use tacacsrs_agent_client::ipc;
     use tacacsrs_agent_client::ipc::tacacs_agent_server::TacacsAgent;
-    use tacacsrs_agent_client::{
-        AuthorizationOperation, AuthorizationResponseStatus, IpcEndpoint, ServiceClient,
-    };
+    use tacacsrs_agent_client::{IpcEndpoint, ServiceClient};
+    use tacacsrs_protocol::operations::{AuthorizationOperation, AuthorizationResponseStatus};
     use tonic::Request;
 
     use crate::config::{
@@ -721,7 +720,7 @@ mod tests {
         let request = AuthorizationOperation::builder(
             "admin",
             0,
-            tacacsrs_agent_client::AuthorizationAuthenticationContext::TacacsAscii,
+            tacacsrs_protocol::operations::AuthorizationAuthenticationContext::TacacsAscii,
         )
         .port("pts/1")
         .remote_address("127.0.0.1")
@@ -769,7 +768,7 @@ mod tests {
         let request = AuthorizationOperation::builder(
             "admin",
             0,
-            tacacsrs_agent_client::AuthorizationAuthenticationContext::TacacsAscii,
+            tacacsrs_protocol::operations::AuthorizationAuthenticationContext::TacacsAscii,
         )
         .port("pts/1")
         .remote_address("127.0.0.1")
@@ -789,7 +788,7 @@ mod tests {
             panic!("the ServiceError oneof must contain the authorization error");
         };
         assert_eq!(error.server, "primary:49");
-        assert!(error.retriable);
+        assert!(!error.retriable);
         assert!(error.message.contains("Simulated failure"));
     }
 

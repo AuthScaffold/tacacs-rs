@@ -7,8 +7,13 @@ use std::time::Instant;
 #[cfg(target_os = "linux")]
 use anyhow::Context;
 #[cfg(target_os = "linux")]
-use tacacsrs_agent_client::{AccountingOperation, IpcEndpoint, ServiceClient};
-use tacacsrs_flows::authorization::{AuthenticationContext, AuthorizationExchange};
+use tacacsrs_agent_client::{IpcEndpoint, ServiceClient};
+#[cfg(target_os = "linux")]
+use tacacsrs_protocol::operations::{AccountingOperation};
+use tacacsrs_protocol::exchange::authorization::AuthorizationExchange;
+use tacacsrs_protocol::operations::{
+    AuthorizationAuthenticationContext as ProtocolAuthenticationContext, AuthorizationOperation,
+};
 
 use crate::commands::accounting::send_accounting_request;
 use crate::connection::Connection;
@@ -30,43 +35,46 @@ pub(super) async fn service_client(endpoint: &str) -> anyhow::Result<ServiceClie
 
 #[cfg(target_os = "linux")]
 pub(super) fn to_service_accounting_request(request: &AccountingRequest) -> AccountingOperation {
-    AccountingOperation {
-        user: request.user.clone(),
-        port: request.port.clone(),
-        remote_address: request.rem_addr.clone(),
-        command: request.cmd.clone(),
-        command_arguments: request.cmd_args.clone(),
-    }
+    crate::commands::accounting::accounting_operation(
+        &request.user,
+        &request.port,
+        &request.rem_addr,
+        &request.cmd,
+        Some(&request.cmd_args),
+    )
 }
 
 pub(super) fn direct_authorization_exchange(
     request: &AuthorizationRequest,
-) -> AuthorizationExchange {
+) -> anyhow::Result<AuthorizationExchange> {
+    authorization_operation(request)?.exchange()
+}
+
+pub(super) fn authorization_operation(
+    request: &AuthorizationRequest,
+) -> anyhow::Result<AuthorizationOperation> {
     let context = match request.authentication_context {
-        AuthorizationAuthenticationContext::Ascii => AuthenticationContext::TacacsAscii,
-        AuthorizationAuthenticationContext::Pap => AuthenticationContext::TacacsPap,
+        AuthorizationAuthenticationContext::Ascii => ProtocolAuthenticationContext::TacacsAscii,
+        AuthorizationAuthenticationContext::Pap => ProtocolAuthenticationContext::TacacsPap,
         AuthorizationAuthenticationContext::Unauthenticated => {
-            AuthenticationContext::Unauthenticated
+            ProtocolAuthenticationContext::Unauthenticated
         }
     };
-    match &request.cmd {
-        Some(command) => AuthorizationExchange::shell_command(
-            context,
-            request.user.clone(),
-            request.port.clone(),
-            request.rem_addr.clone(),
-            request.privilege_level,
-            command.clone(),
-            request.cmd_args.clone(),
-        ),
-        None => AuthorizationExchange::shell_session(
-            context,
-            request.user.clone(),
-            request.port.clone(),
-            request.rem_addr.clone(),
-            request.privilege_level,
-        ),
-    }
+    let mut builder = AuthorizationOperation::builder(
+        request.user.clone(),
+        u32::from(request.privilege_level),
+        context,
+    )
+    .port(request.port.clone())
+    .remote_address(request.rem_addr.clone())
+    .service("shell");
+    builder = match &request.cmd {
+        Some(command) => builder
+            .command(command)
+            .command_args(request.cmd_args.clone()),
+        None => builder.command(""),
+    };
+    builder.build()
 }
 
 /// Runs a single batch request over a connection.
@@ -103,7 +111,7 @@ pub(super) async fn execute_single_request(
             ))
         }
         BatchRequest::Authorization(req) => connection
-            .execute(direct_authorization_exchange(req))
+            .execute(direct_authorization_exchange(req).map_err(|error| error.to_string())?)
             .await
             .map(|response| format!("Authorization success: {response:?}"))
             .map_err(|error| format!("Authorization failed: {error}")),

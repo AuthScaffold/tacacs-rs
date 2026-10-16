@@ -310,6 +310,26 @@ mod tests {
         material: Mutex<BTreeMap<String, Vec<u8>>>,
     }
 
+    struct BlockingResolver {
+        inner: Arc<MutableResolver>,
+        started: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+
+    #[async_trait]
+    impl CredentialResolver for BlockingResolver {
+        async fn resolve(
+            &self,
+            request: &CredentialRequest,
+        ) -> Result<ResolvedCredential, ResolutionError> {
+            if request.reference().symmetric_key() == Some("object-a") {
+                self.started.notify_one();
+                self.release.notified().await;
+            }
+            self.inner.resolve(request).await
+        }
+    }
+
     #[async_trait]
     impl CredentialResolver for MutableResolver {
         async fn resolve(
@@ -577,6 +597,111 @@ mod tests {
                 .selected_server_names(),
             &BTreeSet::from(["primary".to_owned()]),
         );
+    }
+
+    #[tokio::test]
+    async fn blocked_old_resolution_cannot_replace_new_yang_snapshot() {
+        let resolver = Arc::new(BlockingResolver {
+            inner: resolver(&[
+                ("object-a", b"first-material"),
+                ("object-b", b"second-material"),
+            ]),
+            started: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        let coordinator = Arc::new(MaterializationCoordinator::new(
+            Arc::clone(&resolver) as Arc<dyn CredentialResolver>,
+            ValidationOptions::default(),
+        ));
+        let service = service();
+        let first = source("object-a", "192.0.2.30");
+        let first_attempt = coordinator
+            .accept_source(first.clone(), first, ProxyDownstreamObfuscation::Unobfuscated)
+            .await;
+        let preparing = Arc::clone(&coordinator);
+        let old_task = tokio::spawn(async move { preparing.materialize(first_attempt).await });
+        tokio::time::timeout(Duration::from_secs(5), resolver.started.notified())
+            .await
+            .expect("old resolution must reach the barrier");
+
+        let current_source = source("object-b", "192.0.2.31");
+        let current_attempt = coordinator
+            .accept_source(
+                current_source.clone(),
+                current_source.clone(),
+                ProxyDownstreamObfuscation::Unobfuscated,
+            )
+            .await;
+        let prepared = coordinator.materialize(current_attempt).await.unwrap();
+        assert_eq!(
+            coordinator.publish(prepared, &service).await.unwrap(),
+            PublicationOutcome::Published
+        );
+        resolver.release.notify_one();
+        let old_prepared = tokio::time::timeout(Duration::from_secs(5), old_task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            coordinator.publish(old_prepared, &service).await.unwrap(),
+            PublicationOutcome::Superseded
+        );
+        assert_eq!(coordinator.active_servers().await[0].address, "192.0.2.31");
+        let state = coordinator.state.lock().await;
+        assert_eq!(state.desired_source.as_deref(), Some(&current_source));
+        assert_eq!(state.desired_runtime_source.as_deref(), Some(&current_source));
+    }
+
+    #[tokio::test]
+    async fn credential_rotation_preserves_authoritative_yang_references() {
+        let resolver = resolver(&[("object-a", b"first-material")]);
+        let coordinator = MaterializationCoordinator::new(
+            Arc::clone(&resolver) as Arc<dyn CredentialResolver>,
+            ValidationOptions::default(),
+        );
+        let service = service();
+        let desired = source("object-a", "192.0.2.20");
+        let attempt = coordinator
+            .accept_source(
+                desired.clone(),
+                desired.clone(),
+                ProxyDownstreamObfuscation::Unobfuscated,
+            )
+            .await;
+        let prepared = coordinator.materialize(attempt).await.unwrap();
+        coordinator.publish(prepared, &service).await.unwrap();
+        let original = coordinator.active_servers().await[0].clone();
+
+        resolver
+            .unavailable
+            .lock()
+            .unwrap()
+            .insert("object-a".to_owned());
+        let failed = coordinator
+            .credential_change(&known("object-a"))
+            .await
+            .unwrap();
+        assert!(coordinator.materialize(failed).await.is_err());
+        assert!(Arc::ptr_eq(&original, &coordinator.active_servers().await[0]));
+        assert_eq!(coordinator.state.lock().await.desired_source.as_deref(), Some(&desired));
+
+        resolver
+            .material
+            .lock()
+            .unwrap()
+            .insert("object-a".to_owned(), b"second-material".to_vec());
+        resolver.unavailable.lock().unwrap().remove("object-a");
+        let rotated = coordinator
+            .credential_change(&known("object-a"))
+            .await
+            .unwrap();
+        let prepared = coordinator.materialize(rotated).await.unwrap();
+        coordinator.publish(prepared, &service).await.unwrap();
+        assert_ne!(original.as_ref(), coordinator.active_servers().await[0].as_ref());
+        let state = coordinator.state.lock().await;
+        assert_eq!(state.desired_source.as_deref(), Some(&desired));
+        assert_eq!(state.desired_runtime_source.as_deref(), Some(&desired));
     }
 
     #[tokio::test]

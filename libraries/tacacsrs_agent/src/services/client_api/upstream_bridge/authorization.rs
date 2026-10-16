@@ -1,13 +1,12 @@
 //! Authorization request execution for [`UpstreamBridge`].
 
 use async_trait::async_trait;
-use tacacsrs_agent_client::{
+use tacacsrs_protocol::operations::{
     AuthorizationOperation, AuthorizationOperationResponse, AuthorizationResponseStatus,
     ServiceError,
 };
-use tacacsrs_messages::traits::TacacsBodyTrait;
+use tacacsrs_protocol::traits::TacacsBodyTrait;
 
-use super::mapping::{build_authorization_request, to_authorization_response};
 use super::UpstreamBridge;
 use super::routed::RoutedOperation;
 use crate::upstream::{OperationKind, UpstreamConnection, UpstreamRequestError};
@@ -26,10 +25,11 @@ impl RoutedOperation for AuthorizationRoute {
         connection: &dyn UpstreamConnection,
         request: &Self::Request,
     ) -> Result<Self::Response, UpstreamRequestError> {
-        let request =
-            build_authorization_request(request).map_err(UpstreamRequestError::invalid_request)?;
+        let request = request
+            .to_request()
+            .map_err(UpstreamRequestError::invalid_request)?;
         let reply = connection.send_authorization(request).await?;
-        to_authorization_response(connection.server_address(), reply)
+        AuthorizationOperationResponse::from_reply(connection.server_address(), reply)
             .map_err(UpstreamRequestError::outcome_unknown)
     }
 
@@ -38,7 +38,8 @@ impl RoutedOperation for AuthorizationRoute {
     }
 
     fn request_body_length(request: &Self::Request) -> Result<usize, UpstreamRequestError> {
-        build_authorization_request(request)
+        request
+            .to_request()
             .map_err(UpstreamRequestError::invalid_request)?
             .to_bytes()
             .map(|body| body.len())

@@ -1,7 +1,7 @@
 //! Shared operation helpers for [`UpstreamBridge`].
 
 use async_trait::async_trait;
-use tacacsrs_agent_client::ServiceError;
+use tacacsrs_protocol::operations::ServiceError;
 
 use super::UpstreamBridge;
 use crate::upstream::{
@@ -47,6 +47,7 @@ where
 {
     router: &'request OperationRouter,
     request: &'request Operation::Request,
+    outcome_unknown: bool,
 }
 
 #[async_trait]
@@ -62,7 +63,9 @@ where
             Ok(bound_server) => bound_server,
             Err(error) => {
                 log::warn!("Failed to bind a client API request to a TACACS+ server: {error:#}");
-                return Attempt::Aborted(ServiceError::new(error.to_string()).retriable(true));
+                return Attempt::Aborted(
+                    ServiceError::new(error.to_string()).retriable(!self.outcome_unknown),
+                );
             }
         };
 
@@ -99,9 +102,12 @@ where
                         unreachable!("invalid requests return before failure recording")
                     }
                 };
+                self.outcome_unknown |= error.kind() == AttemptFailureKind::OutcomeUnknown;
                 let service_error = ServiceError::new(error.to_string())
                     .with_server(bound_server.connection.server_address())
-                    .retriable(true);
+                    .retriable(
+                        !self.outcome_unknown && error.kind() == AttemptFailureKind::NotSent,
+                    );
                 self.router.note_failure(&bound_server).await;
                 Attempt::Failed {
                     error: service_error,
@@ -140,6 +146,7 @@ impl UpstreamBridge {
         let mut attempt = RoutedAttempt::<Operation> {
             router: &self.router,
             request: &request,
+            outcome_unknown: false,
         };
 
         match run_with_failover(plan, &mut attempt).await {

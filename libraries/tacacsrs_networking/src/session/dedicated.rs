@@ -12,8 +12,8 @@ use anyhow::Context;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{Mutex, RwLock};
 
-use tacacsrs_messages::enumerations::TacacsFlags;
-use tacacsrs_messages::packet::{Packet, PacketTrait};
+use tacacsrs_protocol::enumerations::TacacsFlags;
+use tacacsrs_protocol::packet::{Packet, PacketTrait};
 
 use crate::runtime::{DedicatedConnection, MultiplexedConnection};
 use crate::single_connect::SingleConnectionState;
@@ -265,11 +265,11 @@ mod tests {
 
     use tokio::sync::RwLock;
 
-    use tacacsrs_messages::enumerations::{
+    use tacacsrs_protocol::enumerations::{
         TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType,
     };
-    use tacacsrs_messages::header::Header;
-    use tacacsrs_messages::packet::{Packet, PacketTrait};
+    use tacacsrs_protocol::header::Header;
+    use tacacsrs_protocol::packet::{Packet, PacketTrait};
 
     use super::{DedicatedSession, SingleConnectPromotion, with_single_connect_flag};
     use crate::single_connect::SingleConnectionState;

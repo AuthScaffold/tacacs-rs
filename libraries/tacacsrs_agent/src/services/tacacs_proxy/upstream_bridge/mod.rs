@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tacacsrs_messages::packet::PacketTrait;
+use tacacsrs_protocol::packet::PacketTrait;
 use tacacsrs_networking::PacketWriter;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
@@ -146,7 +146,7 @@ where
                 let session_id = received.packet.header().session_id;
                 let packet = SessionPacket {
                     advertise_single_connect: received.packet.header().flags.contains(
-                        tacacsrs_messages::enumerations::TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+                        tacacsrs_protocol::enumerations::TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
                     ),
                     packet: received.packet,
                     reply_obfuscation: received.reply_obfuscation,
@@ -316,15 +316,15 @@ mod tests {
     use std::time::Duration;
 
     use async_trait::async_trait;
-    use tacacsrs_messages::accounting::reply::AccountingReply;
-    use tacacsrs_messages::authentication::reply::AuthenticationReply;
-    use tacacsrs_messages::enumerations::{
+    use tacacsrs_protocol::accounting::reply::AccountingReply;
+    use tacacsrs_protocol::authentication::reply::AuthenticationReply;
+    use tacacsrs_protocol::enumerations::{
         TacacsAccountingStatus, TacacsAuthenticationReplyFlags, TacacsAuthenticationStatus,
         TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType,
     };
-    use tacacsrs_messages::header::Header;
-    use tacacsrs_messages::packet::{Packet, PacketTrait};
-    use tacacsrs_messages::traits::TacacsBodyTrait;
+    use tacacsrs_protocol::header::Header;
+    use tacacsrs_protocol::packet::{Packet, PacketTrait};
+    use tacacsrs_protocol::traits::TacacsBodyTrait;
     use tacacsrs_networking::{PacketReadResult, PacketReader};
     use tokio::io::AsyncWriteExt;
     use tokio::sync::Mutex;

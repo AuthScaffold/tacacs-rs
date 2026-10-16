@@ -1,4 +1,4 @@
-use tacacsrs_messages::packet::Packet;
+use tacacsrs_protocol::packet::Packet;
 use tokio::sync::RwLock;
 
 pub(crate) struct DuplexChannel {

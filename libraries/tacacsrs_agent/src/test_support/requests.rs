@@ -1,7 +1,7 @@
 //! Domain request builders for agent tests.
 
-use tacacsrs_agent_client::AccountingOperation;
-use tacacsrs_agent_client::{AuthorizationAuthenticationContext, AuthorizationOperation};
+use tacacsrs_protocol::operations::AccountingOperation;
+use tacacsrs_protocol::operations::{AuthorizationAuthenticationContext, AuthorizationOperation};
 
 pub(crate) fn build_request() -> AccountingOperation {
     AccountingOperation {

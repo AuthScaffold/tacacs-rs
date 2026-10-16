@@ -7,7 +7,7 @@
     HTML and LCOV reports. Before you run this script, install cargo-llvm-cov.
 
 .PARAMETER Package
-    The crate name, for example, tacacsrs-messages or tacacsrs-networking.
+    The crate name, for example, tacacsrs-protocol or tacacsrs-networking.
     If you omit this parameter, the script covers the workspace.
 
 .PARAMETER Html
@@ -35,7 +35,7 @@
 
 .EXAMPLE
     # Create an HTML report for one crate.
-    .\lde\run-coverage.ps1 -Package tacacsrs-messages -Html
+    .\lde\run-coverage.ps1 -Package tacacsrs-protocol -Html
 
 .EXAMPLE
     # Export LCOV for one crate and require the minimum coverage.

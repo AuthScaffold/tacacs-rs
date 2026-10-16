@@ -1,13 +1,14 @@
 # tacacsrs-agent-client
 
-Reusable local IPC client and shared protocol types for the central TACACS+
-client service.
+Reusable local IPC transport for the central TACACS+ client service.
 
 This crate is the **client-facing half** of the service architecture. It owns
-the protobuf schema, the generated gRPC transport bindings, the domain-level
-request/response types, and the lightweight `ServiceClient` wrapper that local
+the protobuf schema, generated gRPC bindings, conversions, and the `ServiceClient` wrapper that local
 consumers (such as [TACON](../../executables/tacon/)) use to talk to the
 long-lived TACACS+ client service.
+
+The `tacacsrs-protocol` package owns logical requests, responses, and authorization interpretation.
+Direct callers and IPC callers use those same types.
 
 ## Design goals
 
@@ -25,7 +26,8 @@ long-lived TACACS+ client service.
 tacacsrs_agent_client
 ├── client      - ServiceClient wrapper
 ├── endpoint    - IpcEndpoint parsing
-├── protocol    - domain request/response types
+├── convert     - private conversions to shared protocol operations
+├── health      - standard health client
 └── ipc         - generated protobuf/gRPC bindings
 ```
 
@@ -85,8 +87,7 @@ Unix(path)  parse as SocketAddr
 
 The protobuf schema
 ([`proto/tacacsrs_agent.proto`](proto/tacacsrs_agent.proto))
-defines the on-the-wire contract. Rust domain types in the `protocol` module
-provide ergonomic, type-safe wrappers:
+defines the on-the-wire contract. `tacacsrs_protocol::operations` defines the shared domain types:
 
 | Protobuf message      | Rust domain type                | Direction      |
 |-----------------------|---------------------------------|----------------|
@@ -101,15 +102,14 @@ provide ergonomic, type-safe wrappers:
 | `AuthorizationStatus` | `AuthorizationResponseStatus`   | Service → Client |
 
 The crate implements conversions between protobuf and domain types with
-`From`, `TryFrom`, and explicit `into_proto` / `from_proto` methods. Unit tests
-cover round-trip fidelity.
+`From` and `TryFrom`. Unit tests cover round-trip fidelity, invalid privileges,
+and identical TACACS+ request bodies through direct and IPC paths.
 
 ## Usage example
 
 ```rust,no_run
-use tacacsrs_agent_client::{
-    AccountingOperation, IpcEndpoint, ServiceClient,
-};
+use tacacsrs_agent_client::{IpcEndpoint, ServiceClient};
+use tacacsrs_protocol::operations::AccountingOperation;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

@@ -1,8 +1,9 @@
 use std::os::raw::c_int;
 
-use tacacsrs_agent_client::{
+use tacacsrs_agent_client::{IpcEndpoint, ServiceClient};
+use tacacsrs_protocol::operations::{
     AuthorizationArg, AuthorizationAuthenticationContext, AuthorizationKey, AuthorizationOperation,
-    AuthorizationResponseStatus, IpcEndpoint, ServiceClient,
+    AuthorizationResponseStatus,
 };
 
 use crate::config::{format_endpoint, ipc_endpoint};
@@ -29,7 +30,7 @@ pub(crate) fn authorize_command(
         user: user.to_owned(),
         port: port.to_owned(),
         remote_address: remote_address.to_owned(),
-        privilege_level: 15,
+        privilege_level: tacacsrs_protocol::privilege::PrivilegeLevel::MAX,
         authentication_context: AuthorizationAuthenticationContext::TacacsAscii,
         args: authorization_args(command, argv),
     };
@@ -71,19 +72,24 @@ pub(crate) fn authorize_command(
     match response {
         Ok(response) => {
             debug_log(flags, &format!("authorization response status is {:?}", response.status));
-            match response.status {
-                AuthorizationResponseStatus::PassAdd | AuthorizationResponseStatus::PassRepl => {
-                    AuthorizationDecision::Allow
-                }
-                AuthorizationResponseStatus::Fail
-                | AuthorizationResponseStatus::Error
-                | AuthorizationResponseStatus::Follow => AuthorizationDecision::Deny,
-            }
+            response_decision(response.status, &response.args)
         }
         Err(error) => {
             debug_log(flags, &format!("authorization request returned an error: {error}"));
             AuthorizationDecision::Unavailable
         }
+    }
+}
+
+fn response_decision(
+    status: AuthorizationResponseStatus,
+    args: &[AuthorizationArg],
+) -> AuthorizationDecision {
+    match status.unchanged_execution(args) {
+        tacacsrs_protocol::operations::UnchangedExecutionDecision::Allow => {
+            AuthorizationDecision::Allow
+        }
+        _ => AuthorizationDecision::Deny,
     }
 }
 
@@ -112,4 +118,50 @@ fn authorization_args(command: &str, argv: &[String]) -> Vec<AuthorizationArg> {
 
 fn truncate_arg(value: &str) -> String {
     value.chars().take(247).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mandatory_response_changes_are_denied() {
+        let args = [AuthorizationArg::mandatory_key(
+            AuthorizationKey::Cmd,
+            "replacement",
+        )];
+        for status in [
+            AuthorizationResponseStatus::PassAdd,
+            AuthorizationResponseStatus::PassRepl,
+        ] {
+            assert_eq!(response_decision(status, &args), AuthorizationDecision::Deny);
+        }
+    }
+
+    #[test]
+    fn pass_replies_without_mandatory_changes_are_allowed() {
+        let optional = [AuthorizationArg {
+            name: "optional-attribute".to_owned(),
+            mandatory: false,
+            value: "value".to_owned(),
+        }];
+        for status in [
+            AuthorizationResponseStatus::PassAdd,
+            AuthorizationResponseStatus::PassRepl,
+        ] {
+            assert_eq!(response_decision(status, &[]), AuthorizationDecision::Allow);
+            assert_eq!(response_decision(status, &optional), AuthorizationDecision::Allow);
+        }
+    }
+
+    #[test]
+    fn nonpass_responses_never_allow_local_fallback() {
+        for status in [
+            AuthorizationResponseStatus::Fail,
+            AuthorizationResponseStatus::Error,
+            AuthorizationResponseStatus::Follow,
+        ] {
+            assert_eq!(response_decision(status, &[]), AuthorizationDecision::Deny);
+        }
+    }
 }
