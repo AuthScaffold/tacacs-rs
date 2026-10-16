@@ -1068,6 +1068,17 @@ mod tests {
         assert_eq!(connector.connect_attempts_for(&second.address).await, 1);
     }
 
+    async fn recover_fake_connection(connection: &FakeConnection) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while connection.usable.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("old connection retirement must precede simulated server recovery");
+        connection.usable.store(true, Ordering::Release);
+    }
+
     #[tokio::test]
     async fn operation_failure_does_not_move_other_operation_cursors() {
         let primary = Arc::new(FakeConnection {
@@ -1096,7 +1107,7 @@ mod tests {
             .await
             .expect("primary authentication route");
         state.note_bound_server_failure(&authentication).await;
-        primary.usable.store(true, Ordering::Release);
+        recover_fake_connection(&primary).await;
 
         let authorization = state
             .bind_server_for_operation(OperationKind::Authorization)
@@ -1431,7 +1442,7 @@ mod tests {
             .await
             .expect("initial primary route");
         state.note_bound_server_failure(&initial).await;
-        primary.usable.store(true, Ordering::Release);
+        recover_fake_connection(&primary).await;
         let fallback = state
             .bind_server_for_operation(OperationKind::Authentication)
             .await
@@ -1491,7 +1502,7 @@ mod tests {
             .await
             .expect("initial binding");
         state.note_bound_server_failure(&stale_binding).await;
-        primary.usable.store(true, Ordering::Release);
+        recover_fake_connection(&primary).await;
         tokio::time::advance(Duration::from_secs(5)).await;
         let recovered = state
             .bind_server_for_operation(OperationKind::Authentication)

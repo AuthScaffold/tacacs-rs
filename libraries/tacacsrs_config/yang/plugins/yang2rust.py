@@ -1464,7 +1464,7 @@ class RustEmitter:
                     expression = f"{default_fns[field.yang_name][0]}()"
                 else:
                     expression = "Default::default()"
-                w(f"                {field.rust_name}: {expression},\n")
+                w(f"                {_safe_name(field.rust_name)}: {expression},\n")
             w("            }\n        }\n    }\n\n")
 
         # Write choice-group constants for flattened choices.
