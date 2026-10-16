@@ -18,10 +18,10 @@
 //! [`lifecycle`](super::lifecycle) module owns setup and retirement, and the
 //! [`connection`](crate::connection) runtimes own packet I/O.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StateMutex};
 use std::sync::atomic::AtomicU64;
 
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 
 use crate::PreparedEndpoint;
 
@@ -94,18 +94,22 @@ pub(super) struct CachedConnection<Connection: ?Sized> {
 }
 
 pub(super) struct OperationSlot<Connection: ?Sized> {
-    pub(super) connection: RwLock<Option<CachedConnection<Connection>>>,
+    pub(super) connection: StateMutex<Option<CachedConnection<Connection>>>,
     pub(super) connect_lock: Mutex<()>,
     pub(super) completed_connect_attempts: AtomicU64,
+    pub(super) connection_generation: AtomicU64,
+    pub(super) failed_generation: AtomicU64,
     pub(super) circuit: Arc<OperationCircuit>,
 }
 
 impl<Connection: ?Sized> Default for OperationSlot<Connection> {
     fn default() -> Self {
         Self {
-            connection: RwLock::new(None),
+            connection: StateMutex::new(None),
             connect_lock: Mutex::new(()),
             completed_connect_attempts: AtomicU64::new(0),
+            connection_generation: AtomicU64::new(0),
+            failed_generation: AtomicU64::new(u64::MAX),
             circuit: Arc::new(OperationCircuit::default()),
         }
     }
@@ -147,7 +151,7 @@ impl<Connector: EndpointConnector> Catalog<Connector> {
                 .enumerate()
                 .filter_map(|(index, slot)| slot.endpoint.supports(operation).then_some(index))
                 .collect(),
-            active_position: RwLock::new(0),
+            active_position: StateMutex::new(0),
         });
         Self { endpoints, routes }
     }
@@ -159,15 +163,18 @@ impl<Connector: EndpointConnector> Catalog<Connector> {
 
 pub(super) struct OperationRoute {
     pub(super) indices: Vec<usize>,
-    pub(super) active_position: RwLock<usize>,
+    pub(super) active_position: StateMutex<usize>,
 }
 
 impl OperationRoute {
-    pub(super) async fn advance_if_active(&self, failed_index: usize) {
+    pub(super) fn advance_if_active(&self, failed_index: usize) {
         if self.indices.is_empty() {
             return;
         }
-        let mut active = self.active_position.write().await;
+        let mut active = self
+            .active_position
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.indices[*active] == failed_index {
             *active = (*active + 1) % self.indices.len();
         }

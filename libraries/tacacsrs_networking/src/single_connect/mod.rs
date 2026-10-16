@@ -35,10 +35,9 @@
 //! - **Cancel and shutdown** ([`cache`]): the client marks the cache closed and
 //!   advances the epoch, moving the cached connection into retirement. Promotions
 //!   captured before that epoch cannot repopulate the slot.
-//! - **Epoch counters and validity**: the epoch counter (`generation`) is the
-//!   only cross-task invalidation signal. It is preserved across reconnects, and
-//!   certificate validity bounds remain enforced by the client, not by this
-//!   module.
+//! - **Epoch counters and validity**: the cache generation fences retirement.
+//!   The negotiation epoch fences abandoned probes and stale results. Promotion
+//!   checks both under the cache lock. The client enforces certificate validity.
 //!
 //! [`SingleConnectPromotion::observe_server_response`]: promotion::SingleConnectPromotion::observe_server_response
 //! [`SharedConnectionCache::publish_if_current`]: cache::SharedConnectionCache::publish_if_current
@@ -50,5 +49,5 @@ mod tracker;
 
 pub(crate) use cache::SharedConnectionCache;
 pub(crate) use promotion::SingleConnectPromotion;
-pub(crate) use state::SingleConnectionState;
+pub(crate) use state::{NegotiationState, SingleConnectionState};
 pub(crate) use tracker::{LocalSingleConnectState, SingleConnectFlag};
