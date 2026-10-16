@@ -855,8 +855,8 @@ mod tests {
         assert_eq!(response.server, "primary:49");
         assert_eq!(response.status, AuthorizationResponseStatus::PassAdd);
         assert!(response.server_message.contains("authorized by primary:49"));
-        assert_eq!(response.args, [] as [tacacsrs_protocol::operations::AuthorizationArg; 0]);
-        assert_eq!(response.data, "");
+        assert!(response.args.is_empty());
+        assert!(response.data.is_empty());
 
         service_task.abort();
         let _ = service_task.await;
