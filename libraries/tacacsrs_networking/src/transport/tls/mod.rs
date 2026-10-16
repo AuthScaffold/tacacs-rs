@@ -77,7 +77,17 @@ async fn connect_tls(
         handshake.context("OpenSSL TLS handshake failed")
     })();
     if certificate_failed {
-        result.context(crate::statistics::CertificateFailure)?;
+        result
+            .map_err(|error| {
+                if error.is::<crate::statistics::CertificateVerificationCode>() {
+                    error
+                } else {
+                    error.context(crate::statistics::CertificateVerificationCode(
+                        stream.ssl().verify_result().as_raw(),
+                    ))
+                }
+            })
+            .context(crate::statistics::CertificateFailure)?;
     } else {
         result?;
     }

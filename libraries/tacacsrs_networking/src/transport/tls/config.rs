@@ -249,7 +249,10 @@ impl TlsClientConfig {
         let lifetime = self
             .lifetime
             .map_or(Ok(peer_lifetime), |local| local.intersect(peer_lifetime))?;
-        Ok(BoxedTransport::new(stream).with_certificate_lifetime(lifetime))
+        let details = crate::TlsDetails::from_ssl(stream.ssl());
+        Ok(BoxedTransport::new(stream)
+            .with_certificate_lifetime(lifetime)
+            .with_tls_details(details))
     }
 
     pub(crate) fn with_ocsp_response(

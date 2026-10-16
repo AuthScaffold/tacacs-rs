@@ -176,17 +176,105 @@ module: ietf-system-tacacs-plus
        |  +--rw single-connection?             boolean
        |  +--rw timeout?                       uint16
        |  +--ro statistics
-       |  |  +--ro discontinuity-time?    yang:date-and-time
-       |  |  +--ro connection-opens?      yang:counter64
-       |  |  +--ro connection-closes?     yang:counter64
-       |  |  +--ro connection-aborts?     yang:counter64
-       |  |  +--ro connection-failures?   yang:counter64
-       |  |  +--ro connection-timeouts?   yang:counter64
-       |  |  +--ro messages-sent?         yang:counter64
-       |  |  +--ro messages-received?     yang:counter64
-       |  |  +--ro errors-received?       yang:counter64
-       |  |  +--ro sessions?              yang:counter64
-       |  |  +--ro cert-errors?           yang:counter64
+       |  |  +--ro discontinuity-time?         yang:date-and-time
+       |  |  +--ro connection-opens?           yang:counter64
+       |  |  +--ro connection-closes?          yang:counter64
+       |  |  +--ro connection-aborts?          yang:counter64
+       |  |  +--ro connection-failures?        yang:counter64
+       |  |  +--ro connection-timeouts?        yang:counter64
+       |  |  +--ro messages-sent?              yang:counter64
+       |  |  +--ro messages-received?          yang:counter64
+       |  |  +--ro errors-received?            yang:counter64
+       |  |  +--ro sessions?                   yang:counter64
+       |  |  +--ro cert-errors?                yang:counter64
+       |  |  +--ro trs:connection-successes?   yang:counter64
+       |  +--ro trs:diagnostics
+       |  |  +--ro trs:address?                           string
+       |  |  +--ro trs:port?                              uint16
+       |  |  +--ro trs:source-address?                    string
+       |  |  +--ro trs:routing-instance?                  string
+       |  |  +--ro trs:configured-single-connect?         boolean
+       |  |  +--ro trs:connection-timeout-seconds?        uint16
+       |  |  +--ro trs:state?                             enumeration
+       |  |  +--ro trs:connecting?                        uint64
+       |  |  +--ro trs:connected?                         uint64
+       |  |  +--ro trs:expected-replies?                  uint64
+       |  |  +--ro trs:last-attempt?                      yang:date-and-time
+       |  |  +--ro trs:last-success?                      yang:date-and-time
+       |  |  +--ro trs:last-disconnect?                   yang:date-and-time
+       |  |  +--ro trs:last-disconnect-reason?            enumeration
+       |  |  +--ro trs:connection* [connection-id]
+       |  |  |  +--ro trs:connection-id     uint64
+       |  |  |  +--ro trs:peer-address?     string
+       |  |  |  +--ro trs:address-family?   enumeration
+       |  |  |  +--ro trs:established-at?   yang:date-and-time
+       |  |  |  +--ro trs:single-connect?   boolean
+       |  |  |  +--ro trs:tls-enabled?      boolean
+       |  |  |  +--ro trs:tls-version?      string
+       |  |  |  +--ro trs:tls-cipher?       string
+       |  |  |  +--ro trs:fips-enabled?     boolean
+       |  |  +--ro trs:connections-omitted?               uint64
+       |  |  +--ro trs:last-connection!
+       |  |  |  +--ro trs:connection-id?    uint64
+       |  |  |  +--ro trs:peer-address?     string
+       |  |  |  +--ro trs:address-family?   enumeration
+       |  |  |  +--ro trs:established-at?   yang:date-and-time
+       |  |  |  +--ro trs:single-connect?   boolean
+       |  |  |  +--ro trs:tls-enabled?      boolean
+       |  |  |  +--ro trs:tls-version?      string
+       |  |  |  +--ro trs:tls-cipher?       string
+       |  |  |  +--ro trs:fips-enabled?     boolean
+       |  |  +--ro trs:routing* [operation]
+       |  |  |  +--ro trs:operation    enumeration
+       |  |  |  +--ro trs:eligible?    boolean
+       |  |  |  +--ro trs:on-hold?     boolean
+       |  |  +--ro trs:handshake-attempts?                yang:counter64
+       |  |  +--ro trs:handshake-successes?               yang:counter64
+       |  |  +--ro trs:handshake-failures?                yang:counter64
+       |  |  +--ro trs:read-errors?                       yang:counter64
+       |  |  +--ro trs:write-errors?                      yang:counter64
+       |  |  +--ro trs:receive-timeouts?                  yang:counter64
+       |  |  +--ro trs:send-timeouts?                     yang:counter64
+       |  |  +--ro trs:resets?                            yang:counter64
+       |  |  +--ro trs:peer-disconnects?                  yang:counter64
+       |  |  +--ro trs:malformed-disconnects?             yang:counter64
+       |  |  +--ro trs:no-response-disconnects?           yang:counter64
+       |  |  +--ro trs:credential-expiry-disconnects?     yang:counter64
+       |  |  +--ro trs:other-disconnects?                 yang:counter64
+       |  |  +--ro trs:packets-since-reset-sent?          yang:counter64
+       |  |  +--ro trs:packets-since-reset-received?      yang:counter64
+       |  |  +--ro trs:watchdog-preflights?               yang:counter64
+       |  |  +--ro trs:watchdog-successes?                yang:counter64
+       |  |  +--ro trs:watchdog-failures?                 yang:counter64
+       |  |  +--ro trs:watchdog-preflights-since-reset?   yang:counter64
+       |  |  +--ro trs:tls-read-errors?                   yang:counter64
+       |  |  +--ro trs:tls-write-errors?                  yang:counter64
+       |  |  +--ro trs:tls-certificate-errors?            yang:counter64
+       |  |  +--ro trs:tls-revoked-certificates?          yang:counter64
+       |  |  +--ro trs:tls-untrusted-ca?                  yang:counter64
+       |  |  +--ro trs:tls-expired-certificates?          yang:counter64
+       |  |  +--ro trs:tls-protocol-mismatches?           yang:counter64
+       |  |  +--ro trs:tls-cipher-mismatches?             yang:counter64
+       |  |  +--ro trs:tls-other-errors?                  yang:counter64
+       |  |  +--ro trs:authentication
+       |  |  |  +--ro trs:requests?               yang:counter64
+       |  |  |  +--ro trs:passed?                 yang:counter64
+       |  |  |  +--ro trs:denied?                 yang:counter64
+       |  |  |  +--ro trs:errors?                 yang:counter64
+       |  |  |  +--ro trs:consecutive-failures?   uint64
+       |  |  +--ro trs:authorization
+       |  |  |  +--ro trs:requests?               yang:counter64
+       |  |  |  +--ro trs:passed?                 yang:counter64
+       |  |  |  +--ro trs:denied?                 yang:counter64
+       |  |  |  +--ro trs:errors?                 yang:counter64
+       |  |  |  +--ro trs:consecutive-failures?   uint64
+       |  |  +--ro trs:accounting
+       |  |  |  +--ro trs:requests?               yang:counter64
+       |  |  |  +--ro trs:passed?                 yang:counter64
+       |  |  |  +--ro trs:denied?                 yang:counter64
+       |  |  |  +--ro trs:errors?                 yang:counter64
+       |  |  |  +--ro trs:consecutive-failures?   uint64
+       |  |  +--ro trs:unsupported*                       string
        |  +--ro trs:counter-epoch?             uint64
        +--ro trs:runtime-generation?   uint64
 

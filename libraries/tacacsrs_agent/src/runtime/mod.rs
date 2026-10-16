@@ -18,7 +18,7 @@ mod revision;
 mod server_catalog;
 mod shutdown;
 
-pub use client_service::{ListenerSettings, TacacsClientService};
+pub use client_service::{DiagnosticsHandle, ListenerSettings, TacacsClientService};
 pub use config_filter::{FilteredTacacsPlus, NoopTacacsPlusFilter, TacacsPlusFilter};
 pub use config_supervisor::ConfigSupervisor;
 pub use listener_service::RuntimeListenerService;

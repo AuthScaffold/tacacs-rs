@@ -41,6 +41,21 @@ syntax = "proto3";
 
 package tacacsrs.agent.v1;
 
+// Read-only operational data. This service never sends upstream TACACS+ traffic.
+service Diagnostics {
+  rpc Statistics(StatisticsRequest) returns (StatisticsReply);
+}
+
+message StatisticsRequest {
+  // Exact configured server name. Absent selects the bounded server set.
+  optional string server = 1;
+}
+
+message StatisticsReply {
+  // RFC 7951 operational subtree. Contains no credential values or request payloads.
+  string yang_json = 1;
+}
+
 // The local TACACS+ client service interface.
 //
 // This service exposes TACACS+ operations as unary RPCs. Local clients do not

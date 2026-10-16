@@ -382,12 +382,17 @@ async fn probe_with_resolver(
         let _ = closed.send(());
         Ok::<(), anyhow::Error>(())
     });
+    let counters = endpoint.counters();
     let client = TacacsClient::connect_prepared(endpoint).await?;
     let session = client.open_conversation().await;
     if let Err(error) = &session {
         eprintln!("Native CRL handshake rejected: {error:#}");
+        if format!("{error:#}").contains("revoked") {
+            assert_eq!(counters.snapshot().diagnostics.tls_revoked_certificates, 1);
+        }
     }
     let accepted = session.is_ok();
+    assert_eq!(counters.snapshot().diagnostics.handshake_successes, u64::from(accepted));
     if accepted && expect_expiry {
         tokio::time::pause();
         tokio::time::advance(Duration::from_secs(301)).await;

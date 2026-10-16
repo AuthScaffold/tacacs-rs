@@ -124,22 +124,32 @@ impl TacacsClient {
     /// Returns an error if no shared session can be created and a fresh
     /// dedicated transport cannot be opened.
     pub(super) async fn create_session(&self) -> anyhow::Result<ClientSession> {
-        self.create_session_for(None).await
+        self.create_session_for(None, None).await
     }
 
     pub(super) async fn create_fixed_session(
         &self,
         expected: ExpectedResponseHeader,
     ) -> anyhow::Result<ClientSession> {
-        self.create_session_for(Some(expected)).await
+        self.create_session_for(Some(expected), None).await
+    }
+
+    pub(super) async fn create_fixed_session_until(
+        &self,
+        expected: ExpectedResponseHeader,
+        deadline: crate::RequestDeadline,
+    ) -> anyhow::Result<ClientSession> {
+        self.create_session_for(Some(expected), Some(deadline))
+            .await
     }
 
     async fn create_session_for(
         &self,
         expected: Option<ExpectedResponseHeader>,
+        deadline: Option<crate::RequestDeadline>,
     ) -> anyhow::Result<ClientSession> {
         self.lifecycle.ensure_open()?;
-        let operation = Box::pin(self.create_open_session(expected));
+        let operation = Box::pin(self.create_open_session(expected, deadline));
         let session = match self.endpoint.prepared_credential_lifetime() {
             Some(lifetime) => lifetime.run(operation).await?,
             None => operation.await?,
@@ -151,9 +161,12 @@ impl TacacsClient {
     async fn create_open_session(
         &self,
         expected: Option<ExpectedResponseHeader>,
+        deadline: Option<crate::RequestDeadline>,
     ) -> anyhow::Result<ClientSession> {
         if !self.endpoint.single_connection() {
-            return Ok(ClientSession::dedicated(self.create_fresh_dedicated_session(None).await?));
+            return Ok(ClientSession::dedicated(
+                self.create_fresh_dedicated_session(None, deadline).await?,
+            ));
         }
 
         // Stage 1: unknown capability and active negotiation are decided before
@@ -161,16 +174,18 @@ impl TacacsClient {
         // disabled or after a cached shared connection disconnected. Only Initial
         // can start the capability probe. Negotiating means another session already
         // owns it.
-        match self.single_connection_state().await {
+        match self.single_connection_state() {
             SingleConnectionState::Initial => {
-                return self.create_single_connect_negotiation_session().await;
+                return self
+                    .create_single_connect_negotiation_session(deadline)
+                    .await;
             }
             SingleConnectionState::Negotiating | SingleConnectionState::NotSupported => {
                 // Negotiating means another session already owns the probe.
                 // NotSupported means that the probe denied support. In both
                 // cases, open a fresh dedicated connection without promotion.
                 return Ok(ClientSession::dedicated(
-                    self.create_fresh_dedicated_session(None).await?,
+                    self.create_fresh_dedicated_session(None, deadline).await?,
                 ));
             }
             SingleConnectionState::Supported => {}
@@ -182,7 +197,8 @@ impl TacacsClient {
             return Ok(session);
         }
 
-        self.create_session_after_shared_miss(expected).await
+        self.create_session_after_shared_miss(expected, deadline)
+            .await
     }
 
     /// Opens a sequential packet conversation for transparent proxying and
@@ -200,18 +216,21 @@ impl TacacsClient {
     async fn create_session_after_shared_miss(
         &self,
         expected: Option<ExpectedResponseHeader>,
+        deadline: Option<crate::RequestDeadline>,
     ) -> anyhow::Result<ClientSession> {
         // Stage 3: a rejected shared connection returns the client to Initial
         // after transport loss. The next connection must negotiate again.
-        match self.single_connection_state().await {
+        match self.single_connection_state() {
             SingleConnectionState::Initial => {
-                return self.create_single_connect_negotiation_session().await;
+                return self
+                    .create_single_connect_negotiation_session(deadline)
+                    .await;
             }
             SingleConnectionState::Negotiating | SingleConnectionState::NotSupported => {
                 // Active negotiation and terminal denial both use new
                 // dedicated connections without promotion.
                 return Ok(ClientSession::dedicated(
-                    self.create_fresh_dedicated_session(None).await?,
+                    self.create_fresh_dedicated_session(None, deadline).await?,
                 ));
             }
             SingleConnectionState::Supported => {}
@@ -230,33 +249,42 @@ impl TacacsClient {
         // Stage 6: final fallback. This opens at most one fresh dedicated
         // session on this path. It opens a connection without a probe for
         // NotSupported, or a probe that can promote the completed connection.
-        match self.single_connection_state().await {
+        match self.single_connection_state() {
             SingleConnectionState::NotSupported => {
                 // Another task can record denial while this task waits
                 // on recovery. Keep terminal NotSupported on fresh streams.
-                Ok(ClientSession::dedicated(self.create_fresh_dedicated_session(None).await?))
+                Ok(ClientSession::dedicated(
+                    self.create_fresh_dedicated_session(None, deadline).await?,
+                ))
             }
-            SingleConnectionState::Negotiating => {
-                Ok(ClientSession::dedicated(self.create_fresh_dedicated_session(None).await?))
-            }
+            SingleConnectionState::Negotiating => Ok(ClientSession::dedicated(
+                self.create_fresh_dedicated_session(None, deadline).await?,
+            )),
             SingleConnectionState::Initial | SingleConnectionState::Supported => {
-                self.create_single_connect_negotiation_session().await
+                self.create_single_connect_negotiation_session(deadline)
+                    .await
             }
         }
     }
 
     pub(super) async fn create_single_connect_negotiation_session(
         &self,
+        deadline: Option<crate::RequestDeadline>,
     ) -> anyhow::Result<ClientSession> {
-        let Some(promotion) = self.begin_single_connection_negotiation().await else {
-            return Ok(ClientSession::dedicated(self.create_fresh_dedicated_session(None).await?));
+        let Some(promotion) = self.begin_single_connection_negotiation() else {
+            return Ok(ClientSession::dedicated(
+                self.create_fresh_dedicated_session(None, deadline).await?,
+            ));
         };
 
-        Ok(ClientSession::dedicated(self.create_fresh_dedicated_session(Some(promotion)).await?))
+        Ok(ClientSession::dedicated(
+            self.create_fresh_dedicated_session(Some(promotion), deadline)
+                .await?,
+        ))
     }
 
-    pub(super) async fn single_connection_state(&self) -> SingleConnectionState {
-        *self.single_connection_state.read().await
+    pub(super) fn single_connection_state(&self) -> SingleConnectionState {
+        self.single_connection_state.snapshot()
     }
 
     /// Starts or joins single-connection negotiation for a dedicated session.
@@ -271,33 +299,15 @@ impl TacacsClient {
     /// [Supported] ---- retry --> [Negotiating] -- returns promotion
     /// [NotSupported] ----------> [NotSupported] -- no promotion
     /// ```
-    async fn begin_single_connection_negotiation(&self) -> Option<SingleConnectPromotion> {
-        let mut state = self.single_connection_state.write().await;
-        match *state {
-            SingleConnectionState::NotSupported | SingleConnectionState::Negotiating => None,
-            SingleConnectionState::Initial | SingleConnectionState::Supported => {
-                *state = SingleConnectionState::Negotiating;
-                Some(SingleConnectPromotion::new(
-                    Arc::clone(&self.shared_connection),
-                    Arc::clone(&self.single_connection_state),
-                ))
-            }
-        }
+    fn begin_single_connection_negotiation(&self) -> Option<SingleConnectPromotion> {
+        SingleConnectPromotion::begin(
+            Arc::clone(&self.shared_connection),
+            Arc::clone(&self.single_connection_state),
+        )
     }
 
-    pub(super) async fn update_single_connection_state(&self, new_state: SingleConnectionState) {
-        let mut state = self.single_connection_state.write().await;
-        if *state == new_state {
-            return;
-        }
-
-        log::info!(
-            target: "tacacsrs_networking::client::single_connection_state",
-            "Single-connection state changed from {:?} to {:?}",
-            *state,
-            new_state,
-        );
-        *state = new_state;
+    pub(super) fn update_single_connection_state(&self, new_state: SingleConnectionState) {
+        self.single_connection_state.update(new_state);
     }
 
     /// Updates the client state after the cached shared connection is rejected.
@@ -332,20 +342,18 @@ impl TacacsClient {
     /// The second path is the load-balancer-safe path: after a shared
     /// connection closes, the client does not assume that the next backend has the
     /// same single-connection capability.
-    async fn update_state_after_shared_connection_rejection(
+    fn update_state_after_shared_connection_rejection(
         &self,
         connection: &Arc<MultiplexedConnection>,
     ) {
         match connection.single_connection_state() {
             SingleConnectionState::NotSupported => {
-                self.update_single_connection_state(SingleConnectionState::NotSupported)
-                    .await;
+                self.update_single_connection_state(SingleConnectionState::NotSupported);
             }
             SingleConnectionState::Initial
             | SingleConnectionState::Negotiating
             | SingleConnectionState::Supported => {
-                self.update_single_connection_state(SingleConnectionState::Initial)
-                    .await;
+                self.update_single_connection_state(SingleConnectionState::Initial);
             }
         }
     }
@@ -357,8 +365,6 @@ impl TacacsClient {
         let connection = self.shared_connection.current().await?;
 
         if !connection.can_create_sessions() {
-            self.update_state_after_shared_connection_rejection(&connection)
-                .await;
             self.clear_shared_connection(&connection).await;
             return None;
         }
@@ -377,8 +383,6 @@ impl TacacsClient {
                     "Cached connection to TACACS+ server {} failed to create a session: {error:#}",
                     self.endpoint.address(),
                 );
-                self.update_state_after_shared_connection_rejection(&connection)
-                    .await;
                 self.clear_shared_connection(&connection).await;
                 None
             }
@@ -386,7 +390,11 @@ impl TacacsClient {
     }
 
     async fn clear_shared_connection(&self, connection: &Arc<MultiplexedConnection>) {
-        self.shared_connection.clear_if_same(connection).await;
+        self.shared_connection
+            .clear_if_same(connection, || {
+                self.update_state_after_shared_connection_rejection(connection)
+            })
+            .await;
     }
 
     /// Creates a dedicated session from a newly opened transport.
@@ -397,8 +405,12 @@ impl TacacsClient {
     async fn create_fresh_dedicated_session(
         &self,
         single_connect_promotion: Option<SingleConnectPromotion>,
+        deadline: Option<crate::RequestDeadline>,
     ) -> anyhow::Result<DedicatedSession> {
-        let transport = self.establish_stream().await?;
+        let transport = self
+            .lifecycle
+            .establish(self.endpoint.clone(), deadline)
+            .await?;
 
         Ok(self.create_dedicated_session_with_transport(transport, single_connect_promotion))
     }
@@ -415,8 +427,48 @@ impl TacacsClient {
             .map(tacacsrs_secrets::SecretBytes::expose_secret);
         DedicatedSession::new(transport, obfuscation_key, single_connect_promotion)
     }
+}
 
-    async fn establish_stream(&self) -> anyhow::Result<BoxedTransport> {
-        self.lifecycle.establish(self.endpoint.clone()).await
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stale_shared_rejection_preserves_replacement_and_capability() {
+        let client = TacacsClient::from_prepared(crate::PreparedEndpoint::tcp(
+            "127.0.0.1:49",
+            true,
+            None,
+            crate::ConnectOptions::default(),
+        ));
+        let stale = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+        let replacement = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+        client
+            .shared_connection
+            .store_for_test(replacement.clone())
+            .await;
+        client.update_single_connection_state(SingleConnectionState::Supported);
+
+        for (connection, expected) in [
+            (&stale, SingleConnectionState::Supported),
+            (&replacement, SingleConnectionState::Initial),
+        ] {
+            let locked_cache = client.shared_connection.lock_for_test().await;
+            let mut rejection = Box::pin(client.clear_shared_connection(connection));
+            assert!(futures::poll!(&mut rejection).is_pending());
+            assert_eq!(client.single_connection_state(), SingleConnectionState::Supported);
+            drop(locked_cache);
+            rejection.await;
+            assert_eq!(client.single_connection_state(), expected);
+            if expected == SingleConnectionState::Supported {
+                assert!(Arc::ptr_eq(
+                    &client.shared_connection.current().await.unwrap(),
+                    &replacement
+                ));
+                assert!(replacement.can_create_sessions());
+            } else {
+                assert!(client.shared_connection.current().await.is_none());
+            }
+        }
     }
 }

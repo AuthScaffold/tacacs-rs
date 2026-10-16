@@ -36,6 +36,7 @@ pub(crate) fn client_api_listeners(
         Some(path) => {
             let settings = service.client_api_listener_settings();
             let listener = ClientApiListener {
+                diagnostics: Arc::new(AgentDiagnostics(service.diagnostics_handle())),
                 handler: Arc::new(AgentClientApiHandler {
                     handle: service.client_api_handle(),
                 }),
@@ -87,6 +88,7 @@ impl server::Handler for AgentClientApiHandler {
 /// An injected runtime listener that serves the local client API over IPC.
 struct ClientApiListener {
     handler: Arc<AgentClientApiHandler>,
+    diagnostics: Arc<AgentDiagnostics>,
     path: PathBuf,
     options: ListenerOptions,
 }
@@ -100,6 +102,7 @@ impl RuntimeListenerService for ClientApiListener {
     ) -> anyhow::Result<()> {
         let Self {
             handler,
+            diagnostics,
             path,
             options,
         } = *self;
@@ -109,8 +112,15 @@ impl RuntimeListenerService for ClientApiListener {
         let on_bound = move || {
             let _ = bound_health.set_listener(RuntimeService::ClientApi, ListenerState::Bound);
         };
-        let serving =
-            server::serve_unix(&path, options, handler, receiver, shutdown.flag(), on_bound);
+        let serving = server::serve_unix_with_diagnostics(
+            &path,
+            options,
+            handler,
+            receiver,
+            shutdown.flag(),
+            on_bound,
+            Some(diagnostics),
+        );
         tokio::pin!(serving);
         let result = tokio::select! {
             result = &mut serving => result,
@@ -118,6 +128,18 @@ impl RuntimeListenerService for ClientApiListener {
         };
         drop(registration);
         result
+    }
+}
+
+struct AgentDiagnostics(tacacsrs_agent::DiagnosticsHandle);
+
+impl tacacsrs_ipc::DiagnosticsProvider for AgentDiagnostics {
+    fn statistics_json(
+        &self,
+        server: Option<&str>,
+        maximum_bytes: usize,
+    ) -> anyhow::Result<String> {
+        self.0.statistics_json(server, maximum_bytes)
     }
 }
 

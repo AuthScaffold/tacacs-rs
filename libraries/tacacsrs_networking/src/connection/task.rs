@@ -14,7 +14,14 @@ pub(crate) struct DriverTask {
 
 impl DriverTask {
     pub(crate) fn spawn(future: impl Future<Output = anyhow::Result<()>> + Send + 'static) -> Self {
-        let handle = tokio::spawn(future);
+        Self::spawn_on(&tokio::runtime::Handle::current(), future)
+    }
+
+    pub(crate) fn spawn_on(
+        runtime: &tokio::runtime::Handle,
+        future: impl Future<Output = anyhow::Result<()>> + Send + 'static,
+    ) -> Self {
+        let handle = runtime.spawn(future);
         Self {
             abort: handle.abort_handle(),
             handle: Mutex::new(Some(handle)),

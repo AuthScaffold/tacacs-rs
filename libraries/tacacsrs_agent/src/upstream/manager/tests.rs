@@ -97,6 +97,36 @@ fn materialized_server(secret: &[u8]) -> TacacsPlusServer {
     server
 }
 
+#[tokio::test]
+async fn diagnostics_are_read_only_filtered_bounded_and_secret_free() {
+    let connector = Arc::new(FakeConnector::new(HashMap::new()));
+    let mut server = test_server("192.0.2.10:49");
+    server.shared_secret =
+        Some(tacacsrs_secrets::SecretString::new("diagnostics-secret-sentinel".to_owned()));
+    let state = UpstreamManager::new(
+        vec![server, test_server("192.0.2.11:49")],
+        connector.clone() as Arc<UpstreamConnector>,
+        Duration::from_secs(1),
+        RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
+    );
+    let json = state
+        .diagnostics_json(Some("192.0.2.10:49"), 120 * 1024)
+        .unwrap();
+    assert!(!json.contains("diagnostics-secret-sentinel"));
+    assert!(!json.contains("shared-secret"));
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let servers = parsed["ietf-system-tacacs-plus:tacacs-plus"]["server"]
+        .as_array()
+        .unwrap();
+    assert_eq!(servers.len(), 1);
+    assert_eq!(servers[0]["tacacsrs:diagnostics"]["state"], "not-attempted");
+    assert_eq!(servers[0]["statistics"]["connection-opens"], "0");
+    assert!(state.diagnostics_json(Some("missing"), 120 * 1024).is_err());
+    assert!(state.diagnostics_json(None, 16).is_err());
+    assert_eq!(connector.connect_attempts_for("192.0.2.10:49").await, 0);
+    assert!(tacacsrs_config::parse_yang_json(&json).is_err());
+}
+
 fn bound_secret(bound: &BoundServer<super::ServiceConnector>) -> &[u8] {
     bound
         .server()
@@ -444,6 +474,17 @@ async fn test_connections_open_lazily_in_preference_order() {
     assert_eq!(connector.connect_attempts_for(&second.address).await, 1);
 }
 
+async fn recover_fake_connection(connection: &FakeConnection) {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while connection.usable.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("old connection retirement must precede simulated server recovery");
+    connection.usable.store(true, Ordering::Release);
+}
+
 #[tokio::test]
 async fn operation_failure_does_not_move_other_operation_cursors() {
     let primary = Arc::new(FakeConnection {
@@ -472,7 +513,7 @@ async fn operation_failure_does_not_move_other_operation_cursors() {
         .await
         .expect("primary authentication route");
     state.note_bound_server_failure(&authentication).await;
-    primary.usable.store(true, Ordering::Release);
+    recover_fake_connection(&primary).await;
 
     let authorization = state
         .bind_server_for_operation(OperationKind::Authorization)
@@ -804,7 +845,7 @@ async fn real_request_recovers_a_higher_priority_operation_route() {
         .await
         .expect("initial primary route");
     state.note_bound_server_failure(&initial).await;
-    primary.usable.store(true, Ordering::Release);
+    recover_fake_connection(&primary).await;
     let fallback = state
         .bind_server_for_operation(OperationKind::Authentication)
         .await
@@ -862,7 +903,7 @@ async fn stale_failure_does_not_invalidate_a_recovered_connection() {
         .await
         .expect("initial binding");
     state.note_bound_server_failure(&stale_binding).await;
-    primary.usable.store(true, Ordering::Release);
+    recover_fake_connection(&primary).await;
     tokio::time::advance(Duration::from_secs(5)).await;
     let recovered = state
         .bind_server_for_operation(OperationKind::Authentication)

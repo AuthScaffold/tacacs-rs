@@ -57,6 +57,25 @@ where
     H: Handler,
     B: FnOnce() + Send,
 {
+    serve_unix_with_diagnostics(path, options, handler, readiness, shutdown, on_bound, None).await
+}
+
+/// Runs the standard listener with an optional read-only diagnostics provider.
+/// # Errors
+/// Returns binding, serving, or cleanup errors, as with [`serve_unix`].
+pub async fn serve_unix_with_diagnostics<H, B>(
+    path: &Path,
+    options: ListenerOptions,
+    handler: Arc<H>,
+    readiness: watch::Receiver<HealthStatus>,
+    shutdown: watch::Receiver<bool>,
+    on_bound: B,
+    diagnostics: Option<Arc<dyn crate::DiagnosticsProvider>>,
+) -> anyhow::Result<()>
+where
+    H: Handler,
+    B: FnOnce() + Send,
+{
     let (listener, socket_guard) = prepare_unix_listener(path, options.socket_mode).await?;
     let incoming =
         LimitedIncoming::new(listener, options.max_connections, options.connection_lifetime);
@@ -81,6 +100,13 @@ where
                 .max_encoding_message_size(MAX_IPC_MESSAGE_BYTES),
         )
         .add_service(health_service)
+        .add_service(
+            crate::proto::diagnostics_server::DiagnosticsServer::new(
+                crate::diagnostics::DiagnosticsService(diagnostics),
+            )
+            .max_decoding_message_size(2048)
+            .max_encoding_message_size(MAX_IPC_MESSAGE_BYTES),
+        )
         .serve_with_incoming_shutdown(incoming, wait_for_flag(shutdown.clone()));
     tokio::pin!(serving);
     tokio::select! {

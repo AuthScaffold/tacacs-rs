@@ -28,6 +28,7 @@ tokio-util = "0.7.18"
 # and async helpers are development dependencies used only by the integration
 # tests that compose the client API listener with the runtime.
 [dev-dependencies]
+serde_json = "1.0"
 tacacsrs-ipc = { path = "../tacacsrs_ipc" }
 tokio = { version = "1.52.3", features = ["test-util"] }
 tokio-stream = { version = "0.1.18", features = ["net"] }

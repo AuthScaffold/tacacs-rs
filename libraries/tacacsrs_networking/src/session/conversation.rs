@@ -78,6 +78,7 @@ impl ClientConversation {
             .session
             .as_ref()
             .context("TACACS+ conversation is complete")?;
+        let _reply_wait = session.awaiting_reply(&request);
         session.send_packet(request).await?;
         let response = session.receive_packet().await?;
         self.state.validate_response(response.header())?;

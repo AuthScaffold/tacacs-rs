@@ -53,14 +53,20 @@ def test_armhf_execution_is_a_required_unconditional_gate():
         assert step.get("continue-on-error", "false") == "false"
 
 
+def test_pull_requests_run_on_the_diagnostics_stack_base():
+    branches = workflow("pullrequest_workflow.yml")["on"]["pull_request"]["branches"]
+    assert {"main", "review/yang-toolkit/**", "feature/agent-diagnostics"} <= set(branches)
+
+
 def test_armhf_helper_builds_and_executes_the_affected_packages():
     helper = (ROOT / ".github/steps/armhf/verify.sh").read_text()
     assert "cargo build --locked --release --bins" in helper
     assert "cargo test --locked" in helper
     assert "--no-run" not in helper
     for package in ("tacacsrs-agentd", "tacacsrs-agent-health", "tacon",
+                    "tacacsrs-networking", "tacacsrs-agent",
                     "tacacsrs-sonic", "tacacsrs-ipc", "tacacsrs-agent-ipc-emulator"):
-        assert f"-p {package}" in helper
+        assert f"-p {package} " in helper
     for check in ("ELF32", "Machine: +ARM", "hard-float ABI", '"${binary}" --help'):
         assert check in helper
     dockerfile = (ROOT / ".github/steps/armhf/Dockerfile").read_text()

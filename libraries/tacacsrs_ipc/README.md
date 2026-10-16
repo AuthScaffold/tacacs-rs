@@ -11,6 +11,18 @@ The agent runtime does not depend on this crate or generated IPC bindings.
 The `tacacsrs-protocol` package owns logical requests, responses, and authorization interpretation.
 Direct callers and IPC callers use those same types.
 
+## Read-only diagnostics
+
+`DiagnosticsClient` queries the separate `Diagnostics.Statistics` RPC over the
+same local endpoint. It accepts an optional exact server name and returns an
+RFC 7951 operational JSON document. The maximum JSON payload is 120 KiB.
+
+A host supplies `DiagnosticsProvider` through `serve_unix_with_diagnostics`.
+The provider must bound snapshot copying and serialization and must not perform
+upstream I/O. The daemon adapts its read-only runtime handle to this interface.
+Provider errors use fixed public status messages. Hosts without a provider return
+`UNIMPLEMENTED`; the existing AAA handler and standard health service are unchanged.
+
 ## Design goals
 
 - Provide a self-contained client that can make IPC calls without depending on
