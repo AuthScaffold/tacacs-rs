@@ -8,13 +8,19 @@ import re
 import sys
 from pathlib import Path
 
+# The Cargo metadata helper lives in a sibling step directory.
+_CARGO_METADATA_DIR = Path(__file__).resolve().parent.parent / "cargo-metadata"
+if str(_CARGO_METADATA_DIR) not in sys.path:
+    sys.path.insert(0, str(_CARGO_METADATA_DIR))
+
+from workspace import inventory, load_metadata  # noqa: E402
+
 
 VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]*$")
 PACKAGE_SECTION_RE = re.compile(
     r"(?ms)^\[package\]\r?\n(?P<body>.*?)(?=^\[|\Z)"
 )
 VERSION_LINE_RE = re.compile(r'(?m)^version\s*=\s*"[^"]*"\s*$')
-NAME_LINE_RE = re.compile(r'(?m)^name\s*=\s*"([^"]+)"\s*$')
 LOCK_PACKAGE_RE = re.compile(
     r"(?ms)^\[\[package\]\]\r?\n(?P<body>.*?)(?=^\[\[package\]\]|\Z)"
 )
@@ -48,26 +54,24 @@ def replace_manifest_version(path: Path, package: str, version: str) -> None:
 
 
 def manifest_packages(workspace: Path) -> dict[str, Path]:
-    """Return each workspace package and its manifest path."""
+    """Return each workspace member package and its manifest path.
+
+    Cargo decides workspace membership. Non-members never appear: the excluded
+    fuzz crate, the build directory, and nested manifests outside the workspace
+    are all absent. The metadata uses ``--no-deps``, so it reads only the
+    workspace manifests and does not depend on ``Cargo.lock``.
+    """
+    inv = inventory(load_metadata(workspace, no_deps=True, locked=False))
+    root = Path(inv["workspace_root"])
     packages: dict[str, Path] = {}
-    for path in sorted(workspace.rglob("Cargo.toml")):
-        if "target" in path.parts:
-            continue
-
-        text = path.read_text(encoding="utf-8")
-        section = PACKAGE_SECTION_RE.search(text)
-        if section is None:
-            continue
-
-        match = NAME_LINE_RE.search(section.group("body"))
-        if match is None:
-            raise HydrationError(f"{path} has no valid package name")
-        name = match.group(1)
+    for package in inv["packages"]:
+        name = package["name"]
+        manifest = root / package["manifest_path"]
         if name in packages:
             raise HydrationError(
-                f"duplicate package name {name!r}: {packages[name]} and {path}"
+                f"duplicate package name {name!r}: {packages[name]} and {manifest}"
             )
-        packages[name] = path
+        packages[name] = manifest
     return packages
 
 

@@ -1,0 +1,35 @@
+name: Verify YANG Generation (Offline)
+description: >
+  Install the pinned pyang toolchain, run the YANG generator unit tests, and run
+  the offline hash and version consistency check for the checked-in TACACS+
+  model artifacts. This gate does not clone the pinned upstream source and does
+  not regenerate any artifact, so it performs no branch writes. Deterministic
+  regeneration from the pinned source is a separate, network-bound command
+  (verify_generated.py without --check) that a maintainer runs when the source
+  or generator changes.
+
+runs:
+  using: composite
+  steps:
+    - name: Install the pinned pyang toolchain
+      shell: bash
+      working-directory: libraries/tacacsrs_config/yang
+      run: |
+        set -euo pipefail
+        python3 -m venv "${RUNNER_TEMP}/tacacsrs-yang-venv"
+        "${RUNNER_TEMP}/tacacsrs-yang-venv/bin/python" -m pip install --upgrade pip
+        "${RUNNER_TEMP}/tacacsrs-yang-venv/bin/python" -m pip install -r requirements.txt
+
+    - name: Run the YANG generator unit tests
+      shell: bash
+      working-directory: libraries/tacacsrs_config/yang
+      run: |
+        set -euo pipefail
+        "${RUNNER_TEMP}/tacacsrs-yang-venv/bin/python" -m unittest discover --verbose --pattern 'test_*.py'
+
+    - name: Run the offline YANG consistency check
+      shell: bash
+      working-directory: libraries/tacacsrs_config/yang
+      run: |
+        set -euo pipefail
+        "${RUNNER_TEMP}/tacacsrs-yang-venv/bin/python" verify_generated.py --check

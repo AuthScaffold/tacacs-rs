@@ -1,0 +1,48 @@
+name: Check Architecture
+description: >
+  Enforce the tacacs-rs production dependency allowlist and the external
+  dependency guards from resolved, platform-filtered Cargo metadata.
+
+inputs:
+  target:
+    description: 'Rust target triple used for cargo metadata platform filtering'
+    required: true
+  all-features:
+    description: 'Resolve cargo metadata with all features enabled'
+    required: false
+    default: 'true'
+  products:
+    description: >
+      Path to a JSON file with the release product matrix to verify. An empty
+      value skips product verification.
+    required: false
+    default: ''
+  metadata-report:
+    description: 'Optional path to write the resolved metadata as plain JSON'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Enforce architecture rules
+      shell: bash
+      env:
+        INPUT_TARGET: ${{ inputs.target }}
+        INPUT_ALL_FEATURES: ${{ inputs.all-features }}
+        INPUT_PRODUCTS: ${{ inputs.products }}
+        INPUT_METADATA_REPORT: ${{ inputs.metadata-report }}
+        GITHUB_WORKSPACE: ${{ github.workspace }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        args=(--workspace "$GITHUB_WORKSPACE" --target "$INPUT_TARGET")
+        if [ "$INPUT_ALL_FEATURES" = "true" ]; then
+          args+=(--all-features)
+        fi
+        if [ -n "$INPUT_PRODUCTS" ]; then
+          args+=(--products "$INPUT_PRODUCTS")
+        fi
+        if [ -n "$INPUT_METADATA_REPORT" ]; then
+          args+=(--metadata-report "$INPUT_METADATA_REPORT")
+        fi
+        python "$ACTION_PATH/check_architecture.py" "${args[@]}"
