@@ -16,17 +16,11 @@ mod endpoint;
 /// Stable names used by standard gRPC health checks.
 pub mod health;
 
-/// Generated protobuf/gRPC types for the local IPC transport.
+/// Generated protobuf and gRPC bindings for the local IPC transport.
 ///
-/// The checked-in `.proto` file
-/// ([`proto/tacacsrs_agent.proto`](https://github.com/AuthScaffold/tacacs-rs/blob/main/libraries/tacacsrs_ipc/proto/tacacsrs_agent.proto))
-/// defines the wire IPC contract. The crate includes generated Rust bindings at
-/// build time. It uses them to convert between domain types and the transport
-/// schema.
-///
-/// > **Note:** This module suppresses all Clippy lints because
-/// > `tonic-prost-build` generates the code.
-pub mod ipc;
+/// The checked-in `.proto` file is the single source of truth for the wire
+/// contract. See the module docs for the generated type listing.
+pub mod proto;
 
 mod convert;
 

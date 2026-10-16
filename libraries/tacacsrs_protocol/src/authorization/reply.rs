@@ -5,9 +5,9 @@ use byteorder::{BigEndian, ReadBytesExt};
 use num_enum::TryFromPrimitive;
 
 use crate::enumerations::TacacsAuthorizationStatus;
-use crate::helpers::read_string;
+use crate::wire_io::read_string;
 use crate::packet::{Packet, PacketTrait};
-use crate::traits::TacacsBodyTrait;
+use crate::body::TacacsBodyTrait;
 
 const AUTHORIZATION_REPLY_MIN_LENGTH: usize = 6;
 const AUTHORIZATION_REPLY_ARG_SIZE_OFFSET: usize = 6;

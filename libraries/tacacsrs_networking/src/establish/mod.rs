@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use crate::endpoint::PreparedEndpoint;
-use crate::helpers::connect_tcp;
+use crate::destination::connect_tcp;
 use crate::transport::BoxedTransport;
 use crate::transport::{tls, tls_psk};
 

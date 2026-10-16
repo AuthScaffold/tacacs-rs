@@ -1,4 +1,4 @@
-use tacacsrs_config::{enumerate_servers, parse_yang_json, pipeline};
+use tacacsrs_config::{enumerate_servers, parse_root_json, parse_yang_json};
 use tacacsrs_credential_resolution::{
     CertificateBagMaterial, CertificateWithKeyMaterial, CredentialKind, CredentialReference,
     FakeCredentialResolver, NamedCertificateMaterial, ProviderErrorKind, PublicBytes,
@@ -174,7 +174,7 @@ fn request_plan_is_deterministic_explicit_and_redacted() {
 
 #[test]
 fn planning_requires_enumeration_and_rejects_incomplete_request() {
-    let raw = pipeline::parse_root_json(
+    let raw = parse_root_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
                 "client-credentials": [{

@@ -3,6 +3,7 @@ name = "tacacsrs-config"
 description = "YANG JSON configuration types for TACACS+ and ietf-system-tacacs-plus."
 version = "0.0.0-dev"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 

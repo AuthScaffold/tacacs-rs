@@ -1,7 +1,7 @@
 use crate::header::Header;
 use md5::{Digest, Md5};
 
-pub fn convert(header: &Header, data: &[u8], obfuscation_key: &[u8]) -> Vec<u8> {
+pub(crate) fn convert(header: &Header, data: &[u8], obfuscation_key: &[u8]) -> Vec<u8> {
     let output_length = data.len().min(header.length as usize);
     let mut output = data[..output_length].to_vec();
     convert_inplace(header, &mut output, obfuscation_key);
@@ -9,7 +9,7 @@ pub fn convert(header: &Header, data: &[u8], obfuscation_key: &[u8]) -> Vec<u8> 
     output
 }
 
-pub fn convert_inplace(header: &Header, data: &mut [u8], obfuscation_key: &[u8]) {
+pub(crate) fn convert_inplace(header: &Header, data: &mut [u8], obfuscation_key: &[u8]) {
     assert!(data.len() <= header.length as usize);
     if data.is_empty() {
         return;

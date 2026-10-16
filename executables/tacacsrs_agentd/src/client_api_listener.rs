@@ -22,14 +22,16 @@ use tacacsrs_ipc::server::{self, HealthStatus, ListenerOptions};
 use tacacsrs_protocol::operations::{
     AccountingOperation, AccountingOperationResponse, AuthorizationOperation,
     AuthorizationOperationResponse, PapAuthenticationOperation, PapAuthenticationOperationResponse,
-    ServiceError,
 };
+use tacacsrs_protocol::failure::ServiceError;
 
 /// Builds the injected runtime listeners for the local client API.
 ///
 /// Returns one IPC listener when the client API is enabled, otherwise an empty
 /// set. The raw TACACS+ proxy remains an internal agent runtime listener.
-pub fn client_api_listeners(service: &TacacsClientService) -> Vec<Box<dyn RuntimeListenerService>> {
+pub(crate) fn client_api_listeners(
+    service: &TacacsClientService,
+) -> Vec<Box<dyn RuntimeListenerService>> {
     match service.client_api_socket_path() {
         Some(path) => {
             let settings = service.client_api_listener_settings();

@@ -14,7 +14,7 @@ use tacacsrs_sonic::{
 };
 
 use crate::cli::Cli;
-use crate::sonic_connection_from_cli;
+use crate::startup::sonic_connection_from_cli;
 
 pub(crate) type CredentialProvider =
     (Option<Arc<dyn CredentialResolver>>, Option<Arc<dyn CredentialChangeSource>>);

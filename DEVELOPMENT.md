@@ -211,10 +211,45 @@ cargo +nightly fmt --all
 
 ### Linting
 
+Blocking checks include default Clippy, checked numeric conversions, error and panic documentation, unsafe-block explanations, and internal API visibility.
+Broad pedantic and nursery checks are advisory. Function length is not a design requirement.
+Keep a cohesive state transition together when extraction would hide its sequencing or ownership.
+
 ```bash
 # Run clippy
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+# Inspect advisory style findings
+cargo clippy --workspace --all-targets --all-features -- -W clippy::pedantic -W clippy::nursery
+
+# Match CI documentation coverage, including private implementation modules
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --document-private-items
+
+# Verify the declared minimum supported compiler
+cargo +1.88.0 check --workspace --all-targets --all-features --locked
 ```
+
+Every package inherits `rust-version.workspace`. Parser fuzz failures are blocking, not advisory.
+
+### Reading Stateful Code
+
+Start with the owner and its transition, then read the adjacent tests:
+
+| Behavior | Starting point |
+| --- | --- |
+| Canonical parsing and preparation | [Configuration facade](libraries/tacacsrs_config/src/lib.rs) |
+| Source observation, refresh, and expiry | [Configuration supervisor](libraries/tacacsrs_agent/src/runtime/config_supervisor.rs) |
+| Catalog and policy commits | [Publication](libraries/tacacsrs_agent/src/upstream/manager/publication.rs) |
+| Client construction and closure | [Client facade](libraries/tacacsrs_networking/src/client/mod.rs) |
+| First-reply negotiation and cache promotion | [Single-connect ownership](libraries/tacacsrs_networking/src/single_connect/mod.rs) |
+| Logical operations and wire conversion | [Operation facade](libraries/tacacsrs_protocol/src/operations.rs) |
+| CLI transport selection | [Backend](executables/tacon/src/backend.rs) |
+| Unix listener lifetime | [Socket owner](libraries/tacacsrs_unix_socket/src/listener.rs) |
+
+Module documentation names the owner, entry points, state transitions, and cancellation limits.
+Function documentation explains contracts and failure conditions. Inline comments explain invariants rather than narrating assignments.
+Client, catalog, connection, and session lifetimes are distinct even when their states use similar words.
+Publication keeps runtime state, health, and coordinator bookkeeping in one non-awaiting commit. Retirement occurs afterward.
 
 ### Other Checks
 

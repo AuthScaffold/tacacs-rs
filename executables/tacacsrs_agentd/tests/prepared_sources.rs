@@ -35,7 +35,7 @@ use tacacsrs_protocol::enumerations::{
 };
 use tacacsrs_protocol::exchange::accounting::AccountingExchange;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
-use tacacsrs_protocol::traits::TacacsBodyTrait;
+use tacacsrs_protocol::body::TacacsBodyTrait;
 use tacacsrs_sonic::{map_sonic_tables_to_tacacs_plus, SonicTacacsTables};
 
 #[path = "prepared_sources/psk_peer.rs"]
@@ -71,8 +71,9 @@ mod client_api {
     use tacacsrs_protocol::operations::{
         AccountingOperation, AccountingOperationResponse, AuthorizationOperation,
         AuthorizationOperationResponse, PapAuthenticationOperation,
-        PapAuthenticationOperationResponse, ServiceError,
+        PapAuthenticationOperationResponse,
     };
+    use tacacsrs_protocol::failure::ServiceError;
 
     pub(crate) fn client_api_listeners(
         service: &TacacsClientService,

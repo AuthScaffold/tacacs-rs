@@ -52,7 +52,8 @@ For the host cutover procedure, read the [Plain TACACS+ to TACACS+ over TLS Tran
 
 ## Supported Core
 
-The workspace `default-members` defines the supported core. Plain `cargo build` and `cargo test` select these 13 packages.
+The workspace `default-members` defines the supported core. Plain `cargo build` and `cargo test` select these 14 packages.
+The internal `tacacsrs-unix-socket` package owns shared listener binding and cleanup without depending on TACACS+ or IPC.
 The release products are `tacon`, `tacacsrs-agentd`, `tacacsrs-agent-health`, and the Bash plugin.
 Windows releases contain only `tacon` direct mode. Linux GNU supports the complete core.
 
@@ -212,7 +213,8 @@ Both `tacon` and `tacacsrs-agentd` can load server definitions from an RFC 7951 
 
 Use `--config <file>` with either executable to load this configuration. The `tacacsrs-config` crate owns the generated YANG types and validation.
 
-The crate maps YANG JSON to the runtime `ServerConnectionConfig` values. The CLI and the agent daemon use these values.
+The crate validates canonical YANG and prepares derived `PreparedEndpoint` values for networking.
+The CLI and daemon share this preparation path without replacing the authoritative configuration or credential references.
 
 ## Local Testing
 

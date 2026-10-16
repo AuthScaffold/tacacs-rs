@@ -5,144 +5,18 @@
 //! runs as a normal request/response exchange. The promotion transfers the
 //! connection after the session completes.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context;
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 
 use tacacsrs_protocol::enumerations::TacacsFlags;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
 
-use crate::client::SharedConnectionCache;
-use crate::runtime::DedicatedConnection;
-use crate::single_connect::SingleConnectionState;
+use crate::connection::{BoxedDedicatedConnection, DedicatedConnection};
 use crate::session::random_nonzero_session_id;
+use crate::single_connect::SingleConnectPromotion;
 use crate::transport::BoxedTransport;
-
-type BoxedDedicatedConnection =
-    DedicatedConnection<Box<dyn AsyncRead + Unpin + Send>, Box<dyn AsyncWrite + Unpin + Send>>;
-
-const SINGLE_CONNECT_RESPONSE_PENDING: u8 = 0;
-const SINGLE_CONNECT_RESPONSE_UNSUPPORTED: u8 = 1;
-const SINGLE_CONNECT_RESPONSE_SUPPORTED: u8 = 2;
-
-/// Deferred promotion from a dedicated connection to a cached shared connection.
-///
-/// This is the callback carried by a dedicated session during TACACS+
-/// single-connection negotiation. It records the server response synchronously
-/// when a packet arrives. It does not convert the connection at that point. The
-/// dedicated session owns the reader and writer halves until completion.
-///
-/// ```text
-/// send request with single-connect flag
-///     |
-///     v
-/// [Pending]
-///     |
-///     +-- response has flag ----> [Supported]
-///     |                              |
-///     |                              v
-///     |                      complete session
-///     |                              |
-///     |                              v
-///     |                      upgrade and cache shared connection
-///     |
-///     +-- response lacks flag ---> [Unsupported]
-///                                    |
-///                                    v
-///                            mark NotSupported and drop connection
-/// ```
-pub(crate) struct SingleConnectPromotion {
-    shared_connection: Arc<SharedConnectionCache>,
-    cache_generation: u64,
-    state: Arc<RwLock<SingleConnectionState>>,
-    response: AtomicU8,
-}
-
-impl SingleConnectPromotion {
-    pub(crate) fn new(
-        shared_connection: Arc<SharedConnectionCache>,
-        state: Arc<RwLock<SingleConnectionState>>,
-    ) -> Self {
-        Self {
-            cache_generation: shared_connection.generation.load(Ordering::Acquire),
-            shared_connection,
-            state,
-            response: AtomicU8::new(SINGLE_CONNECT_RESPONSE_PENDING),
-        }
-    }
-
-    fn observe_server_response(&self, packet: &Packet) {
-        let response = if packet
-            .header()
-            .flags
-            .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG)
-        {
-            SINGLE_CONNECT_RESPONSE_SUPPORTED
-        } else {
-            SINGLE_CONNECT_RESPONSE_UNSUPPORTED
-        };
-
-        self.response.store(response, Ordering::Release);
-    }
-
-    async fn promote_if_confirmed(&self, mut connection: BoxedDedicatedConnection) {
-        match self.response.load(Ordering::Acquire) {
-            SINGLE_CONNECT_RESPONSE_SUPPORTED => {
-                if self.record_server_result(true).await {
-                    let mut slot = self.shared_connection.slot.write().await;
-                    if !self.shared_connection.closed.load(Ordering::Acquire)
-                        && self.cache_generation
-                            == self.shared_connection.generation.load(Ordering::Acquire)
-                    {
-                        *slot = Some(connection.upgrade());
-                    }
-                }
-            }
-            SINGLE_CONNECT_RESPONSE_UNSUPPORTED => {
-                self.record_server_result(false).await;
-                connection.shutdown().await;
-            }
-            SINGLE_CONNECT_RESPONSE_PENDING => {
-                connection.shutdown().await;
-            }
-            _ => unreachable!("invalid single-connect response state"),
-        }
-    }
-
-    async fn record_server_result(&self, supported: bool) -> bool {
-        let mut state = self.state.write().await;
-        let new_state = if supported {
-            SingleConnectionState::Supported
-        } else {
-            SingleConnectionState::NotSupported
-        };
-
-        if *state == SingleConnectionState::NotSupported
-            && new_state == SingleConnectionState::Supported
-        {
-            log::debug!(
-                target: "tacacsrs_networking::single_connect",
-                "Ignored late single-connect support confirmation because the state is NotSupported",
-            );
-            return false;
-        }
-
-        if *state != new_state {
-            log::info!(
-                target: "tacacsrs_networking::single_connect",
-                "Single-connection state changed from {:?} to {:?}",
-                *state,
-                new_state,
-            );
-            *state = new_state;
-        }
-
-        supported
-    }
-}
 
 pub(crate) struct DedicatedSession {
     connection: Mutex<Option<BoxedDedicatedConnection>>,
@@ -408,8 +282,63 @@ mod tests {
             .header()
             .flags
             .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
-        assert!(shared_connection.slot.read().await.is_none());
+        assert!(shared_connection.current().await.is_none());
         assert_eq!(*single_connection_state.read().await, SingleConnectionState::NotSupported);
+    }
+
+    #[tokio::test]
+    async fn first_reply_controls_multi_round_promotion() {
+        for first_supports_sharing in [true, false] {
+            let mock = MockTransport::new();
+            let coordinator = mock.coordinator();
+            let shared_connection = Arc::default();
+            let state = Arc::new(RwLock::new(SingleConnectionState::Initial));
+            let session = DedicatedSession::new(
+                BoxedTransport::new(mock),
+                None,
+                Some(SingleConnectPromotion::new(
+                    Arc::clone(&shared_connection),
+                    Arc::clone(&state),
+                )),
+            );
+            for (request_sequence, supports_sharing) in
+                [(1, first_supports_sharing), (3, !first_supports_sharing)]
+            {
+                let mut reply_flags = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG;
+                if supports_sharing {
+                    reply_flags |= TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG;
+                }
+                coordinator
+                    .add_reply(test_packet(
+                        session.session_id(),
+                        request_sequence + 1,
+                        reply_flags,
+                        b"reply",
+                    ))
+                    .await
+                    .unwrap();
+                session
+                    .send_packet(test_packet(
+                        session.session_id(),
+                        request_sequence,
+                        TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+                        b"request",
+                    ))
+                    .await
+                    .unwrap();
+                session.receive_packet().await.unwrap();
+            }
+            session.complete().await;
+            assert_eq!(shared_connection.current().await.is_some(), first_supports_sharing);
+            assert_eq!(
+                *state.read().await,
+                if first_supports_sharing {
+                    SingleConnectionState::Supported
+                } else {
+                    SingleConnectionState::NotSupported
+                }
+            );
+        }
     }
 
     #[tokio::test]
@@ -576,12 +505,9 @@ mod tests {
         session.complete().await;
 
         let connection = shared_connection
-            .slot
-            .read()
+            .current()
             .await
-            .as_ref()
-            .expect("single-connect response must cache the upgraded connection")
-            .clone();
+            .expect("single-connect response must cache the upgraded connection");
         assert_eq!(*single_connection_state.read().await, SingleConnectionState::Supported);
         assert_eq!(connection.single_connection_state(), SingleConnectionState::Supported);
     }

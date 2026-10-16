@@ -19,22 +19,22 @@ use std::path::Path;
 // Re-export public types
 // RequestResult is part of the public API (returned by execute_batch)
 #[allow(unused_imports)]
-pub use types::{BatchFile, RequestResult};
+pub(crate) use types::{BatchFile, RequestResult};
 
 // Re-export the run functions.
-pub use executor::execute_batch;
+pub(crate) use executor::execute_batch;
 #[cfg(target_os = "linux")]
-pub use executor::execute_batch_via_service;
+pub(crate) use executor::execute_batch_via_service;
 
 // Re-export display functions
-pub use progress::print_results_summary;
+pub(crate) use progress::print_results_summary;
 
 /// Loads and parses a batch file from disk
 ///
 /// # Errors
 ///
 /// Returns an error if the file cannot be read or parsed as valid JSON.
-pub fn load_batch_file(path: &Path) -> anyhow::Result<BatchFile> {
+pub(crate) fn load_batch_file(path: &Path) -> anyhow::Result<BatchFile> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read batch file: {}", path.display()))?;
 

@@ -10,7 +10,7 @@ use tacacsrs_protocol::operations::{
     AuthorizationOperation, AuthorizationOperationResponse, AuthorizationResponseStatus,
     PapAuthenticationOperation, PapAuthenticationOperationResponse,
 };
-use crate::ipc;
+use crate::proto;
 
 mod failure;
 
@@ -66,7 +66,7 @@ fn decode_authentication_context(value: i32) -> anyhow::Result<AuthorizationAuth
     }
 }
 
-impl From<AccountingOperation> for ipc::AccountingRequest {
+impl From<AccountingOperation> for proto::AccountingRequest {
     fn from(value: AccountingOperation) -> Self {
         Self {
             user: value.user,
@@ -78,7 +78,7 @@ impl From<AccountingOperation> for ipc::AccountingRequest {
     }
 }
 
-impl From<&AccountingOperation> for ipc::AccountingRequest {
+impl From<&AccountingOperation> for proto::AccountingRequest {
     fn from(value: &AccountingOperation) -> Self {
         Self {
             user: value.user.clone(),
@@ -90,10 +90,10 @@ impl From<&AccountingOperation> for ipc::AccountingRequest {
     }
 }
 
-impl TryFrom<ipc::AccountingRequest> for AccountingOperation {
+impl TryFrom<proto::AccountingRequest> for AccountingOperation {
     type Error = anyhow::Error;
 
-    fn try_from(value: ipc::AccountingRequest) -> Result<Self, Self::Error> {
+    fn try_from(value: proto::AccountingRequest) -> Result<Self, Self::Error> {
         Ok(Self {
             user: value.user,
             port: value.port,
@@ -104,7 +104,7 @@ impl TryFrom<ipc::AccountingRequest> for AccountingOperation {
     }
 }
 
-impl From<PapAuthenticationOperation> for ipc::PapAuthenticationRequest {
+impl From<PapAuthenticationOperation> for proto::PapAuthenticationRequest {
     fn from(value: PapAuthenticationOperation) -> Self {
         Self {
             user: value.user,
@@ -116,10 +116,10 @@ impl From<PapAuthenticationOperation> for ipc::PapAuthenticationRequest {
     }
 }
 
-impl TryFrom<ipc::PapAuthenticationRequest> for PapAuthenticationOperation {
+impl TryFrom<proto::PapAuthenticationRequest> for PapAuthenticationOperation {
     type Error = anyhow::Error;
 
-    fn try_from(value: ipc::PapAuthenticationRequest) -> Result<Self, Self::Error> {
+    fn try_from(value: proto::PapAuthenticationRequest) -> Result<Self, Self::Error> {
         let operation = Self {
             user: value.user,
             password: SecretBytes::new(value.password),
@@ -136,7 +136,7 @@ impl TryFrom<ipc::PapAuthenticationRequest> for PapAuthenticationOperation {
 // Protobuf ↔ domain conversions for AuthorizationOperation
 // ---------------------------------------------------------------------------
 
-impl From<AuthorizationOperation> for ipc::AuthorizationRequest {
+impl From<AuthorizationOperation> for proto::AuthorizationRequest {
     fn from(value: AuthorizationOperation) -> Self {
         Self {
             user: value.user,
@@ -147,13 +147,13 @@ impl From<AuthorizationOperation> for ipc::AuthorizationRequest {
             args: value
                 .args
                 .into_iter()
-                .map(ipc::AuthorizationArg::from)
+                .map(proto::AuthorizationArg::from)
                 .collect(),
         }
     }
 }
 
-impl From<&AuthorizationOperation> for ipc::AuthorizationRequest {
+impl From<&AuthorizationOperation> for proto::AuthorizationRequest {
     fn from(value: &AuthorizationOperation) -> Self {
         Self {
             user: value.user.clone(),
@@ -165,16 +165,16 @@ impl From<&AuthorizationOperation> for ipc::AuthorizationRequest {
                 .args
                 .iter()
                 .cloned()
-                .map(ipc::AuthorizationArg::from)
+                .map(proto::AuthorizationArg::from)
                 .collect(),
         }
     }
 }
 
-impl TryFrom<ipc::AuthorizationRequest> for AuthorizationOperation {
+impl TryFrom<proto::AuthorizationRequest> for AuthorizationOperation {
     type Error = anyhow::Error;
 
-    fn try_from(value: ipc::AuthorizationRequest) -> Result<Self, Self::Error> {
+    fn try_from(value: proto::AuthorizationRequest) -> Result<Self, Self::Error> {
         let operation = Self {
             user: value.user,
             port: value.port,
@@ -192,7 +192,7 @@ impl TryFrom<ipc::AuthorizationRequest> for AuthorizationOperation {
 // Protobuf ↔ domain conversions for AccountingOperationResponse
 // ---------------------------------------------------------------------------
 
-impl From<AccountingOperationResponse> for ipc::AccountingResponse {
+impl From<AccountingOperationResponse> for proto::AccountingResponse {
     fn from(value: AccountingOperationResponse) -> Self {
         Self {
             server: value.server,
@@ -203,10 +203,10 @@ impl From<AccountingOperationResponse> for ipc::AccountingResponse {
     }
 }
 
-impl TryFrom<ipc::AccountingResponse> for AccountingOperationResponse {
+impl TryFrom<proto::AccountingResponse> for AccountingOperationResponse {
     type Error = anyhow::Error;
 
-    fn try_from(proto: ipc::AccountingResponse) -> Result<Self, Self::Error> {
+    fn try_from(proto: proto::AccountingResponse) -> Result<Self, Self::Error> {
         Ok(Self {
             server: proto.server,
             status: accounting_status(proto.status)?,
@@ -216,7 +216,7 @@ impl TryFrom<ipc::AccountingResponse> for AccountingOperationResponse {
     }
 }
 
-impl From<PapAuthenticationOperationResponse> for ipc::PapAuthenticationResponse {
+impl From<PapAuthenticationOperationResponse> for proto::PapAuthenticationResponse {
     fn from(value: PapAuthenticationOperationResponse) -> Self {
         Self {
             server: value.server,
@@ -227,10 +227,10 @@ impl From<PapAuthenticationOperationResponse> for ipc::PapAuthenticationResponse
     }
 }
 
-impl TryFrom<ipc::PapAuthenticationResponse> for PapAuthenticationOperationResponse {
+impl TryFrom<proto::PapAuthenticationResponse> for PapAuthenticationOperationResponse {
     type Error = anyhow::Error;
 
-    fn try_from(proto: ipc::PapAuthenticationResponse) -> Result<Self, Self::Error> {
+    fn try_from(proto: proto::PapAuthenticationResponse) -> Result<Self, Self::Error> {
         Ok(Self {
             server: proto.server,
             status: authentication_status(proto.status)?,
@@ -244,7 +244,7 @@ impl TryFrom<ipc::PapAuthenticationResponse> for PapAuthenticationOperationRespo
 // Protobuf ↔ domain conversions for AuthorizationOperationResponse
 // ---------------------------------------------------------------------------
 
-impl From<AuthorizationOperationResponse> for ipc::AuthorizationResponse {
+impl From<AuthorizationOperationResponse> for proto::AuthorizationResponse {
     fn from(value: AuthorizationOperationResponse) -> Self {
         Self {
             server: value.server,
@@ -253,17 +253,17 @@ impl From<AuthorizationOperationResponse> for ipc::AuthorizationResponse {
             args: value
                 .args
                 .into_iter()
-                .map(ipc::AuthorizationArg::from)
+                .map(proto::AuthorizationArg::from)
                 .collect(),
             data: value.data,
         }
     }
 }
 
-impl TryFrom<ipc::AuthorizationResponse> for AuthorizationOperationResponse {
+impl TryFrom<proto::AuthorizationResponse> for AuthorizationOperationResponse {
     type Error = anyhow::Error;
 
-    fn try_from(proto: ipc::AuthorizationResponse) -> Result<Self, Self::Error> {
+    fn try_from(proto: proto::AuthorizationResponse) -> Result<Self, Self::Error> {
         let response = Self {
             server: proto.server,
             status: authorization_status(proto.status)?,
@@ -278,7 +278,7 @@ impl TryFrom<ipc::AuthorizationResponse> for AuthorizationOperationResponse {
     }
 }
 
-impl From<AuthorizationArg> for ipc::AuthorizationArg {
+impl From<AuthorizationArg> for proto::AuthorizationArg {
     fn from(arg: AuthorizationArg) -> Self {
         Self {
             name: arg.name,
@@ -288,8 +288,8 @@ impl From<AuthorizationArg> for ipc::AuthorizationArg {
     }
 }
 
-impl From<ipc::AuthorizationArg> for AuthorizationArg {
-    fn from(arg: ipc::AuthorizationArg) -> Self {
+impl From<proto::AuthorizationArg> for AuthorizationArg {
+    fn from(arg: proto::AuthorizationArg) -> Self {
         Self {
             name: arg.name,
             mandatory: arg.mandatory,
@@ -320,7 +320,7 @@ mod tests {
                     .arg(AuthorizationArg::optional("protocol", "ssh"))
                     .build()?;
                 let decoded =
-                    AuthorizationOperation::try_from(ipc::AuthorizationRequest::from(&direct))?;
+                    AuthorizationOperation::try_from(proto::AuthorizationRequest::from(&direct))?;
                 assert_eq!(
                     direct.exchange()?.encode_request()?,
                     decoded.exchange()?.encode_request()?
@@ -340,7 +340,7 @@ mod tests {
             command: "show".to_owned(),
             command_arguments: vec!["users".to_owned(), "brief".to_owned()],
         };
-        let decoded = AccountingOperation::try_from(ipc::AccountingRequest::from(&direct))?;
+        let decoded = AccountingOperation::try_from(proto::AccountingRequest::from(&direct))?;
         assert_eq!(direct.exchange().encode_request()?, decoded.exchange().encode_request()?);
         Ok(())
     }
@@ -354,7 +354,7 @@ mod tests {
             remote_address: "192.0.2.1".to_owned(),
             privilege_level: PrivilegeLevel::MAX,
         };
-        let decoded = PapAuthenticationOperation::try_from(ipc::PapAuthenticationRequest::from(
+        let decoded = PapAuthenticationOperation::try_from(proto::PapAuthenticationRequest::from(
             direct.clone(),
         ))?;
         assert_eq!(direct.exchange()?.encode_request()?, decoded.exchange()?.encode_request()?);
@@ -374,10 +374,10 @@ mod tests {
         .build()
         .unwrap();
         for level in [16, 255, u32::MAX] {
-            let mut proto = ipc::AuthorizationRequest::from(&operation);
+            let mut proto = proto::AuthorizationRequest::from(&operation);
             proto.privilege_level = level;
             assert!(AuthorizationOperation::try_from(proto).is_err());
-            let proto = ipc::PapAuthenticationRequest {
+            let proto = proto::PapAuthenticationRequest {
                 user: "admin".to_owned(),
                 password: Vec::new(),
                 port: String::new(),
@@ -399,7 +399,7 @@ mod tests {
         };
         assert!(!format!("{request:?}").contains("sentinel-secret"));
 
-        let proto = ipc::PapAuthenticationRequest::from(request);
+        let proto = proto::PapAuthenticationRequest::from(request);
         let decoded = PapAuthenticationOperation::try_from(proto).unwrap();
         assert_eq!(decoded.user, "admin");
         assert_eq!(decoded.password.expose_secret(), b"sentinel-secret");
@@ -415,7 +415,7 @@ mod tests {
             data: vec![1, 2],
         };
         let decoded = PapAuthenticationOperationResponse::try_from(
-            ipc::PapAuthenticationResponse::from(response),
+            proto::PapAuthenticationResponse::from(response),
         )
         .unwrap();
         assert_eq!(decoded.status, AuthenticationResponseStatus::Pass);
@@ -432,7 +432,7 @@ mod tests {
             command_arguments: vec!["users".to_owned()],
         };
 
-        let encoded: ipc::AccountingRequest = (&request).into();
+        let encoded: proto::AccountingRequest = (&request).into();
         let decoded = AccountingOperation::try_from(encoded).unwrap();
         assert_eq!(decoded, request);
     }
@@ -452,7 +452,7 @@ mod tests {
         .build()
         .unwrap();
 
-        let encoded: ipc::AuthorizationRequest = (&request).into();
+        let encoded: proto::AuthorizationRequest = (&request).into();
         let decoded = AuthorizationOperation::try_from(encoded).unwrap();
         assert_eq!(decoded, request);
         assert_eq!(decoded.service(), Some("shell"));
@@ -462,7 +462,7 @@ mod tests {
 
     #[test]
     fn test_authorization_operation_rejects_invalid_proto_arg_name() {
-        let request = ipc::AuthorizationRequest {
+        let request = proto::AuthorizationRequest {
             user: "admin".to_owned(),
             port: "tty0".to_owned(),
             remote_address: "127.0.0.1".to_owned(),
@@ -471,17 +471,17 @@ mod tests {
                 AuthorizationAuthenticationContext::TacacsAscii,
             ),
             args: vec![
-                ipc::AuthorizationArg {
+                proto::AuthorizationArg {
                     name: "service".to_owned(),
                     mandatory: true,
                     value: "shell".to_owned(),
                 },
-                ipc::AuthorizationArg {
+                proto::AuthorizationArg {
                     name: "cmd".to_owned(),
                     mandatory: true,
                     value: "show".to_owned(),
                 },
-                ipc::AuthorizationArg {
+                proto::AuthorizationArg {
                     name: "bad=name".to_owned(),
                     mandatory: true,
                     value: "value".to_owned(),
@@ -514,7 +514,7 @@ mod tests {
             data: "display this".to_owned(),
         };
 
-        let decoded = AuthorizationOperationResponse::try_from(ipc::AuthorizationResponse::from(
+        let decoded = AuthorizationOperationResponse::try_from(proto::AuthorizationResponse::from(
             response.clone(),
         ))
         .unwrap();
@@ -523,11 +523,11 @@ mod tests {
 
     #[test]
     fn test_authorization_response_rejects_invalid_proto_arg_name() {
-        let response = ipc::AuthorizationResponse {
+        let response = proto::AuthorizationResponse {
             server: "server-a:49".to_owned(),
             status: i32::from(AuthorizationResponseStatus::PassAdd.code()),
             server_message: String::new(),
-            args: vec![ipc::AuthorizationArg {
+            args: vec![proto::AuthorizationArg {
                 name: "bad*name".to_owned(),
                 mandatory: false,
                 value: "value".to_owned(),

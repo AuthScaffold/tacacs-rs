@@ -2,7 +2,7 @@
 
 use crate::accounting::{reply::AccountingReply, request::AccountingRequest};
 use crate::enumerations::{TacacsMinorVersion, TacacsType};
-use crate::traits::TacacsBodyTrait;
+use crate::body::TacacsBodyTrait;
 use crate::exchange::FixedExchange;
 
 /// One TACACS+ accounting request followed by one accounting reply.

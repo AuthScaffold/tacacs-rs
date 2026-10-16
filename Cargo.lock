@@ -2151,13 +2151,13 @@ dependencies = [
  "if-addrs",
  "log",
  "rand",
- "rustix",
  "tacacsrs-config",
  "tacacsrs-credential-resolution",
  "tacacsrs-ipc",
  "tacacsrs-networking",
  "tacacsrs-protocol",
  "tacacsrs-secrets",
+ "tacacsrs-unix-socket",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -2323,9 +2323,9 @@ dependencies = [
  "log",
  "prost",
  "protoc-bin-vendored",
- "rustix",
  "tacacsrs-protocol",
  "tacacsrs-secrets",
+ "tacacsrs-unix-socket",
  "tokio",
  "tokio-stream",
  "tonic",
@@ -2397,6 +2397,16 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "zeroize",
+]
+
+[[package]]
+name = "tacacsrs-unix-socket"
+version = "0.0.0-dev"
+dependencies = [
+ "anyhow",
+ "log",
+ "rustix",
+ "tokio",
 ]
 
 [[package]]

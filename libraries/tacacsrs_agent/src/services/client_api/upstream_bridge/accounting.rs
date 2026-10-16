@@ -2,9 +2,10 @@
 
 use async_trait::async_trait;
 use tacacsrs_protocol::operations::{
-    AccountingOperation, AccountingOperationResponse, AccountingResponseStatus, ServiceError,
+    AccountingOperation, AccountingOperationResponse, AccountingResponseStatus,
 };
-use tacacsrs_protocol::traits::TacacsBodyTrait;
+use tacacsrs_protocol::failure::ServiceError;
+use tacacsrs_protocol::body::TacacsBodyTrait;
 
 use super::UpstreamBridge;
 use super::routed::RoutedOperation;

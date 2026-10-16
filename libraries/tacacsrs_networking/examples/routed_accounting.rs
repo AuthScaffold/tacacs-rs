@@ -22,7 +22,7 @@ use tacacsrs_protocol::enumerations::{
 };
 use tacacsrs_protocol::exchange::accounting::AccountingExchange;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
-use tacacsrs_protocol::traits::TacacsBodyTrait;
+use tacacsrs_protocol::body::TacacsBodyTrait;
 
 struct AccountingAttempt {
     client: RoutedClient,

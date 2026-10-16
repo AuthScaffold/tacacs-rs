@@ -86,7 +86,7 @@ pub(crate) struct TransportControl {
     activity: Arc<TransportActivity>,
     closed: AtomicBool,
     lifetime: Option<super::tls::CertificateLifetime>,
-    expiry: OnceLock<Arc<crate::runtime::task::DriverTask>>,
+    expiry: OnceLock<Arc<crate::connection::task::DriverTask>>,
     counters: Option<crate::ServerCounters>,
     graceful: AtomicBool,
     record: Option<Arc<crate::statistics::ConnectionRecord>>,
@@ -115,7 +115,7 @@ impl TransportControl {
         });
         if let Some(lifetime) = lifetime {
             let weak = Arc::downgrade(&control);
-            let task = crate::runtime::task::DriverTask::spawn(async move {
+            let task = crate::connection::task::DriverTask::spawn(async move {
                 loop {
                     let clock_check =
                         tokio::time::Instant::now() + std::time::Duration::from_secs(1);
@@ -135,7 +135,7 @@ impl TransportControl {
         (BoxedTransport::new(ManagedTransport(control.clone())), control)
     }
 
-    pub(crate) fn expiry_task(&self) -> Option<Arc<crate::runtime::task::DriverTask>> {
+    pub(crate) fn expiry_task(&self) -> Option<Arc<crate::connection::task::DriverTask>> {
         self.expiry.get().cloned()
     }
 

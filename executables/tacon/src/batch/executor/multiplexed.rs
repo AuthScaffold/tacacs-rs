@@ -1,116 +1,27 @@
+//! Multiplexed direct-backend establishment for batch execution.
+
 use anyhow::Context;
-use futures::future::join_all;
 
 use tacacsrs_config::TacacsPlusServer;
 use tacacsrs_config::prepare::PrepareOptions;
 
-use crate::connection::{establish_connection, Connection};
+use crate::backend::Backend;
+use crate::connection::establish_connection;
 
-use super::common::{execute_single_request, load_test_iterations, run_load_test};
-use super::super::types::{BatchRequest, LoadTestConfig, LoadTestResult, RequestResult};
-
-/// Runs requests sequentially on a multiplexed connection.
+/// Establishes an adaptive single-connection direct backend.
 ///
-/// The first request can perform single-connection negotiation. Once the
-/// server confirms support, later requests reuse the upgraded shared transport.
-pub(super) async fn execute_sequential_multiplexed(
-    connection: Connection,
-    requests: &[BatchRequest],
-) -> anyhow::Result<Vec<RequestResult>> {
-    log::info!("Running {} requests sequentially on a multiplexed connection", requests.len());
-
-    let mut results = Vec::with_capacity(requests.len());
-
-    for (index, request) in requests.iter().enumerate() {
-        log::info!("Running request {}/{}", index + 1, requests.len());
-
-        let result = execute_single_request(&connection, request).await;
-        results.push(RequestResult {
-            index,
-            request_type: request.type_name(),
-            result,
-        });
-    }
-
-    Ok(results)
-}
-
-/// Runs requests in parallel on a multiplexed connection.
-pub(super) async fn execute_parallel_multiplexed(
-    connection: Connection,
-    requests: &[BatchRequest],
-) -> anyhow::Result<Vec<RequestResult>> {
-    log::info!("Running {} requests in parallel on a multiplexed connection", requests.len());
-
-    let futures: Vec<_> = requests
-        .iter()
-        .enumerate()
-        .map(|(index, request)| {
-            let connection = connection.clone();
-            async move {
-                log::info!("Starting parallel request {}", index + 1);
-                let result = execute_single_request(&connection, request).await;
-                RequestResult {
-                    index,
-                    request_type: request.type_name(),
-                    result,
-                }
-            }
-        })
-        .collect();
-
-    Ok(join_all(futures).await)
-}
-
-/// Runs a load test over multiplexed connections with controlled concurrency.
+/// The first request can negotiate single-connection support. Later requests
+/// reuse the upgraded shared transport.
 ///
-/// The load test uses one adaptive connection for the whole run. The first
-/// request can negotiate single-connection support. Later requests create
-/// sessions from the same client and reuse the upgraded shared transport when
-/// the server supports it. The test stops immediately after the first failure.
-pub(super) async fn execute_load_test_multiplexed(
+/// # Errors
+///
+/// Returns an error if the connection cannot be established.
+pub(super) async fn establish_multiplexed_backend(
     server: &TacacsPlusServer,
-    requests: &[BatchRequest],
-    config: &LoadTestConfig,
     options: PrepareOptions,
-) -> anyhow::Result<LoadTestResult> {
-    let total_requests = requests.len() * config.repetitions;
-
-    println!("Starting load test with {total_requests} total requests...\n");
-
+) -> anyhow::Result<Backend> {
     let connection = establish_connection(server, options)
         .await
-        .context("Failed to establish multiplexed TACACS+ connection for load test")?;
-
-    Ok(run_load_test(
-        total_requests,
-        load_test_iterations(requests, config.repetitions),
-        config.max_parallel,
-        move |rep, idx, request| {
-            let connection = connection.clone();
-            async move { execute_load_test_single(&connection, request, rep, idx).await }
-        },
-    )
-    .await)
-}
-
-/// Runs one load test iteration on the shared multiplexed connection.
-async fn execute_load_test_single(
-    connection: &Connection,
-    request: &BatchRequest,
-    rep: usize,
-    idx: usize,
-) -> Result<(), String> {
-    execute_single_request(connection, request)
-        .await
-        .map(|_| ())
-        .map_err(|error| {
-            format!(
-                "Request failed at rep {}, request {} ({}): {}",
-                rep + 1,
-                idx + 1,
-                request.type_name(),
-                error
-            )
-        })
+        .context("Failed to establish multiplexed TACACS+ connection")?;
+    Ok(Backend::Direct(connection))
 }

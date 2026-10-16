@@ -1,4 +1,6 @@
-use tacacsrs_config::{enumerate_servers, parse_yang_json, pipeline, validate_credential_references};
+use tacacsrs_config::{
+    enumerate_servers, parse_root_json, parse_yang_json, validate_credential_references,
+};
 
 #[test]
 fn enumerate_servers_inlines_credential_bundles() {
@@ -209,7 +211,7 @@ fn enumerate_servers_preserves_all_nested_central_references_and_metadata() {
 
 #[test]
 fn central_references_are_not_validated_as_local_bundle_ids() {
-    let root = pipeline::parse_root_json(
+    let root = parse_root_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
                 "server": [{
@@ -242,7 +244,7 @@ fn central_references_are_not_validated_as_local_bundle_ids() {
 
 #[test]
 fn validate_credential_references_collects_missing_client_bundle_ref() {
-    let root = pipeline::parse_root_json(
+    let root = parse_root_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
                 "server": [{
@@ -268,7 +270,7 @@ fn validate_credential_references_collects_missing_client_bundle_ref() {
 
 #[test]
 fn validate_credential_references_collects_missing_server_bundle_ref() {
-    let root = pipeline::parse_root_json(
+    let root = parse_root_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
                 "server": [{
@@ -294,7 +296,7 @@ fn validate_credential_references_collects_missing_server_bundle_ref() {
 
 #[test]
 fn validate_credential_references_collects_multiple_missing_bundle_refs() {
-    let root = pipeline::parse_root_json(
+    let root = parse_root_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
                 "server": [

@@ -358,7 +358,7 @@ mod tests {
     };
     use tacacsrs_protocol::header::Header;
     use tacacsrs_protocol::packet::{Packet, PacketTrait};
-    use tacacsrs_protocol::traits::TacacsBodyTrait;
+    use tacacsrs_protocol::body::TacacsBodyTrait;
     use tacacsrs_networking::{PacketReadResult, PacketReader};
     use tokio::io::AsyncWriteExt;
     use tokio::sync::Mutex;

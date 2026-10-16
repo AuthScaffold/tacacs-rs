@@ -61,10 +61,6 @@ const MAX_ARGV_ENTRIES: usize = 256;
 ///
 /// Returns the number of bytes actually read (can be less than requested).
 fn pread(fd: RawFd, buf: &mut [u8], offset: u64) -> io::Result<usize> {
-    // SAFETY: `buf` is a valid mutable slice for the duration of the call.
-    // The caller owns the valid file descriptor `fd`. The offset is cast to
-    // `off_t`. On x86_64 Linux, `off_t` is i64. If the address overflows i64,
-    // the conversion returns an error before the system call.
     let offset_i64 = i64::try_from(offset).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -72,6 +68,8 @@ fn pread(fd: RawFd, buf: &mut [u8], offset: u64) -> io::Result<usize> {
         )
     })?;
 
+    // SAFETY: The caller retains the file descriptor, and `buf` is writable
+    // for its full length. The checked offset fits Linux x86_64 `off_t`.
     let result =
         unsafe { libc::pread(fd, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len(), offset_i64) };
 

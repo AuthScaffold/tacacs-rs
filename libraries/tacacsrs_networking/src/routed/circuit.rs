@@ -19,7 +19,7 @@ pub(super) struct OperationCircuit {
 }
 
 impl OperationCircuit {
-    pub fn is_open(&self) -> bool {
+    pub(super) fn is_open(&self) -> bool {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -27,7 +27,7 @@ impl OperationCircuit {
             .is_some()
     }
 
-    pub fn open(&self) {
+    pub(super) fn open(&self) {
         let mut state = self
             .state
             .lock()
@@ -55,7 +55,7 @@ impl OperationCircuit {
         true
     }
 
-    pub fn try_begin_recovery(
+    pub(super) fn try_begin_recovery(
         self: &Arc<Self>,
         recovery_interval: Duration,
     ) -> Option<RecoveryPermit> {
@@ -82,12 +82,12 @@ pub(super) struct RecoveryPermit {
 }
 
 impl RecoveryPermit {
-    pub fn succeed(&self) -> bool {
+    pub(super) fn succeed(&self) -> bool {
         self.circuit.resolve_recovery(self.revision, Some(true))
     }
 
     #[cfg(test)]
-    pub fn fail(&self) {
+    pub(super) fn fail(&self) {
         self.circuit.resolve_recovery(self.revision, Some(false));
     }
 }
