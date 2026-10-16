@@ -1,7 +1,10 @@
 //! Owned observation of canonical runtime-policy resources.
 //!
 //! File sessions install observation before reading their baseline. The session
-//! owns the watcher; dropping it stops observation without a detached task.
+//! owns the watcher. Linux observation remains passive while idle. Windows checks
+//! the directory identity every 100 ms because a native watcher can stop silently.
+//! Directory removal, rename, or replacement fails observation. Dropping the
+//! session stops observation without a detached task.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,6 +18,10 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 
 use crate::tacacsrs::RuntimePolicy;
+#[cfg(windows)]
+use crate::source::directory_watch::DirectoryWatch;
+#[cfg(not(windows))]
+use crate::source::directory_watch::wait_for_native_change;
 
 /// A complete source candidate or a rejected candidate that leaves applied state unchanged.
 #[derive(Debug, Clone)]
@@ -93,6 +100,8 @@ impl PolicyFile {
         );
         let target = path.clone();
         let directory = parent.clone();
+        #[cfg(windows)]
+        let directory_watch = DirectoryWatch::new([parent.clone()])?;
         let (events, invalidations) = watch::channel(None::<Arc<notify::Error>>);
         let mut watcher = RecommendedWatcher::new(
             move |event: notify::Result<notify::Event>| {
@@ -131,8 +140,12 @@ impl PolicyFile {
         watcher
             .watch(&parent, RecursiveMode::NonRecursive)
             .with_context(|| format!("watch runtime policy directory {}", parent.display()))?;
+        #[cfg(windows)]
+        directory_watch.ensure_current()?;
         Ok(FilePolicyObservation {
             _watcher: watcher,
+            #[cfg(windows)]
+            directory_watch,
             source: Self { path },
             invalidations,
             pending: true,
@@ -144,6 +157,8 @@ impl PolicyFile {
 /// Native file watcher and its cancellation-safe pending observation state.
 pub struct FilePolicyObservation {
     _watcher: RecommendedWatcher,
+    #[cfg(windows)]
+    directory_watch: DirectoryWatch,
     source: PolicyFile,
     invalidations: watch::Receiver<Option<Arc<notify::Error>>>,
     pending: bool,
@@ -157,10 +172,13 @@ const POLICY_RELOAD_DEBOUNCE: Duration = Duration::from_millis(100);
 impl PolicyObservation for FilePolicyObservation {
     async fn next(&mut self) -> anyhow::Result<Option<PolicyChange>> {
         if !self.pending {
-            self.invalidations
-                .changed()
-                .await
-                .context("runtime policy watcher stopped")?;
+            #[cfg(windows)]
+            self.directory_watch
+                .wait_for_change(&mut self.invalidations, "runtime policy watcher stopped")
+                .await?;
+            #[cfg(not(windows))]
+            wait_for_native_change(&mut self.invalidations, "runtime policy watcher stopped")
+                .await?;
             self.pending = true;
             self.debounce_until = Some(Instant::now() + POLICY_RELOAD_DEBOUNCE);
         }
@@ -171,7 +189,11 @@ impl PolicyObservation for FilePolicyObservation {
         if let Some(error) = observation_error {
             anyhow::bail!("Runtime policy observation failed: {error}");
         }
+        #[cfg(windows)]
+        self.directory_watch.ensure_current()?;
         let candidate = self.source.load().await;
+        #[cfg(windows)]
+        self.directory_watch.ensure_current()?;
         self.pending = false;
         self.debounce_until = None;
         Ok(Some(if let Ok(policy) = candidate {
@@ -185,19 +207,23 @@ impl PolicyObservation for FilePolicyObservation {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
 
+    static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+
     fn source() -> PolicyFile {
-        let unique = SystemTime::now()
+        let sequence = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+        let time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        PolicyFile::new(
-            std::env::temp_dir()
-                .join(format!("tacacs-policy-observation-{}-{unique}.json", std::process::id())),
-        )
+        PolicyFile::new(std::env::temp_dir().join(format!(
+            "tacacs-policy-observation-{}-{time}-{sequence}.json",
+            std::process::id()
+        )))
         .unwrap()
     }
 
@@ -295,6 +321,15 @@ mod tests {
 
     #[tokio::test]
     async fn loss_of_watched_directory_ends_observation() {
+        assert_loss_of_watched_directory_ends_observation(false).await;
+    }
+
+    #[tokio::test]
+    async fn rename_of_watched_directory_ends_observation() {
+        assert_loss_of_watched_directory_ends_observation(true).await;
+    }
+
+    async fn assert_loss_of_watched_directory_ends_observation(rename: bool) {
         let directory = source().path().with_extension("directory");
         tokio::fs::create_dir(&directory).await.unwrap();
         let source = PolicyFile::new(directory.join("policy.json")).unwrap();
@@ -303,12 +338,25 @@ mod tests {
             .unwrap();
         let mut observation = source.observe().await.unwrap();
         observation.next().await.unwrap();
-        tokio::fs::remove_file(source.path()).await.unwrap();
-        tokio::fs::remove_dir(directory).await.unwrap();
+        let renamed = directory.with_extension("renamed");
+        if rename {
+            tokio::fs::rename(&directory, &renamed).await.unwrap();
+            tokio::fs::create_dir(&directory).await.unwrap();
+            tokio::fs::write(source.path(), br#"{"tacacsrs:runtime-policy":{}}"#)
+                .await
+                .unwrap();
+        } else {
+            tokio::fs::remove_file(source.path()).await.unwrap();
+            tokio::fs::remove_dir(&directory).await.unwrap();
+        }
         tokio::time::timeout(Duration::from_secs(3), async {
             while observation.next().await.is_ok() {}
         })
         .await
         .expect("watch loss must not silently retain an unobserved policy");
+        if rename {
+            tokio::fs::remove_dir_all(renamed).await.unwrap();
+            tokio::fs::remove_dir_all(directory).await.unwrap();
+        }
     }
 }

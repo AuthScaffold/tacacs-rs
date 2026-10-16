@@ -147,8 +147,15 @@ mod tests {
 
     #[test]
     fn asn1_dates_preserve_seconds_before_and_after_the_epoch() {
-        for seconds in [-86_401, -1, 0, 1, 86_401, 2_524_608_000] {
-            let date = Asn1Time::from_unix(seconds).unwrap();
+        for (date, seconds) in [
+            ("691230235959Z", -86_401_i64),
+            ("691231235959Z", -1),
+            ("700101000000Z", 0),
+            ("700101000001Z", 1),
+            ("700102000001Z", 86_401),
+            ("20500101000000Z", 2_524_608_000),
+        ] {
+            let date = Asn1Time::from_str_x509(date).unwrap();
             let duration = Duration::from_secs(seconds.unsigned_abs());
             let expected = if seconds < 0 {
                 UNIX_EPOCH - duration

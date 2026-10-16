@@ -916,18 +916,21 @@ mod tests {
         let original = server.clone();
         let endpoint = prepare_endpoint(&server, PrepareOptions::default()).unwrap();
         let (closed, observed) = tokio::sync::oneshot::channel();
+        let (handshakes, mut accepted) = tokio::sync::mpsc::channel(1);
         let peer = tokio::spawn(async move {
             let mut closed = Some(closed);
             for context in contexts {
                 let (tcp, _) = listener.accept().await.unwrap();
                 let mut stream = SslStream::new(Ssl::new(&context).unwrap(), tcp).unwrap();
                 Pin::new(&mut stream).accept().await.unwrap();
-                match stream.read(&mut [0]).await {
+                handshakes.send(()).await.unwrap();
+                match stream.read(&mut [0_u8; 1]).await {
                     Ok(0) => {}
                     Err(error)
                         if matches!(
                             error.kind(),
-                            std::io::ErrorKind::ConnectionReset
+                            std::io::ErrorKind::ConnectionAborted
+                                | std::io::ErrorKind::ConnectionReset
                                 | std::io::ErrorKind::UnexpectedEof
                                 | std::io::ErrorKind::BrokenPipe
                         ) => {}
@@ -940,6 +943,10 @@ mod tests {
         });
         let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
         let mut original_session = client.open_conversation().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), accepted.recv())
+            .await
+            .expect("server must complete the initial TLS handshake")
+            .expect("server handshake task must remain active");
         tokio::time::pause();
         tokio::time::advance(Duration::from_secs(61)).await;
         tokio::time::resume();
@@ -949,6 +956,10 @@ mod tests {
             .unwrap();
         original_session.complete().await;
         let mut replacement = client.open_conversation().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), accepted.recv())
+            .await
+            .expect("server must complete the replacement TLS handshake")
+            .expect("server handshake task must remain active");
         replacement.complete().await;
         client
             .close_and_join(tacacsrs_networking::RequestDeadline::after(Duration::ZERO).unwrap())
