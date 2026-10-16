@@ -93,7 +93,7 @@ pub(crate) fn reply_classification(
         TacacsType, TacacsAuthenticationStatus, TacacsAuthorizationStatus, TacacsAccountingStatus,
     };
     use tacacsrs_protocol::packet::PacketTrait;
-    if packet.header().seq_no % 2 != 0 {
+    if !packet.header().seq_no.is_multiple_of(2) {
         return None;
     }
     match packet.header().tacacs_type {

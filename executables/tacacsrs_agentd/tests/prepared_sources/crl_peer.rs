@@ -60,7 +60,7 @@ async fn provider_crl_validity_refreshes_before_expiry_without_notifications() -
     let directory = Directory::new()?;
     let crl = make_crl(&directory.0, false, false).await?;
     let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
-    let source = source_for(&issuer, 449, &[crl.clone()], true, true)?;
+    let source = source_for(&issuer, 449, std::slice::from_ref(&crl), true, true)?;
     let original = source.clone();
     let source = Arc::new(StaticDatastore::new(source));
     let resolver = Arc::new(RefreshingCrlResolver {

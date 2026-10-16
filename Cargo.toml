@@ -43,6 +43,8 @@ cargo = { level = "warn", priority = -1 }
 # --- Workspace-wide allowances for opinionated lints ---
 
 # Allow these style preferences.
+assert_is_empty = "allow"
+chunks_exact_to_as_chunks = "allow"
 module_name_repetitions = "allow"
 option_if_let_else = "allow"
 redundant_pub_crate = "allow"
