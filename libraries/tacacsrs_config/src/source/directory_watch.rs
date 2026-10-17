@@ -13,6 +13,37 @@ use tokio::sync::watch;
 #[cfg(windows)]
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 
+pub(crate) fn acknowledge_observation_active(
+    invalidations: &mut watch::Receiver<Option<Arc<notify::Error>>>,
+    failure_context: &'static str,
+    stopped_context: &'static str,
+) -> anyhow::Result<()> {
+    let observation_error = invalidations.borrow_and_update().clone();
+    if let Some(error) = observation_error {
+        anyhow::bail!("{failure_context}: {error}");
+    }
+    invalidations.has_changed().context(stopped_context)?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub(crate) async fn wait_for_observation_failure(
+    invalidations: &mut watch::Receiver<Option<Arc<notify::Error>>>,
+    failure_context: &'static str,
+    stopped_context: &'static str,
+) -> anyhow::Error {
+    loop {
+        if let Err(error) =
+            acknowledge_observation_active(invalidations, failure_context, stopped_context)
+        {
+            return error;
+        }
+        if invalidations.changed().await.is_err() {
+            return anyhow::anyhow!(stopped_context);
+        }
+    }
+}
+
 /// Bounds detection latency when a native watcher silently stops after directory loss.
 #[cfg(windows)]
 const DIRECTORY_CHECK_INTERVAL: Duration = Duration::from_millis(100);
@@ -93,6 +124,39 @@ impl DirectoryWatch {
             }
         }
     }
+
+    pub(crate) async fn wait_for_observation_failure(
+        &mut self,
+        invalidations: &mut watch::Receiver<Option<Arc<notify::Error>>>,
+        failure_context: &'static str,
+        stopped_context: &'static str,
+    ) -> anyhow::Error {
+        loop {
+            if let Err(error) =
+                acknowledge_observation_active(invalidations, failure_context, stopped_context)
+            {
+                return error;
+            }
+            if let Err(error) = self.ensure_current().context(failure_context) {
+                return error;
+            }
+            tokio::select! {
+                changed = invalidations.changed() => {
+                    if changed.is_err() {
+                        return anyhow::anyhow!(stopped_context);
+                    }
+                    if let Err(error) = self.ensure_current().context(failure_context) {
+                        return error;
+                    }
+                }
+                _ = self.checks.tick() => {
+                    if let Err(error) = self.ensure_current().context(failure_context) {
+                        return error;
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -119,6 +183,98 @@ mod tests {
         }
     }
 
+    fn test_failure() -> Arc<notify::Error> {
+        Arc::new(notify::Error::generic("test observation loss"))
+    }
+
+    #[tokio::test]
+    async fn failure_monitor_reports_an_existing_failure() {
+        let (_events, mut invalidations) = watch::channel(Some(test_failure()));
+
+        let error = tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_observation_failure(
+                &mut invalidations,
+                "test observation failed",
+                "test watcher stopped",
+            ),
+        )
+        .await
+        .expect("existing failure must be reported");
+
+        assert!(error.to_string().contains("test observation loss"));
+    }
+
+    #[tokio::test]
+    async fn failure_monitor_reports_failure_after_ordinary_invalidation() {
+        let (events, mut invalidations) = watch::channel(None);
+        let failure = wait_for_observation_failure(
+            &mut invalidations,
+            "test observation failed",
+            "test watcher stopped",
+        );
+        tokio::pin!(failure);
+        assert!(futures_util::poll!(&mut failure).is_pending());
+
+        events.send_replace(None);
+        assert!(futures_util::poll!(&mut failure).is_pending());
+        events.send_replace(Some(test_failure()));
+        let error = tokio::time::timeout(Duration::from_secs(1), &mut failure)
+            .await
+            .expect("later failure must be reported");
+
+        assert!(error.to_string().contains("test observation loss"));
+    }
+
+    #[tokio::test]
+    async fn failure_monitor_reports_channel_close() {
+        let (events, mut invalidations) = watch::channel(None);
+        drop(events);
+
+        let error = tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_observation_failure(
+                &mut invalidations,
+                "test observation failed",
+                "test watcher stopped",
+            ),
+        )
+        .await
+        .expect("channel close must be reported");
+
+        assert!(error.to_string().contains("test watcher stopped"));
+    }
+
+    #[tokio::test]
+    async fn cancelled_failure_monitor_resumes() {
+        let (events, mut invalidations) = watch::channel(None);
+        {
+            let failure = wait_for_observation_failure(
+                &mut invalidations,
+                "test observation failed",
+                "test watcher stopped",
+            );
+            tokio::pin!(failure);
+            assert!(futures_util::poll!(&mut failure).is_pending());
+            events.send_replace(None);
+            assert!(futures_util::poll!(&mut failure).is_pending());
+        }
+        events.send_replace(Some(test_failure()));
+
+        let error = tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_observation_failure(
+                &mut invalidations,
+                "test observation failed",
+                "test watcher stopped",
+            ),
+        )
+        .await
+        .expect("resumed monitor must report retained failure");
+
+        assert!(error.to_string().contains("test observation loss"));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn idle_linux_observation_has_no_periodic_wake() {
         let (events, mut invalidations) = watch::channel(None);
@@ -136,5 +292,28 @@ mod tests {
         events.send_replace(None);
         assert!(wake_counter.0.load(Ordering::Relaxed) > 0);
         assert!(update.as_mut().poll(&mut context).is_ready());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_linux_failure_monitor_has_no_periodic_wake() {
+        let (events, mut invalidations) = watch::channel(None);
+        let failure = wait_for_observation_failure(
+            &mut invalidations,
+            "test observation failed",
+            "test watcher stopped",
+        );
+        tokio::pin!(failure);
+        let wake_counter = Arc::new(WakeCounter::default());
+        let waker = Waker::from(wake_counter.clone());
+        let mut context = Context::from_waker(&waker);
+
+        assert!(failure.as_mut().poll(&mut context).is_pending());
+        tokio::time::advance(Duration::new(IDLE_ADVANCE_SECONDS, 0)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(wake_counter.0.load(Ordering::Relaxed), 0);
+
+        events.send_replace(Some(test_failure()));
+        assert!(wake_counter.0.load(Ordering::Relaxed) > 0);
+        assert!(failure.as_mut().poll(&mut context).is_ready());
     }
 }
