@@ -26,6 +26,9 @@ tacacsrs-credential-resolution = { path = "../tacacsrs_credential_resolution" }
 tacacsrs-networking = { path = "../tacacsrs_networking" }
 tacacsrs-protocol = { path = "../tacacsrs_protocol" }
 
+[target.'cfg(windows)'.dependencies]
+same-file = "1.0.6"
+
 [dev-dependencies]
 futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 tokio = { version = "1.52.3", features = ["macros", "rt", "rt-multi-thread", "fs", "test-util"] }

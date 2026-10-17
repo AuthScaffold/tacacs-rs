@@ -15,6 +15,7 @@ use tokio_stream::StreamExt;
 
 use crate::{TacacsPlus, ValidationOptions};
 
+pub(crate) mod directory_watch;
 pub mod policy;
 
 /// Description of how the configuration changed between two snapshots.
