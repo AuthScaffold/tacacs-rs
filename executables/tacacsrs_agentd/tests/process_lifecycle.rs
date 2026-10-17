@@ -310,11 +310,13 @@ async fn host_signals_cancel_blocked_bootstrap_without_binding() {
     for signal in ["-TERM", "-INT"] {
         let directory = ProcessDirectory::new();
         let endpoint = directory.0.join("agent.sock");
-        let mut child = agent()
+        let redis = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let redis_url = format!("redis://{}", redis.local_addr().unwrap());
+        let child = agent()
             .args([
                 "--sonic",
                 "--sonic-redis-url",
-                "redis://127.0.0.1:9",
+                &redis_url,
                 "--service-mode",
                 "both",
                 "--host-integration",
@@ -324,7 +326,20 @@ async fn host_signals_cancel_blocked_bootstrap_without_binding() {
             .arg(&endpoint)
             .spawn()
             .unwrap();
-        wait_for_signal_registration(&mut child).await;
+        // QEMU catches host signals before the guest installs its handlers.
+        // Observe guest bootstrap IO instead, and leave its Redis request blocked.
+        let (mut connection, _) = tokio::time::timeout(Duration::from_secs(5), redis.accept())
+            .await
+            .expect("daemon must start Redis bootstrap")
+            .unwrap();
+        let mut request = [0; 1];
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), connection.read(&mut request))
+                .await
+                .expect("daemon must send a Redis request")
+                .unwrap(),
+            1
+        );
         stop(child, signal).await;
         assert!(!endpoint.exists());
     }

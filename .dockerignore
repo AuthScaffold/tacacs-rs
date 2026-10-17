@@ -46,16 +46,30 @@ executables/*/**
 !executables/*/proto/
 !executables/*/proto/**
 
+# Container test stages must include integration tests and their fixtures.
+!libraries/*/tests/
+!libraries/*/tests/**
+!executables/*/tests/
+!executables/*/tests/**
+
+!.github/
+!.github/steps/
+!.github/steps/armhf/
+!.github/steps/armhf/**
+
 # Include the inputs that tacacsrs-config uses to generate YANG and configuration files.
 !libraries/tacacsrs_config/yang/
 !libraries/tacacsrs_config/yang/**
 
-# Include the TLS fixtures for tacacsrs-agentd tests.
+# Include the TLS fixtures for tacacsrs-agentd unit and integration tests.
 !libraries/tacacsrs_networking/examples/
 !libraries/tacacsrs_networking/examples/samples/
 !libraries/tacacsrs_networking/examples/samples/**
+!libraries/tacacsrs_agent_ipc_emulator/examples/
+!libraries/tacacsrs_agent_ipc_emulator/examples/policy.rego
+!libraries/tacacsrs_agent_ipc_emulator/examples/policy_data.json
 !lde/
 !lde/containers/
 !lde/containers/config/
 !lde/containers/config/certificates/
-!lde/containers/config/certificates/client.*
+!lde/containers/config/certificates/**

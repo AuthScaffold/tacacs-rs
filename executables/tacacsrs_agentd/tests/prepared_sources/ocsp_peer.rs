@@ -164,11 +164,9 @@ fn delegated_responder(case: ResponderCase) -> Result<(X509, PKey<openssl::pkey:
     let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
     let issuer_key = PKey::private_key_from_pem(&std::fs::read(fixtures().join("ca.key"))?)?;
     let key = PKey::from_rsa(openssl::rsa::Rsa::generate(2048)?)?;
-    let now = i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs(),
-    )?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
     let mut name = X509NameBuilder::new()?;
     name.append_entry_by_text("CN", "Test OCSP responder")?;
     let mut certificate = X509::builder()?;
@@ -186,8 +184,8 @@ fn delegated_responder(case: ResponderCase) -> Result<(X509, PKey<openssl::pkey:
         ResponderCase::Future => (now + 60, now + 120),
         _ => (now - 60, now + 60),
     };
-    certificate.set_not_before(Asn1Time::from_unix(start)?.as_ref())?;
-    certificate.set_not_after(Asn1Time::from_unix(end)?.as_ref())?;
+    certificate.set_not_before(Asn1Time::from_unix(start.try_into()?)?.as_ref())?;
+    certificate.set_not_after(Asn1Time::from_unix(end.try_into()?)?.as_ref())?;
     certificate.append_extension(BasicConstraints::new().build()?)?;
     let mut usage = KeyUsage::new();
     if matches!(case, ResponderCase::WrongKeyUsage) {

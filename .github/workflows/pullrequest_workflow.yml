@@ -2,7 +2,7 @@ name: Pull Request
 
 on:
   pull_request:
-    branches: ["main", "review/yang-toolkit/**"]
+    branches: ["main", "review/yang-toolkit/**", "feature/agent-diagnostics"]
 
 permissions:
   pull-requests: read
