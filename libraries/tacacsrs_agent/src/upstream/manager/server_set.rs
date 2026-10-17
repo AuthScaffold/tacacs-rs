@@ -182,4 +182,99 @@ impl<Connector: EndpointConnector> ServerSet<Connector> {
     pub(super) fn server_count(&self) -> usize {
         self.servers.len()
     }
+
+    pub(super) fn retire_replaced_until(
+        &self,
+        replacement: &Self,
+        deadline: RequestDeadline,
+        urgent: &std::collections::BTreeSet<&str>,
+    ) {
+        let immediate = RequestDeadline::at(tokio::time::Instant::now());
+        self.client
+            .retire_replaced_with_deadlines(&replacement.client, |name| {
+                if urgent.contains(name) {
+                    immediate
+                } else {
+                    deadline
+                }
+            });
+    }
+
+    pub(super) fn changed_revocation_servers(
+        &self,
+        replacement: &Self,
+    ) -> std::collections::BTreeSet<&str> {
+        self.servers
+            .iter()
+            .filter(|old| {
+                replacement
+                    .servers
+                    .iter()
+                    .find(|new| new.server.name == old.server.name)
+                    .is_some_and(|new| revocation_changed(&old.server, &new.server))
+            })
+            .map(|old| old.server.name.as_str())
+            .collect()
+    }
+}
+
+fn revocation_changed(
+    old: &tacacsrs_config::TacacsPlusServer,
+    new: &tacacsrs_config::TacacsPlusServer,
+) -> bool {
+    old.server_authentication
+        .as_ref()
+        .map(|auth| (&auth.require_crls, &auth.require_ocsp, &auth.require_stapled_ocsp))
+        != new
+            .server_authentication
+            .as_ref()
+            .map(|auth| (&auth.require_crls, &auth.require_ocsp, &auth.require_stapled_ocsp))
+        && (old.server_authentication.as_ref().is_some_and(|auth| {
+            auth.require_crls.is_some()
+                || auth.require_ocsp.is_some()
+                || auth.require_stapled_ocsp.is_some()
+        }) || new.server_authentication.as_ref().is_some_and(|auth| {
+            auth.require_crls.is_some()
+                || auth.require_ocsp.is_some()
+                || auth.require_stapled_ocsp.is_some()
+        }))
+}
+
+#[cfg(test)]
+mod revocation_tests {
+    use super::revocation_changed;
+
+    #[test]
+    fn fetched_evidence_changes_require_immediate_retirement() {
+        let old = tacacsrs_config::TacacsPlusServerBuilder::new(
+            "revocation",
+            tacacsrs_config::TacacsPlusServerType::all(),
+            "127.0.0.1",
+            300,
+        )
+        .build();
+        let mut changed = old.clone();
+        changed.server_authentication =
+            Some(tacacsrs_config::TlsClientServerAuthentication::default());
+        assert!(!revocation_changed(&old, &changed));
+        changed.server_authentication.as_mut().unwrap().require_ocsp =
+            Some(tacacsrs_config::tacacsrs::RequireOcsp {
+                response: Some(vec![1]),
+                evidence_reference: None,
+                max_response_age_seconds: 300,
+            });
+        assert!(revocation_changed(&old, &changed));
+        assert!(!revocation_changed(&changed, &changed));
+        let previous = changed.clone();
+        changed
+            .server_authentication
+            .as_mut()
+            .unwrap()
+            .require_ocsp
+            .as_mut()
+            .unwrap()
+            .response = Some(vec![2]);
+        assert!(revocation_changed(&previous, &changed));
+        assert!(revocation_changed(&changed, &old));
+    }
 }

@@ -100,6 +100,7 @@ impl TlsConfigurationBuilder {
 
         builder.set_min_proto_version(Some(SslVersion::TLS1_3))?;
         builder.set_max_proto_version(Some(SslVersion::TLS1_3))?;
+        super::revocation::configure_verifier(&mut builder)?;
 
         if self.disable_certificate_verification {
             builder.set_verify(SslVerifyMode::NONE);
@@ -114,6 +115,19 @@ impl TlsConfigurationBuilder {
                 )?;
             } else {
                 builder.set_default_verify_paths()?;
+                let ssl_index = X509StoreContext::ssl_idx()?;
+                builder.set_verify_callback(SslVerifyMode::PEER, move |verified, context| {
+                    if !verified || context.error_depth() != 0 {
+                        return verified;
+                    }
+                    let accepted = context.ex_data(ssl_index).is_some_and(|ssl| {
+                        super::revocation::crls::verify(ssl, context.chain()).is_ok()
+                    });
+                    if !accepted {
+                        context.set_error(X509VerifyResult::APPLICATION_VERIFICATION);
+                    }
+                    accepted
+                });
             }
         }
 
@@ -125,6 +139,7 @@ impl TlsConfigurationBuilder {
             if cert_chain.is_empty() {
                 anyhow::bail!("Client certificate chain was not provided");
             }
+            validate_client_chain(&cert_chain)?;
 
             for certificate in &cert_chain {
                 let current = CertificateValidity::from_certificate(certificate)?;
@@ -153,6 +168,55 @@ impl TlsConfigurationBuilder {
             peer_validity_index,
         })
     }
+}
+
+fn validate_client_chain(chain: &[X509]) -> anyhow::Result<()> {
+    if chain.len() < 2 {
+        return Ok(());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for certificate in chain {
+        anyhow::ensure!(
+            seen.insert(certificate.to_der()?),
+            "Client certificate chain contains duplicate certificates"
+        );
+    }
+    for pair in chain.windows(2) {
+        let issuer = &pair[1];
+        anyhow::ensure!(
+            issuer.issued(&pair[0]) == X509VerifyResult::OK,
+            "Client intermediate certificates must follow issuer order"
+        );
+        let public_key = issuer.public_key()?;
+        anyhow::ensure!(
+            issuer.subject_name().try_cmp(issuer.issuer_name())? != std::cmp::Ordering::Equal
+                || !issuer.verify(&public_key)?,
+            "Client intermediate certificates must not include a self-signed root"
+        );
+    }
+    let mut store = X509StoreBuilder::new()?;
+    store.set_flags(X509VerifyFlags::PARTIAL_CHAIN)?;
+    store.set_purpose(X509PurposeId::SSL_CLIENT)?;
+    let anchor = chain
+        .last()
+        .ok_or_else(|| anyhow::anyhow!("Client certificate chain is empty"))?;
+    store.add_cert(anchor.clone())?;
+    let store = store.build();
+    let mut untrusted = openssl::stack::Stack::new()?;
+    for certificate in chain.iter().skip(1).take(chain.len() - 2) {
+        untrusted.push(certificate.clone())?;
+    }
+    let mut verification = X509StoreContext::new()?;
+    anyhow::ensure!(
+        verification.init(
+            &store,
+            &chain[0],
+            &untrusted,
+            openssl::x509::X509StoreContextRef::verify_cert
+        )?,
+        "Client certificate chain failed native validation"
+    );
+    Ok(())
 }
 
 fn configure_certificate_trust(
@@ -239,6 +303,13 @@ fn configure_certificate_trust(
             })
         };
         if let Some(validity) = selected {
+            if context
+                .ex_data(ssl_index)
+                .is_some_and(|ssl| super::revocation::crls::verify(ssl, context.chain()).is_err())
+            {
+                context.set_error(X509VerifyResult::APPLICATION_VERIFICATION);
+                return false;
+            }
             if let Some(slot) = context
                 .ex_data(ssl_index)
                 .and_then(|ssl| ssl.ex_data(peer_validity_index))

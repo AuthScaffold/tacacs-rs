@@ -250,12 +250,121 @@ Configured CA trust and exact end-entity trust are now separate. Empty explicit 
 A rejected replacement leaves the previous prepared generation active.
 See [certificate trust](yang-config-guide.md#certificate-trust) for exact-match renewal behavior and additive trust rules.
 
+### HTTP CRL Registration
+
+`--http-crl-source REFERENCE URL` authorizes a public HTTP(S) CRL location for one opaque evidence reference.
+Repeat the flag with the same reference to add issuer lists in fetch order:
+
+```bash
+tacacsrs-agentd --config /etc/tacacs/upstreams.json \
+    --http-crl-source primary-ca-crls https://pki.example.net/root.crl \
+    --http-crl-source primary-ca-crls https://pki.example.net/issuer.crl
+```
+
+The canonical `tacacsrs:require-crls/evidence-reference` must contain `primary-ca-crls` for this example.
+Registration does not enable CRL verification by itself or replace the canonical revocation policy.
+The startup map remains fixed until restart. Live source changes can select registered references but cannot authorize new URLs.
+Invalid registrations fail before source bootstrap or listener binding, including in SONiC mode.
+
+Each set permits at most 16 unique locations. The daemon uses a 10-second whole-set timeout, a 4 MiB body cap, and four active fetches.
+All locations must succeed. Redirects, environment proxies, decompression, URL credentials, queries, and fragments are disabled or rejected.
+Locations must contain no secrets, including path components. Process arguments and backend diagnostics can expose them.
+Registration authorizes each host and its DNS results; it is not a network sandbox.
+HTTPS verifies platform CA trust and host identity independently of upstream TACACS+ trust configuration.
+Downloaded CRLs still require native signature, freshness, path, and revocation checks.
+
+In SONiC mode, HTTP resolution composes with the existing credential provider and retains its notifications.
+Other credential kinds and unregistered references use the SONiC provider. A failed registered HTTP fetch never uses that fallback.
+Outside SONiC mode, unregistered references fail resolution.
+
+The existing `credential-refresh-interval-seconds` policy schedules retrieval without a separate HTTP task or notification source.
+Failed refresh uses the credential-staleness budget, then withdraws readiness. Signed evidence expiry applies independently.
+Successful refresh restores an expired credential catalog without changing canonical references or restarting the process.
+SIGINT and SIGTERM cancel pending retrieval during startup and live refresh.
+See [the YANG CRL guide](yang-config-guide.md#required-full-crls) for evidence requirements and unsupported modes.
+
+### Certificate Discovery and OCSP
+
+`--http-crl-certificate REFERENCE CERTIFICATE` selects certificate-driven CRL discovery for a registered CRL reference.
+The certificate file must contain one DER certificate. Repeat the option for a chain.
+For that reference, `--http-crl-source` URLs form an exact allowlist, not an instruction to fetch every URL.
+Every discovered full URI must be authorized. Relative distribution points are unsupported.
+
+`--http-ocsp-source REFERENCE URL CERTIFICATE ISSUER` registers an online OCSP query with an explicit responder and DER certificate files.
+Alternatively, `--http-ocsp-certificate REFERENCE CERTIFICATE ISSUER` selects an AIA responder from the certificate.
+Each eligible responder URL must be registered with `--http-ocsp-allow-url URL`.
+All URLs remain public, secret-free, and subject to the same proxy and redirect restrictions as CRL retrieval.
+
+The canonical `tacacsrs:require-ocsp/evidence-reference` selects the OCSP reference.
+The daemon periodically queries the responder through the existing credential refresh loop.
+Responses are limited to 64 KiB and use the shared provider timeout and concurrency cap.
+The supplied response does not replace a separately required TLS staple.
+
+Certificate files are bounded reads at startup. Changes to certificates or authorization maps require restart.
+The provider does not follow arbitrary URLs from live TLS peers. A renewed peer certificate must match freshly registered query material.
+Native verification rejects mismatched evidence before client authentication. Signed expiry still withdraws stale evidence while a fetch is pending.
+Readiness reports configuration availability, not a completed upstream certificate-status check.
+
 ### Timeouts and Failover
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--connect-timeout-seconds <SECS>` | `5` | Timeout for upstream TACACS+ connections |
 | `--runtime-policy <FILE>` | none | Optional live JSON policy for failover and request limits |
+
+### Operational Statistics
+
+`--statistics-file FILE` publishes a read-only RFC 7951 JSON snapshot once per second.
+The parent directory must already exist. Each write uses a private temporary file and atomic replacement, with mode `0600`.
+The destination cannot be a configuration input, discovery certificate, or local listener socket. Symlink destinations are rejected.
+No exporter runs when the flag is absent. An export error is a supervised failure and stops the daemon after normal cleanup.
+The last complete report remains after shutdown; consumers must check process health or file age before treating it as current.
+
+```json
+{
+    "ietf-system-tacacs-plus:tacacs-plus": {
+        "tacacsrs:runtime-generation": "4",
+        "server": [{
+            "name": "primary",
+            "tacacsrs:counter-epoch": "2",
+            "statistics": {
+                "discontinuity-time": "2026-10-14T12:00:00Z",
+                "connection-opens": "1",
+                "messages-sent": "2",
+                "messages-received": "2",
+                "sessions": "2"
+            }
+        }]
+    }
+}
+```
+
+The example omits other zero-valued counters. The actual report includes every supported counter.
+All 64-bit counters and identities are JSON strings. RPK counters are omitted because raw-public-key authentication is disabled.
+The file contains server names and statistics, not addresses, credential references, secrets, or command data.
+It is operational data, not a configuration file. Configuration parsing rejects it.
+
+Counters belong to prepared endpoint identities. Unchanged endpoints retain their epoch across configuration and policy reloads.
+Replacements receive a new epoch and discontinuity time. Removed endpoints leave the current report.
+Late events from an old endpoint update only its old counter owner, never the replacement.
+The report captures one routing generation. Each server snapshot is coherent, but different servers are not sampled at one global instant.
+
+| Counter | Recorded event |
+| --- | --- |
+| `connection-opens` | A logical establishment request for the configured server, including DNS and address selection |
+| `connection-failures` | An unsuccessful or cancelled establishment request |
+| `connection-timeouts` | A native configured connection-timeout failure; caller cancellation is a failure without a timeout classification |
+| `connection-closes` | Clean EOF or successful transport shutdown, recorded once when the transport closes |
+| `connection-aborts` | Forced closure, transport error, or failed/cancelled setup after TCP connects |
+| `messages-sent` | One fully written TACACS+ packet; queued or partial writes do not count |
+| `messages-received` | One complete, decoded packet frame; truncated or invalid frames do not count |
+| `errors-received` | A valid protocol `ERROR` reply, not an ordinary denial |
+| `sessions` | A validated terminal response, once per client session; abandoned or incomplete conversations do not count |
+| `cert-errors` | Establishment failures identified by local certificate or revocation verification |
+
+Single-connect negotiation and configured preflight traffic are included. IPC and proxy operations share the same per-endpoint counters.
+Counters wrap at 64 bits and are never reset in place. A new epoch marks a counter-lifetime discontinuity, not an ordinary counter wrap.
+Atomic replacement prevents partial reports but does not make filesystem I/O hard-cancellable. Temporary cleanup is best effort if underlying I/O outlives cancellation.
 
 ### Debugging
 

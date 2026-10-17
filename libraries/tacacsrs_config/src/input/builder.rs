@@ -144,8 +144,9 @@ fn tls_client_certificate_builder(
     let client_cert_der = load_client_certificate(&identity.certificate_path)?;
     let (client_key_der, client_key_format) = load_client_private_key(&identity.private_key_path)?;
 
-    Ok(builder.with_tls_client_certificate_with_key_format(
-        Some(client_cert_der),
+    Ok(builder.with_tls_client_certificate_chain(
+        Some(client_cert_der.leaf),
+        client_cert_der.intermediates,
         Some(client_key_der),
         Some(client_key_format),
     ))

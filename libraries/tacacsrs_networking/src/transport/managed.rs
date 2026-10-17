@@ -87,6 +87,9 @@ pub(crate) struct TransportControl {
     closed: AtomicBool,
     lifetime: Option<super::tls::CertificateLifetime>,
     expiry: OnceLock<Arc<crate::runtime::task::DriverTask>>,
+    counters: Option<crate::ServerCounters>,
+    graceful: AtomicBool,
+    record: Option<Arc<crate::statistics::ConnectionRecord>>,
 }
 
 impl TransportControl {
@@ -95,6 +98,8 @@ impl TransportControl {
         activity: Arc<TransportActivity>,
     ) -> (BoxedTransport, Arc<Self>) {
         let lifetime = transport.certificate_lifetime();
+        let counters = transport.counters();
+        let record = transport.connection_record();
         let (reader, writer) = transport.split();
         activity.active.fetch_add(1, Ordering::AcqRel);
         let control = Arc::new(Self {
@@ -104,6 +109,9 @@ impl TransportControl {
             closed: AtomicBool::new(false),
             lifetime,
             expiry: OnceLock::new(),
+            counters,
+            graceful: AtomicBool::new(false),
+            record,
         });
         if let Some(lifetime) = lifetime {
             let weak = Arc::downgrade(&control);
@@ -146,12 +154,19 @@ impl TransportControl {
     }
 
     pub(crate) fn close(&self) {
+        self.finish(false);
+    }
+
+    fn finish(&self, graceful: bool) {
         if let Some(task) = self.expiry.get() {
             task.abort();
         }
         self.reader.close();
         self.writer.close();
         if !self.closed.swap(true, Ordering::AcqRel) {
+            if let Some(record) = &self.record {
+                record.close(graceful);
+            }
             self.activity.active.fetch_sub(1, Ordering::AcqRel);
             self.activity.changed.notify_waiters();
         }
@@ -160,13 +175,16 @@ impl TransportControl {
 
 impl Drop for TransportControl {
     fn drop(&mut self) {
-        self.close();
+        self.finish(self.graceful.load(Ordering::Acquire));
     }
 }
 
 struct ManagedTransport(Arc<TransportControl>);
 
 impl Transport for ManagedTransport {
+    fn counters(&self) -> Option<crate::ServerCounters> {
+        self.0.counters.clone()
+    }
     type ReadHalf = ManagedReader;
     type WriteHalf = ManagedWriter;
 
@@ -187,9 +205,20 @@ impl AsyncRead for ManagedReader {
         if let Err(error) = self.0.check_expiry() {
             return Poll::Ready(Err(error));
         }
-        self.0
+        let before = buffer.filled().len();
+        let has_capacity = buffer.remaining() != 0;
+        let result = self
+            .0
             .reader
-            .poll(context, |stream, context| Pin::new(stream).poll_read(context, buffer))
+            .poll(context, |stream, context| Pin::new(stream).poll_read(context, buffer));
+        match &result {
+            Poll::Ready(Ok(())) if has_capacity && buffer.filled().len() == before => {
+                self.0.graceful.store(true, Ordering::Release);
+            }
+            Poll::Ready(Err(_)) => self.0.close(),
+            _ => {}
+        }
+        result
     }
 }
 
@@ -202,27 +231,44 @@ impl AsyncWrite for ManagedWriter {
         if let Err(error) = self.0.check_expiry() {
             return Poll::Ready(Err(error));
         }
-        self.0
+        let result = self
+            .0
             .writer
-            .poll(context, |stream, context| Pin::new(stream).poll_write(context, buffer))
+            .poll(context, |stream, context| Pin::new(stream).poll_write(context, buffer));
+        if matches!(&result, Poll::Ready(Err(_))) {
+            self.0.close();
+        }
+        result
     }
 
     fn poll_flush(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
         if let Err(error) = self.0.check_expiry() {
             return Poll::Ready(Err(error));
         }
-        self.0
+        let result = self
+            .0
             .writer
-            .poll(context, |stream, context| Pin::new(stream).poll_flush(context))
+            .poll(context, |stream, context| Pin::new(stream).poll_flush(context));
+        if matches!(&result, Poll::Ready(Err(_))) {
+            self.0.close();
+        }
+        result
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
         if let Err(error) = self.0.check_expiry() {
             return Poll::Ready(Err(error));
         }
-        self.0
+        let result = self
+            .0
             .writer
-            .poll(context, |stream, context| Pin::new(stream).poll_shutdown(context))
+            .poll(context, |stream, context| Pin::new(stream).poll_shutdown(context));
+        match &result {
+            Poll::Ready(Ok(())) => self.0.graceful.store(true, Ordering::Release),
+            Poll::Ready(Err(_)) => self.0.close(),
+            Poll::Pending => {}
+        }
+        result
     }
 }
 

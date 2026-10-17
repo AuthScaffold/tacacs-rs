@@ -34,7 +34,7 @@ pub use generated::tacacsrs;
 pub use generated::tacacsrs::PskDheKeSupportedGroup;
 pub use generated::{crypto_types, keystore, YangConfigRoot};
 
-pub use statistics::ServerStatistics;
+pub use statistics::{ServerStatistics, ServerOperationalStatistics, OperationalStatistics};
 pub use serde_helpers::YangEmpty;
 
 /// Provides YANG-generated types and related namespaces.

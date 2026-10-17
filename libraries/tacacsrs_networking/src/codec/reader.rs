@@ -37,6 +37,7 @@ pub enum PacketReadResult {
 /// Reads TACACS+ packets, including optional body deobfuscation.
 pub struct PacketReader {
     obfuscation_key: Option<Vec<u8>>,
+    counters: Option<crate::ServerCounters>,
 }
 
 impl PacketReader {
@@ -47,7 +48,15 @@ impl PacketReader {
     ///   If `None`, packets are assumed to be unencrypted.
     #[must_use]
     pub const fn new(obfuscation_key: Option<Vec<u8>>) -> Self {
-        Self { obfuscation_key }
+        Self {
+            obfuscation_key,
+            counters: None,
+        }
+    }
+
+    pub(crate) fn with_counters(mut self, counters: Option<crate::ServerCounters>) -> Self {
+        self.counters = counters;
+        self
     }
 }
 
@@ -138,6 +147,12 @@ impl PacketReader {
             }
         }
 
+        if let Some(counters) = &self.counters {
+            counters.record(crate::statistics::CounterEvent::MessageReceived);
+            if crate::statistics::reply_classification(&packet).is_some_and(|(error, _)| error) {
+                counters.record(crate::statistics::CounterEvent::ErrorReceived);
+            }
+        }
         PacketReadResult::Success(packet)
     }
 }

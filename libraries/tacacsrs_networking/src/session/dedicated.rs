@@ -96,11 +96,14 @@ impl SingleConnectPromotion {
         );
     }
 
-    async fn promote_if_confirmed(&self, connection: BoxedDedicatedConnection) {
+    async fn promote_if_confirmed(&self, mut connection: BoxedDedicatedConnection) {
         let supported = match self.response.load(Ordering::Acquire) {
             SINGLE_CONNECT_RESPONSE_SUPPORTED => true,
             SINGLE_CONNECT_RESPONSE_UNSUPPORTED => false,
-            SINGLE_CONNECT_RESPONSE_PENDING => return,
+            SINGLE_CONNECT_RESPONSE_PENDING => {
+                connection.shutdown().await;
+                return;
+            }
             _ => unreachable!("invalid single-connect response state"),
         };
         let mut slot = self.shared_connection.slot.write().await;
@@ -109,11 +112,15 @@ impl SingleConnectPromotion {
         {
             return;
         }
-        self.state.settle(self.epoch, supported, || {
-            if supported {
+        if supported {
+            self.state.settle(self.epoch, true, || {
                 *slot = Some(connection.upgrade());
-            }
-        });
+            });
+        } else {
+            self.state.settle(self.epoch, false, || {});
+            drop(slot);
+            connection.shutdown().await;
+        }
     }
 }
 
@@ -252,12 +259,14 @@ impl DedicatedSession {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
-        let Some(connection) = self.connection.lock().await.take() else {
+        let Some(mut connection) = self.connection.lock().await.take() else {
             return;
         };
 
         if let Some(promotion) = promotion {
             promotion.promote_if_confirmed(connection).await;
+        } else {
+            connection.shutdown().await;
         }
     }
 }

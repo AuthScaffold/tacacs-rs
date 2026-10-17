@@ -9,6 +9,51 @@ from plugins.yang2rust import Collector, RustEmitter
 
 
 class GeneratedDefaultsTests(unittest.TestCase):
+    def test_binary_leaf_list_in_choice_uses_optional_list_serializer(self):
+        output = self.generate('''
+container evidence {
+    choice source {
+        mandatory true;
+        case inline { leaf-list crl { type binary; min-elements 1; } }
+        case provider { leaf reference { type string; } }
+    }
+}
+''')
+        self.assertIn('pub crl: Option<Vec<Vec<u8>>>', output)
+        self.assertIn('base64_binary::option_vec_bytes', output)
+
+    def test_project_containers_and_lists_use_qualified_json_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ctx = context.Context(repository.FileRepository(directory))
+            base = ctx.add_module("policy.yang", '''
+module policy {
+    yang-version 1.1;
+    namespace "urn:test:policy";
+    prefix p;
+    container auth;
+}
+''')
+            ctx.add_module("tacacsrs.yang", '''
+module tacacsrs {
+    yang-version 1.1;
+    namespace "urn:test:tacacsrs";
+    prefix trs;
+    import policy { prefix p; }
+    augment "/p:auth" {
+        container evidence { leaf age { type uint32; } }
+        list sources { key name; leaf name { type string; } }
+    }
+}
+''')
+            ctx.validate()
+            self.assertEqual(ctx.errors, [])
+            collector = Collector(ctx)
+            collector.collect_module(base)
+            output = io.StringIO()
+            RustEmitter(output, collector).emit()
+            self.assertIn('serde(rename = "tacacsrs:evidence")', output.getvalue())
+            self.assertIn('serde(rename = "tacacsrs:sources")', output.getvalue())
+
     def test_empty_leaves_use_presence_type_without_sibling_import(self):
         output = self.generate("container auth { leaf present { type empty; } }")
         self.assertIn("Option<crate::YangEmpty>", output)

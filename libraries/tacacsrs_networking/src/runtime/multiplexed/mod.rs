@@ -68,7 +68,7 @@ impl MultiplexedConnection {
     #[cfg(test)]
     #[must_use]
     pub(crate) fn new(obfuscation_key: Option<&[u8]>) -> Self {
-        Self::with_manager(Arc::new(SessionManager::new()), obfuscation_key)
+        Self::with_manager(Arc::new(SessionManager::new()), obfuscation_key, None)
     }
 
     /// Creates a connection whose single-connect support has already been confirmed.
@@ -76,20 +76,28 @@ impl MultiplexedConnection {
     /// Use this when taking over a connection from a dedicated probe exchange that
     /// received `TAC_PLUS_SINGLE_CONNECT_FLAG` from the server.
     #[must_use]
-    pub(crate) fn new_single_connect_confirmed(obfuscation_key: Option<&[u8]>) -> Self {
+    pub(crate) fn new_single_connect_confirmed(
+        obfuscation_key: Option<&[u8]>,
+        counters: Option<crate::ServerCounters>,
+    ) -> Self {
         Self::with_manager(
             Arc::new(SessionManager::with_state(SingleConnectionState::Supported)),
             obfuscation_key,
+            counters,
         )
     }
 
-    fn with_manager(session_manager: Arc<SessionManager>, obfuscation_key: Option<&[u8]>) -> Self {
+    fn with_manager(
+        session_manager: Arc<SessionManager>,
+        obfuscation_key: Option<&[u8]>,
+        counters: Option<crate::ServerCounters>,
+    ) -> Self {
         let key = obfuscation_key.map(<[u8]>::to_vec);
         Self {
             runtime: Arc::new(ConnectionRuntime {
                 session_manager: Arc::clone(&session_manager),
-                packet_reader: PacketReader::new(key.clone()),
-                packet_writer: PacketWriter::new(key),
+                packet_reader: PacketReader::new(key.clone()).with_counters(counters.clone()),
+                packet_writer: PacketWriter::new(key).with_counters(counters),
             }),
             session_manager,
             driver: OnceLock::new(),

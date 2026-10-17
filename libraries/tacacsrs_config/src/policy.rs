@@ -49,6 +49,10 @@ pub fn parse_runtime_policy(bytes: &[u8]) -> anyhow::Result<RuntimePolicy> {
 /// outside the supported TACACS+ range.
 pub fn validate_runtime_policy(policy: &RuntimePolicy) -> anyhow::Result<()> {
     ensure!(
+        policy.credential_refresh_interval_seconds > 0,
+        "runtime-policy/credential-refresh-interval-seconds must be greater than zero"
+    );
+    ensure!(
         policy.credential_stale_timeout_seconds > 0,
         "runtime-policy/credential-stale-timeout-seconds must be greater than zero"
     );
@@ -105,6 +109,14 @@ pub fn validate_runtime_policy(policy: &RuntimePolicy) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn zero_credential_refresh_interval_is_rejected() {
+        assert!(super::parse_runtime_policy(
+            br#"{"tacacsrs:runtime-policy":{"credential-refresh-interval-seconds":0}}"#
+        )
+        .is_err());
+    }
+
     use super::*;
 
     #[test]
@@ -114,6 +126,7 @@ mod tests {
         assert_eq!(policy.shutdown_timeout_seconds, 30);
         assert_eq!(policy.source_stale_timeout_seconds, 300);
         assert_eq!(policy.credential_stale_timeout_seconds, 300);
+        assert_eq!(policy.credential_refresh_interval_seconds, 60);
         assert!(policy.authentication.is_none());
         assert_eq!(crate::tacacsrs::Authentication::default().max_body_length, 4096);
         assert_eq!(crate::tacacsrs::Authorization::default().max_body_length, 16384);

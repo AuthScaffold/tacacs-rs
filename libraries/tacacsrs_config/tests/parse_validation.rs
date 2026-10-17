@@ -2435,6 +2435,29 @@ fn reject_invalid_rpk_public_key_format_in_server_auth() {
 }
 
 #[test]
+fn combined_crl_and_ocsp_policy_accepts_direct_and_bundled_configuration() {
+    for bundle in [false, true] {
+        let mut authentication = serde_json::json!({
+            "tacacsrs:require-stapled-ocsp": {},
+            "tacacsrs:require-crls": {"crl": ["AQ=="]}
+        });
+        let mut document = serde_json::json!({"ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [{"name": "combined", "server-type": "accounting", "address": "127.0.0.1", "port": 300}]
+        }});
+        if bundle {
+            authentication["id"] = serde_json::json!("trust");
+            document["ietf-system-tacacs-plus:tacacs-plus"]["server-credentials"] =
+                serde_json::json!([authentication]);
+            authentication = serde_json::json!({"credentials-reference": "trust"});
+        }
+        document["ietf-system-tacacs-plus:tacacs-plus"]["server"][0]["server-authentication"] =
+            authentication;
+        let parsed = parse_yang_json(&document.to_string());
+        assert!(parsed.is_ok(), "bundle {bundle}: {parsed:?}");
+    }
+}
+
+#[test]
 fn reject_invalid_ee_cert_data() {
     let json = r#"{
         "ietf-system-tacacs-plus:tacacs-plus": {

@@ -21,6 +21,7 @@ serde_json = "1.0"
 tacacsrs-agent-client = { path = "../../libraries/tacacsrs_agent_client" }
 tacacsrs-agent = { path = "../../libraries/tacacsrs_agent" }
 tacacsrs-config = { path = "../../libraries/tacacsrs_config" }
+tacacsrs-credential-http = { path = "../../libraries/tacacsrs_credential_http" }
 tacacsrs-credential-resolution = { path = "../../libraries/tacacsrs_credential_resolution" }
 tacacsrs-networking = { path = "../../libraries/tacacsrs_networking" }
 tacacsrs-secrets = { path = "../../libraries/tacacsrs_secrets" }

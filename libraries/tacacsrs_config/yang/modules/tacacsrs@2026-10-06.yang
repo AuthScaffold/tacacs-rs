@@ -102,6 +102,26 @@ module tacacsrs {
     }
   }
 
+  augment "/sys:system/sys-tcs-plus:tacacs-plus" {
+    description "Generation association for operational snapshots.";
+    leaf runtime-generation {
+      config false;
+      type uint64;
+      description "Runtime generation captured for this operational snapshot.";
+    }
+  }
+
+  augment "/sys:system/sys-tcs-plus:tacacs-plus/sys-tcs-plus:server" {
+    description "Counter lifetime identity independent of routing generations.";
+    leaf counter-epoch {
+      config false;
+      type uint64;
+      description
+        "Process-local counter lifetime identity. Unchanged endpoints retain it
+         across reloads; replaced endpoints receive a new identity and discontinuity time.";
+    }
+  }
+
   augment "/sys:system" {
     description
       "Local TACACS+ service policy, separate from the ordered upstream server list.";
@@ -194,6 +214,16 @@ module tacacsrs {
            Retries and policy changes do not renew the interval.
            At expiry, withdraw upstreams until complete credential revalidation succeeds.";
       }
+         leaf credential-refresh-interval-seconds {
+           type uint32 { range "1..max"; }
+           units "seconds";
+           default 60;
+           description
+          "Maximum scheduled delay between provider credential refresh attempts.
+           Start earlier when prepared material approaches expiry.
+           Refresh does not extend signed or provider validity and does not
+           mark valid material stale unless revalidation fails.";
+         }
       leaf source-stale-timeout-seconds {
         type uint32 { range "1..max"; }
         units "seconds";
@@ -312,6 +342,153 @@ module tacacsrs {
         "RFC 8446: The Transport Layer Security (TLS) Protocol
                    Version 1.3, Sections 4.2.7 and 4.2.8";
     }
+  }
+
+  grouping client-certificate-chain {
+    description
+      "Intermediate certificates for a configured TLS client identity.";
+    leaf-list intermediate-certificate {
+      type binary {
+        length "1..max";
+      }
+      ordered-by user;
+      description
+        "DER-encoded intermediate certificates in issuer order, starting
+         with the issuer of cert-data. Each entry contains one X.509
+         certificate. Do not include the leaf or a self-signed root.";
+    }
+  }
+
+  grouping certificate-revocation-policy {
+    description
+      "Required revocation evidence for certificate TLS peer authentication.";
+    container require-crls {
+      presence "Require fresh CRLs for certificate TLS server authentication.";
+      description
+        "Require complete CRL evidence for the verified server certificate path.
+         An unpartitioned base can advertise one explicitly supplied delta.
+         Both lists must be fresh and match issuer, scope, and authority key
+         identifier. CRL numbers must identify a compatible increasing update.
+         Direct CRLs can restrict certificate type and distribution-point scope.
+         Multiple scopes for one issuer must cover disjoint certificate types.
+         Within each scope, reason partitions must be disjoint.
+         At most 128 lists and 4 MiB are accepted.
+         Native verification requires complete reason and path coverage.
+         Exact peer pins and PSK authentication are not supported in this mode.
+         Unavailable, invalid, stale, or incomplete evidence fails closed.";
+      leaf max-age-seconds {
+        type uint32 { range "1..max"; }
+        default 300;
+        description
+          "Maximum seconds since each CRL thisUpdate. The earlier of this
+           limit and nextUpdate bounds evidence use without stale grace.";
+      }
+      choice evidence {
+        mandatory true;
+        case inline {
+          leaf-list crl {
+            type binary { length "1..max"; }
+            min-elements 1;
+            description "One full or delta DER CRL per entry.";
+          }
+        }
+        case provider {
+          leaf evidence-reference {
+            type string { length "1..max"; }
+            mandatory true;
+            description "Opaque provider reference to a complete CRL set.";
+          }
+        }
+      }
+    }
+    container require-ocsp {
+      presence "Require independently supplied OCSP evidence for the peer leaf.";
+      description
+        "Requires a fetched or inline response independently of any mandatory staple.
+         The actual peer, signer, status, and signed freshness are verified before client authentication.";
+      leaf max-response-age-seconds {
+        type uint32 { range "1..max"; }
+        default 300;
+      }
+      choice evidence {
+        mandatory true;
+        case inline {
+          leaf response { type binary { length "1..65536"; } mandatory true; }
+        }
+        case provider {
+          leaf evidence-reference { type string { length "1..max"; } mandatory true; }
+        }
+      }
+    }
+    container require-stapled-ocsp {
+      presence "Require fresh authenticated OCSP evidence for the peer leaf.";
+      description
+        "Request a stapled OCSP response and fail closed if evidence is
+         unavailable, invalid, stale, unknown, or revoked. Responses must
+         be signed by the issuer or a responder issued directly by it.
+         Delegated responders require OCSP signing usage and either a valid
+         noncritical No Check extension or verified configured CRL evidence.
+         This requirement can be combined with require-crls. Both checks
+         must pass. OCSP covers the peer leaf; CRLs cover the CA path.";
+      leaf max-response-age-seconds {
+        type uint32 { range "1..max"; }
+        default 300;
+        description
+          "Maximum time since thisUpdate. Evidence expires at the earlier
+           of this limit and nextUpdate, when nextUpdate is present.
+           No clock-skew allowance or stale grace extends this interval.";
+      }
+    }
+  }
+
+  augment "/sys:system/sys-tcs-plus:tacacs-plus/"
+        + "sys-tcs-plus:server-credentials" {
+    description
+      "Adds required stapled OCSP to reusable server authentication.";
+    uses certificate-revocation-policy;
+  }
+
+  augment "/sys:system/sys-tcs-plus:tacacs-plus/"
+        + "sys-tcs-plus:server/"
+        + "sys-tcs-plus:security/"
+        + "sys-tcs-plus:tls/"
+        + "sys-tcs-plus:server-authentication/"
+        + "sys-tcs-plus:ref-or-explicit/"
+        + "sys-tcs-plus:explicit" {
+    description
+      "Adds required stapled OCSP to per-server certificate authentication.";
+    uses certificate-revocation-policy;
+  }
+
+  augment "/sys:system/sys-tcs-plus:tacacs-plus/"
+        + "sys-tcs-plus:client-credentials/"
+        + "sys-tcs-plus:auth-type/"
+        + "sys-tcs-plus:certificate/"
+        + "sys-tcs-plus:certificate/"
+        + "sys-tcs-plus:inline-or-keystore/"
+        + "sys-tcs-plus:inline/"
+        + "sys-tcs-plus:inline-definition" {
+    description
+      "Adds a client certificate chain to reusable inline credentials.";
+    uses client-certificate-chain;
+  }
+
+  augment "/sys:system/sys-tcs-plus:tacacs-plus/"
+        + "sys-tcs-plus:server/"
+        + "sys-tcs-plus:security/"
+        + "sys-tcs-plus:tls/"
+        + "sys-tcs-plus:client-identity/"
+        + "sys-tcs-plus:ref-or-explicit/"
+        + "sys-tcs-plus:explicit/"
+        + "sys-tcs-plus:auth-type/"
+        + "sys-tcs-plus:certificate/"
+        + "sys-tcs-plus:certificate/"
+        + "sys-tcs-plus:inline-or-keystore/"
+        + "sys-tcs-plus:inline/"
+        + "sys-tcs-plus:inline-definition" {
+    description
+      "Adds a client certificate chain to per-server inline credentials.";
+    uses client-certificate-chain;
   }
 
   augment "/sys:system/sys-tcs-plus:tacacs-plus/"

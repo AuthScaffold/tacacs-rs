@@ -15,6 +15,7 @@ pub enum PacketWriteResult {
 /// Writes TACACS+ packets, including optional body obfuscation.
 pub struct PacketWriter {
     obfuscation_key: Option<Vec<u8>>,
+    counters: Option<crate::ServerCounters>,
 }
 
 impl PacketWriter {
@@ -25,7 +26,19 @@ impl PacketWriter {
     ///   If `None`, packets are sent unencrypted.
     #[must_use]
     pub const fn new(obfuscation_key: Option<Vec<u8>>) -> Self {
-        Self { obfuscation_key }
+        Self {
+            obfuscation_key,
+            counters: None,
+        }
+    }
+
+    pub(crate) fn with_counters(mut self, counters: Option<crate::ServerCounters>) -> Self {
+        self.counters = counters;
+        self
+    }
+
+    pub(crate) fn counters(&self) -> Option<crate::ServerCounters> {
+        self.counters.clone()
     }
 
     /// Returns the configured packet obfuscation key, if one is present.
@@ -69,7 +82,12 @@ impl PacketWriter {
         let bytes = packet.to_bytes();
 
         match writer.write_all(&bytes).await {
-            Ok(()) => PacketWriteResult::Success,
+            Ok(()) => {
+                if let Some(counters) = &self.counters {
+                    counters.record(crate::statistics::CounterEvent::MessageSent);
+                }
+                PacketWriteResult::Success
+            }
             Err(error) => PacketWriteResult::WriteError(error),
         }
     }
@@ -134,6 +152,32 @@ mod tests {
     fn create_test_packet(session_id: u32, body: Vec<u8>, flags: TacacsFlags) -> Packet {
         let header = create_test_header(session_id, body.len() as u32, flags);
         Packet::new(header, body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn counters_only_record_complete_packet_io() {
+        let counters = crate::ServerCounters::default();
+        let writer = PacketWriter::new(None).with_counters(Some(counters.clone()));
+        let reader = crate::PacketReader::new(None).with_counters(Some(counters.clone()));
+        let packet =
+            create_test_packet(12345, vec![1, 2, 3], TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
+        let mut output = Vec::new();
+        assert!(matches!(
+            writer.write_packet(&mut output, packet).await,
+            PacketWriteResult::Success
+        ));
+        assert_eq!(counters.snapshot().messages_sent, 1);
+        assert!(matches!(
+            reader.read_packet(&mut std::io::Cursor::new(&output)).await,
+            crate::PacketReadResult::Success(_)
+        ));
+        assert_eq!(counters.snapshot().messages_received, 1);
+        output.pop();
+        assert!(matches!(
+            reader.read_packet(&mut std::io::Cursor::new(&output)).await,
+            crate::PacketReadResult::BodyReadError { .. }
+        ));
+        assert_eq!(counters.snapshot().messages_received, 1);
     }
 
     #[tokio::test]
