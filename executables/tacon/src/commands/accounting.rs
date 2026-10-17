@@ -1,58 +1,29 @@
-//! TACACS+ Accounting command implementation
+//! TACACS+ accounting command support.
 
 use anyhow::Context;
-use tacacsrs_protocol::accounting::request::AccountingRequest;
 use tacacsrs_protocol::operations::{AccountingOperation, AccountingOperationResponse};
-use tacacsrs_protocol::exchange::accounting::AccountingExchange;
 
 use crate::connection::Connection;
 
-/// Sends an accounting request to record a command run.
+/// Sends a prepared accounting operation over a direct TACACS+ connection.
 ///
-/// # Arguments
+/// # Errors
 ///
-/// * `connection` - The connection used to send this accounting exchange
-/// * `user` - Username that runs the command
-/// * `port` - Port identifier (for example, "tty0")
-/// * `rem_address` - Remote address of the client
-/// * `cmd` - The command that the user runs
-/// * `cmd_args` - Optional arguments to the command
-///
-/// # Returns
-///
-/// The accounting reply from the server, or an error if the request failed.
-pub async fn send_accounting_request(
+/// Returns an error if the accounting exchange fails.
+pub(crate) async fn send_direct(
     connection: &Connection,
-    user: &str,
-    port: &str,
-    rem_address: &str,
-    cmd: &str,
-    cmd_args: Option<&Vec<String>>,
+    operation: &AccountingOperation,
 ) -> anyhow::Result<AccountingOperationResponse> {
-    let request = build_accounting_request(user, port, rem_address, cmd, cmd_args);
-
-    let response = connection
-        .execute(AccountingExchange::new(request))
+    let reply = connection
+        .execute(operation.exchange())
         .await
         .context("Failed to send accounting request")?;
 
-    log::info!("Received accounting response: {response:?}");
-
-    Ok(AccountingOperationResponse::from_reply(connection.server_name(), response))
+    Ok(AccountingOperationResponse::from_reply(connection.server_name(), reply))
 }
 
-/// Constructs an [`AccountingRequest`] from CLI-level arguments.
-pub fn build_accounting_request(
-    user: &str,
-    port: &str,
-    rem_address: &str,
-    cmd: &str,
-    cmd_args: Option<&Vec<String>>,
-) -> AccountingRequest {
-    accounting_operation(user, port, rem_address, cmd, cmd_args).to_request()
-}
-
-pub fn accounting_operation(
+/// Builds an [`AccountingOperation`] from CLI-level arguments.
+pub(crate) fn accounting_operation(
     user: &str,
     port: &str,
     rem_address: &str,

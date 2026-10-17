@@ -3,11 +3,11 @@
 use std::path::Path;
 
 use anyhow::Context;
+use tacacsrs_unix_socket::prepare_unix_listener;
 
 use super::{ProxyListener, accept_loop};
 use crate::runtime::{ListenerRegistration, ShutdownReceiver};
 use crate::services::tacacs_proxy::TacacsProxyService;
-use crate::services::unix_socket;
 
 pub(super) async fn serve<Connector: tacacsrs_networking::routed::EndpointConnector>(
     path: &Path,
@@ -19,8 +19,7 @@ pub(super) async fn serve<Connector: tacacsrs_networking::routed::EndpointConnec
 where
     Connector::Connection: crate::upstream::UpstreamConnection,
 {
-    let (listener, socket_guard) =
-        unix_socket::prepare_unix_listener(path, options.socket_mode()).await?;
+    let (listener, socket_guard) = prepare_unix_listener(path, options.socket_mode()).await?;
     registration.mark_bound();
 
     log::info!(
@@ -35,9 +34,7 @@ where
         shutdown,
     )
     .await;
-    socket_guard
-        .cleanup("TACACS+ proxy Unix domain socket")
-        .await?;
+    socket_guard.cleanup().await?;
     result
 }
 

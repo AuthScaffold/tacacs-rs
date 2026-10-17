@@ -2,9 +2,10 @@
 name = "tacacsrs-agent"
 version = "0.0.0-dev"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Components for the central TACACS+ client service and IPC handling."
+description = "TACACS+ configuration supervision, routed operations, and service lifecycle."
 readme = "README.md"
 
 [dependencies]
@@ -14,7 +15,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 if-addrs = "0.15.0"
 log = "0.4.30"
 rand = "0.10.0"
-rustix = { version = "1.1.4", features = ["fs"] }
+tacacsrs-unix-socket = { path = "../tacacsrs_unix_socket" }
 tacacsrs-config = { path = "../tacacsrs_config" }
 tacacsrs-credential-resolution = { path = "../tacacsrs_credential_resolution" }
 tacacsrs-protocol = { path = "../tacacsrs_protocol" }

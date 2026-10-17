@@ -4,9 +4,9 @@ use anyhow::Context;
 use byteorder::{BigEndian, ReadBytesExt};
 
 use crate::enumerations::TacacsAuthenticationContinueFlags;
-use crate::helpers::{read_bytes, read_string};
+use crate::wire_io::{read_bytes, read_string};
 use crate::packet::{Packet, PacketTrait};
-use crate::traits::TacacsBodyTrait;
+use crate::body::TacacsBodyTrait;
 
 const AUTHENTICATION_CONTINUE_MIN_LENGTH: usize = 5;
 

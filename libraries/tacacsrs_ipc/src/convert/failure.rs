@@ -11,13 +11,12 @@ use std::num::NonZeroU32;
 
 use anyhow::{Context, anyhow, bail};
 use tacacsrs_protocol::failure::{
-    DeliveryState, FailureCategory, FailureFacts, FailurePhase, RetryAdvice,
+    DeliveryState, FailureCategory, FailureFacts, FailurePhase, RetryAdvice, ServiceError,
 };
-use tacacsrs_protocol::operations::ServiceError;
 
-use crate::ipc;
+use crate::proto;
 
-impl From<ServiceError> for ipc::ServiceError {
+impl From<ServiceError> for proto::ServiceError {
     fn from(value: ServiceError) -> Self {
         let facts = value.facts;
         Self {
@@ -33,10 +32,10 @@ impl From<ServiceError> for ipc::ServiceError {
     }
 }
 
-impl TryFrom<ipc::ServiceError> for ServiceError {
+impl TryFrom<proto::ServiceError> for ServiceError {
     type Error = anyhow::Error;
 
-    fn try_from(proto: ipc::ServiceError) -> Result<Self, Self::Error> {
+    fn try_from(proto: proto::ServiceError) -> Result<Self, Self::Error> {
         let facts = FailureFacts::new(
             decode_category(proto.category)?,
             decode_phase(proto.phase)?,
@@ -94,101 +93,101 @@ pub(crate) fn ipc_protocol_failure(message: String) -> ServiceError {
     )
 }
 
-fn encode_category(category: FailureCategory) -> ipc::FailureCategory {
+fn encode_category(category: FailureCategory) -> proto::FailureCategory {
     match category {
-        FailureCategory::Unclassified => ipc::FailureCategory::Unclassified,
-        FailureCategory::InvalidRequest => ipc::FailureCategory::InvalidRequest,
-        FailureCategory::Unavailable => ipc::FailureCategory::Unavailable,
-        FailureCategory::Overloaded => ipc::FailureCategory::Overloaded,
-        FailureCategory::Deadline => ipc::FailureCategory::Deadline,
-        FailureCategory::Transport => ipc::FailureCategory::Transport,
-        FailureCategory::Protocol => ipc::FailureCategory::Protocol,
-        FailureCategory::Cancelled => ipc::FailureCategory::Cancelled,
-        FailureCategory::Internal => ipc::FailureCategory::Internal,
+        FailureCategory::Unclassified => proto::FailureCategory::Unclassified,
+        FailureCategory::InvalidRequest => proto::FailureCategory::InvalidRequest,
+        FailureCategory::Unavailable => proto::FailureCategory::Unavailable,
+        FailureCategory::Overloaded => proto::FailureCategory::Overloaded,
+        FailureCategory::Deadline => proto::FailureCategory::Deadline,
+        FailureCategory::Transport => proto::FailureCategory::Transport,
+        FailureCategory::Protocol => proto::FailureCategory::Protocol,
+        FailureCategory::Cancelled => proto::FailureCategory::Cancelled,
+        FailureCategory::Internal => proto::FailureCategory::Internal,
     }
 }
 
-fn encode_phase(phase: FailurePhase) -> ipc::FailurePhase {
+fn encode_phase(phase: FailurePhase) -> proto::FailurePhase {
     match phase {
-        FailurePhase::Unknown => ipc::FailurePhase::Unknown,
-        FailurePhase::Validation => ipc::FailurePhase::Validation,
-        FailurePhase::Admission => ipc::FailurePhase::Admission,
-        FailurePhase::Routing => ipc::FailurePhase::Routing,
-        FailurePhase::Upstream => ipc::FailurePhase::Upstream,
-        FailurePhase::Ipc => ipc::FailurePhase::Ipc,
+        FailurePhase::Unknown => proto::FailurePhase::Unknown,
+        FailurePhase::Validation => proto::FailurePhase::Validation,
+        FailurePhase::Admission => proto::FailurePhase::Admission,
+        FailurePhase::Routing => proto::FailurePhase::Routing,
+        FailurePhase::Upstream => proto::FailurePhase::Upstream,
+        FailurePhase::Ipc => proto::FailurePhase::Ipc,
     }
 }
 
-fn encode_delivery(delivery: DeliveryState) -> ipc::DeliveryState {
+fn encode_delivery(delivery: DeliveryState) -> proto::DeliveryState {
     match delivery {
-        DeliveryState::NotSent => ipc::DeliveryState::NotSent,
-        DeliveryState::OutcomeUnknown => ipc::DeliveryState::OutcomeUnknown,
+        DeliveryState::NotSent => proto::DeliveryState::NotSent,
+        DeliveryState::OutcomeUnknown => proto::DeliveryState::OutcomeUnknown,
     }
 }
 
-fn encode_retry_advice(advice: RetryAdvice) -> ipc::RetryAdvice {
+fn encode_retry_advice(advice: RetryAdvice) -> proto::RetryAdvice {
     match advice {
-        RetryAdvice::Never => ipc::RetryAdvice::Never,
-        RetryAdvice::AfterRecovery => ipc::RetryAdvice::AfterRecovery,
+        RetryAdvice::Never => proto::RetryAdvice::Never,
+        RetryAdvice::AfterRecovery => proto::RetryAdvice::AfterRecovery,
     }
 }
 
 fn decode_category(value: i32) -> anyhow::Result<FailureCategory> {
-    match ipc::FailureCategory::try_from(value)
+    match proto::FailureCategory::try_from(value)
         .map_err(|_| anyhow!("IPC service error failure category {value} is not recognized"))?
     {
-        ipc::FailureCategory::Unspecified => {
+        proto::FailureCategory::Unspecified => {
             bail!("IPC service error failure category must not be unspecified")
         }
-        ipc::FailureCategory::Unclassified => Ok(FailureCategory::Unclassified),
-        ipc::FailureCategory::InvalidRequest => Ok(FailureCategory::InvalidRequest),
-        ipc::FailureCategory::Unavailable => Ok(FailureCategory::Unavailable),
-        ipc::FailureCategory::Overloaded => Ok(FailureCategory::Overloaded),
-        ipc::FailureCategory::Deadline => Ok(FailureCategory::Deadline),
-        ipc::FailureCategory::Transport => Ok(FailureCategory::Transport),
-        ipc::FailureCategory::Protocol => Ok(FailureCategory::Protocol),
-        ipc::FailureCategory::Cancelled => Ok(FailureCategory::Cancelled),
-        ipc::FailureCategory::Internal => Ok(FailureCategory::Internal),
+        proto::FailureCategory::Unclassified => Ok(FailureCategory::Unclassified),
+        proto::FailureCategory::InvalidRequest => Ok(FailureCategory::InvalidRequest),
+        proto::FailureCategory::Unavailable => Ok(FailureCategory::Unavailable),
+        proto::FailureCategory::Overloaded => Ok(FailureCategory::Overloaded),
+        proto::FailureCategory::Deadline => Ok(FailureCategory::Deadline),
+        proto::FailureCategory::Transport => Ok(FailureCategory::Transport),
+        proto::FailureCategory::Protocol => Ok(FailureCategory::Protocol),
+        proto::FailureCategory::Cancelled => Ok(FailureCategory::Cancelled),
+        proto::FailureCategory::Internal => Ok(FailureCategory::Internal),
     }
 }
 
 fn decode_phase(value: i32) -> anyhow::Result<FailurePhase> {
-    match ipc::FailurePhase::try_from(value)
+    match proto::FailurePhase::try_from(value)
         .map_err(|_| anyhow!("IPC service error failure phase {value} is not recognized"))?
     {
-        ipc::FailurePhase::Unspecified => {
+        proto::FailurePhase::Unspecified => {
             bail!("IPC service error failure phase must not be unspecified")
         }
-        ipc::FailurePhase::Unknown => Ok(FailurePhase::Unknown),
-        ipc::FailurePhase::Validation => Ok(FailurePhase::Validation),
-        ipc::FailurePhase::Admission => Ok(FailurePhase::Admission),
-        ipc::FailurePhase::Routing => Ok(FailurePhase::Routing),
-        ipc::FailurePhase::Upstream => Ok(FailurePhase::Upstream),
-        ipc::FailurePhase::Ipc => Ok(FailurePhase::Ipc),
+        proto::FailurePhase::Unknown => Ok(FailurePhase::Unknown),
+        proto::FailurePhase::Validation => Ok(FailurePhase::Validation),
+        proto::FailurePhase::Admission => Ok(FailurePhase::Admission),
+        proto::FailurePhase::Routing => Ok(FailurePhase::Routing),
+        proto::FailurePhase::Upstream => Ok(FailurePhase::Upstream),
+        proto::FailurePhase::Ipc => Ok(FailurePhase::Ipc),
     }
 }
 
 fn decode_delivery(value: i32) -> anyhow::Result<DeliveryState> {
-    match ipc::DeliveryState::try_from(value)
+    match proto::DeliveryState::try_from(value)
         .map_err(|_| anyhow!("IPC service error delivery state {value} is not recognized"))?
     {
-        ipc::DeliveryState::Unspecified => {
+        proto::DeliveryState::Unspecified => {
             bail!("IPC service error delivery state must not be unspecified")
         }
-        ipc::DeliveryState::NotSent => Ok(DeliveryState::NotSent),
-        ipc::DeliveryState::OutcomeUnknown => Ok(DeliveryState::OutcomeUnknown),
+        proto::DeliveryState::NotSent => Ok(DeliveryState::NotSent),
+        proto::DeliveryState::OutcomeUnknown => Ok(DeliveryState::OutcomeUnknown),
     }
 }
 
 fn decode_retry_advice(value: i32) -> anyhow::Result<RetryAdvice> {
-    match ipc::RetryAdvice::try_from(value)
+    match proto::RetryAdvice::try_from(value)
         .map_err(|_| anyhow!("IPC service error retry advice {value} is not recognized"))?
     {
-        ipc::RetryAdvice::Unspecified => {
+        proto::RetryAdvice::Unspecified => {
             bail!("IPC service error retry advice must not be unspecified")
         }
-        ipc::RetryAdvice::Never => Ok(RetryAdvice::Never),
-        ipc::RetryAdvice::AfterRecovery => Ok(RetryAdvice::AfterRecovery),
+        proto::RetryAdvice::Never => Ok(RetryAdvice::Never),
+        proto::RetryAdvice::AfterRecovery => Ok(RetryAdvice::AfterRecovery),
     }
 }
 
@@ -212,8 +211,8 @@ mod tests {
         )
     }
 
-    fn valid_wire() -> ipc::ServiceError {
-        ipc::ServiceError::from(ServiceError::new("sample", unsent_unavailable()))
+    fn valid_wire() -> proto::ServiceError {
+        proto::ServiceError::from(ServiceError::new("sample", unsent_unavailable()))
     }
 
     #[test]
@@ -222,7 +221,7 @@ mod tests {
             .with_server("tacacs-a:49")
             .with_runtime_generation(7)
             .with_attempt(NonZeroU32::new(3).unwrap());
-        let decoded = ServiceError::try_from(ipc::ServiceError::from(error.clone())).unwrap();
+        let decoded = ServiceError::try_from(proto::ServiceError::from(error.clone())).unwrap();
         assert_eq!(decoded, error);
     }
 
@@ -236,7 +235,7 @@ mod tests {
                 DeliveryState::NotSent,
             ),
         );
-        let wire = ipc::ServiceError::from(error.clone());
+        let wire = proto::ServiceError::from(error.clone());
         assert!(wire.server.is_empty());
         assert!(wire.runtime_generation.is_none());
         assert!(wire.attempt.is_none());
@@ -247,10 +246,10 @@ mod tests {
 
     #[test]
     fn wire_carries_derived_retry_advice() {
-        let unsent = ipc::ServiceError::from(ServiceError::new("x", unsent_unavailable()));
-        assert_eq!(unsent.retry_advice, ipc::RetryAdvice::AfterRecovery as i32);
-        let uncertain = ipc::ServiceError::from(ServiceError::new("x", uncertain_transport()));
-        assert_eq!(uncertain.retry_advice, ipc::RetryAdvice::Never as i32);
+        let unsent = proto::ServiceError::from(ServiceError::new("x", unsent_unavailable()));
+        assert_eq!(unsent.retry_advice, proto::RetryAdvice::AfterRecovery as i32);
+        let uncertain = proto::ServiceError::from(ServiceError::new("x", uncertain_transport()));
+        assert_eq!(uncertain.retry_advice, proto::RetryAdvice::Never as i32);
     }
 
     #[test]
@@ -281,7 +280,7 @@ mod tests {
                     let facts = FailureFacts::new(category, phase, delivery);
                     let error = ServiceError::new("m", facts).with_server("s:49");
                     let decoded =
-                        ServiceError::try_from(ipc::ServiceError::from(error.clone())).unwrap();
+                        ServiceError::try_from(proto::ServiceError::from(error.clone())).unwrap();
                     assert_eq!(decoded, error);
                     assert_eq!(decoded.facts.retry_advice(), facts.retry_advice());
                 }
@@ -291,11 +290,11 @@ mod tests {
 
     #[test]
     fn rejects_unspecified_enum_sentinels() {
-        let mutators: [fn(&mut ipc::ServiceError); 4] = [
-            |wire| wire.category = ipc::FailureCategory::Unspecified as i32,
-            |wire| wire.phase = ipc::FailurePhase::Unspecified as i32,
-            |wire| wire.delivery = ipc::DeliveryState::Unspecified as i32,
-            |wire| wire.retry_advice = ipc::RetryAdvice::Unspecified as i32,
+        let mutators: [fn(&mut proto::ServiceError); 4] = [
+            |wire| wire.category = proto::FailureCategory::Unspecified as i32,
+            |wire| wire.phase = proto::FailurePhase::Unspecified as i32,
+            |wire| wire.delivery = proto::DeliveryState::Unspecified as i32,
+            |wire| wire.retry_advice = proto::RetryAdvice::Unspecified as i32,
         ];
         for mutate in mutators {
             let mut wire = valid_wire();
@@ -306,7 +305,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_enum_values() {
-        let mutators: [fn(&mut ipc::ServiceError); 4] = [
+        let mutators: [fn(&mut proto::ServiceError); 4] = [
             |wire| wire.category = 999,
             |wire| wire.phase = 999,
             |wire| wire.delivery = 999,
@@ -322,11 +321,12 @@ mod tests {
     #[test]
     fn rejects_inconsistent_retry_advice() {
         let mut unsent = valid_wire();
-        unsent.retry_advice = ipc::RetryAdvice::Never as i32;
+        unsent.retry_advice = proto::RetryAdvice::Never as i32;
         assert!(ServiceError::try_from(unsent).is_err());
 
-        let mut uncertain = ipc::ServiceError::from(ServiceError::new("x", uncertain_transport()));
-        uncertain.retry_advice = ipc::RetryAdvice::AfterRecovery as i32;
+        let mut uncertain =
+            proto::ServiceError::from(ServiceError::new("x", uncertain_transport()));
+        uncertain.retry_advice = proto::RetryAdvice::AfterRecovery as i32;
         assert!(ServiceError::try_from(uncertain).is_err());
     }
 
@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn rejects_default_message_with_missing_facts() {
-        assert!(ServiceError::try_from(ipc::ServiceError::default()).is_err());
+        assert!(ServiceError::try_from(proto::ServiceError::default()).is_err());
     }
 
     #[test]

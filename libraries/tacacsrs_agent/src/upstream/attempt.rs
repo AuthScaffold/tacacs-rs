@@ -2,7 +2,7 @@
 
 use tacacsrs_networking::{FixedExchangeError, TransmissionState};
 use tacacsrs_protocol::failure::{DeliveryState, FailureCategory, FailureFacts, FailurePhase};
-use tacacsrs_protocol::operations::ServiceError;
+use tacacsrs_protocol::failure::ServiceError;
 
 /// Conservative transmission state for one upstream request attempt.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

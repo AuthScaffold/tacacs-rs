@@ -9,7 +9,7 @@ use tacacsrs_protocol::enumerations::{
 };
 use tacacsrs_protocol::header::Header;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
-use tacacsrs_protocol::traits::TacacsBodyTrait;
+use tacacsrs_protocol::body::TacacsBodyTrait;
 
 pub(super) fn local_error_reply(request: &Packet, message: &str) -> anyhow::Result<Packet> {
     let body = match request.header().tacacs_type {

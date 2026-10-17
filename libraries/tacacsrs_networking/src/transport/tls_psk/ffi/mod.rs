@@ -200,11 +200,11 @@ unsafe fn create_session(
         return None;
     }
 
+    // SAFETY: `session` is newly allocated. `cipher` came from OpenSSL's
+    // configured cipher stack for the same `SSL*`, and the key slice is
+    // valid for the duration of the call. Each OpenSSL setter copies the
+    // supplied data into the session.
     let configured = unsafe {
-        // SAFETY: `session` is newly allocated. `cipher` came from OpenSSL's
-        // configured cipher stack for the same `SSL*`, and the key slice is
-        // valid for the duration of the call. Each OpenSSL setter copies the
-        // supplied data into the session.
         SSL_SESSION_set_protocol_version(session, TLS1_3_VERSION) == 1
             && SSL_SESSION_set_cipher(session, cipher) == 1
             && SSL_SESSION_set1_master_key(session, key.as_ptr(), key.len()) == 1

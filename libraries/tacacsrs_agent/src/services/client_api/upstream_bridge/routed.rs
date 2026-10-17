@@ -5,7 +5,7 @@ use std::num::NonZeroU32;
 use async_trait::async_trait;
 use tacacsrs_networking::routed::EndpointConnector;
 use tacacsrs_protocol::failure::{DeliveryState, FailureCategory, FailureFacts, FailurePhase};
-use tacacsrs_protocol::operations::ServiceError;
+use tacacsrs_protocol::failure::ServiceError;
 use tacacsrs_networking::retry::{
     Attempt, AttemptDisposition, FailoverAttempt, FailoverOutcome, run_with_failover,
 };

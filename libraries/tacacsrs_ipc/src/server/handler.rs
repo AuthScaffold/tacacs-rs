@@ -1,9 +1,9 @@
 //! Operation handler interface for the IPC server adapter.
 
+use tacacsrs_protocol::failure::ServiceError;
 use tacacsrs_protocol::operations::{
     AccountingOperation, AccountingOperationResponse, AuthorizationOperation,
     AuthorizationOperationResponse, PapAuthenticationOperation, PapAuthenticationOperationResponse,
-    ServiceError,
 };
 
 /// Executes decoded client API operations for the IPC server.

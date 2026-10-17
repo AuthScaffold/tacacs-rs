@@ -5,7 +5,7 @@ use std::time::Duration;
 use tacacsrs_networking::admission::{AdmissionPool, AdmissionReservation, AdmissionError as PoolError};
 use tacacsrs_networking::RequestDeadline;
 use tacacsrs_protocol::failure::{DeliveryState, FailureCategory, FailureFacts, FailurePhase};
-use tacacsrs_protocol::operations::ServiceError;
+use tacacsrs_protocol::failure::ServiceError;
 pub(crate) use tacacsrs_networking::admission::AdmissionPermit;
 
 use crate::config::RuntimePolicy;

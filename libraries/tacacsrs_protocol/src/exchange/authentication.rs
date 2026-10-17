@@ -5,7 +5,7 @@ use crate::enumerations::{
     TacacsAuthenticationAction, TacacsAuthenticationService, TacacsAuthenticationStatus,
     TacacsAuthenticationType, TacacsMinorVersion, TacacsType,
 };
-use crate::traits::TacacsBodyTrait;
+use crate::body::TacacsBodyTrait;
 use crate::exchange::FixedExchange;
 use tacacsrs_secrets::SecretBytes;
 

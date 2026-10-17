@@ -5,6 +5,7 @@ members = [
     "libraries/tacacsrs_secrets",
     "libraries/tacacsrs_networking",
     "libraries/tacacsrs_ipc",
+    "libraries/tacacsrs_unix_socket",
     "libraries/tacacsrs_agent_ipc_emulator",
     "libraries/tacacsrs_agent",
     "libraries/tacacsrs_config",
@@ -23,6 +24,7 @@ default-members = [
     "libraries/tacacsrs_secrets",
     "libraries/tacacsrs_networking",
     "libraries/tacacsrs_ipc",
+    "libraries/tacacsrs_unix_socket",
     "libraries/tacacsrs_agent",
     "libraries/tacacsrs_config",
     "libraries/tacacsrs_credential_resolution",
@@ -46,14 +48,21 @@ repository = "https://github.com/AuthScaffold/tacacs-rs"
 # The `openssl` crate does not expose these APIs.
 # Unsafe code remains denied by default. Each exception needs an explicit local allowance.
 unsafe_code = "deny"
+unreachable_pub = "warn"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
 
 [workspace.lints.clippy]
 # These lint groups have low priority. Individual overrides take precedence.
 all = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
-nursery = { level = "warn", priority = -1 }
+pedantic = { level = "allow", priority = -1 }
+nursery = { level = "allow", priority = -1 }
 cargo = { level = "warn", priority = -1 }
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+cast_precision_loss = "warn"
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+undocumented_unsafe_blocks = "warn"
 
 # --- Workspace-wide allowances for opinionated lints ---
 

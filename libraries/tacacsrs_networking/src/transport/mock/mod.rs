@@ -75,8 +75,8 @@
 //! ```
 //!
 //! [`Transport`]: crate::transport::abstractions::Transport
-//! [`MultiplexedConnection`]: crate::runtime::MultiplexedConnection
-//! [`MultiplexedConnection::run_with_halves`]: crate::runtime::MultiplexedConnection::run_with_halves
+//! [`MultiplexedConnection`]: crate::connection::MultiplexedConnection
+//! [`MultiplexedConnection::run_with_halves`]: crate::connection::MultiplexedConnection::run_with_halves
 //! [`MockTransport::coordinator()`]: MockTransport::coordinator
 
 #![allow(dead_code)]

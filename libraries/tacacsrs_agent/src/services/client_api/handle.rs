@@ -3,8 +3,8 @@
 use tacacsrs_protocol::operations::{
     AccountingOperation, AccountingOperationResponse, AuthorizationOperation,
     AuthorizationOperationResponse, PapAuthenticationOperation, PapAuthenticationOperationResponse,
-    ServiceError,
 };
+use tacacsrs_protocol::failure::ServiceError;
 
 use super::upstream_bridge::UpstreamBridge;
 use crate::upstream::NetworkUpstreamConnector;

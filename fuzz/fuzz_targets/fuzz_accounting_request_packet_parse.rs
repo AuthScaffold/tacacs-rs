@@ -3,7 +3,7 @@
 use libfuzzer_sys::fuzz_target;
 use tacacsrs_protocol::accounting::request::AccountingRequest;
 use tacacsrs_protocol::packet::Packet;
-use tacacsrs_protocol::traits::TacacsBodyTrait;
+use tacacsrs_protocol::body::TacacsBodyTrait;
 
 fuzz_target!(|data: &[u8]| {
     // Exercise the full packet-level parsing path for the header and body.

@@ -3,7 +3,7 @@ use crate::enumerations::{
     TacacsAuthenticationType,
 };
 use crate::packet::{Packet, PacketTrait};
-use crate::traits::TacacsBodyTrait;
+use crate::body::TacacsBodyTrait;
 use std::io::{Cursor, Read};
 use byteorder::ReadBytesExt;
 use anyhow::{Context, Result};

@@ -2,6 +2,7 @@
 name = "tacacsrs-agent-ipc-emulatord"
 version = "0.0.0-dev"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Standalone OPA/Rego-based emulator for TACACS+ agent IPC"

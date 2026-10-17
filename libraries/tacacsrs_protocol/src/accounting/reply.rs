@@ -2,7 +2,7 @@ use std::io::Cursor;
 use byteorder::{BigEndian, ReadBytesExt};
 use num_enum::TryFromPrimitive;
 use crate::{
-    constants::TACACS_ACCOUNTING_REPLY_MIN_LENGTH, helpers::read_string, traits::TacacsBodyTrait,
+    constants::TACACS_ACCOUNTING_REPLY_MIN_LENGTH, wire_io::read_string, body::TacacsBodyTrait,
 };
 use crate::packet::{Packet, PacketTrait};
 use anyhow::Context;

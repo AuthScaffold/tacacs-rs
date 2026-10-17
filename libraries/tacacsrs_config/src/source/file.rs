@@ -1,3 +1,12 @@
+//! File-backed configuration source for CLI and YANG-file inputs.
+//!
+//! [`CliFileDatastore`] implements the [`ConfigDatastore`]
+//! contract over parsed CLI inputs. It rebuilds the canonical
+//! [`TacacsPlus`] snapshot from the normalized input model in
+//! [`crate::input`], watches the referenced files, and republishes validated
+//! snapshots. Raw CLI and credential-file normalization stays in
+//! [`crate::input`]; this module owns only the observation backend.
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -10,18 +19,17 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
+use crate::input::{tacacs_plus_from_cli_input, CliDatastoreInput};
 use crate::TacacsPlus;
-use crate::source::{
+#[cfg(windows)]
+use super::directory_watch::DirectoryWatch;
+use super::directory_watch::acknowledge_observation_active;
+#[cfg(not(windows))]
+use super::directory_watch::{wait_for_native_change, wait_for_observation_failure};
+use super::{
     ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigDatastore, ConfigDelta,
     ConfigObservation, DatastoreRuntimePolicy, InitialLoadPolicy,
 };
-#[cfg(windows)]
-use crate::source::directory_watch::DirectoryWatch;
-use crate::source::directory_watch::acknowledge_observation_active;
-#[cfg(not(windows))]
-use crate::source::directory_watch::{wait_for_native_change, wait_for_observation_failure};
-use super::builder::tacacs_plus_from_cli_input;
-use super::model::CliDatastoreInput;
 
 /// File-backed datastore for CLI-supplied TACACS+ configuration inputs.
 ///
@@ -363,7 +371,7 @@ mod tests {
     use tokio::time::{timeout, Duration};
 
     use crate::source::ConfigDatastore;
-    use super::super::model::{
+    use crate::input::{
         CliConfigSource, CliDatastoreInput, CliSecurity, CliSecurityInputs, CliServerInput,
     };
     use super::*;

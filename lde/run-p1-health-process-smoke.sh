@@ -28,7 +28,7 @@ cleanup() {
 trap cleanup EXIT
 
 export CARGO_INCREMENTAL=0
-cargo build -p tacacsrs-agentd --bins >/dev/null
+cargo build -p tacacsrs-agentd -p tacacsrs-agent-health --bins >/dev/null
 agent="target/debug/tacacsrs-agentd"
 probe="target/debug/tacacsrs-agent-health"
 

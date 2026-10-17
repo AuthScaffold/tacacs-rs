@@ -2,7 +2,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use tacacsrs_protocol::accounting::reply::AccountingReply;
-use tacacsrs_protocol::traits::TacacsBodyTrait;
+use tacacsrs_protocol::body::TacacsBodyTrait;
 
 fuzz_target!(|data: &[u8]| {
     // AccountingReply::from_bytes must never panic on arbitrary input.

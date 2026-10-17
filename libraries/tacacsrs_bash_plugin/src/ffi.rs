@@ -8,6 +8,19 @@ use crate::config::{
 use crate::logging::debug_log;
 use crate::session::{get_user_name, is_remote_user, remote_address, tty_name};
 
+/// Bash plugin ABI result: success, or allow the command to run.
+///
+/// `plugin_init` and `plugin_uninit` return this value on success, and
+/// `on_shell_execve` returns it when Bash may run the command.
+const PLUGIN_RESULT_OK: c_int = 0;
+
+/// Bash plugin ABI result: TACACS+ denied the command, so Bash must not run it.
+const PLUGIN_RESULT_DENY: c_int = 1;
+
+/// Bash plugin ABI result: TACACS+ is unavailable and local authorization is
+/// disabled, so the plugin blocks the command and Bash must not run it.
+const PLUGIN_RESULT_UNAVAILABLE: c_int = -2;
+
 #[no_mangle]
 /// Initializes the Bash execve plugin.
 ///
@@ -17,7 +30,7 @@ use crate::session::{get_user_name, is_remote_user, remote_address, tty_name};
 pub unsafe extern "C" fn plugin_init() -> c_int {
     let flags = reload_config(true);
     debug_log(flags, &format!("tacacsrs bash plugin initialized; flags={}", format_flags(flags)));
-    0
+    PLUGIN_RESULT_OK
 }
 
 #[no_mangle]
@@ -29,7 +42,7 @@ pub unsafe extern "C" fn plugin_init() -> c_int {
 pub unsafe extern "C" fn plugin_uninit() -> c_int {
     let flags = current_flags();
     debug_log(flags, "tacacsrs bash plugin uninitialized");
-    0
+    PLUGIN_RESULT_OK
 }
 
 #[no_mangle]
@@ -50,19 +63,19 @@ pub unsafe extern "C" fn on_shell_execve(
 ) -> c_int {
     if shell_level > 2 {
         debug_log(current_flags(), &format!("not authorizing nested shell level {shell_level}"));
-        return 0;
+        return PLUGIN_RESULT_OK;
     }
 
     let flags = reload_config(false);
     if flags & TACACS_AUTHORIZATION_FLAG == 0 {
         debug_log(flags, "TACACS+ command authorization is disabled");
-        return 0;
+        return PLUGIN_RESULT_OK;
     }
 
     let user_name = get_user_name(user);
     if !is_remote_user(&user_name) {
         debug_log(flags, &format!("user {user_name} is local; allowing the command"));
-        return 0;
+        return PLUGIN_RESULT_OK;
     }
 
     let command = c_string(cmd);
@@ -82,7 +95,7 @@ pub unsafe extern "C" fn on_shell_execve(
     match authorize_command(flags, &user_name, &port, &remote_address, &command, &args) {
         AuthorizationDecision::Allow => {
             debug_log(flags, &format!("TACACS+ authorization allowed command {command}"));
-            0
+            PLUGIN_RESULT_OK
         }
         AuthorizationDecision::Unavailable => {
             if flags & LOCAL_AUTHORIZATION_FLAG == 0 {
@@ -95,17 +108,17 @@ pub unsafe extern "C" fn on_shell_execve(
                     "TACACS+ did not authorize {command} with the given arguments. The command will \
                      not run."
                 );
-                return -2;
+                return PLUGIN_RESULT_UNAVAILABLE;
             }
             debug_log(flags, "TACACS+ is unavailable; using local authorization");
-            0
+            PLUGIN_RESULT_OK
         }
         AuthorizationDecision::Deny => {
             debug_log(flags, &format!("TACACS+ authorization denied command {command}"));
             println!(
                 "TACACS+ denied {command} with the given arguments. The command will not run."
             );
-            1
+            PLUGIN_RESULT_DENY
         }
     }
 }

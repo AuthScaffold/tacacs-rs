@@ -14,8 +14,8 @@ use tonic::{Request, Response, Status};
 
 use super::Handler;
 use super::request_tracker::RequestTracker;
-use crate::ipc;
-use crate::ipc::tacacs_agent_server::TacacsAgent;
+use crate::proto;
+use crate::proto::tacacs_agent_server::TacacsAgent;
 
 /// Delegates each gRPC request to the operation [`Handler`].
 pub(super) struct GrpcService<H: Handler> {
@@ -46,8 +46,8 @@ impl<H: Handler> Clone for GrpcService<H> {
 impl<H: Handler> TacacsAgent for GrpcService<H> {
     async fn authenticate_pap(
         &self,
-        request: Request<ipc::PapAuthenticationRequest>,
-    ) -> Result<Response<ipc::PapAuthenticationReply>, Status> {
+        request: Request<proto::PapAuthenticationRequest>,
+    ) -> Result<Response<proto::PapAuthenticationReply>, Status> {
         let request =
             PapAuthenticationOperation::try_from(request.into_inner()).map_err(|error| {
                 log::warn!("Invalid IPC PAP authentication request: {error}");
@@ -57,13 +57,13 @@ impl<H: Handler> TacacsAgent for GrpcService<H> {
         log::debug!("Received an IPC PAP authentication request for user={}", request.user);
 
         let result = match self.handler.authenticate_pap(request).await {
-            Ok(response) => ipc::PapAuthenticationReply {
-                result: Some(ipc::pap_authentication_reply::Result::Response(response.into())),
+            Ok(response) => proto::PapAuthenticationReply {
+                result: Some(proto::pap_authentication_reply::Result::Response(response.into())),
             },
             Err(error) => {
                 log::warn!("IPC PAP authentication request failed: {error:?}");
-                ipc::PapAuthenticationReply {
-                    result: Some(ipc::pap_authentication_reply::Result::Error(error.into())),
+                proto::PapAuthenticationReply {
+                    result: Some(proto::pap_authentication_reply::Result::Error(error.into())),
                 }
             }
         };
@@ -78,8 +78,8 @@ impl<H: Handler> TacacsAgent for GrpcService<H> {
     /// `ServiceError` reply variant.
     async fn accounting(
         &self,
-        request: Request<ipc::AccountingRequest>,
-    ) -> Result<Response<ipc::AccountingReply>, Status> {
+        request: Request<proto::AccountingRequest>,
+    ) -> Result<Response<proto::AccountingReply>, Status> {
         let request = AccountingOperation::try_from(request.into_inner()).map_err(|error| {
             log::warn!("Invalid IPC accounting request: {error}");
             Status::invalid_argument(error.to_string())
@@ -97,14 +97,14 @@ impl<H: Handler> TacacsAgent for GrpcService<H> {
                     response.server,
                     response.status,
                 );
-                ipc::AccountingReply {
-                    result: Some(ipc::accounting_reply::Result::Response(response.into())),
+                proto::AccountingReply {
+                    result: Some(proto::accounting_reply::Result::Response(response.into())),
                 }
             }
             Err(error) => {
                 log::warn!("IPC accounting request failed: {error:?}");
-                ipc::AccountingReply {
-                    result: Some(ipc::accounting_reply::Result::Error(error.into())),
+                proto::AccountingReply {
+                    result: Some(proto::accounting_reply::Result::Error(error.into())),
                 }
             }
         };
@@ -117,8 +117,8 @@ impl<H: Handler> TacacsAgent for GrpcService<H> {
     /// puts the result in the `AuthorizationReply` oneof envelope.
     async fn authorization(
         &self,
-        request: Request<ipc::AuthorizationRequest>,
-    ) -> Result<Response<ipc::AuthorizationReply>, Status> {
+        request: Request<proto::AuthorizationRequest>,
+    ) -> Result<Response<proto::AuthorizationReply>, Status> {
         let request = AuthorizationOperation::try_from(request.into_inner()).map_err(|error| {
             log::warn!("Invalid IPC authorization request: {error}");
             Status::invalid_argument(error.to_string())
@@ -138,14 +138,14 @@ impl<H: Handler> TacacsAgent for GrpcService<H> {
                     response.server,
                     response.status,
                 );
-                ipc::AuthorizationReply {
-                    result: Some(ipc::authorization_reply::Result::Response(response.into())),
+                proto::AuthorizationReply {
+                    result: Some(proto::authorization_reply::Result::Response(response.into())),
                 }
             }
             Err(error) => {
                 log::warn!("IPC authorization request failed: {error:?}");
-                ipc::AuthorizationReply {
-                    result: Some(ipc::authorization_reply::Result::Error(error.into())),
+                proto::AuthorizationReply {
+                    result: Some(proto::authorization_reply::Result::Error(error.into())),
                 }
             }
         };
@@ -157,17 +157,19 @@ impl<H: Handler> TacacsAgent for GrpcService<H> {
 mod tests {
     use std::sync::Arc;
 
-    use tacacsrs_protocol::failure::{DeliveryState, FailureCategory, FailureFacts, FailurePhase};
+    use tacacsrs_protocol::failure::{
+        DeliveryState, FailureCategory, FailureFacts, FailurePhase, ServiceError,
+    };
     use tacacsrs_protocol::operations::{
         AccountingOperation, AccountingOperationResponse, AuthorizationAuthenticationContext,
         AuthorizationOperation, AuthorizationOperationResponse, PapAuthenticationOperation,
-        PapAuthenticationOperationResponse, ServiceError,
+        PapAuthenticationOperationResponse,
     };
     use tonic::Request;
 
     use super::{GrpcService, Handler};
-    use crate::ipc;
-    use crate::ipc::tacacs_agent_server::TacacsAgent;
+    use crate::proto;
+    use crate::proto::tacacs_agent_server::TacacsAgent;
     use crate::server::request_tracker::RequestTracker;
 
     /// A handler that returns one conservative authorization failure.
@@ -228,11 +230,11 @@ mod tests {
             .unwrap()
             .into_inner();
 
-        let Some(ipc::authorization_reply::Result::Error(error)) = reply.result else {
+        let Some(proto::authorization_reply::Result::Error(error)) = reply.result else {
             panic!("the ServiceError oneof must contain the authorization error");
         };
         assert_eq!(error.server, "primary:49");
-        assert_eq!(error.retry_advice, ipc::RetryAdvice::Never as i32);
+        assert_eq!(error.retry_advice, proto::RetryAdvice::Never as i32);
         assert!(error.message.contains("Simulated failure"));
     }
 }

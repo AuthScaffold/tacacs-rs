@@ -231,7 +231,7 @@ impl PapAuthenticationOperationResponse {
 #[cfg(test)]
 mod tests {
     use crate::exchange::FixedExchange;
-    use crate::traits::TacacsBodyTrait;
+    use crate::body::TacacsBodyTrait;
 
     use super::*;
 

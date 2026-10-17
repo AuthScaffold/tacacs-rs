@@ -92,6 +92,22 @@ permissions:
   packages: read
 
 jobs:
+  msrv:
+    name: Minimum Rust 1.88
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Install the minimum Rust toolchain
+        uses: ./.github/steps/setup-rust
+        with:
+          toolchain: '1.88.0'
+          cache-key: msrv
+          install-libseccomp-dev: 'true'
+          install-openssl: 'true'
+      - name: Check all workspace targets on the minimum toolchain
+        shell: bash
+        run: cargo check --workspace --all-targets --all-features --locked
+
   cache-preflight:
     name: Cache Preflight (${{ matrix.config.name }})
     runs-on: ${{ matrix.config.os }}
@@ -213,14 +229,14 @@ jobs:
           target: ${{ matrix.config.target }}
           feature-args: ${{ matrix.config.feature_args }}
 
-      - name: Run Clippy nursery lints
+      - name: Run advisory Clippy style lints
         if: inputs.include-clippy-nursery
         uses: ./.github/steps/run-clippy
         with:
           package-args: ${{ matrix.config.package_args }}
           target: ${{ matrix.config.target }}
           feature-args: ${{ matrix.config.feature_args }}
-          lint-args: -W clippy::nursery
+          lint-args: -W clippy::pedantic -W clippy::nursery
           advisory: 'true'
 
       - name: Build documentation
@@ -456,6 +472,7 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     needs:
+      - msrv
       - cache-preflight
       - pre-tests
       - testing

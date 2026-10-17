@@ -6,16 +6,24 @@ use crate::c_strings::c_string;
 
 const REMOTE_USER_GECOS_PREFIX: &str = "remote_user";
 
-pub(crate) fn get_user_name(user: *mut c_char) -> String {
-    let user = c_string(user);
+/// Resolves a host-supplied user name, falling back to the process user.
+///
+/// # Safety
+/// A non-null `user` must reference a readable NUL-terminated string for this call.
+pub(crate) unsafe fn get_user_name(user: *mut c_char) -> String {
+    // SAFETY: The caller supplies the optional live C string described above.
+    let user = unsafe { c_string(user) };
     if !user.is_empty() {
         return user;
     }
 
     // SAFETY: `getuid` and `geteuid` take no pointers and have no caller
     // safety requirements.
-    user_name_from_uid(unsafe { libc::getuid() })
-        .or_else(|| user_name_from_uid(unsafe { libc::geteuid() }))
+    let uid = unsafe { libc::getuid() };
+    // SAFETY: `geteuid` takes no pointers or ownership.
+    let effective_uid = unsafe { libc::geteuid() };
+    user_name_from_uid(uid)
+        .or_else(|| user_name_from_uid(effective_uid))
         .unwrap_or_else(|| "UNKNOWN".to_owned())
 }
 
@@ -42,7 +50,8 @@ pub(crate) fn tty_name() -> String {
             // SAFETY: `buffer` is writable for `buffer.len()` bytes. On
             // success, `ttyname_r` writes a NUL-terminated string.
             if unsafe { libc::ttyname_r(fd, buffer.as_mut_ptr(), buffer.len()) } == 0 {
-                return c_string(buffer.as_ptr());
+                // SAFETY: A successful ttyname_r call produced a live NUL-terminated string.
+                return unsafe { c_string(buffer.as_ptr()) };
             }
         }
     }
@@ -72,7 +81,8 @@ fn user_name_from_uid(uid: libc::uid_t) -> Option<String> {
     if name.is_null() {
         None
     } else {
-        Some(c_string(name))
+        // SAFETY: The non-null name belongs to the live libc password record.
+        Some(unsafe { c_string(name) })
     }
 }
 

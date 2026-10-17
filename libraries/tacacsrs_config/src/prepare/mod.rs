@@ -1,8 +1,16 @@
-//! Derives runtime inputs from canonical YANG configuration.
+//! Derives native runtime endpoints from canonical YANG configuration.
 //!
-//! Credential planning expands no references and performs no provider I/O.
+//! This module is the final stage of the configuration flow:
+//!
+//! ```text
+//! canonical  ->  enumerate  ->  resolve  ->  materialize  ->  prepare
+//! ```
+//!
+//! [`resolution_plan`] expands no references and performs no provider I/O.
 //! Materialization resolves a closed plan into staged generated values, then
 //! validates the complete candidate set without changing the source snapshot.
+//! [`prepare_endpoint`] projects a materialized server into a native networking
+//! endpoint.
 
 mod formats;
 mod endpoint;

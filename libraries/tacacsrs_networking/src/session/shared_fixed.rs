@@ -10,7 +10,7 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use super::SessionManager;
 
 pub(crate) struct SharedFixedSession {
-    pub(crate) connection_owner: Option<Arc<crate::runtime::MultiplexedConnection>>,
+    pub(crate) connection_owner: Option<Arc<crate::connection::MultiplexedConnection>>,
     id: u32,
     outbound: mpsc::Sender<Packet>,
     response: Mutex<Option<oneshot::Receiver<anyhow::Result<Packet>>>>,

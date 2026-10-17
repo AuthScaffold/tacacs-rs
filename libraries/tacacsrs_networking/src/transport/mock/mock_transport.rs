@@ -26,7 +26,7 @@ use super::mock_write_half::MockWriteHalf;
 /// Create one with [`MockTransport::new()`]. Get a
 /// [`MockTransportCoordinator`] through [`MockTransport::coordinator()`]. Then
 /// pass the transport to
-/// [`MultiplexedConnection`](crate::runtime::MultiplexedConnection).
+/// [`MultiplexedConnection`](crate::connection::MultiplexedConnection).
 ///
 /// [`split`](Transport::split) consumes `self`, so it can run only once.
 #[derive(Debug)]

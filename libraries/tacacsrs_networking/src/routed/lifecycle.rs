@@ -6,7 +6,7 @@ use anyhow::{Context, ensure};
 use tokio::sync::oneshot;
 
 use crate::{PreparedEndpoint, RequestDeadline};
-use crate::runtime::task::DriverTask;
+use crate::connection::task::DriverTask;
 
 use super::{EndpointConnector, OperationKind};
 
@@ -557,7 +557,7 @@ mod tests {
         use tacacsrs_protocol::accounting::reply::AccountingReply;
         use tacacsrs_protocol::enumerations::{TacacsAccountingStatus, TacacsFlags};
         use tacacsrs_protocol::packet::{Packet, PacketTrait};
-        use tacacsrs_protocol::traits::TacacsBodyTrait;
+        use tacacsrs_protocol::body::TacacsBodyTrait;
         use crate::{ConnectPreflight, PacketReader, PacketReadResult};
 
         tokio::time::timeout(Duration::from_secs(2), async {

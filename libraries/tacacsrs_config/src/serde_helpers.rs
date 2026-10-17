@@ -27,14 +27,14 @@ pub(crate) mod base64_binary {
 
         use super::BASE64;
 
-        pub fn serialize<S>(value: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+        pub(crate) fn serialize<S>(value: &[u8], serializer: S) -> Result<S::Ok, S::Error>
         where
             S: serde::Serializer,
         {
             serializer.serialize_str(&BASE64.encode(value))
         }
 
-        pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+        pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
         where
             D: serde::Deserializer<'de>,
         {
@@ -49,7 +49,10 @@ pub(crate) mod base64_binary {
 
         use super::BASE64;
 
-        pub fn serialize<S>(value: &Option<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
+        pub(crate) fn serialize<S>(
+            value: &Option<Vec<u8>>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error>
         where
             S: serde::Serializer,
         {
@@ -59,7 +62,7 @@ pub(crate) mod base64_binary {
             }
         }
 
-        pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Vec<u8>>, D::Error>
+        pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Option<Vec<u8>>, D::Error>
         where
             D: serde::Deserializer<'de>,
         {
@@ -74,7 +77,7 @@ pub(crate) mod base64_binary {
         use serde::{Deserialize, Serialize};
         use super::BASE64;
 
-        pub fn serialize<S: serde::Serializer>(
+        pub(crate) fn serialize<S: serde::Serializer>(
             value: &Option<Vec<Vec<u8>>>,
             serializer: S,
         ) -> Result<S::Ok, S::Error> {
@@ -89,7 +92,7 @@ pub(crate) mod base64_binary {
                 .serialize(serializer)
         }
 
-        pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(
             deserializer: D,
         ) -> Result<Option<Vec<Vec<u8>>>, D::Error> {
             Option::<Vec<String>>::deserialize(deserializer)?
@@ -111,7 +114,7 @@ pub(crate) mod base64_binary {
 
         use super::BASE64;
 
-        pub fn serialize<S>(value: &[Vec<u8>], serializer: S) -> Result<S::Ok, S::Error>
+        pub(crate) fn serialize<S>(value: &[Vec<u8>], serializer: S) -> Result<S::Ok, S::Error>
         where
             S: serde::Serializer,
         {
@@ -122,7 +125,7 @@ pub(crate) mod base64_binary {
             encoded.serialize(serializer)
         }
 
-        pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<Vec<u8>>, D::Error>
+        pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Vec<Vec<u8>>, D::Error>
         where
             D: serde::Deserializer<'de>,
         {

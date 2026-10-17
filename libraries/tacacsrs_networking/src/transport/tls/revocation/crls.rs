@@ -130,9 +130,9 @@ impl CrlEvidence {
         store.set_purpose(purpose)?;
         store.add_cert(anchor.to_owned())?;
         for crl in &self.lists {
-            // SAFETY: Both native objects remain alive. OpenSSL takes its own
-            // reference to each CRL; this call transfers no Rust ownership.
             ensure!(
+                // SAFETY: Both native objects remain alive. OpenSSL takes its own
+                // reference to each CRL; this call transfers no Rust ownership.
                 unsafe { X509_STORE_add_crl(store.as_ptr(), crl.as_ptr()) } == 1,
                 "OpenSSL rejected CRL evidence"
             );

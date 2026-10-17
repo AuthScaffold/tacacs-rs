@@ -54,14 +54,14 @@ cargo +nightly fmt --all
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # Docs (PowerShell: set $env:RUSTDOCFLAGS="-D warnings" first)
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --document-private-items
 
 # Build and test
 cargo build --workspace
 cargo test --workspace --all-features
 
 # Targeted loops
-cargo test -p tacacsrs-messages
+cargo test -p tacacsrs-protocol
 cargo test test_name
 cargo clippy -p tacacsrs-networking --all-targets --all-features -- -D warnings
 ```
@@ -105,55 +105,50 @@ Current workspace members are listed in `Cargo.toml`. In the sketch below,
 arrows point from a crate to the workspace crates it depends on:
 
 ```text
-tacacsrs-flow-abstractions -> tacacsrs-messages
-tacacsrs-networking -> tacacsrs-config, tacacsrs-flow-abstractions, tacacsrs-messages
-tacacsrs-flows -> tacacsrs-flow-abstractions, tacacsrs-messages, tacacsrs-networking
-
-tacacsrs-datastore -> tacacsrs-config
-tacacsrs-sonic -> tacacsrs-config, tacacsrs-datastore
-
-tacacsrs-agent -> tacacsrs-ipc, tacacsrs-config, tacacsrs-flows,
-                  tacacsrs-messages, tacacsrs-networking
+tacacsrs-protocol -> tacacsrs-secrets
+tacacsrs-networking -> tacacsrs-protocol, tacacsrs-secrets
+tacacsrs-credential-resolution -> tacacsrs-secrets
+tacacsrs-config -> tacacsrs-networking, tacacsrs-protocol,
+                   tacacsrs-credential-resolution, tacacsrs-secrets
+tacacsrs-sonic -> tacacsrs-config, tacacsrs-credential-resolution, tacacsrs-secrets
+tacacsrs-credential-http -> tacacsrs-credential-resolution, tacacsrs-secrets
+tacacsrs-ipc -> tacacsrs-protocol, tacacsrs-secrets, tacacsrs-unix-socket
+tacacsrs-agent -> tacacsrs-config, tacacsrs-protocol, tacacsrs-networking,
+                  tacacsrs-credential-resolution, tacacsrs-secrets, tacacsrs-unix-socket
 tacacsrs-agent-ipc-emulator -> tacacsrs-ipc
-tacacsrs-libtac -> tacacsrs-ipc
 tacacsrs-bash-plugin -> tacacsrs-ipc
 
-tacon -> tacacsrs-ipc, tacacsrs-config, tacacsrs-flows,
-         tacacsrs-messages, tacacsrs-networking
+tacon -> tacacsrs-ipc (Linux only), tacacsrs-config, tacacsrs-protocol, tacacsrs-networking
 tacacsrs-agentd -> tacacsrs-agent, tacacsrs-ipc, tacacsrs-config,
-                   tacacsrs-datastore, tacacsrs-networking, tacacsrs-sonic
+                   tacacsrs-credential-http, tacacsrs-sonic
+tacacsrs-agent-health -> tacacsrs-ipc
 tacacsrs-agent-ipc-emulatord -> tacacsrs-ipc, tacacsrs-agent-ipc-emulator
 session-wrapper -> tacacsrs-ipc
 ```
 
 ### Libraries
 
-- `tacacsrs-messages` contains protocol types: `Header`, `Packet`, accounting
-  and authorization request/reply bodies, enumerations, `TacacsBodyTrait`, and
-  TACACS+ MD5 XOR obfuscation. Obfuscation is not encryption.
-- `tacacsrs-flow-abstractions` contains sans-I/O flow helpers and traits such as
-  packet construction/parsing and `ClientSessionFlowIoTrait`.
-- `tacacsrs-flows` contains high-level protocol flows such as
-  `AccountingFlow`, implemented over session I/O abstractions.
-- `tacacsrs-networking` owns transports, packet reader/writer plumbing,
-  `TacacsConnection`, `DedicatedConnection`, session multiplexing, single-connect
-  tracking, and configuration-driven connection establishment.
-- `tacacsrs-ipc` owns the protobuf/gRPC IPC contract, `IpcEndpoint`,
-  domain request/response types, and `ServiceClient`. `ServiceClient` holds a
-  reusable tonic channel. Do not describe it as stateless.
-- `tacacsrs-agent` coordinates central service behavior: upstream connection
-  caching, ordered failover, preferred-server probes, per-server reconnect
-  serialization, and IPC service handling.
+- `tacacsrs-protocol` owns wire bodies, logical operations, failure facts, exchange
+  descriptions, and unchanged-command interpretation. Body codecs live in `body`.
+  TACACS+ MD5 XOR obfuscation is not encryption.
+- `tacacsrs-networking` owns prepared endpoints, transports, client selection,
+  connection drivers, sessions, single-connect promotion, routed catalogs, and retry.
+- `tacacsrs-ipc` owns generated `proto` bindings, conversion, the domain handler,
+  bounded Unix server, health, and `ServiceClient`. The client retains a reusable tonic channel.
+- `tacacsrs-unix-socket` owns trusted-directory binding, advisory locks, and owned-path cleanup.
+- `tacacsrs-agent` owns source supervision, revision-fenced publication, health,
+  domain operation ingress, raw proxying, and coordinated shutdown. It has no production IPC dependency.
 - `tacacsrs-config` contains generated RFC 7951/YANG JSON model types,
   builders, validation options, server enumeration, and credential reference
   validation for `ietf-system-tacacs-plus`.
-- `tacacsrs-datastore` defines the `ConfigDatastore` abstraction, static
-  datastore, configuration change events, and change stream helpers.
+- Configuration's `source` module owns `ConfigDatastore`, observations, and static/file backends.
+  Its `input` module normalizes CLI inputs. Parsing functions are re-exported at the crate root.
+- `tacacsrs-credential-resolution` owns provider-neutral material and resolver contracts.
+- `tacacsrs-credential-http` implements explicitly authorized HTTP evidence retrieval.
 - `tacacsrs-sonic` maps SONiC ConfigDB `TACPLUS` / `TACPLUS_SERVER` data into
   the YANG model and implements SONiC-backed configuration loading and watching.
 - `tacacsrs-agent-ipc-emulator` provides OPA/Rego-driven local IPC emulation for
   integration and scenario testing.
-- `tacacsrs-libtac` exposes a libtac-compatible C ABI backed by agent IPC.
 - `tacacsrs-bash-plugin` exposes the SONiC Bash `execve` plugin surface and must
   keep FFI, runtime, configuration, logging, authorization, and session concerns
   separated.
@@ -161,7 +156,7 @@ session-wrapper -> tacacsrs-ipc
 ### Executables
 
 - `tacon` is the CLI client. It supports direct server mode and agent IPC mode,
-  accounting, batch execution, and stubs for authentication and authorization.
+  accounting, authorization, fixed PAP authentication, and batch execution.
   Its man page is generated from clap definitions in `executables/tacon/src/cli.rs`.
 - `tacacsrs-agentd` is the local central agent daemon. It can load static JSON or
   SONiC ConfigDB-backed configuration and proxies IPC operations to upstream
@@ -230,7 +225,7 @@ The `.github/steps/inject-versions` action hydrates the manifests and
   ergonomics without infecting stored types, consider `impl AsRef<str>`,
   `impl AsRef<Path>`, or `impl AsRef<[u8]>` for flexible function inputs.
 - Reuse existing abstractions: `Transport`, `BoxedTransport`,
-  `ClientSessionFlowIoTrait`, `AccountingFlow`, `ConfigDatastore`,
+  `FixedExchange`, `ClientConversation`, `ConfigDatastore`,
   `ServiceError`, `IpcEndpoint`, and the mock transport/controller patterns.
 - Prefer essential behavior on the owning type. Use traits for extension or
   abstraction seams, not to hide core functionality.
