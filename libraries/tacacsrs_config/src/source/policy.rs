@@ -1,7 +1,13 @@
 //! Owned observation of canonical runtime-policy resources.
 //!
 //! File sessions install observation before reading their baseline. The session
-//! owns the watcher; dropping it stops observation without a detached task.
+//! owns the watcher and pending read. Observation failure interrupts the read.
+//! Reads use Tokio's blocking pool. A started operating-system read can finish
+//! after session drop, but it cannot publish into a dropped session. Linux
+//! observation remains passive while idle. Windows checks the directory identity
+//! every 100 ms because a native watcher can stop silently. Directory removal,
+//! rename, or replacement fails observation. Dropping the session stops
+//! observation without a detached monitor.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,9 +18,15 @@ use async_trait::async_trait;
 use notify::event::ModifyKind;
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::watch;
+use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use crate::tacacsrs::RuntimePolicy;
+#[cfg(windows)]
+use crate::source::directory_watch::DirectoryWatch;
+use crate::source::directory_watch::acknowledge_observation_active;
+#[cfg(not(windows))]
+use crate::source::directory_watch::{wait_for_native_change, wait_for_observation_failure};
 
 /// A complete source candidate or a rejected candidate that leaves applied state unchanged.
 #[derive(Debug, Clone)]
@@ -93,6 +105,8 @@ impl PolicyFile {
         );
         let target = path.clone();
         let directory = parent.clone();
+        #[cfg(windows)]
+        let directory_watch = DirectoryWatch::new([parent.clone()])?;
         let (events, invalidations) = watch::channel(None::<Arc<notify::Error>>);
         let mut watcher = RecommendedWatcher::new(
             move |event: notify::Result<notify::Event>| {
@@ -131,12 +145,18 @@ impl PolicyFile {
         watcher
             .watch(&parent, RecursiveMode::NonRecursive)
             .with_context(|| format!("watch runtime policy directory {}", parent.display()))?;
+        #[cfg(windows)]
+        directory_watch.ensure_current()?;
         Ok(FilePolicyObservation {
             _watcher: watcher,
+            #[cfg(windows)]
+            directory_watch,
             source: Self { path },
+            failures: invalidations.clone(),
             invalidations,
             pending: true,
             debounce_until: None,
+            read: None,
         })
     }
 }
@@ -144,34 +164,129 @@ impl PolicyFile {
 /// Native file watcher and its cancellation-safe pending observation state.
 pub struct FilePolicyObservation {
     _watcher: RecommendedWatcher,
+    #[cfg(windows)]
+    directory_watch: DirectoryWatch,
     source: PolicyFile,
+    failures: watch::Receiver<Option<Arc<notify::Error>>>,
     invalidations: watch::Receiver<Option<Arc<notify::Error>>>,
     pending: bool,
     debounce_until: Option<Instant>,
+    read: Option<JoinHandle<anyhow::Result<RuntimePolicy>>>,
 }
 
 /// Coalesces file replacement bursts without creating a queue of candidate documents.
 const POLICY_RELOAD_DEBOUNCE: Duration = Duration::from_millis(100);
 
+impl Drop for FilePolicyObservation {
+    fn drop(&mut self) {
+        if let Some(read) = &self.read {
+            read.abort();
+        }
+    }
+}
+
+impl FilePolicyObservation {
+    async fn wait_for_debounce(&mut self, deadline: Instant) -> anyhow::Result<()> {
+        #[cfg(windows)]
+        tokio::select! {
+            biased;
+            error = self.directory_watch.wait_for_observation_failure(
+                &mut self.failures,
+                "Runtime policy observation failed",
+                "runtime policy watcher stopped",
+            ) => return Err(error),
+            () = tokio::time::sleep_until(deadline) => {}
+        }
+        #[cfg(not(windows))]
+        tokio::select! {
+            biased;
+            error = wait_for_observation_failure(
+                &mut self.failures,
+                "Runtime policy observation failed",
+                "runtime policy watcher stopped",
+            ) => return Err(error),
+            () = tokio::time::sleep_until(deadline) => {}
+        }
+        Ok(())
+    }
+
+    fn start_read(&mut self) {
+        let source = self.source.clone();
+        self.read = Some(tokio::task::spawn_blocking(move || {
+            let bytes = std::fs::read(source.path())
+                .with_context(|| format!("read runtime policy file {}", source.path().display()))?;
+            crate::policy::parse_runtime_policy(&bytes)
+                .with_context(|| format!("parse runtime policy file {}", source.path().display()))
+        }));
+    }
+
+    async fn read_candidate(&mut self) -> anyhow::Result<anyhow::Result<RuntimePolicy>> {
+        let read = self
+            .read
+            .as_mut()
+            .context("runtime policy read is missing")?;
+        #[cfg(windows)]
+        let candidate = tokio::select! {
+            biased;
+            error = self.directory_watch.wait_for_observation_failure(
+                &mut self.failures,
+                "Runtime policy observation failed",
+                "runtime policy watcher stopped",
+            ) => return Err(error),
+            candidate = read => candidate,
+        };
+        #[cfg(not(windows))]
+        let candidate = tokio::select! {
+            biased;
+            error = wait_for_observation_failure(
+                &mut self.failures,
+                "Runtime policy observation failed",
+                "runtime policy watcher stopped",
+            ) => return Err(error),
+            candidate = read => candidate,
+        };
+        acknowledge_observation_active(
+            &mut self.failures,
+            "Runtime policy observation failed",
+            "runtime policy watcher stopped",
+        )?;
+        #[cfg(windows)]
+        self.directory_watch
+            .ensure_current()
+            .context("Runtime policy observation failed")?;
+        self.read = None;
+        candidate.context("runtime policy reader stopped")
+    }
+}
+
 #[async_trait]
 impl PolicyObservation for FilePolicyObservation {
     async fn next(&mut self) -> anyhow::Result<Option<PolicyChange>> {
         if !self.pending {
-            self.invalidations
-                .changed()
-                .await
-                .context("runtime policy watcher stopped")?;
+            #[cfg(windows)]
+            self.directory_watch
+                .wait_for_change(&mut self.invalidations, "runtime policy watcher stopped")
+                .await?;
+            #[cfg(not(windows))]
+            wait_for_native_change(&mut self.invalidations, "runtime policy watcher stopped")
+                .await?;
             self.pending = true;
             self.debounce_until = Some(Instant::now() + POLICY_RELOAD_DEBOUNCE);
         }
-        if let Some(deadline) = self.debounce_until {
-            tokio::time::sleep_until(deadline).await;
+        if self.read.is_none() {
+            if let Some(deadline) = self.debounce_until {
+                self.wait_for_debounce(deadline).await?;
+            }
+            acknowledge_observation_active(
+                &mut self.invalidations,
+                "Runtime policy observation failed",
+                "runtime policy watcher stopped",
+            )?;
+            #[cfg(windows)]
+            self.directory_watch.ensure_current()?;
+            self.start_read();
         }
-        let observation_error = self.invalidations.borrow_and_update().clone();
-        if let Some(error) = observation_error {
-            anyhow::bail!("Runtime policy observation failed: {error}");
-        }
-        let candidate = self.source.load().await;
+        let candidate = self.read_candidate().await?;
         self.pending = false;
         self.debounce_until = None;
         Ok(Some(if let Ok(policy) = candidate {
@@ -185,19 +300,23 @@ impl PolicyObservation for FilePolicyObservation {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
 
+    static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+
     fn source() -> PolicyFile {
-        let unique = SystemTime::now()
+        let sequence = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+        let time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        PolicyFile::new(
-            std::env::temp_dir()
-                .join(format!("tacacs-policy-observation-{}-{unique}.json", std::process::id())),
-        )
+        PolicyFile::new(std::env::temp_dir().join(format!(
+            "tacacs-policy-observation-{}-{time}-{sequence}.json",
+            std::process::id()
+        )))
         .unwrap()
     }
 
@@ -247,6 +366,7 @@ mod tests {
         let mut observation = source.observe().await.unwrap();
         observation.next().await.unwrap();
         let (events, invalidations) = watch::channel(None);
+        observation.failures = invalidations.clone();
         observation.invalidations = invalidations;
         for _ in 0..10_000 {
             events.send_replace(None);
@@ -267,6 +387,87 @@ mod tests {
             panic!("cancelled observation must resume");
         };
         assert_eq!(current.accounting.as_ref().unwrap().request_timeout_seconds, 23);
+        drop(observation);
+        tokio::fs::remove_file(source.path()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_pending_read_is_retained_and_concurrent_invalidation_is_not_lost() {
+        let source = source();
+        tokio::fs::write(
+            source.path(),
+            br#"{"tacacsrs:runtime-policy":{"accounting":{"request-timeout-seconds":17}}}"#,
+        )
+        .await
+        .unwrap();
+        let mut observation = source.observe().await.unwrap();
+        let first = source.load().await.unwrap();
+        let (release, stalled) = tokio::sync::oneshot::channel();
+        observation.read = Some(tokio::spawn(async move {
+            stalled.await.unwrap();
+            Ok(first)
+        }));
+        let (events, invalidations) = watch::channel(None);
+        observation.failures = invalidations.clone();
+        observation.invalidations = invalidations;
+        {
+            let next = observation.next();
+            tokio::pin!(next);
+            assert!(futures_util::poll!(&mut next).is_pending());
+        }
+        tokio::fs::write(
+            source.path(),
+            br#"{"tacacsrs:runtime-policy":{"accounting":{"request-timeout-seconds":23}}}"#,
+        )
+        .await
+        .unwrap();
+        events.send_replace(None);
+        release.send(()).unwrap();
+
+        let Some(PolicyChange::Changed(first)) = observation.next().await.unwrap() else {
+            panic!("cancelled read must remain owned");
+        };
+        assert_eq!(first.accounting.as_ref().unwrap().request_timeout_seconds, 17);
+        assert!(observation.invalidations.has_changed().unwrap());
+        let Some(PolicyChange::Changed(latest)) =
+            tokio::time::timeout(Duration::from_secs(1), observation.next())
+                .await
+                .unwrap()
+                .unwrap()
+        else {
+            panic!("invalidation during the read must trigger reconciliation");
+        };
+        assert_eq!(latest.accounting.as_ref().unwrap().request_timeout_seconds, 23);
+        assert!(!observation.invalidations.has_changed().unwrap());
+        drop(observation);
+        tokio::fs::remove_file(source.path()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn observation_failure_wins_when_a_read_is_ready() {
+        let source = source();
+        tokio::fs::write(source.path(), br#"{"tacacsrs:runtime-policy":{}}"#)
+            .await
+            .unwrap();
+        let mut observation = source.observe().await.unwrap();
+        let candidate = source.load().await.unwrap();
+        observation.read = Some(tokio::spawn(async move { Ok(candidate) }));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !observation.read.as_ref().unwrap().is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("candidate read must be ready");
+        let (events, invalidations) =
+            watch::channel(Some(Arc::new(notify::Error::generic("test observation loss"))));
+        observation.failures = invalidations.clone();
+        observation.invalidations = invalidations;
+
+        let error = observation.next().await.unwrap_err();
+        assert!(error.to_string().contains("test observation loss"));
+
+        drop(events);
         drop(observation);
         tokio::fs::remove_file(source.path()).await.unwrap();
     }
@@ -295,6 +496,54 @@ mod tests {
 
     #[tokio::test]
     async fn loss_of_watched_directory_ends_observation() {
+        assert_loss_of_watched_directory_ends_observation(false).await;
+    }
+
+    #[tokio::test]
+    async fn rename_of_watched_directory_ends_observation() {
+        assert_loss_of_watched_directory_ends_observation(true).await;
+    }
+
+    #[tokio::test]
+    async fn watched_directory_rename_interrupts_a_stalled_read() {
+        let directory = source().path().with_extension("stalled-directory");
+        tokio::fs::create_dir(&directory).await.unwrap();
+        let source = PolicyFile::new(directory.join("policy.json")).unwrap();
+        tokio::fs::write(source.path(), br#"{"tacacsrs:runtime-policy":{}}"#)
+            .await
+            .unwrap();
+        let mut observation = source.observe().await.unwrap();
+        let candidate = source.load().await.unwrap();
+        let (release, stalled) = tokio::sync::oneshot::channel();
+        observation.read = Some(tokio::spawn(async move {
+            stalled.await.unwrap();
+            Ok(candidate)
+        }));
+        let renamed = directory.with_extension("stalled-renamed");
+        {
+            let next = observation.next();
+            tokio::pin!(next);
+            assert!(futures_util::poll!(&mut next).is_pending());
+            tokio::fs::rename(&directory, &renamed).await.unwrap();
+            tokio::fs::create_dir(&directory).await.unwrap();
+            tokio::fs::write(source.path(), br#"{"tacacsrs:runtime-policy":{}}"#)
+                .await
+                .unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(1), &mut next)
+                .await
+                .expect("directory loss must interrupt the stalled read");
+            assert!(result.is_err());
+        }
+
+        release.send(()).unwrap();
+        let read = observation.read.take().unwrap();
+        read.await.unwrap().unwrap();
+        drop(observation);
+        tokio::fs::remove_dir_all(renamed).await.unwrap();
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    async fn assert_loss_of_watched_directory_ends_observation(rename: bool) {
         let directory = source().path().with_extension("directory");
         tokio::fs::create_dir(&directory).await.unwrap();
         let source = PolicyFile::new(directory.join("policy.json")).unwrap();
@@ -303,12 +552,25 @@ mod tests {
             .unwrap();
         let mut observation = source.observe().await.unwrap();
         observation.next().await.unwrap();
-        tokio::fs::remove_file(source.path()).await.unwrap();
-        tokio::fs::remove_dir(directory).await.unwrap();
+        let renamed = directory.with_extension("renamed");
+        if rename {
+            tokio::fs::rename(&directory, &renamed).await.unwrap();
+            tokio::fs::create_dir(&directory).await.unwrap();
+            tokio::fs::write(source.path(), br#"{"tacacsrs:runtime-policy":{}}"#)
+                .await
+                .unwrap();
+        } else {
+            tokio::fs::remove_file(source.path()).await.unwrap();
+            tokio::fs::remove_dir(&directory).await.unwrap();
+        }
         tokio::time::timeout(Duration::from_secs(3), async {
             while observation.next().await.is_ok() {}
         })
         .await
         .expect("watch loss must not silently retain an unobserved policy");
+        if rename {
+            tokio::fs::remove_dir_all(renamed).await.unwrap();
+            tokio::fs::remove_dir_all(directory).await.unwrap();
+        }
     }
 }
