@@ -17,10 +17,27 @@ tacacsrs-agent-health \
 
 Use `--host-integration none` in containers. `auto` selects systemd only when `NOTIFY_SOCKET` is present. Explicit `systemd` requires the notification socket and helper, sends `READY=1` once, and sends `STOPPING=1` before listener drain.
 
-The daemon supervises SONiC ConfigDB startup and notification subscriptions. It can bind listeners before Redis exists, and it retries with capped jittered backoff. It applies valid snapshots without a restart. It keeps the previous known-good configuration after invalid reloads or subscription outages.
+The daemon supervises SONiC ConfigDB startup and notification subscriptions.
+In SONiC mode, it loads the forwarder profile before binding listeners. It retries unavailable configuration with capped backoff.
+It applies valid snapshots without a restart and retains known-good configuration after invalid reloads or subscription outages.
+
+The process registers SIGINT and SIGTERM once, before asynchronous bootstrap.
+Either signal cancels startup or requests listener drain through the signal-free agent API.
+An unavailable bootstrap dependency does not prevent signal handling. Requested shutdown exits successfully after cleanup.
+Unexpected host or configuration task exit is fatal, but the daemon still requests service drain and joins its other tasks.
 
 Use `--runtime-policy <FILE>` to load live failover strategies and request
 limits. The daemon keeps the last-known-good policy after an invalid update.
+
+Set `shutdown-timeout-seconds` in that canonical policy resource to bound graceful service and peer cleanup. Its default is 30 seconds; zero is invalid.
+The daemon captures the applied value once when cleanup begins. Later policy updates do not renew the deadline.
+At expiry it cancels pending work and exits with an error. An earlier failure remains the primary reported error.
+Systemd notifications use owned asynchronous child processes, so a stalled helper is terminated when teardown aborts its task.
+
+## Optional Profiling
+
+Tokio Console profiling requires the `console` feature and `RUSTFLAGS="--cfg tokio_unstable"` when building Tokio and the daemon.
+Without that instrumentation cfg, a `console` build reports that profiling is disabled and uses normal logging instead of panicking.
 
 ## Runtime Service Modes
 

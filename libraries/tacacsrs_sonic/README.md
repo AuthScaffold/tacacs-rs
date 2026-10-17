@@ -24,6 +24,23 @@ The [`mapping`] module implements parsing and field mapping as pure functions
 and fully unit-tests them without a live Redis. The Redis client only handles
 I/O.
 
+## Observation Ownership
+
+`SonicConfigDb::observe()` establishes Redis notification delivery before the baseline read.
+The returned session owns a notification pump and its pending snapshot future.
+The pump coalesces invalidations through a bounded watch channel and never waits for a slow snapshot consumer.
+There is no separate reload worker. Cancelling `next()` retains the pending read and concurrent invalidations.
+
+Dropping the observation cancels the pump and drops the pending Redis operation.
+Loss of the Pub/Sub connection returns an observation error. The agent opens a new session before it reads a recovery baseline.
+Rejected mappings retain the previous accepted snapshot and its delta history.
+The first valid snapshot after a rejection emits a recovery change, even when its TACACS+ delta is empty.
+The matching restart-required event follows that recovery change.
+The native tests verify idle cleanup, pending-read cleanup, cancellation, disconnect recovery, and removal of the final server.
+
+`ConfigDatastore` requires an explicit observation implementation. Its former `subscribe()` method and default observation adapter are removed.
+One-shot `load()` remains available for non-observing callers.
+
 ## Forwarder Ownership
 
 `SonicForwarderSettings::local_services` normalizes the validated forwarder row into generated `LocalServices`.
@@ -94,11 +111,12 @@ The reserved ACMS root defaults to `/etc/sonic/credentials`, but no ACMS path,
 symlink, or certificate parsing behavior is implemented until the deferred
 schema and stable-link contract is reviewed.
 
-The datastore watches the EPSK root and its parent alongside Redis keyspace
-notifications. Only reviewed opaque object names and root events trigger the
-watcher. It ignores materializer temporary names and access-only events. The
-watcher debounces filesystem and ConfigDB bursts and always causes a complete
-snapshot reload, credential re-resolution, and atomic runtime candidate apply.
+`SonicCredentialChangeSource` watches the EPSK root and its parent independently of Redis configuration observation.
+Its returned stream owns the watcher worker. Dropping the stream cancels that worker, even while it waits without an event.
+Only reviewed opaque object names and root events trigger the watcher. It ignores temporary names and access-only events.
+Rescan events require complete reconciliation. Failed root-watch re-registration reports `Unavailable` and ends the stream so the agent can reconnect.
+`watch_credential_changes` exposes the owned debounced stream directly and requires an active Tokio runtime.
+The agent re-resolves affected credentials and prepares an atomic runtime candidate from its retained canonical source.
 The watcher never patches bytes into an active runtime. This supports
 immutable-ID ConfigDB switches and explicit same-ID atomic replacement while
 preserving the prior runtime on missing or rejected material.
@@ -106,8 +124,8 @@ preserving the prior runtime on missing or rejected material.
 ## Example watcher
 
 The `configdb_watch` example demonstrates the crate's runtime contract: it
-loads the current TACACS+ snapshot from Redis and then prints every
-`ConfigChange` emitted by the keyspace-notification subscription. Each change
+opens one observation, prints its baseline, and then prints each
+`ConfigChange` from that same session. Each change
 event carries the complete latest TACACS+ snapshot plus a delta that consumers
 can use to decide whether an incremental update is enough. The example defaults
 to a local TCP Redis instance so it works with Docker or WSL. Production SONiC
@@ -149,5 +167,5 @@ redis-cli -n 4 DEL 'TACPLUS_SERVER|192.0.2.20'
 ```
 
 The example intentionally reports only whether a shared secret is configured.
-It never prints secret values. The mapper treats compatibility rows without a
+It never prints secret values or the credential-bearing Redis URL. The mapper treats compatibility rows without a
 per-server or global `passkey` as unobfuscated plain TCP.

@@ -87,6 +87,9 @@ impl ConnectOptions {
 /// - TCP connection fails or times out
 /// - the prepared backend fails to complete its handshake
 pub(crate) async fn establish_stream(endpoint: &PreparedEndpoint) -> Result<BoxedTransport> {
+    if let Some(lifetime) = endpoint.client_identity_lifetime() {
+        lifetime.check()?;
+    }
     let address = endpoint.address();
     let options = &endpoint.options;
 
@@ -112,9 +115,7 @@ pub(crate) async fn establish_stream(endpoint: &PreparedEndpoint) -> Result<Boxe
 
     match &endpoint.transport {
         PreparedTransport::Tcp => Ok(BoxedTransport::new(tcp_stream)),
-        PreparedTransport::Tls(config) => {
-            Ok(BoxedTransport::new(config.connect(tcp_stream).await?))
-        }
+        PreparedTransport::Tls(config) => config.connect(tcp_stream).await,
         PreparedTransport::Psk(config, server_name) => Ok(BoxedTransport::new(
             config
                 .connect(address, server_name.as_deref(), tcp_stream)

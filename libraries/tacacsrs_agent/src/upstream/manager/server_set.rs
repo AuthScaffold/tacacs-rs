@@ -29,6 +29,7 @@ pub(super) struct RuntimeRoutingSnapshot<
     pub(super) proxy_downstream_obfuscation: PreparedProxyPolicy,
     pub(super) runtime_policy: Arc<RuntimePolicy>,
     pub(super) admission: Arc<AdmissionRegistry>,
+    pub(super) credential_lifetime: crate::runtime::CredentialLifetime,
 }
 
 /// One request's immutable routing and retry-policy inputs.
@@ -53,6 +54,10 @@ impl<Connector: EndpointConnector> RoutingLease<Connector> {
         let deadline =
             RequestDeadline::after(runtime.runtime_policy.limits(operation).request_timeout())
                 .unwrap_or_else(|_| RequestDeadline::at(tokio::time::Instant::now()));
+        let deadline = runtime
+            .credential_lifetime
+            .deadline
+            .map_or(deadline, |expiry| RequestDeadline::at(deadline.expires_at().min(expiry)));
         Self {
             runtime,
             operation,

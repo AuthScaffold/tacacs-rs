@@ -6,49 +6,11 @@ use std::sync::Arc;
 
 use anyhow::{Context, ensure};
 use futures_util::future::{BoxFuture, FutureExt};
+use tacacsrs_agent::runtime::{FilteredTacacsPlus, NoopTacacsPlusFilter, TacacsPlusFilter};
 use tacacsrs_config::local_services::{prepare_local_services, ListenerEndpoint};
-use tacacsrs_config::proxy_policy::{prepare_proxy_policy, PreparedProxyPolicy};
+use tacacsrs_config::proxy_policy::prepare_proxy_policy;
 use tacacsrs_config::tacacsrs::LocalServices;
 use tacacsrs_config::{TacacsPlus, TacacsPlusServer, TacacsPlusServerExt};
-
-/// Filtered daemon configuration plus local proxy-only metadata derived from it.
-pub(crate) struct FilteredTacacsPlus {
-    /// TACACS+ configuration to apply to the upstream runtime state.
-    pub(crate) tacacs_plus: TacacsPlus,
-    /// Obfuscation policy expected on downstream raw TACACS+ proxy traffic.
-    pub(crate) proxy_downstream_obfuscation: PreparedProxyPolicy,
-}
-
-/// Filters a validated TACACS+ configuration before it is applied to runtime state.
-pub(crate) trait TacacsPlusFilter: Send + Sync {
-    /// Returns the configuration snapshot to apply to the daemon.
-    fn filter(&self, tacacs_plus: TacacsPlus) -> BoxFuture<'_, anyhow::Result<FilteredTacacsPlus>>;
-}
-
-/// Filter implementation that preserves every server unchanged.
-#[derive(Debug, Default)]
-pub(crate) struct NoopTacacsPlusFilter {
-    source: LocalServices,
-}
-
-impl NoopTacacsPlusFilter {
-    fn new(source: LocalServices) -> Self {
-        Self { source }
-    }
-}
-
-impl TacacsPlusFilter for NoopTacacsPlusFilter {
-    fn filter(&self, tacacs_plus: TacacsPlus) -> BoxFuture<'_, anyhow::Result<FilteredTacacsPlus>> {
-        async move {
-            let proxy_downstream_obfuscation = prepare_proxy_policy(&self.source, None)?;
-            Ok(FilteredTacacsPlus {
-                tacacs_plus,
-                proxy_downstream_obfuscation,
-            })
-        }
-        .boxed()
-    }
-}
 
 /// Filter that removes upstream servers targeting the local TCP proxy endpoint.
 #[derive(Debug, Clone)]

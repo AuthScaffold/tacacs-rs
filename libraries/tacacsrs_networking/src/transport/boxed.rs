@@ -27,12 +27,24 @@ impl<T: Transport> ErasedTransport for T {
 ///
 /// Use [`BoxedTransport::new`] with a concrete [`Transport`] implementation,
 /// such as `TcpStream` or `TlsStream<TcpStream>`.
-pub(crate) struct BoxedTransport(Box<dyn ErasedTransport>);
+pub(crate) struct BoxedTransport(Box<dyn ErasedTransport>, Option<super::tls::CertificateLifetime>);
 
 impl BoxedTransport {
     /// Wraps a concrete transport in a type-erased wrapper.
     pub(crate) fn new<T: Transport>(transport: T) -> Self {
-        Self(Box::new(transport))
+        Self(Box::new(transport), None)
+    }
+
+    pub(crate) fn with_certificate_lifetime(
+        mut self,
+        lifetime: super::tls::CertificateLifetime,
+    ) -> Self {
+        self.1 = Some(lifetime);
+        self
+    }
+
+    pub(crate) const fn certificate_lifetime(&self) -> Option<super::tls::CertificateLifetime> {
+        self.1
     }
 }
 

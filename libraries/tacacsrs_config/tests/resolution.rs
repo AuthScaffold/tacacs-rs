@@ -62,6 +62,7 @@ fn epsk_server() -> tacacsrs_config::TacacsPlusServer {
 
 fn certificate_material() -> ResolvedCredential {
     ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
+        validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
         public_key_format: None,
         public_key: None,
         private_key_format:
@@ -73,6 +74,7 @@ fn certificate_material() -> ResolvedCredential {
 
 fn ca_material() -> ResolvedCredential {
     ResolvedCredential::CaCertificateBag(CertificateBagMaterial {
+        validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
         certificates: vec![NamedCertificateMaterial {
             name: "ca".to_owned(),
             certificate: PublicBytes::new(b"ca".to_vec()),
@@ -82,6 +84,7 @@ fn ca_material() -> ResolvedCredential {
 
 fn ee_material() -> ResolvedCredential {
     ResolvedCredential::EeCertificateBag(CertificateBagMaterial {
+        validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
         certificates: vec![NamedCertificateMaterial {
             name: "ee".to_owned(),
             certificate: PublicBytes::new(b"ee".to_vec()),
@@ -127,6 +130,7 @@ async fn fake_resolver_completes_all_request_variants() {
     let epsk_resolver = FakeCredentialResolver::new().with_response(
         epsk_plan.requests()[0].slot(),
         ResolvedCredential::SymmetricKey(SymmetricKeyMaterial {
+            validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
             key_format: None,
             key: SecretBytes::new(b"epsk".to_vec()),
         }),
@@ -352,6 +356,7 @@ fn result_set_rejects_missing_duplicate_unexpected_and_mismatched_responses() {
             ResolvedResponse::new(
                 slots[0].slot(),
                 ResolvedCredential::SymmetricKey(SymmetricKeyMaterial {
+                    validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
                     key_format: None,
                     key: SecretBytes::new(b"wrong-kind".to_vec()),
                 }),

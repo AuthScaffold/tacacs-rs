@@ -1,10 +1,10 @@
-//! Shared process shutdown and listener lifecycle coordination.
+//! Host-requested shutdown and listener lifecycle coordination.
 //!
-//! One coordinator waits for operating-system signals. Listener tasks hold
-//! cloneable receivers and registration guards.
+//! The embedding host requests shutdown. Listener tasks hold cloneable receivers
+//! and registration guards. This module installs no process signal handlers.
 //!
 //! ```text
-//! SIGTERM / Ctrl-C
+//! Host stop future
 //!        |
 //!        v
 //! lifecycle=Draining -> broadcast -> stop accepting -> drain -> Stopped
@@ -105,25 +105,6 @@ impl Drop for ListenerRegistration {
             .health
             .set_listener(self.service, ListenerState::Stopped);
         debug_assert!(accepted, "cannot stop a disabled listener");
-    }
-}
-
-/// Waits for a termination signal that stops the service from accepting clients.
-pub(super) async fn process_shutdown_signal() {
-    use tokio::signal::unix::{SignalKind, signal};
-
-    if let Ok(mut terminate_signal) = signal(SignalKind::terminate()) {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                log::info!("Received Ctrl-C; starting graceful shutdown");
-            }
-            _ = terminate_signal.recv() => {
-                log::info!("Received SIGTERM; starting graceful shutdown");
-            }
-        }
-    } else {
-        let _ = tokio::signal::ctrl_c().await;
-        log::info!("Received Ctrl-C; starting graceful shutdown");
     }
 }
 

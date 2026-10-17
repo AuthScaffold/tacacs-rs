@@ -26,6 +26,7 @@ fn secret_bytes_require_explicit_borrow_and_redact_debug() {
 #[test]
 fn secret_bearing_aggregate_debug_redacts_all_material() {
     let credential = ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
+        validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
         public_key_format: None,
         public_key: None,
         private_key_format: PrivateKeyFormat::OneAsymmetricKeyFormat,
@@ -52,6 +53,7 @@ fn closed_result_debug_omits_secret_and_reference_values() {
     let response = ResolvedResponse::new(
         plan.requests()[0].slot(),
         ResolvedCredential::SymmetricKey(SymmetricKeyMaterial {
+            validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
             key_format: None,
             key: SecretBytes::new(b"resolved-symmetric-secret".to_vec()),
         }),

@@ -6,15 +6,29 @@
 //! controls failover.
 
 mod client_service;
+mod config_filter;
+mod config_supervisor;
 mod health;
+mod materialization_coordinator;
+mod policy_supervisor;
 mod proxy_loop_guard;
 mod request_tracker;
+mod revision;
 mod server_catalog;
 mod shutdown;
 
 pub use client_service::TacacsClientService;
+pub use config_filter::{FilteredTacacsPlus, NoopTacacsPlusFilter, TacacsPlusFilter};
+pub use config_supervisor::ConfigSupervisor;
+pub use policy_supervisor::PolicySupervisor;
+pub use revision::{
+    CredentialRevision, MaterializationRevision, PolicyRevision, PolicyUpdate, SourceRevision,
+};
+pub(crate) use revision::{ExpiredMaterial, MaterialExpiry, MaterializationCommit};
+mod credential_lifetime;
+pub(crate) use credential_lifetime::CredentialLifetime;
 pub use health::{
-    DatastoreState, DegradationReason, ListenerState, RuntimeHealthPublisher,
+    DatastoreState, DegradationReason, ListenerState, RuntimeHealthPublisher, RuntimeGeneration,
     RuntimeHealthSnapshot, RuntimeLifecycle, RuntimeService, UpstreamAvailability,
 };
 

@@ -2,7 +2,7 @@
 
 use std::io;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::task::{Context, Poll, Waker};
 
@@ -85,6 +85,8 @@ pub(crate) struct TransportControl {
     writer: ControlledHalf<Box<dyn AsyncWrite + Unpin + Send>>,
     activity: Arc<TransportActivity>,
     closed: AtomicBool,
+    lifetime: Option<super::tls::CertificateLifetime>,
+    expiry: OnceLock<Arc<crate::runtime::task::DriverTask>>,
 }
 
 impl TransportControl {
@@ -92,6 +94,7 @@ impl TransportControl {
         transport: BoxedTransport,
         activity: Arc<TransportActivity>,
     ) -> (BoxedTransport, Arc<Self>) {
+        let lifetime = transport.certificate_lifetime();
         let (reader, writer) = transport.split();
         activity.active.fetch_add(1, Ordering::AcqRel);
         let control = Arc::new(Self {
@@ -99,11 +102,53 @@ impl TransportControl {
             writer: ControlledHalf::new(writer),
             activity,
             closed: AtomicBool::new(false),
+            lifetime,
+            expiry: OnceLock::new(),
         });
+        if let Some(lifetime) = lifetime {
+            let weak = Arc::downgrade(&control);
+            let task = crate::runtime::task::DriverTask::spawn(async move {
+                loop {
+                    let clock_check =
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+                    tokio::time::sleep_until(lifetime.deadline.expires_at().min(clock_check)).await;
+                    let Some(control) = weak.upgrade() else {
+                        break;
+                    };
+                    if control.closed.load(Ordering::Acquire) || lifetime.check().is_err() {
+                        control.close();
+                        break;
+                    }
+                }
+                Ok(())
+            });
+            let _ = control.expiry.set(Arc::new(task));
+        }
         (BoxedTransport::new(ManagedTransport(control.clone())), control)
     }
 
+    pub(crate) fn expiry_task(&self) -> Option<Arc<crate::runtime::task::DriverTask>> {
+        self.expiry.get().cloned()
+    }
+
+    fn check_expiry(&self) -> io::Result<()> {
+        if self
+            .lifetime
+            .is_some_and(|lifetime| lifetime.check().is_err())
+        {
+            self.close();
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "TLS certificate validity expired",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn close(&self) {
+        if let Some(task) = self.expiry.get() {
+            task.abort();
+        }
         self.reader.close();
         self.writer.close();
         if !self.closed.swap(true, Ordering::AcqRel) {
@@ -139,6 +184,9 @@ impl AsyncRead for ManagedReader {
         context: &mut Context<'_>,
         buffer: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
+        if let Err(error) = self.0.check_expiry() {
+            return Poll::Ready(Err(error));
+        }
         self.0
             .reader
             .poll(context, |stream, context| Pin::new(stream).poll_read(context, buffer))
@@ -151,18 +199,27 @@ impl AsyncWrite for ManagedWriter {
         context: &mut Context<'_>,
         buffer: &[u8],
     ) -> Poll<io::Result<usize>> {
+        if let Err(error) = self.0.check_expiry() {
+            return Poll::Ready(Err(error));
+        }
         self.0
             .writer
             .poll(context, |stream, context| Pin::new(stream).poll_write(context, buffer))
     }
 
     fn poll_flush(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if let Err(error) = self.0.check_expiry() {
+            return Poll::Ready(Err(error));
+        }
         self.0
             .writer
             .poll(context, |stream, context| Pin::new(stream).poll_flush(context))
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if let Err(error) = self.0.check_expiry() {
+            return Poll::Ready(Err(error));
+        }
         self.0
             .writer
             .poll(context, |stream, context| Pin::new(stream).poll_shutdown(context))
@@ -173,6 +230,68 @@ impl AsyncWrite for ManagedWriter {
 mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use super::*;
+
+    async fn expiring_transport() -> (BoxedTransport, tokio::net::TcpStream) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (client, peer) = tokio::join!(
+            tokio::net::TcpStream::connect(listener.local_addr().unwrap()),
+            listener.accept()
+        );
+        let certificate = openssl::x509::X509::from_pem(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../lde/containers/config/certificates/client.crt"
+        )))
+        .unwrap();
+        let lifetime = crate::transport::tls::CertificateLifetime {
+            validity: crate::transport::tls::CertificateValidity::from_certificate(&certificate)
+                .unwrap(),
+            deadline: crate::RequestDeadline::after(std::time::Duration::from_secs(1)).unwrap(),
+        };
+        (BoxedTransport::new(client.unwrap()).with_certificate_lifetime(lifetime), peer.unwrap().0)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expired_io_closes_both_halves_even_when_the_timer_is_cancelled() {
+        let (transport, mut peer) = expiring_transport().await;
+        let activity = Arc::new(TransportActivity::default());
+        let (transport, control) = TransportControl::wrap(transport, activity.clone());
+        let task = control.expiry_task().unwrap();
+        task.abort();
+        task.join_until(crate::RequestDeadline::after(std::time::Duration::ZERO).unwrap())
+            .await
+            .unwrap();
+        let (mut reader, mut writer) = transport.split();
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        assert_eq!(
+            writer.write_all(b"late").await.unwrap_err().kind(),
+            io::ErrorKind::ConnectionAborted
+        );
+        assert_eq!(
+            reader.read(&mut [0]).await.unwrap_err().kind(),
+            io::ErrorKind::ConnectionAborted
+        );
+        assert_eq!(peer.read(&mut [0]).await.unwrap(), 0);
+        control.close();
+        assert_eq!(activity.active.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expiry_task_does_not_retain_transport_owners() {
+        let (transport, mut peer) = expiring_transport().await;
+        let activity = Arc::new(TransportActivity::default());
+        let (transport, control) = TransportControl::wrap(transport, activity.clone());
+        let task = control.expiry_task().unwrap();
+        let weak = Arc::downgrade(&control);
+        drop(control);
+        drop(transport);
+        task.join_until(crate::RequestDeadline::after(std::time::Duration::ZERO).unwrap())
+            .await
+            .unwrap();
+        assert!(weak.upgrade().is_none());
+        assert!(task.is_finished());
+        assert_eq!(activity.active.load(Ordering::Acquire), 0);
+        assert_eq!(peer.read(&mut [0]).await.unwrap(), 0);
+    }
 
     #[tokio::test]
     async fn close_releases_socket_while_read_future_is_unpolled() {

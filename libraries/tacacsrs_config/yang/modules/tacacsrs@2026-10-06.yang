@@ -175,6 +175,35 @@ module tacacsrs {
     container runtime-policy {
       description
         "Failover and admission controls for local client API and proxy services.";
+      leaf shutdown-timeout-seconds {
+        type uint32 { range "1..max"; }
+        units "seconds";
+        default 30;
+        description
+          "Graceful shutdown budget for runtime and host cleanup.
+           The host captures one deadline when shutdown starts.
+           At expiry, pending asynchronous work is cancelled.
+           Policy updates do not extend a shutdown already in progress.";
+      }
+      leaf credential-stale-timeout-seconds {
+        type uint32 { range "1..max"; }
+        units "seconds";
+        default 300;
+        description
+          "Grace interval for referenced credentials after invalidation or provider loss.
+           Retries and policy changes do not renew the interval.
+           At expiry, withdraw upstreams until complete credential revalidation succeeds.";
+      }
+      leaf source-stale-timeout-seconds {
+        type uint32 { range "1..max"; }
+        units "seconds";
+        default 300;
+        description
+          "Maximum grace interval after applied source configuration becomes stale.
+           Capture the deadline at the first observed source failure or rejection.
+           Retries, credential refresh, and policy changes do not renew the interval.
+           At expiry, withdraw upstreams until a valid source is applied again.";
+      }
       leaf failover-recovery-interval-seconds {
         type uint32 { range "1..max"; }
         units "seconds";

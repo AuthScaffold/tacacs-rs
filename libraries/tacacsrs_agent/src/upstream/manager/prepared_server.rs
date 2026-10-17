@@ -9,6 +9,7 @@ use tacacsrs_networking::routed::{Endpoint, OperationKind};
 pub(super) struct PreparedServer {
     pub(super) server: Arc<TacacsPlusServer>,
     pub(super) endpoint: Endpoint,
+    pub(super) certificate_lifetime: crate::runtime::CredentialLifetime,
 }
 
 impl PreparedServer {
@@ -17,6 +18,15 @@ impl PreparedServer {
         options: PrepareOptions,
     ) -> anyhow::Result<Self> {
         let prepared = tacacsrs_config::prepare::prepare_endpoint(&server, options)?;
+        let certificate_lifetime = match prepared.client_certificate_validity() {
+            Some(validity) => crate::runtime::CredentialLifetime::new(
+                tacacsrs_credential_resolution::CredentialValidity::new(
+                    Some(validity.valid_from()),
+                    Some(validity.valid_until()),
+                )?,
+            )?,
+            None => crate::runtime::CredentialLifetime::unbounded(),
+        };
         let operations = [
             (OperationKind::Authentication, TacacsPlusServerType::AUTHENTICATION),
             (OperationKind::Authorization, TacacsPlusServerType::AUTHORIZATION),
@@ -27,7 +37,11 @@ impl PreparedServer {
             server.supports_server_type(capability).then_some(operation)
         });
         let endpoint = Endpoint::new(&server.name, prepared, operations);
-        Ok(Self { server, endpoint })
+        Ok(Self {
+            server,
+            endpoint,
+            certificate_lifetime,
+        })
     }
 
     pub(super) fn config(&self) -> &TacacsPlusServer {

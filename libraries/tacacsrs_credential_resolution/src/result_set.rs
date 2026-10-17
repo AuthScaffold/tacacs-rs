@@ -190,6 +190,7 @@ mod tests {
             let credential = match request.kind() {
                 CredentialKind::CertificateWithKey => {
                     ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
+                        validity: crate::CredentialValidity::unbounded(),
                         public_key_format: None,
                         public_key: None,
                         private_key_format: PrivateKeyFormat::OneAsymmetricKeyFormat,
@@ -199,6 +200,7 @@ mod tests {
                 }
                 CredentialKind::CaCertificateBag => {
                     ResolvedCredential::CaCertificateBag(CertificateBagMaterial {
+                        validity: crate::CredentialValidity::unbounded(),
                         certificates: vec![NamedCertificateMaterial {
                             name: "ca".to_owned(),
                             certificate: PublicBytes::new(b"ca".to_vec()),
@@ -207,6 +209,7 @@ mod tests {
                 }
                 CredentialKind::EeCertificateBag => {
                     ResolvedCredential::EeCertificateBag(CertificateBagMaterial {
+                        validity: crate::CredentialValidity::unbounded(),
                         certificates: vec![NamedCertificateMaterial {
                             name: "ee".to_owned(),
                             certificate: PublicBytes::new(b"ee".to_vec()),

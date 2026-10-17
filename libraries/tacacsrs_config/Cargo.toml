@@ -13,7 +13,7 @@ futures-core = "0.3"
 log = "0.4.30"
 notify = "8.2.0"
 rustls-pki-types = "1.14.1"
-tokio = { version = "1.52.3", features = ["sync", "macros", "rt", "time"] }
+tokio = { version = "1.52.3", features = ["fs", "sync", "macros", "rt", "time"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 base64 = "0.23"
 bitflags = { version = "2", features = ["serde"] }
@@ -25,9 +25,12 @@ tacacsrs-credential-resolution = { path = "../tacacsrs_credential_resolution" }
 tacacsrs-networking = { path = "../tacacsrs_networking" }
 tacacsrs-protocol = { path = "../tacacsrs_protocol" }
 
+[target.'cfg(windows)'.dependencies]
+same-file = "1.0.6"
+
 [dev-dependencies]
-futures-util = "0.3"
-tokio = { version = "1.52.3", features = ["macros", "rt", "rt-multi-thread", "fs"] }
+futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+tokio = { version = "1.52.3", features = ["macros", "rt", "rt-multi-thread", "fs", "test-util"] }
 openssl = "0.10.80"
 tokio-openssl = "0.6.5"
 env_logger = "0.11.10"

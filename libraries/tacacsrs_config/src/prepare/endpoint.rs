@@ -807,6 +807,245 @@ mod tests {
         assert!(probe_certificate_trust(&leaf, &leaf_key, policy, None, &[intermediate]).await);
     }
 
+    #[tokio::test]
+    async fn negotiated_chain_expiry_uses_selected_ca_or_pin_not_unused_trust() {
+        let (authority, authority_key) = fixture_certificate("ca");
+        let (_, leaf_key) = fixture_certificate("server");
+        let intermediate_key =
+            openssl::pkey::PKey::from_rsa(openssl::rsa::Rsa::generate(2048).unwrap()).unwrap();
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap();
+        let intermediate = signed_peer(
+            &authority,
+            &authority_key,
+            &intermediate_key,
+            (now - 60, now + 60),
+            false,
+            true,
+        );
+        let leaf = signed_peer(
+            &intermediate,
+            &intermediate_key,
+            &leaf_key,
+            (now - 60, now + 600),
+            false,
+            false,
+        );
+        let unused =
+            signed_peer(&authority, &authority_key, &leaf_key, (now - 60, now + 1), false, false);
+        let mut ordinary = server_trust(&authority, false);
+        ordinary.ee_certs = server_trust(&unused, true).ee_certs;
+        let mut alternate = ordinary.clone();
+        alternate
+            .ee_certs
+            .as_mut()
+            .unwrap()
+            .inline_definition
+            .as_mut()
+            .unwrap()
+            .certificate
+            .push(crate::truststore::CertsCertificate {
+                name: "intermediate-pin".to_owned(),
+                cert_data: intermediate.to_der().unwrap(),
+            });
+        let mut exact = server_trust(&leaf, true);
+        exact
+            .ee_certs
+            .as_mut()
+            .unwrap()
+            .inline_definition
+            .as_mut()
+            .unwrap()
+            .certificate
+            .push(crate::truststore::CertsCertificate {
+                name: "unused-pin".to_owned(),
+                cert_data: unused.to_der().unwrap(),
+            });
+        for (policy, seconds) in [(ordinary, 61), (alternate, 61), (exact, 601)] {
+            probe_peer_expiry(
+                &leaf,
+                &leaf_key,
+                policy,
+                std::slice::from_ref(&intermediate),
+                std::time::Duration::from_secs(seconds),
+            )
+            .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn expired_peer_connection_recovers_with_a_fresh_certificate_without_reload() {
+        use std::pin::Pin;
+        use std::time::Duration;
+        use openssl::ssl::{Ssl, SslContext, SslMethod};
+        use tokio::io::AsyncReadExt;
+        use tokio::net::TcpListener;
+        use tokio_openssl::SslStream;
+        let (authority, authority_key) = fixture_certificate("ca");
+        let (_, key) = fixture_certificate("server");
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap();
+        let contexts = [60, 600].map(|seconds| {
+            let certificate = signed_peer(
+                &authority,
+                &authority_key,
+                &key,
+                (now - 60, now + seconds),
+                false,
+                false,
+            );
+            let mut context = SslContext::builder(SslMethod::tls_server()).unwrap();
+            context.set_certificate(&certificate).unwrap();
+            context.set_private_key(&key).unwrap();
+            context.build()
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut server = builder().with_tls_server_authentication().build();
+        server.port = listener.local_addr().unwrap().port();
+        server.server_authentication = Some(server_trust(&authority, false));
+        let original = server.clone();
+        let endpoint = prepare_endpoint(&server, PrepareOptions::default()).unwrap();
+        let (closed, observed) = tokio::sync::oneshot::channel();
+        let (handshakes, mut accepted) = tokio::sync::mpsc::channel(1);
+        let peer = tokio::spawn(async move {
+            let mut closed = Some(closed);
+            for context in contexts {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut stream = SslStream::new(Ssl::new(&context).unwrap(), tcp).unwrap();
+                Pin::new(&mut stream).accept().await.unwrap();
+                handshakes.send(()).await.unwrap();
+                match stream.read(&mut [0_u8; 1]).await {
+                    Ok(0) => {}
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::ConnectionAborted
+                                | std::io::ErrorKind::ConnectionReset
+                                | std::io::ErrorKind::UnexpectedEof
+                                | std::io::ErrorKind::BrokenPipe
+                        ) => {}
+                    result => panic!("expected transport closure: {result:?}"),
+                }
+                if let Some(closed) = closed.take() {
+                    let _ = closed.send(());
+                }
+            }
+        });
+        let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+        let mut original_session = client.open_conversation().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), accepted.recv())
+            .await
+            .expect("server must complete the initial TLS handshake")
+            .expect("server handshake task must remain active");
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(61)).await;
+        tokio::time::resume();
+        tokio::time::timeout(Duration::from_secs(1), observed)
+            .await
+            .unwrap()
+            .unwrap();
+        original_session.complete().await;
+        let mut replacement = client.open_conversation().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), accepted.recv())
+            .await
+            .expect("server must complete the replacement TLS handshake")
+            .expect("server handshake task must remain active");
+        replacement.complete().await;
+        client
+            .close_and_join(tacacsrs_networking::RequestDeadline::after(Duration::ZERO).unwrap())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), peer)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(server, original);
+    }
+
+    async fn probe_peer_expiry(
+        certificate: &openssl::x509::X509,
+        key: &openssl::pkey::PKey<openssl::pkey::Private>,
+        policy: crate::TlsClientServerAuthentication,
+        chain: &[openssl::x509::X509],
+        expiry: std::time::Duration,
+    ) {
+        use std::pin::Pin;
+        use std::time::Duration;
+        use openssl::ssl::{Ssl, SslContext, SslMethod};
+        use tokio::io::AsyncReadExt;
+        use tokio::net::TcpListener;
+        use tokio_openssl::SslStream;
+        let mut context = SslContext::builder(SslMethod::tls_server()).unwrap();
+        context.set_certificate(certificate).unwrap();
+        context.set_private_key(key).unwrap();
+        for certificate in chain {
+            context.add_extra_chain_cert(certificate.clone()).unwrap();
+        }
+        let context = context.build();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut server = builder().with_tls_server_authentication().build();
+        server.port = listener.local_addr().unwrap().port();
+        server.server_authentication = Some(policy);
+        let original = server.clone();
+        let endpoint = prepare_endpoint(&server, PrepareOptions::default()).unwrap();
+        let (closed, mut observed) = tokio::sync::oneshot::channel();
+        let peer = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut stream = SslStream::new(Ssl::new(&context).unwrap(), tcp).unwrap();
+            Pin::new(&mut stream).accept().await.unwrap();
+            match stream.read(&mut [0]).await {
+                Ok(0) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::UnexpectedEof
+                            | std::io::ErrorKind::BrokenPipe
+                    ) => {}
+                result => {
+                    panic!("expired transport must close without application bytes: {result:?}")
+                }
+            }
+            let _ = closed.send(());
+        });
+        let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+        let mut conversation = client.open_conversation().await.unwrap();
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(2)).await;
+        tokio::time::resume();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut observed)
+                .await
+                .is_err(),
+            "unused trust must not shorten this connection's lifetime"
+        );
+        tokio::time::pause();
+        tokio::time::advance(expiry).await;
+        tokio::time::resume();
+        let expired = tokio::time::timeout(Duration::from_millis(250), observed).await;
+        conversation.complete().await;
+        client
+            .close_and_join(tacacsrs_networking::RequestDeadline::after(Duration::ZERO).unwrap())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), peer)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(expired.is_ok(), "selected certificate path must expire the connection");
+        assert_eq!(server, original);
+    }
+
     async fn probe_certificate_trust(
         certificate: &openssl::x509::X509,
         key: &openssl::pkey::PKey<openssl::pkey::Private>,

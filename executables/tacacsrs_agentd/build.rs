@@ -10,6 +10,7 @@ mod cli {
 use cli::Cli;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rustc-check-cfg=cfg(tokio_unstable)");
     let out_dir = std::path::PathBuf::from(env::var("OUT_DIR")?);
     let man_dir = out_dir.join("man");
     fs::create_dir_all(&man_dir)?;

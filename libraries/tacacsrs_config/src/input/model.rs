@@ -57,6 +57,29 @@ impl CliDatastoreInput {
         }
         paths
     }
+
+    pub(super) async fn capture_paths(&mut self) -> anyhow::Result<()> {
+        match &mut self.source {
+            CliConfigSource::YangFile { path } => {
+                *path = capture_path(path).await?;
+            }
+            CliConfigSource::Inline { security, .. } => {
+                if let CliSecurityMode::TlsClientCertificate { identity } = &mut security.mode {
+                    identity.certificate_path = capture_path(&identity.certificate_path).await?;
+                    identity.private_key_path = capture_path(&identity.private_key_path).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+async fn capture_path(path: &std::path::Path) -> anyhow::Result<PathBuf> {
+    let path = std::path::absolute(path).context("resolve input path")?;
+    let parent = tokio::fs::canonicalize(path.parent().context("input path has no parent")?)
+        .await
+        .context("resolve input directory")?;
+    Ok(parent.join(path.file_name().context("input path has no file name")?))
 }
 
 /// Source of the TACACS+ root configuration.

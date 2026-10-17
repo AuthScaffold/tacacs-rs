@@ -231,6 +231,7 @@ impl CredentialResolver for SonicCredentialResolver {
         .map_err(|_| ResolutionError::provider(ProviderErrorKind::Unavailable, request.context()))?
         .map_err(|kind| ResolutionError::provider(kind, request.context()))?;
         Ok(ResolvedCredential::SymmetricKey(SymmetricKeyMaterial {
+            validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
             key_format: Some(SymmetricKeyFormat::OctetStringKeyFormat),
             key: SecretBytes::from_zeroizing(bytes),
         }))

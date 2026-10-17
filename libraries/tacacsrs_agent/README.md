@@ -96,6 +96,81 @@ The agent exchange interface remains because it owns protocol-to-service error c
 
 ## Generation Readiness
 
+`RuntimeHealthSnapshot::runtime_generation()` identifies the currently published routing and policy snapshot.
+`RuntimeGeneration` values are scoped to one runtime instance. They are not source or credential revisions.
+Catalog replacement, applied-configuration status, eligible-server count, and availability reset now commit under the same publication lock.
+Health readers cannot observe a partially updated publication. Policy-only updates advance the runtime generation without resetting availability or replacing global admission.
+An unchanged catalog reload preserves observed upstream availability. A rejected replacement leaves the published generation and applied-health metadata unchanged.
+
+Materialized updates also commit the coordinator's active-server set and active source generation inside the runtime publication boundary.
+Cancellation before publication leaves the prior runtime and active material unchanged.
+Cancellation during later connection retirement retains matching runtime, health, and coordinator state.
+The coordinator releases its state lock at commit, before asynchronous retirement. Canonical source snapshots and credential references remain unchanged.
+
+`RuntimeHealthSnapshot::materialization_revision()` reports the applied `SourceRevision` and `CredentialRevision` for coordinated materialization.
+The source counter advances at admission before asynchronous host filtering, including repeated candidates and source rejection notifications.
+The credential counter advances independently when an invalidation schedules materialization.
+These counters belong to one controller instance. They are not content hashes, provider versions, or globally comparable identifiers.
+Policy-only updates preserve the applied pair. Direct server reloads clear it because they bypass coordinated materialization.
+
+Successful materialization clears credential-resolution failure in the publication commit.
+Failure reporting checks the attempt revision under the coordinator lock, so an old result cannot change health for newer work.
+If a newer credential invalidation supersedes incomplete work, it refreshes all dependencies before targeted selection resumes.
+
+`runtime::ConfigSupervisor` owns source recovery, credential notifications, and materialization coordination.
+The host supplies a `ConfigDatastore`, service, health publisher, and `TacacsPlusFilter`.
+`NoopTacacsPlusFilter` preserves every upstream. Host-specific filters can derive a working candidate without changing the retained authoritative snapshot.
+
+All supervised sources use the same coordinator, including inline configuration without a credential resolver.
+An older filter result cannot replace a newer admitted source or update its health. Source recovery commits with the accepted runtime generation.
+A pending or rejected source cannot trigger credential refresh against an older filtered candidate.
+Credential invalidations during filtering are retained in the revision used for the eventual prepared candidate.
+During source unavailability, credential refresh can use retained configuration without marking the source current.
+Source observation continues while one owned candidate future filters, resolves, or publishes.
+A newer source event cancels and replaces that future, so disconnection and rejection remain observable.
+
+`ConfigSupervisor` enforces canonical `source-stale-timeout-seconds`, which defaults to 300 seconds and rejects zero.
+Its owned monitor captures the applied budget when it first observes a stale published source.
+Repeated failures, credential refreshes, and policy updates do not renew that interval.
+Health records the source revision that last established a current runtime.
+Credential publication during a source outage preserves that recovery identity, even when it applies a different source revision.
+At expiry, a generation-checked transaction withdraws upstreams and marks `SourceExpired`. Readiness stops while liveness and source observation continue.
+Removed endpoints receive an immediate retirement cutoff. A valid source publication can restore service without replacing shared admission or restarting the process.
+Credential refresh cannot revive an expired unavailable source.
+
+`credential-stale-timeout-seconds` independently limits stale referenced credentials and defaults to 300 seconds, with a minimum of one second.
+Relevant invalidation marks material stale before resolution starts. Notification loss also starts grace when the applied catalog uses credential references.
+Inline-only catalogs do not expire because an unused credential watcher is unavailable.
+At expiry, the runtime withdraws the entire catalog and reports `CredentialsExpired`, while source observation and liveness remain active.
+An attempt started before expiry cannot revive the old material. Complete revalidation can restore service without changing canonical source references.
+Repeated failures and policy changes do not renew grace. Source and credential expiry remain independently enforced after either withdraws the catalog.
+Absolute credential validity, certificate expiry, and revocation require separate policy and metadata.
+
+Use `with_credential_resolver` and `with_credential_changes` to configure credential providers.
+Notifications require a resolver. Provider configuration is checked before source I/O.
+`initialize_until(stop)` optionally prepares the initial configuration before listeners start.
+`run_until(stop)` consumes the supervisor and runs both source and credential supervision, without repeating successful initialization.
+The stop future belongs to the host. The supervisor installs no process signal handlers.
+
+Cancellation drops pending load, filter, resolution, and publication futures. It preserves the last successfully published configuration.
+The runtime uses `ConfigDatastore::observe()` for both initial configuration and later changes.
+Successful initialization retains the same session. Interrupted initialization starts a fresh session before retry or serving.
+File observations own their watcher and coalesce invalidations without a detached reload worker.
+All retained configuration sources implement owned observation. The transitional adapter and datastore subscription method are removed.
+Source, credential, and policy decisions use revision checks and the shared generation/health publication boundary.
+
+`TacacsClientService::apply_policy_candidate` accepts a borrowed canonical policy, or `None` for a rejected source observation.
+It assigns `PolicyRevision` before validation or publication waits. The canonical value remains unchanged.
+Both this method and `reload_runtime_policy` return `PolicyUpdate`: `Applied(revision)`, `Rejected(revision)`, or `Superseded`.
+Prepared-policy reloads cannot return `Rejected`; their validation has already completed.
+Runtime closure remains an error. A superseded candidate cannot change policy, global admission, or health.
+
+`RuntimeHealthSnapshot::applied_policy_revision()` records the last committed policy update, or `None` before the first update.
+Policy, runtime generation, shared admission limits, and rejection recovery commit together without an asynchronous wait.
+Rejected or cancelled candidates preserve the applied policy revision and generation. Revision numbers can therefore have gaps.
+Server updates preserve the policy revision. Policy updates preserve materialization revisions, applied source status, and upstream availability.
+`PolicySupervisor::new(observation, service)` no longer accepts a separate health publisher or writes health after publication.
+
 `ServiceConfig::validation_options` carries the schema policy selected by the configuration source.
 Construction and both reload APIs apply the shared configuration checks with that policy.
 The daemon obtains the policy from `ConfigDatastore::validation_options`, including explicit migration relaxations.
@@ -272,10 +347,13 @@ The listener follows this startup sequence:
 6. begin serving IPC clients
 ```
 
-`serve()` waits for SIGTERM or Ctrl-C in its owned serving future.
-Embedded hosts use `serve_until(stop_future)` without installing signal handlers.
+All hosts use `serve_until(stop_future)`. The former signal-owning `serve()` method is removed.
+The library installs no process signal handlers. The daemon registers SIGINT and SIGTERM before asynchronous bootstrap and supplies the stop future.
+A stop future that is already ready prevents listener binding and closes the runtime without touching the configured socket path.
 Shutdown changes health to `Draining`, closes admission and upstream connection creation, and stops listeners from accepting new work.
-The maximum current operation request budget supplies one absolute deadline for listener drain and all current and historical upstream cleanup.
+Listener and upstream drain use the smaller of the maximum current operation budget and canonical `shutdown-timeout-seconds`.
+The shutdown policy defaults to 30 seconds and rejects zero. It does not change request deadlines or endpoint retirement during reload.
+Embedding hosts can read the applied budget through `TacacsClientService::shutdown_timeout()` and capture a deadline when cleanup begins.
 At expiry, remaining listener tasks are cancelled and joined, and upstream sockets are forced closed.
 Owned Unix socket paths are removed before successful shutdown publishes `Stopped`.
 A listener failure cancels its siblings and uses the same cleanup path.
@@ -288,6 +366,10 @@ Terminal shutdown also reaches retired endpoints retained by old requests. A sto
 Cancelling the serving future schedules immediate upstream cleanup and drops listener-owned transport guards.
 Use `close_and_join(deadline)` to confirm upstream cleanup after cancellation or when the service has not started listeners.
 For an active listener run, request shutdown through the future passed to `serve_until` and await that run's result.
+
+The daemon captures one absolute deadline across service drain, configuration supervision, and host-task cleanup.
+At expiry it drops the service future, aborts and joins pending peer tasks, and reports failed shutdown without hiding the original failure.
+This bounds graceful asynchronous waits. Arbitrary non-yielding Rust code or an already-started blocking filesystem operation is not preemptible by a future timeout.
 
 The same typed watch-backed snapshot drives startup, liveness, readiness, datastore freshness, upstream availability, standard gRPC health, host integration, and operator status. It contains only typed flags and counts. Configuration values, server identities, credential references, and raw errors stay outside the shared state.
 

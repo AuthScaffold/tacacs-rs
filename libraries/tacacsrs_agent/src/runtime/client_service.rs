@@ -7,7 +7,7 @@
 //! # Startup sequence
 //!
 //! 1. [`TacacsClientService::new`] resolves the current upstream server set.
-//! 2. [`TacacsClientService::serve`] publishes lazy connection state and binds
+//! 2. [`TacacsClientService::serve_until`] publishes lazy connection state and binds
 //!    each listener.
 //! 3. The service accepts clients until it receives a shutdown signal.
 //!
@@ -23,6 +23,7 @@
 
 use std::sync::Arc;
 
+use futures_util::FutureExt;
 use tacacsrs_agent_client::IpcEndpoint;
 use tacacsrs_config::TacacsPlus;
 use tacacsrs_config::local_services::{prepare_local_services, PreparedLocalServices, ListenerEndpoint};
@@ -30,8 +31,8 @@ use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 
 use super::{
-    RequestTracker, RuntimeHealthPublisher, ShutdownCoordinator, UpstreamAvailability,
-    enumerate_supported_servers, ProxyLoopGuard,
+    RequestTracker, RuntimeHealthPublisher, ShutdownCoordinator, enumerate_supported_servers,
+    ProxyLoopGuard,
 };
 use crate::config::{PreparedProxyPolicy, RuntimePolicy, ServiceConfig};
 use crate::services::client_api::ClientApiService;
@@ -50,7 +51,7 @@ use tacacsrs_networking::routed::EndpointConnector;
 ///
 /// [`TacacsClientService`] connects operator configuration to shared runtime
 /// state. Its constructor validates the configuration and creates the failover
-/// state machine. [`serve`](TacacsClientService::serve) starts the listeners.
+/// state machine. [`serve_until`](TacacsClientService::serve_until) starts the listeners with host cancellation.
 ///
 /// This type is not `Clone` because it owns the listener lifecycle. Share
 /// [`ServiceConfig`] before you create the service.
@@ -73,6 +74,16 @@ pub struct TacacsClientService {
 }
 
 impl TacacsClientService {
+    #[cfg(test)]
+    pub(crate) fn pause_next_publication(&self) -> Arc<tokio::sync::Notify> {
+        self.runtime.state.pause_next_publication()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn hold_publication(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.runtime.reload_lock.lock().await
+    }
+
     /// Builds a service with the concrete native connector.
     ///
     /// # Errors
@@ -119,8 +130,32 @@ impl TacacsClientService {
     }
 
     /// Applies a validated policy to new requests.
-    pub async fn reload_runtime_policy(&self, policy: RuntimePolicy) {
-        self.runtime.reload_runtime_policy(policy).await;
+    /// Returns `Superseded` when a newer policy was admitted before publication.
+    ///
+    /// # Errors
+    /// Returns an error if the runtime has closed.
+    pub async fn reload_runtime_policy(
+        &self,
+        policy: RuntimePolicy,
+    ) -> anyhow::Result<super::PolicyUpdate> {
+        self.runtime.reload_runtime_policy(policy).await
+    }
+
+    /// Applies an observed canonical policy or records a source rejection.
+    /// `None` records a rejected observation. Invalid canonical values also return
+    /// `Rejected` without replacing the applied policy. The source is borrowed unchanged.
+    ///
+    /// # Errors
+    /// Returns an error if the runtime has closed.
+    pub async fn apply_policy_candidate(
+        &self,
+        source: Option<&tacacsrs_config::tacacsrs::RuntimePolicy>,
+    ) -> anyhow::Result<super::PolicyUpdate> {
+        let revision = self.runtime.state.admit_policy()?;
+        match source.map(RuntimePolicy::try_from) {
+            Some(Ok(policy)) => self.runtime.publish_policy(revision, policy).await,
+            Some(Err(_)) | None => self.runtime.state.reject_policy(revision),
+        }
     }
 
     /// Applies upstream configuration with its prepared downstream policy.
@@ -151,18 +186,62 @@ impl TacacsClientService {
             .await
     }
 
+    /// Applies materialized servers and coordinator bookkeeping in one commit.
+    pub(crate) async fn publish_materialized_servers(
+        &self,
+        servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
+        policy: PreparedProxyPolicy,
+        validity: super::CredentialLifetime,
+        commit: impl FnOnce() -> Option<super::MaterializationCommit> + Send,
+    ) -> anyhow::Result<()> {
+        self.runtime
+            .publish_materialized_servers(servers, policy, Some(validity), commit)
+            .await
+    }
+
+    /// Withdraws expired upstreams without closing the recoverable runtime.
+    pub(crate) async fn withdraw_expired_material(
+        &self,
+        commit: impl FnOnce() -> Option<super::MaterializationCommit> + Send,
+    ) -> anyhow::Result<()> {
+        let _reload = self.runtime.reload_lock.lock().await;
+        let proxy = self
+            .runtime
+            .state
+            .proxy_transport_settings()
+            .downstream_obfuscation()
+            .clone();
+        self.runtime
+            .state
+            .reload_shared_servers_with_retirement(
+                Vec::new(),
+                proxy,
+                Some(tacacsrs_networking::RequestDeadline::at(tokio::time::Instant::now())),
+                None,
+                commit,
+            )
+            .await
+    }
+
+    pub(crate) fn source_stale_timeout(&self) -> std::time::Duration {
+        self.runtime.state.source_stale_timeout()
+    }
+
+    pub(crate) fn credential_stale_timeout(&self) -> std::time::Duration {
+        self.runtime.state.credential_stale_timeout()
+    }
+
+    /// Returns the applied graceful shutdown budget for an embedding host.
+    /// Capture it once when shutdown begins; later policy updates must not renew it.
+    #[must_use]
+    pub fn shutdown_timeout(&self) -> std::time::Duration {
+        self.runtime.state.shutdown_timeout()
+    }
+
     /// Returns the current configured upstream count.
     #[must_use]
     pub fn server_count(&self) -> usize {
         self.runtime.server_count()
-    }
-
-    /// Serves until a process shutdown signal and joins runtime resources.
-    ///
-    /// # Errors
-    /// Returns a listener or shutdown error after cleanup.
-    pub async fn serve(&self) -> anyhow::Result<()> {
-        self.runtime.serve().await
     }
 
     /// Serves until an embedding host requests shutdown, without installing signals.
@@ -292,7 +371,6 @@ where
             anyhow::bail!("Runtime health and service configuration must enable the same services");
         }
         let servers = enumerate_supported_servers(&config.tacacs_plus, &config.validation_options)?;
-        let eligible_server_count = servers.len();
 
         let connector = factory(proxy_loop_guard.clone());
         let proxy_policy = if !configuration_applied
@@ -313,8 +391,7 @@ where
                 .with_certificate_verification_disabled(config.disable_certificate_verification),
         )?);
         let request_tracker = Arc::new(RequestTracker::default());
-        health.set_eligible_server_count(eligible_server_count);
-        health.set_applied_configuration(configuration_applied);
+        state.publish_initial_health(configuration_applied);
 
         Ok(Self {
             config,
@@ -345,9 +422,25 @@ where
     }
 
     /// Atomically applies a validated runtime policy to new requests.
-    pub async fn reload_runtime_policy(&self, runtime_policy: RuntimePolicy) {
+    /// Newer admitted candidates supersede older updates waiting for publication.
+    ///
+    /// # Errors
+    /// Returns an error if the runtime has closed.
+    pub async fn reload_runtime_policy(
+        &self,
+        runtime_policy: RuntimePolicy,
+    ) -> anyhow::Result<super::PolicyUpdate> {
+        let revision = self.state.admit_policy()?;
+        self.publish_policy(revision, runtime_policy).await
+    }
+
+    async fn publish_policy(
+        &self,
+        revision: super::PolicyRevision,
+        runtime_policy: RuntimePolicy,
+    ) -> anyhow::Result<super::PolicyUpdate> {
         let _reload_guard = self.reload_lock.lock().await;
-        self.state.reload_runtime_policy(runtime_policy);
+        self.state.publish_policy(revision, runtime_policy)
     }
 
     /// Applies TACACS+ configuration and the downstream proxy obfuscation policy.
@@ -373,17 +466,12 @@ where
     ) -> anyhow::Result<()> {
         proxy_downstream_obfuscation.shared_secret()?;
         let servers = enumerate_supported_servers(&tacacs_plus, &self.config.validation_options)?;
-        let eligible_server_count = servers.len();
         self.state
             .reload_shared_servers_with_proxy_downstream_obfuscation(
                 servers.into_iter().map(Arc::new).collect(),
                 proxy_downstream_obfuscation,
             )
             .await?;
-        self.health.set_eligible_server_count(eligible_server_count);
-        self.health.set_applied_configuration(true);
-        self.health
-            .set_upstream_availability(UpstreamAvailability::Unknown);
         Ok(())
     }
 
@@ -402,23 +490,32 @@ where
         servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
         proxy_downstream_obfuscation: PreparedProxyPolicy,
     ) -> anyhow::Result<()> {
+        self.publish_materialized_servers(servers, proxy_downstream_obfuscation, None, || None)
+            .await
+    }
+
+    async fn publish_materialized_servers(
+        &self,
+        servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
+        proxy_downstream_obfuscation: PreparedProxyPolicy,
+        validity: Option<super::CredentialLifetime>,
+        commit: impl FnOnce() -> Option<super::MaterializationCommit> + Send,
+    ) -> anyhow::Result<()> {
         proxy_downstream_obfuscation.shared_secret()?;
         tacacsrs_config::prepare::validate_materialized_servers(
             servers.iter().map(AsRef::as_ref),
             &self.config.validation_options,
         )?;
         let _reload_guard = self.reload_lock.lock().await;
-        let eligible_server_count = servers.len();
         self.state
-            .reload_shared_servers_with_proxy_downstream_obfuscation(
+            .reload_shared_servers_with_retirement(
                 servers,
                 proxy_downstream_obfuscation,
+                None,
+                validity,
+                commit,
             )
             .await?;
-        self.health.set_eligible_server_count(eligible_server_count);
-        self.health.set_applied_configuration(true);
-        self.health
-            .set_upstream_availability(UpstreamAvailability::Unknown);
         Ok(())
     }
 
@@ -426,21 +523,6 @@ where
     #[must_use]
     pub fn server_count(&self) -> usize {
         self.state.server_count()
-    }
-
-    /// Runs the local service listeners until the process stops.
-    ///
-    /// Startup leaves operation connections unopened until their first request.
-    /// If no eligible servers exist, the listeners still start. A later
-    /// datastore reload can make the service ready without a process restart.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the IPC listener cannot be created or if the local
-    /// endpoint configuration is invalid for the current platform.
-    pub async fn serve(&self) -> anyhow::Result<()> {
-        self.serve_until(super::shutdown::process_shutdown_signal())
-            .await
     }
 
     /// Runs listeners until an embedding host requests shutdown, without installing signal handlers.
@@ -454,12 +536,28 @@ where
         &self,
         stop: impl std::future::Future<Output = ()> + Send,
     ) -> anyhow::Result<()> {
+        self.state.ensure_open()?;
         let shutdown = ShutdownCoordinator::new(self.health.clone());
+        tokio::pin!(stop);
+        if stop.as_mut().now_or_never().is_some() {
+            shutdown.initiate_shutdown();
+            let result = self
+                .state
+                .close_and_join(self.state.shutdown_deadline()?)
+                .await;
+            if result.is_ok() {
+                shutdown.mark_stopped();
+            } else {
+                shutdown.fail();
+            }
+            return result;
+        }
         let serving = self.serve_with_shutdown(&shutdown);
         tokio::pin!(serving);
         tokio::select! {
+            biased;
+            () = &mut stop => { shutdown.initiate_shutdown(); serving.await }
             result = &mut serving => result,
-            () = stop => { shutdown.initiate_shutdown(); serving.await }
         }
     }
 
@@ -549,7 +647,7 @@ where
                 }
             }
         }
-        let deadline = self.state.retirement_deadline()?;
+        let deadline = self.state.shutdown_deadline()?;
         self.state.close();
         let draining = async {
             while let Some(result) = tasks.join_next().await {
@@ -665,6 +763,118 @@ mod tests {
         config.local_services.tacacs_proxy_endpoint =
             Some(config.local_services.client_api_endpoint.clone());
         assert!(test_service(config).is_err());
+    }
+
+    #[tokio::test]
+    async fn runtime_health_generation_tracks_catalog_and_policy_publication() {
+        use crate::runtime::RuntimeGeneration;
+
+        let config =
+            service_config(test_endpoint("publication-health"), vec![test_server("primary:49")]);
+        let mut source = config.tacacs_plus.clone();
+        let service = test_service(config).unwrap();
+        assert_eq!(service.health.snapshot().runtime_generation(), Some(RuntimeGeneration::new(0)));
+        service
+            .health
+            .set_upstream_availability(crate::UpstreamAvailability::Available);
+        service
+            .reload_runtime_policy(RuntimePolicy::default())
+            .await
+            .unwrap();
+        let policy = service.health.snapshot();
+        assert_eq!(policy.runtime_generation(), Some(RuntimeGeneration::new(1)));
+        assert_eq!(policy.upstream_availability(), crate::UpstreamAvailability::Available);
+        assert!(policy.has_applied_configuration());
+        source.server.push(test_server("secondary:49"));
+        service.reload_tacacs_plus(source.clone()).await.unwrap();
+        let replacement = service.health.snapshot();
+        assert_eq!(replacement.runtime_generation(), Some(RuntimeGeneration::new(2)));
+        assert_eq!(replacement.eligible_server_count(), 2);
+        assert_eq!(replacement.upstream_availability(), crate::UpstreamAvailability::Unknown);
+        source.server[0].shared_secret = None;
+        assert!(service.reload_tacacs_plus(source).await.is_err());
+        assert_eq!(service.health.snapshot(), replacement);
+    }
+
+    #[tokio::test]
+    async fn shutdown_budget_reloads_without_changing_request_retirement_budget() {
+        let config =
+            service_config(test_endpoint("shutdown-budget"), vec![test_server("primary:49")]);
+        let service = test_service(config).unwrap();
+        let source = tacacsrs_config::policy::parse_runtime_policy(
+            br#"{"tacacsrs:runtime-policy":{
+            "shutdown-timeout-seconds":2,"authentication":{"request-timeout-seconds":100}}}"#,
+        )
+        .unwrap();
+        let original = source.clone();
+        service
+            .reload_runtime_policy(RuntimePolicy::try_from(&source).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(source, original);
+        assert_eq!(service.state.shutdown_timeout(), Duration::from_secs(2));
+        let now = tokio::time::Instant::now();
+        assert!(
+            service.state.shutdown_deadline().unwrap().expires_at() <= now + Duration::from_secs(3)
+        );
+        assert!(
+            service.state.retirement_deadline().unwrap().expires_at()
+                >= now + Duration::from_secs(99)
+        );
+    }
+
+    #[tokio::test]
+    async fn already_stopped_host_does_not_attempt_listener_binding() {
+        let endpoint = test_endpoint("stop-before-bind");
+        let IpcEndpoint::Unix(path) = &endpoint else {
+            panic!("Unix test endpoint required");
+        };
+        tokio::fs::write(path, b"unrelated existing file")
+            .await
+            .unwrap();
+        let config = service_config(endpoint.clone(), vec![test_server("primary:49")]);
+        let service = test_service(config).unwrap();
+        let result = service.serve_until(std::future::ready(())).await;
+        assert_eq!(tokio::fs::read(path).await.unwrap(), b"unrelated existing file");
+        tokio::fs::remove_file(path).await.unwrap();
+        assert!(result.is_ok(), "a stopped host must not attempt to bind: {result:?}");
+        assert_eq!(service.health.snapshot().lifecycle(), RuntimeLifecycle::Stopped);
+    }
+
+    #[tokio::test]
+    async fn waiting_policy_publication_does_not_claim_an_applied_configuration() {
+        let mut config = service_config(
+            test_endpoint("waiting-policy-generation"),
+            vec![test_server("primary:49")],
+        );
+        config.tacacs_plus = tacacsrs_config::TacacsPlus::empty();
+        let health = RuntimeHealthPublisher::new(config.enabled_services());
+        let service =
+            TacacsClientService::waiting_for_configuration(config, health.clone()).unwrap();
+        service
+            .reload_runtime_policy(RuntimePolicy::default())
+            .await
+            .unwrap();
+        let snapshot = health.snapshot();
+        assert_eq!(snapshot.runtime_generation().unwrap().value(), 1);
+        assert!(!snapshot.has_applied_configuration());
+        assert_eq!(snapshot.eligible_server_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn unchanged_reload_preserves_observed_upstream_availability() {
+        let config =
+            service_config(test_endpoint("unchanged-health"), vec![test_server("primary:49")]);
+        let source = config.tacacs_plus.clone();
+        let service = test_service(config).unwrap();
+        service
+            .health
+            .set_upstream_availability(crate::UpstreamAvailability::Available);
+        service.reload_tacacs_plus(source).await.unwrap();
+        assert_eq!(
+            service.health.snapshot().upstream_availability(),
+            crate::UpstreamAvailability::Available
+        );
     }
 
     #[tokio::test]
@@ -1038,7 +1248,8 @@ mod tests {
         );
 
         let service = test_service_with_connector(config, connector).unwrap();
-        let service_task = tokio::spawn(async move { service.serve().await });
+        let service_task =
+            tokio::spawn(async move { service.serve_until(std::future::pending()).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let client = ServiceClient::connect(endpoint.clone()).await.unwrap();
@@ -1090,7 +1301,8 @@ mod tests {
         let config = service_config(endpoint.clone(), vec![test_server("primary:49")]);
 
         let service = test_service_with_connector(config, connector).unwrap();
-        let service_task = tokio::spawn(async move { service.serve().await });
+        let service_task =
+            tokio::spawn(async move { service.serve_until(std::future::pending()).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let client = ServiceClient::connect(endpoint.clone()).await.unwrap();
