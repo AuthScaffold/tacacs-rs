@@ -15,6 +15,11 @@ use crate::source::{
     ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigDatastore, ConfigDelta,
     ConfigObservation, DatastoreRuntimePolicy, InitialLoadPolicy,
 };
+#[cfg(windows)]
+use crate::source::directory_watch::DirectoryWatch;
+use crate::source::directory_watch::acknowledge_observation_active;
+#[cfg(not(windows))]
+use crate::source::directory_watch::{wait_for_native_change, wait_for_observation_failure};
 use super::builder::tacacs_plus_from_cli_input;
 use super::model::CliDatastoreInput;
 
@@ -27,6 +32,11 @@ use super::model::CliDatastoreInput;
 /// The observation owns its watcher and pending read. Reads use Tokio's blocking
 /// pool, so they do not block the async runtime. A started blocking read can
 /// finish after session drop, but it cannot publish into a dropped session.
+/// Observation failure interrupts a pending read and prevents candidate publication.
+/// Linux observations remain passive while idle. Windows observations check
+/// captured directory identities every 100 ms because a native watcher can
+/// stop silently. Removal, rename, or replacement fails the observation. No
+/// detached monitor is used.
 #[derive(Debug, Clone)]
 pub struct CliFileDatastore {
     input: CliDatastoreInput,
@@ -50,10 +60,14 @@ impl CliFileDatastore {
         input.capture_paths().await?;
         let watched_paths = input.watched_paths();
         let (events, invalidations) = watch::channel(None::<Arc<notify::Error>>);
+        #[cfg(windows)]
+        let mut directory_watch = None;
         let watcher = if watched_paths.is_empty() {
             None
         } else {
             let watch_dirs = watch_directories(&watched_paths);
+            #[cfg(windows)]
+            let captured_directory_watch = DirectoryWatch::new(watch_dirs.clone())?;
             let directories = watch_dirs.clone();
             let mut watcher = RecommendedWatcher::new(
                 move |event: notify::Result<Event>| {
@@ -89,11 +103,19 @@ impl CliFileDatastore {
                         format!("watch configuration directory {}", directory.display())
                     })?;
             }
+            #[cfg(windows)]
+            {
+                captured_directory_watch.ensure_current()?;
+                directory_watch = Some(captured_directory_watch);
+            }
             Some(watcher)
         };
         Ok(FileObservation {
             watcher,
+            #[cfg(windows)]
+            directory_watch,
             input,
+            failures: invalidations.clone(),
             invalidations,
             previous: None,
             pending: true,
@@ -134,7 +156,10 @@ impl ConfigDatastore for CliFileDatastore {
 
 struct FileObservation {
     watcher: Option<RecommendedWatcher>,
+    #[cfg(windows)]
+    directory_watch: Option<DirectoryWatch>,
     input: CliDatastoreInput,
+    failures: watch::Receiver<Option<Arc<notify::Error>>>,
     invalidations: watch::Receiver<Option<Arc<notify::Error>>>,
     previous: Option<Arc<TacacsPlus>>,
     pending: bool,
@@ -150,6 +175,91 @@ impl Drop for FileObservation {
     }
 }
 
+impl FileObservation {
+    async fn wait_for_debounce(&mut self, deadline: Instant) -> anyhow::Result<()> {
+        #[cfg(windows)]
+        {
+            let directory_watch = self
+                .directory_watch
+                .as_mut()
+                .context("configuration directory watch is missing")?;
+            tokio::select! {
+                biased;
+                error = directory_watch.wait_for_observation_failure(
+                    &mut self.failures,
+                    "Configuration observation failed",
+                    "configuration watcher stopped",
+                ) => return Err(error),
+                () = tokio::time::sleep_until(deadline) => {}
+            }
+        }
+        #[cfg(not(windows))]
+        tokio::select! {
+            biased;
+            error = wait_for_observation_failure(
+                &mut self.failures,
+                "Configuration observation failed",
+                "configuration watcher stopped",
+            ) => return Err(error),
+            () = tokio::time::sleep_until(deadline) => {}
+        }
+        Ok(())
+    }
+
+    async fn read_candidate(&mut self) -> anyhow::Result<anyhow::Result<TacacsPlus>> {
+        let read = self
+            .read
+            .as_mut()
+            .context("configuration read is missing")?;
+        let candidate;
+        if self.watcher.is_some() {
+            #[cfg(windows)]
+            {
+                let directory_watch = self
+                    .directory_watch
+                    .as_mut()
+                    .context("configuration directory watch is missing")?;
+                candidate = tokio::select! {
+                    biased;
+                    error = directory_watch.wait_for_observation_failure(
+                        &mut self.failures,
+                        "Configuration observation failed",
+                        "configuration watcher stopped",
+                    ) => return Err(error),
+                    candidate = read => candidate,
+                };
+            }
+            #[cfg(not(windows))]
+            {
+                candidate = tokio::select! {
+                    biased;
+                    error = wait_for_observation_failure(
+                        &mut self.failures,
+                        "Configuration observation failed",
+                        "configuration watcher stopped",
+                    ) => return Err(error),
+                    candidate = read => candidate,
+                };
+            }
+            acknowledge_observation_active(
+                &mut self.failures,
+                "Configuration observation failed",
+                "configuration watcher stopped",
+            )?;
+        } else {
+            candidate = read.await;
+        }
+        #[cfg(windows)]
+        if let Some(directory_watch) = &self.directory_watch {
+            directory_watch
+                .ensure_current()
+                .context("Configuration observation failed")?;
+        }
+        self.read = None;
+        candidate.context("configuration reader stopped")
+    }
+}
+
 #[async_trait]
 impl ConfigObservation for FileObservation {
     async fn next(&mut self) -> anyhow::Result<Option<ConfigChangeEvent>> {
@@ -157,34 +267,40 @@ impl ConfigObservation for FileObservation {
             if self.watcher.is_none() {
                 return Ok(None);
             }
-            self.invalidations
-                .changed()
-                .await
-                .context("configuration watcher stopped")?;
+            #[cfg(windows)]
+            self.directory_watch
+                .as_mut()
+                .context("configuration directory watch is missing")?
+                .wait_for_change(&mut self.invalidations, "configuration watcher stopped")
+                .await?;
+            #[cfg(not(windows))]
+            wait_for_native_change(&mut self.invalidations, "configuration watcher stopped")
+                .await?;
             self.pending = true;
             self.debounce_until = Some(Instant::now() + self.input.debounce);
         }
         if self.read.is_none() {
             if let Some(deadline) = self.debounce_until {
-                tokio::time::sleep_until(deadline).await;
+                self.wait_for_debounce(deadline).await?;
             }
-            let error = self.invalidations.borrow_and_update().clone();
-            if let Some(error) = error {
-                anyhow::bail!("Configuration observation failed: {error}");
+            if self.watcher.is_some() {
+                acknowledge_observation_active(
+                    &mut self.invalidations,
+                    "Configuration observation failed",
+                    "configuration watcher stopped",
+                )?;
+            }
+            #[cfg(windows)]
+            if let Some(directory_watch) = &self.directory_watch {
+                directory_watch.ensure_current()?;
             }
             let input = self.input.clone();
             self.read =
                 Some(tokio::task::spawn_blocking(move || tacacs_plus_from_cli_input(&input)));
         }
-        let read = self
-            .read
-            .as_mut()
-            .context("configuration read is missing")?;
-        let candidate = read.await;
-        self.read = None;
+        let candidate = self.read_candidate().await?;
         self.pending = false;
         self.debounce_until = None;
-        let candidate = candidate.context("configuration reader stopped")?;
         Ok(Some(if let Ok(snapshot) = candidate {
             let snapshot = Arc::new(snapshot);
             let delta = ConfigDelta::diff(self.previous.as_deref(), &snapshot);
@@ -241,6 +357,7 @@ fn paths_match(event_path: &Path, watched_path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use tokio::time::{timeout, Duration};
@@ -250,6 +367,8 @@ mod tests {
         CliConfigSource, CliDatastoreInput, CliSecurity, CliSecurityInputs, CliServerInput,
     };
     use super::*;
+
+    static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn observation_filters_access_but_reconciles_rescan_events() {
@@ -266,21 +385,25 @@ mod tests {
     }
 
     fn temp_config(contents: &str) -> PathBuf {
-        let unique = SystemTime::now()
+        let sequence = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+        let time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock must be after epoch")
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("cli-file-datastore-{unique}.json"));
+        let path = std::env::temp_dir()
+            .join(format!("cli-file-datastore-{}-{time}-{sequence}.json", std::process::id()));
         fs::write(&path, contents).expect("temporary configuration file must be written");
         path
     }
 
     fn temp_file(prefix: &str, contents: &[u8]) -> PathBuf {
-        let unique = SystemTime::now()
+        let sequence = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+        let time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock must be after epoch")
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("cli-file-datastore-{prefix}-{unique}"));
+        let path = std::env::temp_dir()
+            .join(format!("cli-file-datastore-{prefix}-{}-{time}-{sequence}", std::process::id()));
         fs::write(&path, contents).expect("temporary file must be written");
         path
     }
@@ -442,6 +565,7 @@ mod tests {
         let mut observation = datastore.open_observation().await.unwrap();
         observation.next().await.unwrap();
         let (events, invalidations) = watch::channel(None);
+        observation.failures = invalidations.clone();
         observation.invalidations = invalidations;
         for _ in 0..10_000 {
             events.send_replace(None);
@@ -483,6 +607,7 @@ mod tests {
             Ok(first)
         }));
         let (events, invalidations) = watch::channel(None);
+        observation.failures = invalidations.clone();
         observation.invalidations = invalidations;
         {
             let next = observation.next();
@@ -505,6 +630,38 @@ mod tests {
             panic!("invalidation during the read must trigger reconciliation");
         };
         assert_eq!(latest.config.server[0].address, "192.0.2.11");
+        assert!(!observation.invalidations.has_changed().unwrap());
+        drop(observation);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn observation_failure_wins_when_a_read_is_ready() {
+        let path = temp_config(&config("192.0.2.10"));
+        let datastore = CliFileDatastore::new(
+            CliDatastoreInput::new(CliConfigSource::YangFile { path: path.clone() }, "file")
+                .with_debounce(Duration::ZERO),
+        );
+        let mut observation = datastore.open_observation().await.unwrap();
+        let candidate = tacacs_plus_from_cli_input(&observation.input).unwrap();
+        observation.read = Some(tokio::spawn(async move { Ok(candidate) }));
+        timeout(Duration::from_secs(1), async {
+            while !observation.read.as_ref().unwrap().is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("candidate read must be ready");
+        let (events, invalidations) =
+            watch::channel(Some(Arc::new(notify::Error::generic("test observation loss"))));
+        observation.failures = invalidations.clone();
+        observation.invalidations = invalidations;
+
+        let error = observation.next().await.unwrap_err();
+        assert!(error.to_string().contains("test observation loss"));
+        assert!(observation.previous.is_none());
+
+        drop(events);
         drop(observation);
         fs::remove_file(path).unwrap();
     }
@@ -543,6 +700,55 @@ mod tests {
 
     #[tokio::test]
     async fn watched_directory_loss_is_an_observation_error() {
+        assert_watched_directory_loss_is_an_observation_error(false).await;
+    }
+
+    #[tokio::test]
+    async fn watched_directory_rename_is_an_observation_error() {
+        assert_watched_directory_loss_is_an_observation_error(true).await;
+    }
+
+    #[tokio::test]
+    async fn watched_directory_rename_interrupts_a_stalled_read() {
+        let directory = temp_config("").with_extension("stalled-directory");
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("config.json");
+        fs::write(&path, config("192.0.2.10")).unwrap();
+        let datastore = CliFileDatastore::new(
+            CliDatastoreInput::new(CliConfigSource::YangFile { path: path.clone() }, "file")
+                .with_debounce(Duration::ZERO),
+        );
+        let mut observation = datastore.open_observation().await.unwrap();
+        let candidate = tacacs_plus_from_cli_input(&observation.input).unwrap();
+        let (release, stalled) = tokio::sync::oneshot::channel();
+        observation.read = Some(tokio::spawn(async move {
+            stalled.await.unwrap();
+            Ok(candidate)
+        }));
+        let renamed = directory.with_extension("stalled-renamed");
+        {
+            let next = observation.next();
+            tokio::pin!(next);
+            assert!(futures_util::poll!(&mut next).is_pending());
+            fs::rename(&directory, &renamed).unwrap();
+            fs::create_dir(&directory).unwrap();
+            fs::write(&path, config("192.0.2.11")).unwrap();
+            let result = timeout(Duration::from_secs(1), &mut next)
+                .await
+                .expect("directory loss must interrupt the stalled read");
+            assert!(result.is_err());
+        }
+
+        release.send(()).unwrap();
+        let read = observation.read.take().unwrap();
+        read.await.unwrap().unwrap();
+        drop(observation);
+        fs::remove_dir_all(renamed).unwrap();
+        fs::remove_dir_all(&directory).unwrap();
+        fs::remove_file(directory.with_extension("json")).unwrap();
+    }
+
+    async fn assert_watched_directory_loss_is_an_observation_error(rename: bool) {
         let directory = temp_config("").with_extension("directory");
         fs::create_dir(&directory).unwrap();
         let path = directory.join("config.json");
@@ -553,11 +759,22 @@ mod tests {
         );
         let mut observation = datastore.observe().await.unwrap();
         observation.next().await.unwrap();
-        fs::remove_file(path).unwrap();
-        fs::remove_dir(&directory).unwrap();
+        let renamed = directory.with_extension("renamed");
+        if rename {
+            fs::rename(&directory, &renamed).unwrap();
+            fs::create_dir(&directory).unwrap();
+            fs::write(&path, config("192.0.2.11")).unwrap();
+        } else {
+            fs::remove_file(path).unwrap();
+            fs::remove_dir(&directory).unwrap();
+        }
         timeout(Duration::from_secs(1), async { while observation.next().await.is_ok() {} })
             .await
             .expect("watch loss must be reported");
+        if rename {
+            fs::remove_dir_all(renamed).unwrap();
+            fs::remove_dir_all(&directory).unwrap();
+        }
         fs::remove_file(directory.with_extension("json")).unwrap();
     }
 
