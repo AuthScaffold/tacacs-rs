@@ -1,5 +1,9 @@
 # session-wrapper
 
+This experimental package is excluded from default Cargo builds and supported release artifacts.
+Explicit `cargo build -p session-wrapper` and `cargo test -p session-wrapper` commands remain available.
+Full workspace builds and CI tests still include it.
+
 `session-wrapper` is a Linux `x86_64` proof-of-concept login/session wrapper for TACACS+ command authorization. It starts a command under a seccomp user-notification filter. The parent wrapper process observes every `execve` crossing. It then decides, in real time, whether to allow or deny the command.
 
 ## Platform support
@@ -20,7 +24,7 @@ The wrapper:
 8. Drops the child to the requested UID/GID and execs `COMMAND [ARGS]...`.
 9. For each intercepted exec:
    - Compares the exec path with the **allowlist**. If the path matches, it responds CONTINUE immediately.
-   - Otherwise, sends a TACACS+ **accounting** record to the agent and interprets the response status as allow/deny.
+  - Otherwise, sends a TACACS+ **authorization** request to the agent and applies the shared unchanged-command interpreter.
    - On IPC failure, applies the configured `--fail-policy` (closed = deny, open = allow).
 10. Keeps supervising until the initial child **and all subreaped descendants** exit.
 

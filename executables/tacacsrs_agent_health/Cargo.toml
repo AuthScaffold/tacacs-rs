@@ -8,7 +8,7 @@ description = "gRPC health probe for tacacsrs-agentd"
 
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
-tacacsrs-agent-client = { path = "../../libraries/tacacsrs_agent_client" }
+tacacsrs-ipc = { path = "../../libraries/tacacsrs_ipc" }
 tokio = { version = "1.52.3", features = ["macros", "rt", "time"] }
 tonic-health = "0.14.6"
 

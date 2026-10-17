@@ -25,7 +25,7 @@ mod routing_tests;
 /// The bridge holds an [`OperationRouter`], not the whole upstream manager. It
 /// can select servers and record outcomes. It cannot read proxy settings or
 /// change the runtime configuration.
-pub(super) struct UpstreamBridge<
+pub(crate) struct UpstreamBridge<
     Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
 > {
     router: OperationRouter<Connector>,
@@ -41,7 +41,7 @@ impl<Connector: EndpointConnector> Clone for UpstreamBridge<Connector> {
 
 impl<Connector: EndpointConnector> UpstreamBridge<Connector> {
     /// Creates a client API bridge for the shared upstream manager.
-    pub(super) fn new(upstream_manager: Arc<UpstreamManager<Connector>>) -> Self {
+    pub(crate) fn new(upstream_manager: Arc<UpstreamManager<Connector>>) -> Self {
         Self {
             router: OperationRouter::new(upstream_manager, PolicyService::ClientApi),
         }
@@ -185,7 +185,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.server.as_deref(), Some("primary:49"));
-        assert!(!error.retriable);
+        assert_eq!(error.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::Never);
 
         let response = bridge
             .execute_authorization_request(build_authorization_request())
@@ -209,7 +209,10 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(error.retriable);
+        assert_eq!(
+            error.facts.retry_advice(),
+            tacacsrs_protocol::failure::RetryAdvice::AfterRecovery
+        );
         assert!(error.message.contains("waiting for initial configuration"));
     }
 }

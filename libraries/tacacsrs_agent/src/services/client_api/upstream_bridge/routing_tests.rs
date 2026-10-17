@@ -333,7 +333,10 @@ async fn overload_is_retriable_without_upstream_io_and_cancellation_releases_cap
                 .execute_accounting_request(accounting())
                 .await
                 .unwrap_err();
-            assert!(error.retriable);
+            assert_eq!(
+                error.facts.retry_advice(),
+                tacacsrs_protocol::failure::RetryAdvice::AfterRecovery
+            );
             assert!(error.message.contains("admission queue is full"));
             assert_eq!(
                 connector
@@ -488,7 +491,8 @@ async fn deadline_includes_admission_and_retry_and_survives_policy_reload() {
         result = &mut request => panic!("backup request did not start: {result:?}"),
     }
     let error = request.await.unwrap_err();
-    assert!(!error.retriable, "a sent request with no reply must not retry");
+    assert_eq!(error.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::Never);
+    assert_eq!(error.facts.delivery(), tacacsrs_protocol::failure::DeliveryState::OutcomeUnknown);
     assert_eq!(started.elapsed(), Duration::from_secs(5));
     assert_eq!(
         connector
@@ -558,7 +562,7 @@ async fn expired_upstream_attempt_routes_the_next_request_to_backup() {
         .execute_accounting_request(accounting())
         .await
         .unwrap_err();
-    assert!(!error.retriable);
+    assert_eq!(error.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::Never);
     assert_eq!(
         connector
             .attempts("backup:49", OperationKind::Accounting)
@@ -591,7 +595,7 @@ async fn ordered_retry_stops_on_unknown_authentication_outcome() {
         .expect_err("uncertain authentication must not be replayed");
 
     assert_eq!(error.server.as_deref(), Some("primary:49"));
-    assert!(!error.retriable);
+    assert_eq!(error.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::Never);
     assert_eq!(
         connector
             .attempts("backup:49", OperationKind::Authentication)
@@ -646,10 +650,10 @@ async fn uncertain_accounting_failure_does_not_retry() {
         .execute_accounting_request(accounting())
         .await
         .expect_err("an uncertain accounting result must not be replayed");
-    let decoded = tacacsrs_protocol::operations::ServiceError::from(
-        tacacsrs_agent_client::ipc::ServiceError::from(error),
-    );
-    assert!(!decoded.retriable, "IPC must not recommend replay of an unknown outcome");
+    assert_eq!(error.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::Never);
+    assert_eq!(error.facts.delivery(), tacacsrs_protocol::failure::DeliveryState::OutcomeUnknown);
+    assert_eq!(error.runtime_generation, Some(0));
+    assert_eq!(error.attempt.map(std::num::NonZeroU32::get), Some(1));
 
     assert_eq!(
         connector
@@ -674,7 +678,7 @@ async fn uncertain_failure_stops_before_binding_a_missing_backup() {
         .execute_pap_authentication_request(authentication())
         .await
         .unwrap_err();
-    assert!(!error.retriable, "IPC must not recommend replay of an uncertain attempt");
+    assert_eq!(error.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::Never);
     assert_eq!(
         connector
             .attempts("backup:49", OperationKind::Authentication)
@@ -709,7 +713,7 @@ async fn ordered_retry_stops_on_unknown_authorization_outcome() {
         .execute_authorization_request(request)
         .await
         .unwrap_err();
-    assert!(!error.retriable);
+    assert_eq!(error.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::Never);
     assert_eq!(error.server.as_deref(), Some("primary:49"));
     assert_eq!(
         connector
@@ -753,10 +757,8 @@ async fn unsent_accounting_bind_failure_remains_retriable() {
         .execute_accounting_request(accounting())
         .await
         .unwrap_err();
-    let decoded = tacacsrs_protocol::operations::ServiceError::from(
-        tacacsrs_agent_client::ipc::ServiceError::from(error),
-    );
-    assert!(decoded.retriable);
+    assert_eq!(error.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::AfterRecovery);
+    assert_eq!(error.facts.delivery(), tacacsrs_protocol::failure::DeliveryState::NotSent);
 }
 
 #[tokio::test]

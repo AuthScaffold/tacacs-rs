@@ -188,7 +188,7 @@ mod tests {
     use tacacsrs_config::tacacsrs::{LocalServices, ProxyCredentialSource};
     use tacacsrs_config::proxy_policy::prepare_proxy_policy;
     use tacacsrs_agent::{EnabledServices, PreparedProxyPolicy};
-    use tacacsrs_agent_client::IpcEndpoint;
+    use tacacsrs_ipc::IpcEndpoint;
     use tacacsrs_config::TacacsPlusServerType;
     use tacacsrs_config::{
         TacacsPlus, TacacsPlusBuilder, TacacsPlusServerBuilder, ValidationOptions,

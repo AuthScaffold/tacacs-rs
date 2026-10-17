@@ -68,7 +68,9 @@ pub enum AuthorizationAuthenticationContext {
 ///                               +-----------------------------+
 ///                               | message: String             |
 ///                               | server: Option<String>      |
-///                               | retriable: bool             |
+///                               | facts: FailureFacts         |
+///                               | runtime_generation: Option  |
+///                               | attempt: Option<NonZeroU32> |
 ///                               +-----------------------------+
 /// ```
 ///
@@ -669,22 +671,26 @@ impl AuthenticationResponseStatus {
 /// Structured error returned by the local service when a request cannot be
 /// fulfilled.
 ///
-/// The service uses this type to build error responses. The client uses it to
-/// interpret those responses. The [`retriable`](ServiceError::retriable) flag
-/// permits a retry after service failover or recovery. Unknown delivery outcomes
-/// must not set this flag merely because the transport error is temporary.
+/// Direct clients and IPC adapters preserve these facts without flattening them
+/// into message text. Replay advice derives from the known cause and delivery
+/// state. A temporary transport failure does not make unknown delivery safe.
 ///
 /// # Builder pattern
 ///
 /// ```
 /// # use tacacsrs_protocol::operations::ServiceError;
-/// let error = ServiceError::new("connection unavailable before transmission")
-///     .with_server("tacacs-a:49")
-///     .retriable(true);
+/// # use tacacsrs_protocol::failure::{DeliveryState, FailureCategory, FailureFacts, FailurePhase, RetryAdvice};
+/// let facts = FailureFacts::new(
+///     FailureCategory::Unavailable,
+///     FailurePhase::Routing,
+///     DeliveryState::NotSent,
+/// );
+/// let error = ServiceError::new("connection unavailable before transmission", facts)
+///     .with_server("tacacs-a:49");
 ///
 /// assert_eq!(error.message, "connection unavailable before transmission");
 /// assert_eq!(error.server.as_deref(), Some("tacacs-a:49"));
-/// assert!(error.retriable);
+/// assert_eq!(error.facts.retry_advice(), RetryAdvice::AfterRecovery);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceError {
@@ -692,21 +698,24 @@ pub struct ServiceError {
     pub message: String,
     /// Upstream server associated with the error, if the service selected one.
     pub server: Option<String>,
-    /// Whether the caller can retry without an unknown prior delivery outcome.
-    pub retriable: bool,
+    /// Known cause, phase, and delivery state. Replay advice derives from these facts.
+    pub facts: crate::failure::FailureFacts,
+    /// Captured routing generation, scoped to the running service instance.
+    pub runtime_generation: Option<u64>,
+    /// One-based attempt number within the captured request.
+    pub attempt: Option<std::num::NonZeroU32>,
 }
 
 impl ServiceError {
-    /// Creates a new service error with the given message.
-    ///
-    /// The `server` field defaults to `None` and `retriable` defaults to
-    /// `false`. Use the builder methods to set them.
+    /// Creates an error from explicit facts without assuming delivery or retry safety.
     #[must_use]
-    pub fn new(message: impl Into<String>) -> Self {
+    pub fn new(message: impl Into<String>, facts: crate::failure::FailureFacts) -> Self {
         Self {
             message: message.into(),
             server: None,
-            retriable: false,
+            facts,
+            runtime_generation: None,
+            attempt: None,
         }
     }
 
@@ -717,13 +726,32 @@ impl ServiceError {
         self
     }
 
-    /// Sets whether the caller can retry the request.
+    /// Records the routing generation captured before admission.
     #[must_use]
-    pub const fn retriable(mut self, retriable: bool) -> Self {
-        self.retriable = retriable;
+    pub const fn with_runtime_generation(mut self, generation: u64) -> Self {
+        self.runtime_generation = Some(generation);
+        self
+    }
+
+    /// Records the one-based upstream attempt number.
+    #[must_use]
+    pub const fn with_attempt(mut self, attempt: std::num::NonZeroU32) -> Self {
+        self.attempt = Some(attempt);
         self
     }
 }
+
+impl std::fmt::Display for ServiceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)?;
+        if let Some(server) = &self.server {
+            write!(formatter, " via {server}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ServiceError {}
 
 #[cfg(test)]
 mod tests {

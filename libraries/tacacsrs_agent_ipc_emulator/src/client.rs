@@ -1,7 +1,7 @@
 use anyhow::Context;
 use http::Uri;
 use hyper_util::rt::TokioIo;
-use tacacsrs_agent_client::IpcEndpoint;
+use tacacsrs_ipc::IpcEndpoint;
 use tonic::transport::{Channel, Endpoint};
 use tower::service_fn;
 

@@ -5,10 +5,8 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use clap::{Parser, ValueEnum};
-use tacacsrs_agent_client::health::{
-    LIVENESS_HEALTH_SERVICE, READINESS_HEALTH_SERVICE, STARTUP_HEALTH_SERVICE,
-};
-use tacacsrs_agent_client::{HealthClient, IpcEndpoint};
+use tacacsrs_ipc::health::{LIVENESS_HEALTH_SERVICE, READINESS_HEALTH_SERVICE, STARTUP_HEALTH_SERVICE};
+use tacacsrs_ipc::{HealthClient, IpcEndpoint};
 use tonic_health::pb::health_check_response::ServingStatus;
 
 const EXIT_NOT_SERVING: u8 = 1;

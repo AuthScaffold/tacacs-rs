@@ -1,5 +1,9 @@
 # tacacsrs-agent-ipc-emulator
 
+This library and its companion `tacacsrs-agent-ipc-emulatord` executable are experimental.
+Default Cargo builds and supported release artifacts exclude both packages. Full workspace builds and CI tests still include them.
+Use `cargo test -p tacacsrs-agent-ipc-emulator` or `cargo run -p tacacsrs-agent-ipc-emulatord -- --help` for explicit selection.
+
 OPA/Rego-driven emulator for the local `TacacsAgent` gRPC IPC API. It is
 intended for integration tests that need to exercise `ServiceClient`, `tacon`,
 `session-wrapper`, or other IPC clients without running `tacacsrs-agentd` and a
@@ -65,7 +69,7 @@ that drives an authorization denylist from fixed policy data.
 
 ```rust,no_run
 # async fn example() -> anyhow::Result<()> {
-use tacacsrs_agent_client::ServiceClient;
+use tacacsrs_ipc::ServiceClient;
 use tacacsrs_agent_ipc_emulator::{EmulatorPolicy, IpcEmulator};
 
 let policy = EmulatorPolicy::new(

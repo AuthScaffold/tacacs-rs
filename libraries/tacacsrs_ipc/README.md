@@ -1,11 +1,12 @@
-# tacacsrs-agent-client
+# tacacsrs-ipc
 
 Reusable local IPC transport for the central TACACS+ client service.
 
-This crate is the **client-facing half** of the service architecture. It owns
-the protobuf schema, generated gRPC bindings, conversions, and the `ServiceClient` wrapper that local
-consumers (such as [TACON](../../executables/tacon/)) use to talk to the
-long-lived TACACS+ client service.
+This crate owns the protobuf schema, generated gRPC bindings, conversions,
+the reusable `ServiceClient` channel, and the bounded IPC server adapter.
+Local consumers such as [TACON](../../executables/tacon/) use the client SDK.
+The daemon composes the server adapter with an agent operation handler.
+The agent runtime does not depend on this crate or generated IPC bindings.
 
 The `tacacsrs-protocol` package owns logical requests, responses, and authorization interpretation.
 Direct callers and IPC callers use those same types.
@@ -19,15 +20,18 @@ Direct callers and IPC callers use those same types.
 - Expose operation-centric Rust types so callers never deal with generated
   protobuf structs directly.
 - Support Unix domain socket IPC on Linux and loopback TCP for the IPC emulator.
+- Keep server adaptation independent of agent routing, canonical configuration,
+  and networking connector types.
 
 ## Module hierarchy
 
 ```text
-tacacsrs_agent_client
+tacacsrs_ipc
 ├── client      - ServiceClient wrapper
 ├── endpoint    - IpcEndpoint parsing
 ├── convert     - private conversions to shared protocol operations
 ├── health      - standard health client
+├── server      - domain handler, bounded Unix listener, and health publication
 └── ipc         - generated protobuf/gRPC bindings
 ```
 
@@ -49,7 +53,7 @@ tacacsrs_agent_client
 ┌──────────────────────────────┐
 │ Central TACACS+ Client       │
 │ Service                      │
-│ (tacacsrs-agent)             │
+│ (IPC adapter + agent handler)│
 └──────┬───────────────────────┘
        │ gRPC reply
        v
@@ -108,7 +112,7 @@ and identical TACACS+ request bodies through direct and IPC paths.
 ## Usage example
 
 ```rust,no_run
-use tacacsrs_agent_client::{IpcEndpoint, ServiceClient};
+use tacacsrs_ipc::{IpcEndpoint, ServiceClient};
 use tacacsrs_protocol::operations::AccountingOperation;
 
 #[tokio::main]

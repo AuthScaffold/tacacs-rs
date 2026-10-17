@@ -18,12 +18,13 @@ log = "0.4"
 rustls-pki-types = "1.14.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tacacsrs-agent-client = { path = "../../libraries/tacacsrs_agent_client" }
+tacacsrs-ipc = { path = "../../libraries/tacacsrs_ipc" }
 tacacsrs-agent = { path = "../../libraries/tacacsrs_agent" }
 tacacsrs-config = { path = "../../libraries/tacacsrs_config" }
 tacacsrs-credential-http = { path = "../../libraries/tacacsrs_credential_http" }
 tacacsrs-credential-resolution = { path = "../../libraries/tacacsrs_credential_resolution" }
 tacacsrs-networking = { path = "../../libraries/tacacsrs_networking" }
+tacacsrs-protocol = { path = "../../libraries/tacacsrs_protocol" }
 tacacsrs-secrets = { path = "../../libraries/tacacsrs_secrets" }
 tacacsrs-sonic = { path = "../../libraries/tacacsrs_sonic" }
 tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "net", "parking_lot", "process", "rt", "rt-multi-thread", "signal", "sync", "time"] }
@@ -40,7 +41,6 @@ foreign-types = "0.3.2"
 openssl = "0.10.80"
 openssl-sys = "0.9.116"
 tokio-openssl = "0.6.5"
-tacacsrs-protocol = { path = "../../libraries/tacacsrs_protocol" }
 tokio = { version = "1.52.3", features = ["test-util"] }
 tonic = "0.14.6"
 

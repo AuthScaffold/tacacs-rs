@@ -44,6 +44,10 @@ impl<Connector: EndpointConnector> Clone for OperationRouter<Connector> {
 }
 
 impl<Connector: EndpointConnector> RequestRouting<Connector> {
+    pub(crate) fn generation(&self) -> u64 {
+        self.lease.generation()
+    }
+
     pub(crate) fn reserve(
         &self,
         body_length: usize,

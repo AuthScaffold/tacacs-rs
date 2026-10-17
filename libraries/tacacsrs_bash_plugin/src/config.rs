@@ -4,7 +4,7 @@ use std::os::raw::c_int;
 use std::sync::Mutex;
 use std::time::SystemTime;
 
-use tacacsrs_agent_client::IpcEndpoint;
+use tacacsrs_ipc::IpcEndpoint;
 
 use crate::logging::debug_log;
 

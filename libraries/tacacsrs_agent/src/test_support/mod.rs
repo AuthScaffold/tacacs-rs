@@ -4,8 +4,10 @@
 //! required fake servers and domain request builders.
 
 mod fake_upstream;
+mod listeners;
 mod requests;
 
 pub(crate) use fake_upstream::{FakeConnection, FakeConnector};
+pub(crate) use listeners::{BlockingClientApiListener, TestClientApiListener};
 pub(crate) use requests::build_authorization_request;
 pub(crate) use requests::build_request;

@@ -2,7 +2,9 @@
 
 `tacacs-rs` implements the TACACS+ protocol in Rust. It provides TACACS+ authentication, authorization, and accounting components for network infrastructure.
 
-The `tacacsrs-agent` component provides a TACACS+ TCP proxy and a gRPC-based AAA service. The `tacon` application tests plain TCP and TLS transport modes. These modes include mTLS, TLS PSK, and TLS PSK-DHE.
+The `tacacsrs-agent` component owns routed AAA operations, configuration supervision, and the raw TACACS+ proxy.
+The daemon composes this runtime with the gRPC adapter from `tacacsrs-ipc`.
+The `tacon` application supports plain TCP and TLS, including mTLS, TLS PSK, and TLS PSK-DHE.
 
 The workspace also provides configuration parsing, daemon packaging, IPC emulation, and integration components.
 
@@ -39,34 +41,54 @@ For the host cutover procedure, read the [Plain TACACS+ to TACACS+ over TLS Tran
 | Component | Description |
 |-----------|-------------|
 | **tacacsrs-protocol** | Pure wire types, logical operations, exchange descriptions, and conversation validation |
-| **tacacsrs-agent** | TACACS+ TCP proxy and gRPC-based AAA service library |
+| **tacacsrs-agent** | Configuration supervision, routed operations, health, shutdown, and raw TACACS+ proxy |
+| **tacacsrs-ipc** | Protobuf contract, reusable channel SDK, and bounded gRPC server adapter |
 | **tacon** | TACACS+ test application for AAA operations and transport modes |
 | **tacacsrs-agentd** | Daemon that hosts `tacacsrs-agent`, maintains upstream connections, and manages failover |
-| **tacacsrs-agent-ipc-emulatord** | OPA/Rego-based gRPC IPC emulator for `ServiceClient` integration tests |
+| **tacacsrs-agent-ipc-emulatord** | Experimental OPA/Rego IPC emulator, excluded from supported release artifacts |
 | **tacacsrs-config** | YANG JSON parser, validator, and local credential-bundle enumerator for `ietf-system-tacacs-plus` |
 | **tacacsrs-credential-resolution** | Provider-neutral credential plans, secret-safe material, and request-result matching |
-| **session-wrapper** | Linux proof of concept for TACACS+ command authorization through seccomp user notifications |
+| **session-wrapper** | Experimental Linux seccomp authorization wrapper, excluded from supported release artifacts |
+
+## Supported Core
+
+The workspace `default-members` defines the supported core. Plain `cargo build` and `cargo test` select these 13 packages.
+The release products are `tacon`, `tacacsrs-agentd`, `tacacsrs-agent-health`, and the Bash plugin.
+Windows releases contain only `tacon` direct mode. Linux GNU supports the complete core.
+
+The session wrapper, Rego emulator library, and emulator daemon are experimental.
+They remain available for explicit builds and tests, but are not supported release artifacts:
+
+```bash
+cargo build -p session-wrapper -p tacacsrs-agent-ipc-emulatord
+cargo test -p session-wrapper -p tacacsrs-agent-ipc-emulator
+```
+
+`cargo build --workspace` and `cargo test --workspace --all-features` still include the experimental packages.
+CI retains their tests. A dependency guard prevents the core from acquiring the wrapper, Rego, or seccomp dependencies.
 
 ## Workspace Architecture
 
 ```text
-tacon (CLI)  ──────┬──► tacacsrs-agent-client
+tacon (CLI)  ──────┬──► tacacsrs-ipc
                    ├──► tacacsrs-config
                    ├──► tacacsrs-protocol
                    └──► tacacsrs-networking
 
 tacacsrs-agentd ───┬──► tacacsrs-agent
-                   ├──► tacacsrs-agent-client
+                   ├──► tacacsrs-ipc
                    └──► tacacsrs-config
 
-tacacsrs-agent ────┬──► tacacsrs-agent-client
+tacacsrs-agent ────┬──► tacacsrs-config
                    ├──► tacacsrs-protocol
                    └──► tacacsrs-networking
 
-tacacsrs-agent-ipc-emulatord ───► tacacsrs-agent-ipc-emulator
-                                  └──► tacacsrs-agent-client
+tacacsrs-ipc ──────────► tacacsrs-protocol
 
-tacacsrs-credential-resolution ──► tacacsrs-config
+tacacsrs-agent-ipc-emulatord ───► tacacsrs-agent-ipc-emulator
+                                  └──► tacacsrs-ipc
+
+tacacsrs-config ───────► tacacsrs-credential-resolution
                               └──► tacacsrs-secrets
 ```
 
@@ -89,7 +111,7 @@ The crate expands local credential bundles. It preserves external central refere
 - [tacacsrs-agent-ipc-emulator README](libraries/tacacsrs_agent_ipc_emulator/README.md) — Rego policy format and in-process/out-of-process IPC emulator usage
 - [tacacsrs-config README](libraries/tacacsrs_config/README.md) — YANG JSON schema support, codegen workflow, parsing APIs
 - [tacacsrs-credential-resolution README](libraries/tacacsrs_credential_resolution/README.md) — Central credential planning, resolver contracts, and secret-safe material
-- [session-wrapper README](executables/session_wrapper/README.md) — Linux seccomp session wrapper architecture and current allow-all behavior
+- [session-wrapper README](executables/session_wrapper/README.md) — Experimental Linux seccomp session wrapper and authorization behavior
 - [Session Wrapper Deployment Guide](docs/session-wrapper.md) — SSH `ForceCommand` integration, configuration examples, security notes, troubleshooting
 - [Session Wrapper Testing](docs/session-wrapper-testing.md) — Linux smoke and integration checks for the session wrapper
 - [Building for SONiC](docs/sonic-build-guide.md) — Linux GNU artifacts for network switches
@@ -105,9 +127,9 @@ The workspace crates are internal and are not published to crates.io.
 
 | Environment | Supported scope |
 | ----------- | --------------- |
-| Linux GNU | Complete workspace |
+| Linux GNU | Supported core, with experimental packages available explicitly |
 | Windows MSVC | `tacon` direct mode and its dependency crates |
-| Linux GNU x86-64 | `session-wrapper` |
+| Linux GNU x86-64 | Experimental `session-wrapper` |
 
 The workspace does not support musl or macOS. Use the development container for complete workspace development on Windows.
 

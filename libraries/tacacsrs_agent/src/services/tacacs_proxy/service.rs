@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use tacacsrs_agent_client::IpcEndpoint;
+use tacacsrs_config::local_services::ListenerEndpoint;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::listener;
@@ -62,7 +62,7 @@ where
     /// Runs the TACACS+ proxy listener until the process receives a shutdown signal.
     pub(crate) async fn serve(
         &self,
-        endpoint: &IpcEndpoint,
+        endpoint: &ListenerEndpoint,
         options: ListenerOptions,
         shutdown: ShutdownReceiver,
         health: RuntimeHealthPublisher,

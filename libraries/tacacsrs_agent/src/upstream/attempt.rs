@@ -1,6 +1,8 @@
 //! Classified upstream request failures used by replay policy.
 
 use tacacsrs_networking::{FixedExchangeError, TransmissionState};
+use tacacsrs_protocol::failure::{DeliveryState, FailureCategory, FailureFacts, FailurePhase};
+use tacacsrs_protocol::operations::ServiceError;
 
 /// Conservative transmission state for one upstream request attempt.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -50,6 +52,26 @@ impl UpstreamRequestError {
     pub(crate) const fn kind(&self) -> AttemptFailureKind {
         self.kind
     }
+
+    pub(crate) fn into_service_error(self) -> ServiceError {
+        let (category, phase, delivery) = match self.kind {
+            AttemptFailureKind::InvalidRequest => {
+                (FailureCategory::InvalidRequest, FailurePhase::Validation, DeliveryState::NotSent)
+            }
+            AttemptFailureKind::NotSent => {
+                (FailureCategory::Transport, FailurePhase::Upstream, DeliveryState::NotSent)
+            }
+            AttemptFailureKind::OutcomeUnknown => {
+                (FailureCategory::Transport, FailurePhase::Upstream, DeliveryState::OutcomeUnknown)
+            }
+        };
+        let category = if self.source.is::<tokio::time::error::Elapsed>() {
+            FailureCategory::Deadline
+        } else {
+            category
+        };
+        ServiceError::new(self.to_string(), FailureFacts::new(category, phase, delivery))
+    }
 }
 
 impl std::fmt::Display for UpstreamRequestError {
@@ -61,5 +83,33 @@ impl std::fmt::Display for UpstreamRequestError {
 impl std::error::Error for UpstreamRequestError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.source.source()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tacacsrs_protocol::failure::RetryAdvice;
+    use super::*;
+
+    #[test]
+    fn service_errors_preserve_delivery_independently_of_retry_advice() {
+        let invalid =
+            UpstreamRequestError::invalid_request(anyhow::anyhow!("failure")).into_service_error();
+        let uncertain =
+            UpstreamRequestError::outcome_unknown(anyhow::anyhow!("failure")).into_service_error();
+        assert_eq!(invalid.message, uncertain.message);
+        assert_eq!(invalid.facts.retry_advice(), RetryAdvice::Never);
+        assert_eq!(uncertain.facts.retry_advice(), RetryAdvice::Never);
+        assert_eq!(invalid.facts.delivery(), DeliveryState::NotSent);
+        assert_eq!(uncertain.facts.delivery(), DeliveryState::OutcomeUnknown);
+        assert_ne!(invalid.facts.category(), uncertain.facts.category());
+
+        let unsent = UpstreamRequestError {
+            kind: AttemptFailureKind::NotSent,
+            source: anyhow::anyhow!("failure"),
+        }
+        .into_service_error();
+        assert_eq!(unsent.facts.delivery(), DeliveryState::NotSent);
+        assert_eq!(unsent.facts.retry_advice(), RetryAdvice::AfterRecovery);
     }
 }
