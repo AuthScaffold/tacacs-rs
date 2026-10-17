@@ -2280,6 +2280,7 @@ dependencies = [
  "notify",
  "openssl",
  "rustls-pki-types",
+ "same-file",
  "serde",
  "serde_ignored",
  "serde_json",

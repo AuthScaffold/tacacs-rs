@@ -253,7 +253,10 @@ The pinned YANG model requires a port, so canonical snapshots and programmatic s
 It watches a YANG file or referenced CLI certificate and key files when applicable.
 Observation installs the watcher before loading and publishing its baseline snapshot.
 Rejected reloads emit `CandidateRejected` without replacing the previous accepted snapshot.
-When the observation session is dropped, the watcher stops.
+On Linux, native notifications keep idle file observations passive without timer wakes or periodic filesystem checks.
+On Windows, each file observation checks the captured directory identity every 100 ms.
+Directory removal, rename, or replacement ends the observation with an error.
+Dropping the observation stops its native watcher and any Windows identity checks. No detached monitor remains.
 Inputs with no watched paths yield an empty observation stream.
 
 ```rust
@@ -272,7 +275,7 @@ let snapshot = source.load().await?;
 
 The separate `tacacsrs-datastore` and `tacacsrs-cli-datastore` packages are removed.
 Consumers import `tacacsrs_config::source` and `tacacsrs_config::input` directly.
-This consolidation preserves the current load/subscribe contract. Owned observation sessions remain later lifecycle work.
+This consolidation preserves the load and observation contracts. File sources use owned observation sessions.
 
 ## Programmatic builder API
 
