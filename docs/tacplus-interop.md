@@ -1,5 +1,20 @@
 # Independent TACACS+ Server Tests
 
+## Devcontainer Server
+
+The development image installs the verified `tac_plus-ng` revision and MAVIS modules under `/opt/tacacs-test-server`.
+It sets `TACPLUS_SERVER_BINARY` and `TACPLUS_LIBRARY_DIR` for the runner.
+After rebuilding the image, run the complete matrix from the repository root:
+
+```bash
+python3 lde/run-tacplus-interop.py
+```
+
+The server does not run continuously. Each scenario uses a temporary configuration, loopback ports, and a process that the runner stops afterward.
+No Docker socket or published container port is required. Ordinary workspace tests still skip these opt-in cases.
+Explicit `--server-binary` and `--library-dir` arguments override the image defaults for another native build.
+The original Compose fixture remains available for manual testing.
+
 ## Native Build
 
 The [Compose fixture](../lde/containers/compose.yml) uses Marc Huber's `tac_plus-ng` through an upstream image recipe.

@@ -91,22 +91,35 @@ Do not commit the bundle into the repository.
 ## Installed Tools
 
 The image retains Rust 1.88.0 as the workspace default and installs its Clippy and coverage components.
-Nightly supplies rustfmt, Clippy, and Miri.
+Nightly supplies rustfmt, Clippy, Miri, and `rust-src` for the Miri sysroot.
+Rust 1.91.0 builds the standalone API classifier. Its rustdoc analysis uses `nightly-2025-11-23`.
 Stable builds standalone Cargo tools without changing the workspace MSRV.
 The configuration disables remote-user UID updates because all writable paths use named volumes.
 The initialization command assigns those volumes to the `vscode` user.
 It recursively repairs ownership in the Cargo cache because Docker copies root-owned image content into a new cache volume.
 This setting also prevents an unnecessary generated UID image and its `BASE_IMAGE` warning.
 
-The image includes ripgrep, jq, ShellCheck, GitHub CLI, Python venv support, pytest, and the native OpenSSL/libseccomp build dependencies.
+The image includes ripgrep, jq, ShellCheck, GitHub CLI, and Python venv support.
+The `/opt/tacacs-python` environment supplies `pyang` 2.7.1, `pytest` 8.4.2, and PyYAML 6.0.3 on `PATH`.
+It keeps Python packages separate from Debian's managed Python environment.
+Native dependencies include the C/C++ toolchain, Perl, OpenSSL, libseccomp, PCRE2, libcrypt, and zlib headers.
+Binutils supplies `objcopy`, `strip`, `nm`, and `readelf` for release checks.
+Redis server and client tools support private local test fixtures. Post-create setup does not start Redis or other test services.
+The image also builds `tac_plus-ng` revision `70bf938b542d63bca00d50be0874a38a290319e0` under `/opt/tacacs-test-server`, including MAVIS libraries and modules.
+The installation records the upstream commit in `source-revision` and removes the temporary build tree.
+`TACPLUS_SERVER_BINARY` and `TACPLUS_LIBRARY_DIR` select this installation for the [native interoperability runner](tacplus-interop.md#devcontainer-server).
+The server does not start automatically. The runner owns temporary loopback listeners and stops them after each scenario.
 It also installs `cargo-audit`, `cargo-fuzz`, `cargo-llvm-cov`, `cargo-outdated`, `cargo-udeps`, and `mdbook`.
+The SBOM generator is pinned to `cargo-cyclonedx` 0.5.9, matching CI.
 Buf comes from the versioned upstream container image.
-Standalone Cargo tool versions follow their locked published releases at image-build time.
+Other standalone Cargo tool versions follow their locked published releases at image-build time.
 This is a development image, not a bit-for-bit reproducible release artifact.
 
 The first image build needs network access and can take longer while it compiles the tools.
 Later builds reuse container layers and named dependency caches.
-Post-create setup fetches the locked workspace dependencies and runs the bootstrap contract tests.
+Post-create setup fetches the locked workspace dependencies, installs the repository's API classifier, and runs the bootstrap contract tests.
+The classifier installs into `~/.local/bin` and uses a separate target subdirectory in the persistent Cargo cache.
+See the [API classifier guide](../.github/tools/api-classifier/README.md#limitations) for the analyzer coverage limits.
 It does not run the full Rust suite or fix existing warnings automatically.
 
 ## Validation and Limitations

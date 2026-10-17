@@ -29,6 +29,16 @@ runs:
       run: |
         cargo +nightly fuzz run fuzz_accounting_request_packet_parse -- -max_total_time=30
 
+    - name: Fuzz authentication message parsing
+      shell: bash
+      run: |
+        cargo +nightly fuzz run fuzz_authentication_parse -- -max_total_time=30
+
+    - name: Fuzz authorization message parsing
+      shell: bash
+      run: |
+        cargo +nightly fuzz run fuzz_authorization_parse -- -max_total_time=30
+
     - name: Fuzz all protocol message families
       shell: bash
       run: |

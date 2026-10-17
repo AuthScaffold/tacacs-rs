@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,10 +18,13 @@ from unittest.mock import patch
 import pytest
 
 # Import the sibling module.
+from api_analysis import ApiAnalysisError, ApiBump
 from compute_versions import (
     Crate,
+    GitError,
     VersionResult,
     bump_breaking,
+    bump_minor,
     bump_patch,
     commit_count_since,
     compute_all_versions,
@@ -29,7 +33,8 @@ from compute_versions import (
     compute_prerelease_calver,
     compute_prerelease_library_versions,
     discover_libraries,
-    parse_cargo_toml,
+    git,
+    has_changes_since,
     parse_semver,
     source_ref_for_tag,
     topological_sort,
@@ -61,13 +66,39 @@ def tmp_workspace(tmp_path: Path) -> Path:
     return ws
 
 
+def _put(path: Path, text: str) -> None:
+    """Write a dedented file and its parent directories."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(textwrap.dedent(text), encoding="utf-8")
+
+
+def _workspace_member_dirs(ws: Path) -> list[str]:
+    """Return every member directory that currently holds a manifest."""
+    members: list[str] = []
+    for base in ("libraries", "executables"):
+        base_dir = ws / base
+        if base_dir.is_dir():
+            for sub in sorted(base_dir.iterdir()):
+                if (sub / "Cargo.toml").is_file():
+                    members.append(f"{base}/{sub.name}")
+    return members
+
+
+def write_workspace_manifest(ws: Path) -> None:
+    """Write the virtual workspace manifest for the current member set."""
+    lines = ["[workspace]", 'resolver = "2"', "members = ["]
+    lines += [f'    "{member}",' for member in _workspace_member_dirs(ws)]
+    lines.append("]")
+    (ws / "Cargo.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def make_library(
     ws: Path,
     name: str,
     dir_name: str,
     deps: dict[str, str] | None = None,
 ) -> Path:
-    """Create a library crate in the workspace."""
+    """Create a real library crate and refresh the workspace manifest."""
     lib_dir = ws / "libraries" / dir_name
     lib_dir.mkdir(parents=True, exist_ok=True)
 
@@ -76,7 +107,7 @@ def make_library(
         "[package]",
         f'name = "{name}"',
         'version = "0.0.0-dev"',
-        'edition = "2024"',
+        'edition = "2021"',
         "",
         "[dependencies]",
     ]
@@ -84,18 +115,19 @@ def make_library(
         for dep_name, dep_path in deps.items():
             lines.append(f'{dep_name} = {{ path = "{dep_path}" }}')
 
-    cargo_toml.write_text("\n".join(lines), encoding="utf-8")
+    cargo_toml.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     # Create a source file. The tests can change this file.
     src = lib_dir / "src"
     src.mkdir(exist_ok=True)
     (src / "lib.rs").write_text("// placeholder\n", encoding="utf-8")
 
+    write_workspace_manifest(ws)
     return lib_dir
 
 
 def make_executable(ws: Path, name: str, dir_name: str) -> Path:
-    """Create an executable crate in the workspace."""
+    """Create a real executable crate and refresh the workspace manifest."""
     exe_dir = ws / "executables" / dir_name
     exe_dir.mkdir(parents=True, exist_ok=True)
 
@@ -105,7 +137,7 @@ def make_executable(ws: Path, name: str, dir_name: str) -> Path:
         [package]
         name = "{name}"
         version = "0.0.0-dev"
-        edition = "2024"
+        edition = "2021"
         """),
         encoding="utf-8",
     )
@@ -114,6 +146,7 @@ def make_executable(ws: Path, name: str, dir_name: str) -> Path:
     src.mkdir(exist_ok=True)
     (src / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
 
+    write_workspace_manifest(ws)
     return exe_dir
 
 
@@ -192,97 +225,216 @@ class TestBumpBreaking:
         assert bump_breaking(2, 5, 1) == "3.0.0"
 
 
-class TestParseCargoToml:
-    def test_simple(self, tmp_path: Path) -> None:
-        toml = tmp_path / "Cargo.toml"
-        toml.write_text(textwrap.dedent("""\
+class TestBumpMinor:
+    def test_post_1_0(self) -> None:
+        assert bump_minor(1, 2, 3) == "1.3.0"
+
+    def test_major_2(self) -> None:
+        assert bump_minor(2, 0, 5) == "2.1.0"
+
+    def test_pre_1_0_takes_patch(self) -> None:
+        # Before 1.0 the minor position is reserved for breaking changes, so an
+        # additive change is a patch-level bump within the same range.
+        assert bump_minor(0, 3, 4) == "0.3.5"
+
+    def test_pre_1_0_zero_minor(self) -> None:
+        assert bump_minor(0, 0, 2) == "0.0.3"
+
+
+class TestDiscoverLibraries:
+    def test_library_targets_discovered_executables_excluded(
+        self, tmp_path: Path,
+    ) -> None:
+        """Discovery keeps library members and drops binary-only members."""
+        make_library(tmp_path, "my-lib", "my_lib")
+        make_executable(tmp_path, "my-app", "my_app")
+
+        crates = discover_libraries(tmp_path)
+
+        assert set(crates) == {"my-lib"}
+        assert crates["my-lib"].relative_dir == "libraries/my_lib"
+
+    def test_dual_type_library_discovered(self, tmp_path: Path) -> None:
+        """A crate-type = ["cdylib", "rlib"] member is a library."""
+        _put(tmp_path / "Cargo.toml", """\
+            [workspace]
+            resolver = "2"
+            members = ["libraries/plugin"]
+            """)
+        _put(tmp_path / "libraries" / "plugin" / "Cargo.toml", """\
             [package]
-            name = "my-crate"
-            version = "0.1.0"
+            name = "plugin"
+            version = "0.0.0-dev"
+            edition = "2021"
+
+            [lib]
+            crate-type = ["cdylib", "rlib"]
+            """)
+        _put(tmp_path / "libraries" / "plugin" / "src" / "lib.rs", "// plugin\n")
+
+        crates = discover_libraries(tmp_path)
+
+        assert set(crates) == {"plugin"}
+
+    def test_renamed_dependency_resolves_real_identity(self, tmp_path: Path) -> None:
+        """A renamed path edge cascades to the real member, not the alias."""
+        _put(tmp_path / "Cargo.toml", """\
+            [workspace]
+            resolver = "2"
+            members = ["libraries/base", "libraries/top"]
+            """)
+        _put(tmp_path / "libraries" / "base" / "Cargo.toml", """\
+            [package]
+            name = "base-lib"
+            version = "0.0.0-dev"
+            edition = "2021"
+            """)
+        _put(tmp_path / "libraries" / "base" / "src" / "lib.rs", "// base\n")
+        _put(tmp_path / "libraries" / "top" / "Cargo.toml", """\
+            [package]
+            name = "top-lib"
+            version = "0.0.0-dev"
+            edition = "2021"
 
             [dependencies]
-            anyhow = "1.0"
-        """), encoding="utf-8")
+            aliased = { package = "base-lib", path = "../base" }
+            """)
+        _put(tmp_path / "libraries" / "top" / "src" / "lib.rs", "// top\n")
 
-        name, deps = parse_cargo_toml(toml)
-        assert name == "my-crate"
-        assert deps == []
+        crates = discover_libraries(tmp_path)
 
-    def test_path_dep(self, tmp_path: Path) -> None:
-        # Create the directory structure for path resolution.
-        libs = tmp_path / "libraries"
-        lib_a = libs / "lib_a"
-        lib_b = libs / "lib_b"
-        lib_a.mkdir(parents=True)
-        lib_b.mkdir(parents=True)
+        assert crates["top-lib"].workspace_deps == ["base-lib"]
 
-        toml = lib_b / "Cargo.toml"
-        toml.write_text(textwrap.dedent("""\
+    def test_inherited_workspace_dependency_cascades(self, tmp_path: Path) -> None:
+        """An inherited ``workspace = true`` path edge cascades."""
+        _put(tmp_path / "Cargo.toml", """\
+            [workspace]
+            resolver = "2"
+            members = ["libraries/base", "libraries/top"]
+
+            [workspace.dependencies]
+            base-lib = { path = "libraries/base" }
+            """)
+        _put(tmp_path / "libraries" / "base" / "Cargo.toml", """\
             [package]
-            name = "lib-b"
-            version = "0.1.0"
+            name = "base-lib"
+            version = "0.0.0-dev"
+            edition = "2021"
+            """)
+        _put(tmp_path / "libraries" / "base" / "src" / "lib.rs", "// base\n")
+        _put(tmp_path / "libraries" / "top" / "Cargo.toml", """\
+            [package]
+            name = "top-lib"
+            version = "0.0.0-dev"
+            edition = "2021"
 
             [dependencies]
-            lib-a = { path = "../lib_a" }
-            external = "1.0"
-        """), encoding="utf-8")
+            base-lib = { workspace = true }
+            """)
+        _put(tmp_path / "libraries" / "top" / "src" / "lib.rs", "// top\n")
 
-        name, deps = parse_cargo_toml(toml)
-        assert name == "lib-b"
-        assert deps == ["lib-a"]
+        crates = discover_libraries(tmp_path)
 
-    def test_non_library_path_dep_excluded(self, tmp_path: Path) -> None:
-        """The parser excludes path dependencies outside libraries/."""
-        lib = tmp_path / "libraries" / "lib_a"
-        lib.mkdir(parents=True)
-        ext = tmp_path / "external" / "ext_crate"
-        ext.mkdir(parents=True)
+        assert crates["top-lib"].workspace_deps == ["base-lib"]
 
-        toml = lib / "Cargo.toml"
-        toml.write_text(textwrap.dedent("""\
+    def test_target_specific_dependency_cascades(self, tmp_path: Path) -> None:
+        """A platform-conditioned normal edge still cascades."""
+        _put(tmp_path / "Cargo.toml", """\
+            [workspace]
+            resolver = "2"
+            members = ["libraries/base", "libraries/top"]
+            """)
+        _put(tmp_path / "libraries" / "base" / "Cargo.toml", """\
             [package]
-            name = "lib-a"
-            version = "0.1.0"
+            name = "base-lib"
+            version = "0.0.0-dev"
+            edition = "2021"
+            """)
+        _put(tmp_path / "libraries" / "base" / "src" / "lib.rs", "// base\n")
+        _put(tmp_path / "libraries" / "top" / "Cargo.toml", """\
+            [package]
+            name = "top-lib"
+            version = "0.0.0-dev"
+            edition = "2021"
 
-            [dependencies]
-            ext-crate = { path = "../../external/ext_crate" }
-        """), encoding="utf-8")
+            [target.'cfg(unix)'.dependencies]
+            base-lib = { path = "../base" }
+            """)
+        _put(tmp_path / "libraries" / "top" / "src" / "lib.rs", "// top\n")
 
-        name, deps = parse_cargo_toml(toml)
-        assert name == "lib-a"
-        assert deps == []
+        crates = discover_libraries(tmp_path)
+
+        assert crates["top-lib"].workspace_deps == ["base-lib"]
 
     def test_reverse_dev_dependency_does_not_create_release_cycle(
         self, tmp_path: Path,
     ) -> None:
-        """A reverse development edge supports examples. It does not change release order."""
-        libs = tmp_path / "libraries"
-        networking = libs / "networking"
-        flows = libs / "flows"
-        networking.mkdir(parents=True)
-        flows.mkdir(parents=True)
-
-        (networking / "Cargo.toml").write_text(textwrap.dedent("""\
+        """A reverse development edge supports examples, not release order."""
+        _put(tmp_path / "Cargo.toml", """\
+            [workspace]
+            resolver = "2"
+            members = ["libraries/networking", "libraries/flows"]
+            """)
+        _put(tmp_path / "libraries" / "networking" / "Cargo.toml", """\
             [package]
             name = "networking"
-            version = "0.1.0"
+            version = "0.0.0-dev"
+            edition = "2021"
 
             [dev-dependencies]
             flows = { path = "../flows" }
-        """), encoding="utf-8")
-        (flows / "Cargo.toml").write_text(textwrap.dedent("""\
+            """)
+        _put(tmp_path / "libraries" / "networking" / "src" / "lib.rs", "// net\n")
+        _put(tmp_path / "libraries" / "flows" / "Cargo.toml", """\
             [package]
             name = "flows"
-            version = "0.1.0"
+            version = "0.0.0-dev"
+            edition = "2021"
 
             [dependencies]
             networking = { path = "../networking" }
-        """), encoding="utf-8")
+            """)
+        _put(tmp_path / "libraries" / "flows" / "src" / "lib.rs", "// flows\n")
 
         crates = discover_libraries(tmp_path)
+
         assert crates["networking"].workspace_deps == []
         assert crates["flows"].workspace_deps == ["networking"]
         assert topological_sort(crates) == ["networking", "flows"]
+
+    def test_members_outside_libraries_directory(self, tmp_path: Path) -> None:
+        """Discovery follows Cargo membership, not the libraries/ directory."""
+        _put(tmp_path / "Cargo.toml", """\
+            [workspace]
+            resolver = "2"
+            members = ["crates/alpha", "tools/beta"]
+
+            [package]
+            name = "root-crate"
+            version = "0.0.0-dev"
+            edition = "2021"
+            """)
+        _put(tmp_path / "src" / "lib.rs", "// root\n")
+        _put(tmp_path / "crates" / "alpha" / "Cargo.toml", """\
+            [package]
+            name = "alpha"
+            version = "0.0.0-dev"
+            edition = "2021"
+            """)
+        _put(tmp_path / "crates" / "alpha" / "src" / "lib.rs", "// alpha\n")
+        _put(tmp_path / "tools" / "beta" / "Cargo.toml", """\
+            [package]
+            name = "beta"
+            version = "0.0.0-dev"
+            edition = "2021"
+            """)
+        _put(tmp_path / "tools" / "beta" / "src" / "lib.rs", "// beta\n")
+
+        crates = discover_libraries(tmp_path)
+
+        assert set(crates) == {"root-crate", "alpha", "beta"}
+        assert crates["root-crate"].relative_dir == "."
+        assert crates["alpha"].relative_dir == "crates/alpha"
 
 
 # ---------------------------------------------------------------------------
@@ -502,10 +654,10 @@ class TestComputeLibraryVersions:
         assert by_name["base-lib"].version == "0.1.1"
         assert by_name["base-lib"].tag is not None
 
-        # The dependent library also gets a new version.
+        # The dependent library also gets a new version from the cascade.
         assert by_name["top-lib"].version == "0.1.1"
         assert by_name["top-lib"].tag is not None
-        assert "dependency version changed" in by_name["top-lib"].reason
+        assert "skipped" in by_name["top-lib"].reason
 
     def test_no_cascade_when_dep_unchanged(self, tmp_workspace: Path) -> None:
         """No cascade occurs when the dependency keeps its version."""
@@ -557,6 +709,187 @@ class TestComputeLibraryVersions:
         assert by_name["a"].version == "0.1.1"
         assert by_name["b"].version == "0.1.1"
         assert by_name["c"].version == "0.2.1"  # The prior version is 0.2.0.
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: structured API classification
+# ---------------------------------------------------------------------------
+
+class TestComputeLibraryVersionsApiClassification:
+    """The non-skip path maps a structured ApiBump to a version increment.
+
+    These tests mock ``classify_api_change`` so they do not build any crate or
+    run the api-classifier tool. They assert the mapping from the structured
+    enum to the SemVer arithmetic, the hydrated-tag baseline, and fail-closed
+    propagation of analysis errors.
+    """
+
+    def _changed_library(self, ws: Path, baseline_tag: str) -> Path:
+        lib = make_library(ws, "my-lib", "my_lib")
+        git_commit(ws, "initial")
+        git_tag(ws, baseline_tag)
+        (lib / "src" / "lib.rs").write_text("// changed\n", encoding="utf-8")
+        git_commit(ws, "change")
+        return lib
+
+    def test_additive_change_is_minor(self, tmp_workspace: Path) -> None:
+        self._changed_library(tmp_workspace, "my-lib-v1.0.0")
+        crates = discover_libraries(tmp_workspace)
+        order = topological_sort(crates)
+
+        with patch(
+            "compute_versions.classify_api_change", return_value=ApiBump.MINOR,
+        ) as classify:
+            results = compute_library_versions(
+                crates, order, cwd=tmp_workspace, skip_semver_checks=False,
+            )
+
+        assert results[0].version == "1.1.0"
+        assert "minor" in results[0].reason
+        # The API baseline is the hydrated release tag, not the source commit.
+        assert classify.call_args.args[1] == "my-lib-v1.0.0"
+
+    def test_breaking_change_is_major(self, tmp_workspace: Path) -> None:
+        self._changed_library(tmp_workspace, "my-lib-v1.2.3")
+        crates = discover_libraries(tmp_workspace)
+        order = topological_sort(crates)
+
+        with patch("compute_versions.classify_api_change", return_value=ApiBump.MAJOR):
+            results = compute_library_versions(
+                crates, order, cwd=tmp_workspace, skip_semver_checks=False,
+            )
+
+        assert results[0].version == "2.0.0"
+        assert results[0].reason == "breaking"
+
+    def test_pre_1_0_breaking_bumps_minor_position(self, tmp_workspace: Path) -> None:
+        """A removed function is a major API change; before 1.0 it bumps 0.x."""
+        self._changed_library(tmp_workspace, "my-lib-v0.1.5")
+        crates = discover_libraries(tmp_workspace)
+        order = topological_sort(crates)
+
+        with patch("compute_versions.classify_api_change", return_value=ApiBump.MAJOR):
+            results = compute_library_versions(
+                crates, order, cwd=tmp_workspace, skip_semver_checks=False,
+            )
+
+        assert results[0].version == "0.2.0"
+        assert results[0].reason == "breaking"
+
+    def test_compatible_change_is_patch(self, tmp_workspace: Path) -> None:
+        self._changed_library(tmp_workspace, "my-lib-v1.0.0")
+        crates = discover_libraries(tmp_workspace)
+        order = topological_sort(crates)
+
+        with patch("compute_versions.classify_api_change", return_value=ApiBump.PATCH):
+            results = compute_library_versions(
+                crates, order, cwd=tmp_workspace, skip_semver_checks=False,
+            )
+
+        assert results[0].version == "1.0.1"
+        assert results[0].reason == "patch"
+
+    def test_analysis_error_fails_closed(self, tmp_workspace: Path) -> None:
+        """A tool error aborts the computation; it never becomes a bump."""
+        self._changed_library(tmp_workspace, "my-lib-v1.0.0")
+        crates = discover_libraries(tmp_workspace)
+        order = topological_sort(crates)
+
+        with patch(
+            "compute_versions.classify_api_change",
+            side_effect=ApiAnalysisError("api-classifier build failed"),
+        ):
+            with pytest.raises(ApiAnalysisError, match="build failed"):
+                compute_library_versions(
+                    crates, order, cwd=tmp_workspace, skip_semver_checks=False,
+                )
+
+    def test_dependency_only_bump_is_classified(self, tmp_workspace: Path) -> None:
+        """A dependent with unchanged source is still classified.
+
+        A re-exported dependency item is part of this crate's public API, so a
+        dependency-only revision must be analyzed, not assumed to be a patch.
+        """
+        make_library(tmp_workspace, "base-lib", "base_lib")
+        make_library(
+            tmp_workspace, "top-lib", "top_lib", deps={"base-lib": "../base_lib"},
+        )
+        git_commit(tmp_workspace, "initial")
+        git_tag(tmp_workspace, "base-lib-v1.0.0")
+        git_tag(tmp_workspace, "top-lib-v1.0.0")
+        (tmp_workspace / "libraries" / "base_lib" / "src" / "lib.rs").write_text(
+            "// changed base\n", encoding="utf-8",
+        )
+        git_commit(tmp_workspace, "change base")
+
+        crates = discover_libraries(tmp_workspace)
+        order = topological_sort(crates)
+
+        analyzed: list[str] = []
+
+        def record(package: str, baseline: str, **kwargs: object) -> ApiBump:
+            analyzed.append(package)
+            return ApiBump.PATCH
+
+        with patch("compute_versions.classify_api_change", side_effect=record):
+            results = compute_library_versions(
+                crates, order, cwd=tmp_workspace, skip_semver_checks=False,
+            )
+
+        by_name = {r.name: r for r in results}
+        assert by_name["base-lib"].version == "1.0.1"
+        assert by_name["top-lib"].version == "1.0.1"
+        assert by_name["top-lib"].reason == "patch"
+        # Both the changed crate and the dependency-only dependent are analyzed.
+        assert analyzed == ["base-lib", "top-lib"]
+
+    def test_dependency_only_bump_can_be_major(self, tmp_workspace: Path) -> None:
+        """A dependency-only change can be breaking when a re-export changes."""
+        make_library(tmp_workspace, "base-lib", "base_lib")
+        make_library(
+            tmp_workspace, "top-lib", "top_lib", deps={"base-lib": "../base_lib"},
+        )
+        git_commit(tmp_workspace, "initial")
+        git_tag(tmp_workspace, "base-lib-v1.0.0")
+        git_tag(tmp_workspace, "top-lib-v1.0.0")
+        (tmp_workspace / "libraries" / "base_lib" / "src" / "lib.rs").write_text(
+            "// changed base\n", encoding="utf-8",
+        )
+        git_commit(tmp_workspace, "change base")
+
+        crates = discover_libraries(tmp_workspace)
+        order = topological_sort(crates)
+
+        def classify(package: str, baseline: str, **kwargs: object) -> ApiBump:
+            return ApiBump.MAJOR if package == "top-lib" else ApiBump.PATCH
+
+        with patch("compute_versions.classify_api_change", side_effect=classify):
+            results = compute_library_versions(
+                crates, order, cwd=tmp_workspace, skip_semver_checks=False,
+            )
+
+        by_name = {r.name: r for r in results}
+        assert by_name["base-lib"].version == "1.0.1"
+        # The dependent's own source did not change, but the dependency's
+        # re-exported surface broke, so it takes a major bump.
+        assert by_name["top-lib"].version == "2.0.0"
+        assert by_name["top-lib"].reason == "breaking"
+
+    def test_skip_semver_checks_never_calls_analysis(self, tmp_workspace: Path) -> None:
+        self._changed_library(tmp_workspace, "my-lib-v1.0.0")
+        crates = discover_libraries(tmp_workspace)
+        order = topological_sort(crates)
+
+        with patch(
+            "compute_versions.classify_api_change",
+            side_effect=AssertionError("classify_api_change must not be called"),
+        ):
+            results = compute_library_versions(
+                crates, order, cwd=tmp_workspace, skip_semver_checks=True,
+            )
+
+        assert results[0].version == "1.0.1"
+        assert "skipped" in results[0].reason
 
 
 # ---------------------------------------------------------------------------
@@ -624,7 +957,12 @@ class TestComputeCalver:
             now=datetime(2026, 4, 25, tzinfo=timezone.utc),
         )
 
-        assert result is None
+        # The generated hydration commit is not a source change, so the
+        # executable stays at its existing CalVer with no new tag.
+        assert result is not None
+        assert result.version == "2026.424.0"
+        assert result.tag is None
+        assert result.reason == "unchanged"
 
     def test_calver_no_changes(self, tmp_workspace: Path) -> None:
         make_executable(tmp_workspace, "tacon", "tacon")
@@ -636,7 +974,13 @@ class TestComputeCalver:
             ["executables/tacon/", "libraries/"],
             cwd=tmp_workspace,
         )
-        assert result is None
+        # An unchanged executable keeps its existing CalVer and creates no tag,
+        # so the version map still carries it at its released version.
+        assert result is not None
+        assert result.version == "2026.424.0"
+        assert result.tag is None
+        assert result.reason == "unchanged"
+        assert result.previous_tag == "tacon-2026.424.0"
 
     def test_calver_new_day(self, tmp_workspace: Path) -> None:
         make_executable(tmp_workspace, "tacon", "tacon")
@@ -951,3 +1295,434 @@ class TestComputeAllVersionsPrerelease:
         assert result["versions"]["myapp"] == "2026.424.0-dev.2"
         assert result["new_tags"] == []  # The pre-release mode creates no tags.
         assert result["has_release"] is False
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: the git helper fails loud, never silently empty
+# ---------------------------------------------------------------------------
+
+class TestGitRaisesOnFailure:
+    """A failed Git command raises instead of returning empty output.
+
+    A silent empty result could look like "no diff" or "no tag" and skip a
+    release or mis-derive a version, so every non-zero exit must raise.
+    """
+
+    def test_git_rev_parse_bad_ref_raises(self, tmp_workspace: Path) -> None:
+        git_commit(tmp_workspace, "initial")
+        with pytest.raises(GitError, match="failed"):
+            git("rev-parse", "--verify", "no-such-ref^{commit}", cwd=tmp_workspace)
+
+    def test_git_log_unknown_tag_raises(self, tmp_workspace: Path) -> None:
+        git_commit(tmp_workspace, "initial")
+        with pytest.raises(GitError):
+            git("log", "-1", "--format=%B", "no-such-tag", cwd=tmp_workspace)
+
+    def test_has_changes_since_bad_ref_raises(self, tmp_workspace: Path) -> None:
+        git_commit(tmp_workspace, "initial")
+        with pytest.raises(GitError):
+            has_changes_since("no-such-ref", ["."], cwd=tmp_workspace)
+
+    def test_commit_count_since_bad_ref_raises(self, tmp_workspace: Path) -> None:
+        git_commit(tmp_workspace, "initial")
+        with pytest.raises(GitError):
+            commit_count_since("no-such-ref", cwd=tmp_workspace)
+
+    def test_source_ref_for_tag_unknown_tag_raises(self, tmp_workspace: Path) -> None:
+        git_commit(tmp_workspace, "initial")
+        with pytest.raises(GitError):
+            source_ref_for_tag("no-such-tag", cwd=tmp_workspace)
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: workspace-wide (root) watch paths
+# ---------------------------------------------------------------------------
+
+class TestRootPathWatch:
+    """A change to a root file selects dependents for release.
+
+    The root manifest, lockfile, and Cargo configuration can change a crate's
+    build inputs or resolved dependencies without touching its own directory.
+    """
+
+    def _write_lock(self, ws: Path, extra: str = "") -> None:
+        (ws / "Cargo.lock").write_text(
+            textwrap.dedent(
+                """\
+                version = 4
+
+                [[package]]
+                name = "my-lib"
+                version = "0.0.0-dev"
+                """
+            )
+            + extra,
+            encoding="utf-8",
+        )
+
+    def test_lockfile_only_change_triggers_library_release(
+        self, tmp_workspace: Path,
+    ) -> None:
+        make_library(tmp_workspace, "my-lib", "my_lib")
+        self._write_lock(tmp_workspace)
+        git_commit(tmp_workspace, "initial")
+        git_tag(tmp_workspace, "my-lib-v0.1.0")
+
+        # Change ONLY the lockfile, as a transitive security update would.
+        self._write_lock(
+            tmp_workspace,
+            '\n[[package]]\nname = "somedep"\nversion = "1.0.1"\n'
+            'source = "registry+https://github.com/rust-lang/crates.io-index"\n',
+        )
+        git_commit(tmp_workspace, "lockfile security update")
+
+        crates = discover_libraries(tmp_workspace)
+        order = topological_sort(crates)
+        results = compute_library_versions(
+            crates, order, cwd=tmp_workspace, skip_semver_checks=True,
+        )
+        assert results[0].version == "0.1.1"
+        assert results[0].tag == "my-lib-v0.1.1"
+
+    def test_root_manifest_change_triggers_library_release(
+        self, tmp_workspace: Path,
+    ) -> None:
+        make_library(tmp_workspace, "my-lib", "my_lib")
+        git_commit(tmp_workspace, "initial")
+        git_tag(tmp_workspace, "my-lib-v0.1.0")
+
+        # Change ONLY the root manifest, for example a workspace-wide profile.
+        root = tmp_workspace / "Cargo.toml"
+        root.write_text(
+            root.read_text(encoding="utf-8") + "\n[profile.release]\nlto = true\n",
+            encoding="utf-8",
+        )
+        git_commit(tmp_workspace, "root manifest change")
+
+        crates = discover_libraries(tmp_workspace)
+        order = topological_sort(crates)
+        results = compute_library_versions(
+            crates, order, cwd=tmp_workspace, skip_semver_checks=True,
+        )
+        assert results[0].version == "0.1.1"
+        assert results[0].tag == "my-lib-v0.1.1"
+
+    def test_lockfile_only_update_produces_full_version_map_and_tags(
+        self, tmp_workspace: Path,
+    ) -> None:
+        make_library(tmp_workspace, "my-lib", "my_lib")
+        make_executable(tmp_workspace, "tacon", "tacon")
+        self._write_lock(tmp_workspace)
+        git_commit(tmp_workspace, "initial")
+        git_tag(tmp_workspace, "my-lib-v0.1.0")
+        git_tag(tmp_workspace, "tacon-2026.424.0")
+
+        self._write_lock(
+            tmp_workspace,
+            '\n[[package]]\nname = "somedep"\nversion = "1.0.1"\n'
+            'source = "registry+https://github.com/rust-lang/crates.io-index"\n',
+        )
+        git_commit(tmp_workspace, "lockfile security update")
+
+        now = datetime(2026, 4, 24, tzinfo=timezone.utc)
+        result = compute_all_versions(
+            tmp_workspace, binary_name="tacon", skip_semver_checks=True, now=now,
+        )
+
+        # The lock-only update still selects the library and the executable.
+        assert result["versions"]["my-lib"] == "0.1.1"
+        assert result["versions"]["tacon"] == "2026.424.1"
+        assert result["has_release"] is True
+        assert "my-lib-v0.1.1" in result["new_tags"]
+        assert "tacon-2026.424.1" in result["new_tags"]
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: unchanged executables stay in the version map
+# ---------------------------------------------------------------------------
+
+class TestUnchangedExecutableInVersionMap:
+    def test_unchanged_executable_carries_existing_calver(
+        self, tmp_workspace: Path,
+    ) -> None:
+        make_library(tmp_workspace, "my-lib", "my_lib")
+        make_executable(tmp_workspace, "tacon", "tacon")
+        git_commit(tmp_workspace, "initial")
+        git_tag(tmp_workspace, "my-lib-v0.3.0")
+        git_tag(tmp_workspace, "tacon-2026.424.0")
+
+        # Nothing changes, so no crate gets a new tag.
+        now = datetime(2026, 4, 24, tzinfo=timezone.utc)
+        result = compute_all_versions(
+            tmp_workspace, binary_name="tacon", skip_semver_checks=True, now=now,
+        )
+
+        # The executable and the library both stay in the map at their existing
+        # versions, with no new tags.
+        assert result["versions"]["tacon"] == "2026.424.0"
+        assert result["versions"]["my-lib"] == "0.3.0"
+        assert result["new_tags"] == []
+        assert result["has_release"] is False
+        assert result["calver_tag"] == ""
+
+    def test_unchanged_shared_executables_carry_same_calver(
+        self, tmp_workspace: Path,
+    ) -> None:
+        make_executable(tmp_workspace, "tacon", "tacon")
+        make_executable(tmp_workspace, "tacacsrs-agentd", "tacacsrs_agentd")
+        make_executable(
+            tmp_workspace, "tacacsrs-agent-health", "tacacsrs_agent_health",
+        )
+        git_commit(tmp_workspace, "initial")
+        git_tag(tmp_workspace, "tacon-2026.424.0")
+
+        now = datetime(2026, 4, 24, tzinfo=timezone.utc)
+        result = compute_all_versions(
+            tmp_workspace,
+            binary_name="tacon",
+            shared_executable_names=["tacacsrs-agentd", "tacacsrs-agent-health"],
+            skip_semver_checks=True,
+            now=now,
+        )
+
+        # The shared executables carry the same existing CalVer, with no tags.
+        assert result["versions"]["tacon"] == "2026.424.0"
+        assert result["versions"]["tacacsrs-agentd"] == "2026.424.0"
+        assert result["versions"]["tacacsrs-agent-health"] == "2026.424.0"
+        assert result["new_tags"] == []
+        assert result["has_release"] is False
+
+
+class TestUnchangedMapHydration:
+    """The version map for an unchanged executable still hydrates cleanly.
+
+    This feeds a map that carries an unchanged executable at its existing CalVer
+    into the real hydration step, proving the two sides agree.
+    """
+
+    def test_unchanged_map_hydrates_manifests_and_lock(self, tmp_path: Path) -> None:
+        # Import the sibling hydration step without editing it.
+        inject_dir = Path(__file__).resolve().parent.parent / "inject-versions"
+        sys.path.insert(0, str(inject_dir))
+        try:
+            from hydrate_versions import hydrate
+        finally:
+            sys.path.remove(str(inject_dir))
+
+        ws = tmp_path / "ws"
+        (ws / "libraries" / "my_lib" / "src").mkdir(parents=True)
+        (ws / "executables" / "tacon" / "src").mkdir(parents=True)
+        (ws / "Cargo.toml").write_text(
+            textwrap.dedent(
+                """\
+                [workspace]
+                resolver = "2"
+                members = ["libraries/my_lib", "executables/tacon"]
+                """
+            ),
+            encoding="utf-8",
+        )
+        (ws / "libraries" / "my_lib" / "Cargo.toml").write_text(
+            '[package]\nname = "my-lib"\nversion = "0.0.0-dev"\nedition = "2021"\n',
+            encoding="utf-8",
+        )
+        (ws / "libraries" / "my_lib" / "src" / "lib.rs").write_text(
+            "// my-lib\n", encoding="utf-8",
+        )
+        (ws / "executables" / "tacon" / "Cargo.toml").write_text(
+            '[package]\nname = "tacon"\nversion = "0.0.0-dev"\nedition = "2021"\n',
+            encoding="utf-8",
+        )
+        (ws / "executables" / "tacon" / "src" / "main.rs").write_text(
+            "fn main() {}\n", encoding="utf-8",
+        )
+        (ws / "Cargo.lock").write_text(
+            textwrap.dedent(
+                """\
+                version = 4
+
+                [[package]]
+                name = "my-lib"
+                version = "0.0.0-dev"
+
+                [[package]]
+                name = "tacon"
+                version = "0.0.0-dev"
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        # The library changed (new patch) but the executable did not. The map
+        # still carries the executable at its existing CalVer.
+        hydrate(ws, {"my-lib": "0.3.1", "tacon": "2026.424.0"})
+
+        lib_manifest = (ws / "libraries" / "my_lib" / "Cargo.toml").read_text()
+        exe_manifest = (ws / "executables" / "tacon" / "Cargo.toml").read_text()
+        lock = (ws / "Cargo.lock").read_text()
+        assert 'version = "0.3.1"' in lib_manifest
+        assert 'version = "2026.424.0"' in exe_manifest
+        assert lock.count('version = "0.3.1"') == 1
+        assert lock.count('version = "2026.424.0"') == 1
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: conservative breaking floor for normal dependencies
+# ---------------------------------------------------------------------------
+
+class TestNormalDependencyBreakingFloor:
+    """A breaking normal dependency floors a dependent to a major bump.
+
+    A normal dependency's incompatible bump can break a re-export of its items
+    even when the dependent's own analyzed surface looks compatible, so the
+    dependent takes a conservative major bump. A build dependency cannot reach
+    the public API, so it never floors.
+    """
+
+    def test_discover_separates_normal_and_build_deps(self, tmp_path: Path) -> None:
+        _put(tmp_path / "Cargo.toml", """\
+            [workspace]
+            resolver = "2"
+            members = ["libraries/base", "libraries/top"]
+            """)
+        _put(tmp_path / "libraries" / "base" / "Cargo.toml", """\
+            [package]
+            name = "base-lib"
+            version = "0.0.0-dev"
+            edition = "2021"
+            """)
+        _put(tmp_path / "libraries" / "base" / "src" / "lib.rs", "// base\n")
+        _put(tmp_path / "libraries" / "top" / "Cargo.toml", """\
+            [package]
+            name = "top-lib"
+            version = "0.0.0-dev"
+            edition = "2021"
+
+            [build-dependencies]
+            base-lib = { path = "../base" }
+            """)
+        _put(tmp_path / "libraries" / "top" / "src" / "lib.rs", "// top\n")
+        _put(tmp_path / "libraries" / "top" / "build.rs", "fn main() {}\n")
+
+        crates = discover_libraries(tmp_path)
+
+        # A build edge propagates a release but is not a public-API edge.
+        assert crates["top-lib"].workspace_deps == ["base-lib"]
+        assert crates["top-lib"].normal_deps == []
+
+    def test_normal_dependency_breaking_floors_dependent_to_major(
+        self, tmp_workspace: Path,
+    ) -> None:
+        make_library(tmp_workspace, "base-lib", "base_lib")
+        make_library(
+            tmp_workspace, "top-lib", "top_lib", deps={"base-lib": "../base_lib"},
+        )
+        git_commit(tmp_workspace, "initial")
+        git_tag(tmp_workspace, "base-lib-v1.0.0")
+        git_tag(tmp_workspace, "top-lib-v1.0.0")
+        (tmp_workspace / "libraries" / "base_lib" / "src" / "lib.rs").write_text(
+            "// changed base\n", encoding="utf-8",
+        )
+        git_commit(tmp_workspace, "change base")
+
+        crates = discover_libraries(tmp_workspace)
+        order = topological_sort(crates)
+
+        # base breaks; top's own surface looks compatible. The floor still forces
+        # top to a major bump because base is a normal dependency.
+        def classify(package: str, baseline: str, **kwargs: object) -> ApiBump:
+            return ApiBump.MAJOR if package == "base-lib" else ApiBump.PATCH
+
+        with patch("compute_versions.classify_api_change", side_effect=classify):
+            results = compute_library_versions(
+                crates, order, cwd=tmp_workspace, skip_semver_checks=False,
+            )
+
+        by_name = {r.name: r for r in results}
+        assert by_name["base-lib"].version == "2.0.0"
+        assert by_name["top-lib"].version == "2.0.0"
+        assert "normal dependency" in by_name["top-lib"].reason
+
+    def test_pre_1_0_normal_dependency_breaking_floors_dependent(
+        self, tmp_workspace: Path,
+    ) -> None:
+        make_library(tmp_workspace, "base-lib", "base_lib")
+        make_library(
+            tmp_workspace, "top-lib", "top_lib", deps={"base-lib": "../base_lib"},
+        )
+        git_commit(tmp_workspace, "initial")
+        git_tag(tmp_workspace, "base-lib-v0.1.0")
+        git_tag(tmp_workspace, "top-lib-v0.4.2")
+        (tmp_workspace / "libraries" / "base_lib" / "src" / "lib.rs").write_text(
+            "// changed base\n", encoding="utf-8",
+        )
+        git_commit(tmp_workspace, "change base")
+
+        crates = discover_libraries(tmp_workspace)
+        order = topological_sort(crates)
+
+        def classify(package: str, baseline: str, **kwargs: object) -> ApiBump:
+            return ApiBump.MAJOR if package == "base-lib" else ApiBump.PATCH
+
+        with patch("compute_versions.classify_api_change", side_effect=classify):
+            results = compute_library_versions(
+                crates, order, cwd=tmp_workspace, skip_semver_checks=False,
+            )
+
+        by_name = {r.name: r for r in results}
+        # A 0.x breaking bump moves the minor position. Both the broken base and
+        # the floored dependent move their minor positions.
+        assert by_name["base-lib"].version == "0.2.0"
+        assert by_name["top-lib"].version == "0.5.0"
+        assert "normal dependency" in by_name["top-lib"].reason
+
+    def test_build_dependency_breaking_does_not_floor_dependent(
+        self, tmp_workspace: Path,
+    ) -> None:
+        _put(tmp_workspace / "Cargo.toml", """\
+            [workspace]
+            resolver = "2"
+            members = ["libraries/base_lib", "libraries/top_lib"]
+            """)
+        _put(tmp_workspace / "libraries" / "base_lib" / "Cargo.toml", """\
+            [package]
+            name = "base-lib"
+            version = "0.0.0-dev"
+            edition = "2021"
+            """)
+        _put(tmp_workspace / "libraries" / "base_lib" / "src" / "lib.rs", "// base\n")
+        _put(tmp_workspace / "libraries" / "top_lib" / "Cargo.toml", """\
+            [package]
+            name = "top-lib"
+            version = "0.0.0-dev"
+            edition = "2021"
+
+            [build-dependencies]
+            base-lib = { path = "../base_lib" }
+            """)
+        _put(tmp_workspace / "libraries" / "top_lib" / "src" / "lib.rs", "// top\n")
+        _put(tmp_workspace / "libraries" / "top_lib" / "build.rs", "fn main() {}\n")
+        git_commit(tmp_workspace, "initial")
+        git_tag(tmp_workspace, "base-lib-v1.0.0")
+        git_tag(tmp_workspace, "top-lib-v1.0.0")
+        (tmp_workspace / "libraries" / "base_lib" / "src" / "lib.rs").write_text(
+            "// changed base\n", encoding="utf-8",
+        )
+        git_commit(tmp_workspace, "change base")
+
+        crates = discover_libraries(tmp_workspace)
+        order = topological_sort(crates)
+
+        def classify(package: str, baseline: str, **kwargs: object) -> ApiBump:
+            return ApiBump.MAJOR if package == "base-lib" else ApiBump.PATCH
+
+        with patch("compute_versions.classify_api_change", side_effect=classify):
+            results = compute_library_versions(
+                crates, order, cwd=tmp_workspace, skip_semver_checks=False,
+            )
+
+        by_name = {r.name: r for r in results}
+        assert by_name["base-lib"].version == "2.0.0"
+        # A build dependency never reaches the public API, so no floor applies.
+        assert by_name["top-lib"].version == "1.0.1"
+        assert by_name["top-lib"].reason == "patch"

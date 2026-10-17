@@ -1,0 +1,205 @@
+{
+  "description": "Architecture rules for the tacacs-rs workspace. The allowlist names the production (normal) workspace-to-workspace edges that Cargo may resolve. The guards preserve the external and transitive dependency boundaries that previously lived inline in .github/steps/run-tests/action.yml. Rules track the 17 real workspace packages, not any proposed renames.",
+  "allowed_workspace_edges": {
+    "tacacsrs-secrets": [],
+    "tacacsrs-unix-socket": [],
+    "tacacsrs-protocol": [
+      "tacacsrs-secrets"
+    ],
+    "tacacsrs-networking": [
+      "tacacsrs-protocol",
+      "tacacsrs-secrets"
+    ],
+    "tacacsrs-ipc": [
+      "tacacsrs-protocol",
+      "tacacsrs-secrets",
+      "tacacsrs-unix-socket"
+    ],
+    "tacacsrs-credential-resolution": [
+      "tacacsrs-secrets"
+    ],
+    "tacacsrs-credential-http": [
+      "tacacsrs-credential-resolution"
+    ],
+    "tacacsrs-config": [
+      "tacacsrs-credential-resolution",
+      "tacacsrs-networking",
+      "tacacsrs-protocol",
+      "tacacsrs-secrets"
+    ],
+    "tacacsrs-sonic": [
+      "tacacsrs-config",
+      "tacacsrs-credential-resolution"
+    ],
+    "tacacsrs-agent": [
+      "tacacsrs-config",
+      "tacacsrs-credential-resolution",
+      "tacacsrs-networking",
+      "tacacsrs-protocol",
+      "tacacsrs-secrets",
+      "tacacsrs-unix-socket"
+    ],
+    "tacacsrs-bash-plugin": [
+      "tacacsrs-ipc",
+      "tacacsrs-protocol"
+    ],
+    "tacacsrs-agent-ipc-emulator": [
+      "tacacsrs-ipc",
+      "tacacsrs-protocol"
+    ],
+    "tacon": [
+      "tacacsrs-config",
+      "tacacsrs-ipc",
+      "tacacsrs-networking",
+      "tacacsrs-protocol",
+      "tacacsrs-secrets"
+    ],
+    "session-wrapper": [
+      "tacacsrs-ipc",
+      "tacacsrs-protocol"
+    ],
+    "tacacsrs-agentd": [
+      "tacacsrs-agent",
+      "tacacsrs-config",
+      "tacacsrs-credential-http",
+      "tacacsrs-credential-resolution",
+      "tacacsrs-ipc",
+      "tacacsrs-networking",
+      "tacacsrs-protocol",
+      "tacacsrs-secrets",
+      "tacacsrs-sonic"
+    ],
+    "tacacsrs-agent-health": [
+      "tacacsrs-ipc"
+    ],
+    "tacacsrs-agent-ipc-emulatord": [
+      "tacacsrs-agent-ipc-emulator",
+      "tacacsrs-ipc"
+    ]
+  },
+  "forbidden_dependency_guards": [
+    {
+      "name": "pure-protocol",
+      "description": "Check pure protocol dependencies. The protocol package stays free of async runtime, TLS, IPC, store, and higher-layer workspace code.",
+      "roots": [
+        "tacacsrs-protocol"
+      ],
+      "forbidden": [
+        "tokio",
+        "openssl",
+        "tonic",
+        "prost",
+        "redis",
+        "tacacsrs-config",
+        "tacacsrs-networking",
+        "tacacsrs-agent"
+      ]
+    },
+    {
+      "name": "provider-neutral-credentials",
+      "description": "Check provider-neutral credential dependencies. Credential resolution stays provider neutral and free of transport or schema code.",
+      "roots": [
+        "tacacsrs-credential-resolution"
+      ],
+      "forbidden": [
+        "tokio",
+        "openssl",
+        "tonic",
+        "prost",
+        "redis",
+        "tacacsrs-config",
+        "tacacsrs-networking",
+        "tacacsrs-agent",
+        "tacacsrs-sonic"
+      ]
+    },
+    {
+      "name": "schema-free-networking",
+      "description": "Check schema-free networking dependencies. The network client stays free of IPC, store, configuration, credential, and agent code.",
+      "roots": [
+        "tacacsrs-networking"
+      ],
+      "forbidden": [
+        "tonic",
+        "prost",
+        "redis",
+        "tacacsrs-config",
+        "tacacsrs-credential-resolution",
+        "tacacsrs-agent",
+        "tacacsrs-sonic"
+      ]
+    },
+    {
+      "name": "configuration-adapter",
+      "description": "Check configuration adapter dependencies. The configuration library keeps clap, IPC, store, and higher-layer code out of its production graph.",
+      "roots": [
+        "tacacsrs-config"
+      ],
+      "forbidden": [
+        "clap",
+        "tonic",
+        "prost",
+        "redis",
+        "tacacsrs-agent",
+        "tacacsrs-sonic"
+      ]
+    },
+    {
+      "name": "ipc-independent-agent",
+      "description": "Check IPC-independent agent dependencies. The agent runtime does not own the IPC transport in production.",
+      "roots": [
+        "tacacsrs-agent"
+      ],
+      "forbidden": [
+        "tonic",
+        "prost",
+        "tacacsrs-ipc"
+      ]
+    },
+    {
+      "name": "runtime-independent-ipc",
+      "description": "Check runtime-independent IPC dependencies. The IPC crate does not depend on the agent, network client, configuration, store, or credential code.",
+      "roots": [
+        "tacacsrs-ipc"
+      ],
+      "forbidden": [
+        "redis",
+        "tacacsrs-config",
+        "tacacsrs-networking",
+        "tacacsrs-credential-resolution",
+        "tacacsrs-agent",
+        "tacacsrs-sonic"
+      ]
+    },
+    {
+      "name": "unix-socket-leaf",
+      "description": "Check Unix socket ownership dependencies. The Unix socket crate stays a small leaf with no protocol, transport, schema, or IPC code.",
+      "roots": [
+        "tacacsrs-unix-socket"
+      ],
+      "forbidden": [
+        "tonic",
+        "prost",
+        "redis",
+        "openssl",
+        "tacacsrs-protocol",
+        "tacacsrs-config",
+        "tacacsrs-networking",
+        "tacacsrs-agent",
+        "tacacsrs-ipc"
+      ]
+    },
+    {
+      "name": "supported-core",
+      "description": "Check supported core dependencies. The production closure of the workspace default members excludes the experimental crates, Rego, and libseccomp.",
+      "roots": "default-members",
+      "forbidden": [
+        "session-wrapper",
+        "tacacsrs-agent-ipc-emulator",
+        "tacacsrs-agent-ipc-emulatord",
+        "regorus",
+        "libseccomp"
+      ]
+    }
+  ]
+}

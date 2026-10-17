@@ -7,11 +7,21 @@ from pathlib import Path
 
 import pytest
 
-from hydrate_versions import HydrationError, hydrate
+from hydrate_versions import HydrationError, hydrate, manifest_packages
 
 
 def write_workspace(workspace: Path) -> None:
-    """Create a small Cargo workspace fixture."""
+    """Create a small real Cargo workspace fixture."""
+    (workspace / "Cargo.toml").write_text(
+        textwrap.dedent(
+            """\
+            [workspace]
+            resolver = "2"
+            members = ["crates/demo"]
+            """
+        ),
+        encoding="utf-8",
+    )
     crate = workspace / "crates" / "demo"
     crate.mkdir(parents=True)
     (crate / "Cargo.toml").write_text(
@@ -25,6 +35,9 @@ def write_workspace(workspace: Path) -> None:
         ),
         encoding="utf-8",
     )
+    src = crate / "src"
+    src.mkdir()
+    (src / "lib.rs").write_text("// demo\n", encoding="utf-8")
     (workspace / "Cargo.lock").write_text(
         textwrap.dedent(
             """\
@@ -107,3 +120,43 @@ def test_rejects_duplicate_source_free_lock_entries(tmp_path: Path) -> None:
 
 def test_empty_map_does_not_require_lockfile(tmp_path: Path) -> None:
     hydrate(tmp_path, {})
+
+
+def test_excludes_non_member_manifests(tmp_path: Path) -> None:
+    """Only workspace members are hydration targets. Non-members are excluded."""
+    write_workspace(tmp_path)
+
+    # An excluded fuzz crate must never become a hydration target.
+    fuzz = tmp_path / "fuzz"
+    (fuzz / "src").mkdir(parents=True)
+    (fuzz / "Cargo.toml").write_text(
+        textwrap.dedent(
+            """\
+            [package]
+            name = "demo-fuzz"
+            version = "0.0.0"
+            edition = "2021"
+
+            [[bin]]
+            name = "demo-fuzz"
+            path = "src/main.rs"
+            """
+        ),
+        encoding="utf-8",
+    )
+    (fuzz / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+    root = tmp_path / "Cargo.toml"
+    root.write_text(root.read_text() + 'exclude = ["fuzz"]\n', encoding="utf-8")
+
+    # A nested manifest under the build directory must never appear.
+    build_manifest = tmp_path / "target" / "nested" / "Cargo.toml"
+    build_manifest.parent.mkdir(parents=True)
+    build_manifest.write_text(
+        '[package]\nname = "ignored"\nversion = "0.0.0"\n', encoding="utf-8"
+    )
+
+    packages = manifest_packages(tmp_path)
+    assert set(packages) == {"demo"}
+
+    with pytest.raises(HydrationError, match="no Cargo.toml exists"):
+        hydrate(tmp_path, {"demo-fuzz": "1.0.0"})
