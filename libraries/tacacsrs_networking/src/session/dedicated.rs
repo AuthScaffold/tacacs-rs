@@ -16,7 +16,7 @@ use tacacsrs_protocol::packet::{Packet, PacketTrait};
 use crate::connection::{BoxedDedicatedConnection, DedicatedConnection};
 use crate::session::random_nonzero_session_id;
 use crate::single_connect::SingleConnectPromotion;
-use crate::transport::BoxedTransport;
+use crate::transport::{BoxedTransport, Transport};
 
 pub(crate) struct DedicatedSession {
     connection: Mutex<Option<BoxedDedicatedConnection>>,
@@ -24,6 +24,7 @@ pub(crate) struct DedicatedSession {
     expected_response_sequence: Mutex<Option<u8>>,
     complete: AtomicBool,
     single_connect_promotion: std::sync::Mutex<Option<SingleConnectPromotion>>,
+    counters: Option<crate::ServerCounters>,
 }
 
 impl DedicatedSession {
@@ -33,6 +34,7 @@ impl DedicatedSession {
         single_connect_promotion: Option<SingleConnectPromotion>,
     ) -> Self {
         Self {
+            counters: transport.counters(),
             connection: Mutex::new(Some(DedicatedConnection::new(transport, obfuscation_key))),
             session_id: random_nonzero_session_id(),
             expected_response_sequence: Mutex::new(None),
@@ -101,15 +103,28 @@ impl DedicatedSession {
             .await?;
 
         if let Err(error) = self.validate_response_header(&packet).await {
+            if let Some(counters) = &self.counters {
+                counters.disconnect_reason(crate::DisconnectReason::MalformedPacket);
+            }
             connection.take();
             return Err(error);
         }
-        if let Some(promotion) = self
+        let promotion = self
             .single_connect_promotion
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-        {
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if packet.header().seq_no == 2 {
+            if let Some(counters) = &self.counters {
+                counters.single_connect(
+                    promotion.is_some()
+                        && packet
+                            .header()
+                            .flags
+                            .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG),
+                );
+            }
+        }
+        if let Some(promotion) = promotion.as_ref() {
             promotion.observe_server_response(&packet);
         }
         Ok(packet)
@@ -155,6 +170,12 @@ impl DedicatedSession {
             promotion.promote_if_confirmed(connection).await;
         } else {
             connection.shutdown().await;
+        }
+    }
+
+    pub(crate) fn record_timeout(&self) {
+        if let Some(counters) = &self.counters {
+            counters.disconnect_reason(crate::DisconnectReason::NoResponse);
         }
     }
 }

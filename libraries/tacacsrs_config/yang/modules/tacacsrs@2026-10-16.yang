@@ -16,12 +16,18 @@ module tacacsrs {
                  Access-Control System Plus (TACACS+)";
   }
 
+  import ietf-yang-types { prefix yang; }
+
   organization
     "AuthScaffold tacacs-rs project";
   contact
     "Project Web: <https://github.com/AuthScaffold/tacacs-rs>";
   description
     "Project-owned TACACS+ configuration extensions for tacacs-rs.";
+
+  revision 2026-10-16 {
+    description "Adds bounded read-only server, connection, TLS, and operation diagnostics.";
+  }
 
   revision 2026-10-06 {
     description
@@ -72,6 +78,97 @@ module tacacsrs {
       }
     }
     description "Authoritative source of downstream proxy obfuscation credentials.";
+  }
+
+  grouping diagnostic-connection {
+    description "Public metadata from one established connection. No credentials are included.";
+    leaf connection-id { type uint64; description "Process-local connection identity."; }
+    leaf peer-address { type string; description "Observed peer socket address, including its port."; }
+    leaf address-family { type enumeration { enum IPv4; enum IPv6; } description "Observed peer address family."; }
+    leaf established-at { type yang:date-and-time; description "Time transport establishment completed."; }
+    leaf single-connect { type boolean; description "Observed first-reply single-connect agreement. Absent before observation."; }
+    leaf tls-enabled { type boolean; description "Whether this established transport uses TLS."; }
+    leaf tls-version { type string; description "Negotiated TLS version. Absent for cleartext connections."; }
+    leaf tls-cipher { type string; description "Negotiated cipher suite, never key material."; }
+    leaf fips-enabled { type boolean; description "Observed backend FIPS mode. Absent when unknown."; }
+  }
+
+  grouping diagnostic-operation {
+    description "Per-server operations in local completion order, not aggregate logical retries.";
+    leaf requests { type yang:counter64; description "First requests accepted for execution, including queued sends."; }
+    leaf passed { type yang:counter64; description "Validated terminal success replies."; }
+    leaf denied { type yang:counter64; description "Validated authentication failures or authorization denials."; }
+    leaf errors { type yang:counter64; description "Other validated terminal replies."; }
+    leaf consecutive-failures { type uint64; description "Consecutive terminal non-success replies; success resets this gauge."; }
+  }
+
+  augment "/sys:system/sys-tcs-plus:tacacs-plus/sys-tcs-plus:server/sys-tcs-plus:statistics" {
+    description "Distinguishes successful establishments from the standard connection-open attempt counter.";
+    leaf connection-successes { config false; type yang:counter64; description "Completed TCP or TLS establishments, including required TLS verification."; }
+  }
+
+  augment "/sys:system/sys-tcs-plus:tacacs-plus/sys-tcs-plus:server" {
+    description "Measured server diagnostics for one captured routing generation and counter epoch.";
+    container diagnostics {
+      config false;
+      description "Read-only endpoint telemetry. Missing observations are not represented as false or zero.";
+      leaf address { type string; description "Configured host address or DNS name."; }
+      leaf port { type uint16; description "Configured service port."; }
+      leaf source-address { type string; description "Configured source address when present."; }
+      leaf routing-instance { type string; description "Configured routing instance when present."; }
+      leaf configured-single-connect { type boolean; description "Configured negotiation policy, not observed server support."; }
+      leaf connection-timeout-seconds { type uint16; units "seconds"; description "Configured connection timeout."; }
+      leaf state { type enumeration { enum connected; enum connecting; enum disconnected; enum not-attempted; } description "Transport state, distinct from routing eligibility and agent readiness."; }
+      leaf connecting { type uint64; description "Transport attempts in progress."; }
+      leaf connected { type uint64; description "Established transports not yet closed."; }
+      leaf expected-replies { type uint64; description "Requests awaiting validated completion, including queued sends. Cancellation clears the gauge."; }
+      leaf last-attempt { type yang:date-and-time; description "Most recent transport attempt."; }
+      leaf last-success { type yang:date-and-time; description "Most recent completed transport establishment."; }
+      leaf last-disconnect { type yang:date-and-time; description "Most recent established-transport close."; }
+      leaf last-disconnect-reason { type enumeration { enum graceful; enum peer; enum malformed-packet; enum no-response; enum write-error; enum read-error; enum credential-expired; enum other; } description "First observed close cause; cleanup does not overwrite it."; }
+      list connection { key connection-id; max-elements 32; description "Bounded active connection details."; uses diagnostic-connection; }
+      leaf connections-omitted { type uint64; description "Active transports omitted from the bounded detail list."; }
+      container last-connection { presence "A connection completed establishment."; description "Last established connection, which may no longer be active."; uses diagnostic-connection; }
+      list routing {
+        key operation;
+        description "Configured operation eligibility and current circuit hold state.";
+        leaf operation { type enumeration { enum authentication; enum authorization; enum accounting; } }
+        leaf eligible { type boolean; }
+        leaf on-hold { type boolean; }
+      }
+      leaf handshake-attempts { type yang:counter64; description "TLS handshake attempts."; }
+      leaf handshake-successes { type yang:counter64; description "TLS handshakes with completed required verification."; }
+      leaf handshake-failures { type yang:counter64; description "Failed or cancelled TLS establishment attempts."; }
+      leaf read-errors { type yang:counter64; description "First observed read failures on connections."; }
+      leaf write-errors { type yang:counter64; description "First observed write failures on connections."; }
+      leaf receive-timeouts { type yang:counter64; description "Receive I/O timeouts and fixed-exchange deadline expirations."; }
+      leaf send-timeouts { type yang:counter64; description "Observed send I/O timeouts."; }
+      leaf resets { type yang:counter64; description "Established connection closes with a non-graceful cause."; }
+      leaf peer-disconnects { type yang:counter64; description "Peer EOF or reset closes."; }
+      leaf malformed-disconnects { type yang:counter64; description "Protocol or framing violation closes."; }
+      leaf no-response-disconnects { type yang:counter64; description "Timeout-induced connection closes."; }
+      leaf credential-expiry-disconnects { type yang:counter64; description "Credential lifetime closes."; }
+      leaf other-disconnects { type yang:counter64; description "Other aborts, including local shutdown cancellation and I/O failures."; }
+      leaf packets-since-reset-sent { type yang:counter64; description "Complete packets sent since the most recent endpoint connection reset."; }
+      leaf packets-since-reset-received { type yang:counter64; description "Complete packets received since the most recent endpoint connection reset."; }
+      leaf watchdog-preflights { type yang:counter64; description "Explicitly configured accounting-watchdog preflight attempts, including setup failures."; }
+      leaf watchdog-successes { type yang:counter64; description "Successful accounting-watchdog preflights."; }
+      leaf watchdog-failures { type yang:counter64; description "Failed or cancelled accounting-watchdog preflights."; }
+      leaf watchdog-preflights-since-reset { type yang:counter64; description "Preflight attempts since the latest endpoint connection reset. No periodic timer is implied."; }
+      leaf tls-read-errors { type yang:counter64; description "Read failures on TLS transports."; }
+      leaf tls-write-errors { type yang:counter64; description "Write failures on TLS transports."; }
+      leaf tls-certificate-errors { type yang:counter64; description "Certificate-related TLS establishment failures."; }
+      leaf tls-revoked-certificates { type yang:counter64; description "Native verification failures identified as revoked certificates."; }
+      leaf tls-untrusted-ca { type yang:counter64; description "Native verification failures identified as untrusted issuers."; }
+      leaf tls-expired-certificates { type yang:counter64; description "Native verification failures identified as invalid certificate dates."; }
+      leaf tls-protocol-mismatches { type yang:counter64; description "Native SSL reason codes identifying unsupported or mismatched protocol versions."; }
+      leaf tls-cipher-mismatches { type yang:counter64; description "Native SSL reason codes identifying absent or incompatible ciphers."; }
+      leaf tls-other-errors { type yang:counter64; description "Other TLS establishment errors; no classification is inferred from error text."; }
+      container authentication { uses diagnostic-operation; }
+      container authorization { uses diagnostic-operation; }
+      container accounting { uses diagnostic-operation; }
+      leaf-list unsupported { type string; description "Capabilities this runtime does not measure; these must not be displayed as zero counters."; }
+    }
   }
 
   grouping request-limits {

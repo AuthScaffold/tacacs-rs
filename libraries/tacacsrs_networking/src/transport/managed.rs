@@ -124,6 +124,9 @@ impl TransportControl {
                         break;
                     };
                     if control.closed.load(Ordering::Acquire) || lifetime.check().is_err() {
+                        if let Some(counters) = &control.counters {
+                            counters.disconnect_reason(crate::DisconnectReason::CredentialExpired);
+                        }
                         control.close();
                         break;
                     }
@@ -144,6 +147,9 @@ impl TransportControl {
             .lifetime
             .is_some_and(|lifetime| lifetime.check().is_err())
         {
+            if let Some(counters) = &self.counters {
+                counters.disconnect_reason(crate::DisconnectReason::CredentialExpired);
+            }
             self.close();
             return Err(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
@@ -213,9 +219,17 @@ impl AsyncRead for ManagedReader {
             .poll(context, |stream, context| Pin::new(stream).poll_read(context, buffer));
         match &result {
             Poll::Ready(Ok(())) if has_capacity && buffer.filled().len() == before => {
+                if let Some(counters) = &self.0.counters {
+                    counters.disconnect_reason(crate::DisconnectReason::Peer);
+                }
                 self.0.graceful.store(true, Ordering::Release);
             }
-            Poll::Ready(Err(_)) => self.0.close(),
+            Poll::Ready(Err(error)) => {
+                if let Some(counters) = &self.0.counters {
+                    counters.io_error(error, false);
+                }
+                self.0.close();
+            }
             _ => {}
         }
         result
@@ -235,7 +249,10 @@ impl AsyncWrite for ManagedWriter {
             .0
             .writer
             .poll(context, |stream, context| Pin::new(stream).poll_write(context, buffer));
-        if matches!(&result, Poll::Ready(Err(_))) {
+        if let Poll::Ready(Err(error)) = &result {
+            if let Some(counters) = &self.0.counters {
+                counters.io_error(error, true);
+            }
             self.0.close();
         }
         result
@@ -249,7 +266,10 @@ impl AsyncWrite for ManagedWriter {
             .0
             .writer
             .poll(context, |stream, context| Pin::new(stream).poll_flush(context));
-        if matches!(&result, Poll::Ready(Err(_))) {
+        if let Poll::Ready(Err(error)) = &result {
+            if let Some(counters) = &self.0.counters {
+                counters.io_error(error, true);
+            }
             self.0.close();
         }
         result
@@ -265,7 +285,12 @@ impl AsyncWrite for ManagedWriter {
             .poll(context, |stream, context| Pin::new(stream).poll_shutdown(context));
         match &result {
             Poll::Ready(Ok(())) => self.0.graceful.store(true, Ordering::Release),
-            Poll::Ready(Err(_)) => self.0.close(),
+            Poll::Ready(Err(error)) => {
+                if let Some(counters) = &self.0.counters {
+                    counters.io_error(error, true);
+                }
+                self.0.close();
+            }
             Poll::Pending => {}
         }
         result

@@ -91,14 +91,16 @@ impl TacacsClient {
         let expected =
             ExpectedResponseHeader::fixed(exchange.packet_type(), exchange.minor_version());
         let session = deadline
-            .run(self.create_fixed_session(expected))
+            .run(self.create_fixed_session_until(expected, deadline))
             .await
             .map_err(FixedExchangeError::not_sent)?
             .map_err(FixedExchangeError::not_sent)?;
         deadline.check().map_err(FixedExchangeError::not_sent)?;
-        let result = deadline
-            .run(execute_on_session(&session, exchange))
-            .await
+        let execution = deadline.run(execute_on_session(&session, exchange)).await;
+        if execution.is_err() {
+            session.record_timeout();
+        }
+        let result = execution
             .map_err(FixedExchangeError::outcome_unknown)
             .and_then(std::convert::identity);
         let _completed = deadline.run(session.complete()).await;
@@ -144,6 +146,7 @@ where
     )
     .map_err(FixedExchangeError::not_sent)?;
 
+    let _reply_wait = session.awaiting_reply(&request);
     let response = session
         .fixed_round_trip(request)
         .await
@@ -171,9 +174,9 @@ where
         )));
     }
 
-    session.record_terminal_reply(&response);
     let reply = exchange
         .decode_reply(response.body())
         .map_err(FixedExchangeError::outcome_unknown)?;
+    session.record_terminal_reply(&response);
     Ok(reply)
 }

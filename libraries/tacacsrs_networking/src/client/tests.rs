@@ -748,6 +748,7 @@ async fn deadline_classifies_stalled_tls_and_sent_requests() {
                 .with_certificate_tls("localhost", None, CertificateTrust::Platform, None)
                 .unwrap();
         }
+        let counters = endpoint.counters();
         let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
         let deadline = RequestDeadline::after(Duration::from_millis(200)).unwrap();
         let exchange = client.execute_classified_until(
@@ -780,6 +781,18 @@ async fn deadline_classifies_stalled_tls_and_sent_requests() {
                 TransmissionState::OutcomeUnknown
             }
         );
+        client
+            .close_and_join(RequestDeadline::after(Duration::from_secs(1)).unwrap())
+            .await
+            .unwrap();
+        let snapshot = counters.snapshot();
+        assert_eq!(snapshot.diagnostics.connecting, 0);
+        assert_eq!(snapshot.diagnostics.expected_replies, 0);
+        if tls {
+            assert_eq!(snapshot.connection_failures, 1);
+            assert_eq!(snapshot.connection_timeouts, 1);
+            assert_eq!(snapshot.diagnostics.handshake_failures, 1);
+        }
     }
 }
 
@@ -799,6 +812,10 @@ async fn accounting_watchdog_preflight_establishes_shared_connection_when_echoed
     let client = TacacsClient::connect_prepared(server).await.unwrap();
 
     let preflight_packet = receive_request(&mut request_receiver).await;
+    let diagnostics = client.endpoint.counters().snapshot().diagnostics;
+    assert_eq!(diagnostics.watchdog_preflights, 1);
+    assert_eq!(diagnostics.watchdog_successes, 1);
+    assert_eq!(diagnostics.watchdog_failures, 0);
     let preflight_request = AccountingRequest::from_packet(&preflight_packet).unwrap();
     assert!(preflight_request
         .flags
@@ -1017,7 +1034,7 @@ async fn stale_negotiation_attempt_uses_dedicated_stream_after_not_supported() {
     client.update_single_connection_state(SingleConnectionState::NotSupported);
 
     let session = client
-        .create_single_connect_negotiation_session()
+        .create_single_connect_negotiation_session(None)
         .await
         .unwrap();
     run_session_exchange(&session).await;

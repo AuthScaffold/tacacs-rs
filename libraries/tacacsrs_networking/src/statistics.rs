@@ -4,6 +4,13 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
+mod diagnostics;
+pub use diagnostics::{
+    ConnectionDetails, DiagnosticsSnapshot, DisconnectReason, OperationStatistics, TlsDetails,
+};
+pub(crate) use diagnostics::{CertificateVerificationCode, ReplyWait};
+use diagnostics::authentication_outcome;
+
 /// A coherent snapshot of counters for one prepared endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatisticsSnapshot {
@@ -12,6 +19,8 @@ pub struct StatisticsSnapshot {
     /// Time this counter lifetime began. Counters are never reset in place.
     pub discontinuity_time: SystemTime,
     pub connection_opens: u64,
+    /// Completed transport establishments, including TLS validation when enabled.
+    pub connection_successes: u64,
     pub connection_closes: u64,
     pub connection_aborts: u64,
     pub connection_failures: u64,
@@ -21,29 +30,39 @@ pub struct StatisticsSnapshot {
     pub errors_received: u64,
     pub sessions: u64,
     pub cert_errors: u64,
+    /// Bounded operational details and explicitly measured gauges.
+    pub diagnostics: DiagnosticsSnapshot,
 }
 
 /// Shared counters for one immutable prepared endpoint and its connections.
 #[derive(Debug, Clone)]
-pub struct ServerCounters(Arc<Mutex<StatisticsSnapshot>>);
+pub struct ServerCounters(
+    Arc<Mutex<StatisticsSnapshot>>,
+    Option<Arc<diagnostics::ConnectionScope>>,
+);
 
 impl Default for ServerCounters {
     fn default() -> Self {
         static NEXT_EPOCH: AtomicU64 = AtomicU64::new(1);
-        Self(Arc::new(Mutex::new(StatisticsSnapshot {
-            epoch: NEXT_EPOCH.fetch_add(1, Ordering::Relaxed),
-            discontinuity_time: SystemTime::now(),
-            connection_opens: 0,
-            connection_closes: 0,
-            connection_aborts: 0,
-            connection_failures: 0,
-            connection_timeouts: 0,
-            messages_sent: 0,
-            messages_received: 0,
-            errors_received: 0,
-            sessions: 0,
-            cert_errors: 0,
-        })))
+        Self(
+            Arc::new(Mutex::new(StatisticsSnapshot {
+                epoch: NEXT_EPOCH.fetch_add(1, Ordering::Relaxed),
+                discontinuity_time: SystemTime::now(),
+                connection_opens: 0,
+                connection_successes: 0,
+                connection_closes: 0,
+                connection_aborts: 0,
+                connection_failures: 0,
+                connection_timeouts: 0,
+                messages_sent: 0,
+                messages_received: 0,
+                errors_received: 0,
+                sessions: 0,
+                cert_errors: 0,
+                diagnostics: DiagnosticsSnapshot::default(),
+            })),
+            None,
+        )
     }
 }
 
@@ -63,11 +82,27 @@ impl ServerCounters {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let counter = match event {
-            CounterEvent::ConnectionOpen => &mut counters.connection_opens,
+            CounterEvent::ConnectionOpen => {
+                counters.diagnostics.connecting += 1;
+                counters.diagnostics.last_attempt = Some(SystemTime::now());
+                &mut counters.connection_opens
+            }
             CounterEvent::ConnectionClose => &mut counters.connection_closes,
             CounterEvent::ConnectionAbort => &mut counters.connection_aborts,
-            CounterEvent::MessageSent => &mut counters.messages_sent,
-            CounterEvent::MessageReceived => &mut counters.messages_received,
+            CounterEvent::MessageSent => {
+                counters.diagnostics.packets_since_reset_sent = counters
+                    .diagnostics
+                    .packets_since_reset_sent
+                    .wrapping_add(1);
+                &mut counters.messages_sent
+            }
+            CounterEvent::MessageReceived => {
+                counters.diagnostics.packets_since_reset_received = counters
+                    .diagnostics
+                    .packets_since_reset_received
+                    .wrapping_add(1);
+                &mut counters.messages_received
+            }
             CounterEvent::ErrorReceived => &mut counters.errors_received,
             CounterEvent::SessionCompleted => &mut counters.sessions,
         };
@@ -132,6 +167,9 @@ pub(crate) struct ConnectionAttempt {
     counters: ServerCounters,
     finished: bool,
     connected: bool,
+    tls: bool,
+    peer: Option<std::net::SocketAddr>,
+    deadline: Option<crate::RequestDeadline>,
 }
 
 impl ConnectionAttempt {
@@ -141,13 +179,56 @@ impl ConnectionAttempt {
             counters,
             finished: false,
             connected: false,
+            tls: false,
+            peer: None,
+            deadline: None,
         }
     }
     pub(crate) fn connected(&mut self) {
         self.connected = true;
     }
+    pub(crate) fn peer(&mut self, peer: Option<std::net::SocketAddr>) {
+        self.peer = peer;
+    }
+    pub(crate) fn with_deadline(mut self, deadline: Option<crate::RequestDeadline>) -> Self {
+        self.deadline = deadline;
+        self
+    }
+    pub(crate) fn peer_address(&self) -> Option<std::net::SocketAddr> {
+        self.peer
+    }
+    pub(crate) fn handshake(&mut self) {
+        self.tls = true;
+        let mut snapshot = self
+            .counters
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        snapshot.diagnostics.handshake_attempts =
+            snapshot.diagnostics.handshake_attempts.wrapping_add(1);
+    }
+    pub(crate) fn failed_error(&mut self, error: &anyhow::Error) {
+        if self.tls && !self.finished {
+            self.counters.tls_failure(error);
+        }
+        self.failed(error.is::<tokio::time::error::Elapsed>(), error.is::<CertificateFailure>());
+    }
     pub(crate) fn succeeded(&mut self) {
-        self.finished = true;
+        if !self.finished {
+            let mut counters = self
+                .counters
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            counters.connection_successes = counters.connection_successes.wrapping_add(1);
+            counters.diagnostics.connecting = counters.diagnostics.connecting.saturating_sub(1);
+            counters.diagnostics.last_success = Some(SystemTime::now());
+            if self.tls {
+                counters.diagnostics.handshake_successes =
+                    counters.diagnostics.handshake_successes.wrapping_add(1);
+            }
+            self.finished = true;
+        }
     }
     pub(crate) fn failed(&mut self, timeout: bool, certificate: bool) {
         if !self.finished {
@@ -157,6 +238,11 @@ impl ConnectionAttempt {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             counters.connection_failures = counters.connection_failures.wrapping_add(1);
+            counters.diagnostics.connecting = counters.diagnostics.connecting.saturating_sub(1);
+            if self.tls {
+                counters.diagnostics.handshake_failures =
+                    counters.diagnostics.handshake_failures.wrapping_add(1);
+            }
             if self.connected {
                 counters.connection_aborts = counters.connection_aborts.wrapping_add(1);
             }
@@ -173,7 +259,11 @@ impl ConnectionAttempt {
 
 impl Drop for ConnectionAttempt {
     fn drop(&mut self) {
-        self.failed(false, false);
+        self.failed(
+            self.deadline
+                .is_some_and(|deadline| deadline.check().is_err()),
+            false,
+        );
     }
 }
 
@@ -200,6 +290,7 @@ impl ConnectionRecord {
     }
     pub(crate) fn close(&self, graceful: bool) {
         if !self.closed.swap(true, Ordering::AcqRel) {
+            self.counters.disconnected(graceful);
             self.counters.record(if graceful {
                 CounterEvent::ConnectionClose
             } else {
@@ -218,6 +309,43 @@ impl Drop for ConnectionRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connection_attempt_results_are_terminal() {
+        let counters = ServerCounters::default();
+        let mut successful = ConnectionAttempt::new(counters.clone());
+        successful.succeeded();
+        successful.succeeded();
+        successful.failed(true, true);
+        drop(successful);
+        let mut failed = ConnectionAttempt::new(counters.clone());
+        failed.failed(false, false);
+        failed.succeeded();
+        drop(failed);
+        let snapshot = counters.snapshot();
+        assert_eq!(snapshot.connection_opens, 2);
+        assert_eq!(snapshot.connection_successes, 1);
+        assert_eq!(snapshot.connection_failures, 1);
+        assert_eq!(snapshot.connection_timeouts, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn setup_cancellation_distinguishes_deadline_expiry() {
+        let counters = ServerCounters::default();
+        let deadline = crate::RequestDeadline::after(std::time::Duration::from_secs(1)).unwrap();
+        let mut expired = ConnectionAttempt::new(counters.clone()).with_deadline(Some(deadline));
+        expired.connected();
+        expired.handshake();
+        let cancelled = ConnectionAttempt::new(counters.clone());
+        drop(cancelled);
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        drop(expired);
+        let snapshot = counters.snapshot();
+        assert_eq!(snapshot.connection_failures, 2);
+        assert_eq!(snapshot.connection_timeouts, 1);
+        assert_eq!(snapshot.diagnostics.handshake_failures, 1);
+        assert_eq!(snapshot.diagnostics.connecting, 0);
+    }
 
     #[test]
     fn timeout_and_connection_records_are_exactly_once() {

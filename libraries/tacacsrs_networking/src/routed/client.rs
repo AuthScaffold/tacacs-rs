@@ -45,6 +45,16 @@ impl RoutedClient {
 }
 
 impl<Connector: EndpointConnector> RoutedClient<Connector> {
+    /// Reads the circuit state without connecting or changing endpoint selection.
+    #[must_use]
+    pub fn circuit_open(&self, name: &str, operation: OperationKind) -> Option<bool> {
+        self.catalog
+            .endpoints
+            .iter()
+            .find(|slot| slot.endpoint.name() == name && slot.endpoint.supports(operation))
+            .map(|slot| slot.operation(operation).circuit.is_open())
+    }
+
     /// Creates a routed client with a host-supplied connection factory.
     pub fn with_connector(endpoints: Vec<Endpoint>, connector: Connector) -> Self {
         let connector = Arc::new(connector);

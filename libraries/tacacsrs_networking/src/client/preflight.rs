@@ -27,12 +27,16 @@ impl TacacsClient {
     }
 
     async fn send_accounting_watchdog_preflight(&self) -> anyhow::Result<()> {
+        let mut observation = self.endpoint.counters().watchdog_preflight();
         let reply = self
             .execute(AccountingWatchdogExchange(accounting_watchdog_preflight_request()))
             .await?;
 
         match reply.status {
-            TacacsAccountingStatus::TacPlusAcctStatusSuccess => Ok(()),
+            TacacsAccountingStatus::TacPlusAcctStatusSuccess => {
+                observation.succeeded = true;
+                Ok(())
+            }
             status => anyhow::bail!("TACACS+ accounting WATCHDOG preflight failed: {status:?}"),
         }
     }

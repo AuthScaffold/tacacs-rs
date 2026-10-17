@@ -66,6 +66,22 @@ impl PacketReader {
     where
         Reader: AsyncRead + Unpin + ?Sized,
     {
+        let result = self.read_packet_inner(reader).await;
+        if let Some(counters) = &self.counters {
+            match &result {
+                PacketReadResult::HeaderReadError(error)
+                | PacketReadResult::BodyReadError { error, .. } => counters.io_error(error, false),
+                PacketReadResult::Success(_) => {}
+                _ => counters.disconnect_reason(crate::DisconnectReason::MalformedPacket),
+            }
+        }
+        result
+    }
+
+    async fn read_packet_inner<Reader>(&self, reader: &mut Reader) -> PacketReadResult
+    where
+        Reader: AsyncRead + Unpin + ?Sized,
+    {
         // Read the header.
         let mut header_buffer = [0_u8; TACACS_HEADER_LENGTH];
         if let Err(e) = reader.read_exact(&mut header_buffer).await {

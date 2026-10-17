@@ -1,3 +1,8 @@
+//! Operational YANG snapshots and their RFC 7951 serialization.
+
+mod diagnostics;
+pub use diagnostics::{ConnectionStatistics, OperationCounters, RoutingStatus, ServerDiagnostics};
+
 /// Runtime statistics counters for a TACACS+ server.
 ///
 /// This type maps to the YANG `grouping statistics` container. All counters are
@@ -12,6 +17,9 @@ pub struct ServerStatistics {
     /// Number of requests to open a connection.
     #[serde(serialize_with = "counter64")]
     pub connection_opens: u64,
+    /// Successful transport establishments, not attempts still in progress.
+    #[serde(rename = "tacacsrs:connection-successes", serialize_with = "counter64")]
+    pub connection_successes: u64,
     /// Number of graceful connection closes.
     #[serde(serialize_with = "counter64")]
     pub connection_closes: u64,
@@ -49,6 +57,7 @@ impl From<tacacsrs_networking::StatisticsSnapshot> for ServerStatistics {
         Self {
             discontinuity_time: Some(value.discontinuity_time),
             connection_opens: value.connection_opens,
+            connection_successes: value.connection_successes,
             connection_closes: value.connection_closes,
             connection_aborts: value.connection_aborts,
             connection_failures: value.connection_failures,
@@ -73,6 +82,9 @@ pub struct ServerOperationalStatistics {
     pub counter_epoch: u64,
     /// Read-only counters for this server and epoch.
     pub statistics: ServerStatistics,
+    /// Read-only endpoint diagnostics from the same counter snapshot.
+    #[serde(rename = "tacacsrs:diagnostics", skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<ServerDiagnostics>,
 }
 
 /// Operational server counters captured from one runtime generation.
@@ -87,6 +99,41 @@ pub struct OperationalStatistics {
 }
 
 impl OperationalStatistics {
+    /// Serializes the operational subtree within a caller-supplied byte limit.
+    /// # Errors
+    /// Returns an error if the output exceeds the limit or contains an invalid timestamp.
+    pub fn to_yang_json_bounded(&self, limit: usize) -> anyhow::Result<String> {
+        #[derive(serde::Serialize)]
+        struct Root<'a> {
+            #[serde(rename = "ietf-system-tacacs-plus:tacacs-plus")]
+            statistics: &'a OperationalStatistics,
+        }
+        struct Output {
+            bytes: Vec<u8>,
+            limit: usize,
+        }
+        impl std::io::Write for Output {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                if data.len() > self.limit.saturating_sub(self.bytes.len()) {
+                    return Err(std::io::Error::other(
+                        "Operational statistics exceed the response limit",
+                    ));
+                }
+                self.bytes.extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut output = Output {
+            bytes: Vec::new(),
+            limit,
+        };
+        serde_json::to_writer_pretty(&mut output, &Root { statistics: self })?;
+        Ok(String::from_utf8(output.bytes)?)
+    }
+
     /// Serializes an RFC 7951 operational subtree, not a loadable configuration document.
     /// # Errors
     /// Returns an error for an unrepresentable timestamp or serialization failure.
@@ -140,6 +187,7 @@ mod tests {
                 name: "primary".to_owned(),
                 counter_epoch: 9,
                 statistics,
+                diagnostics: None,
             }],
         };
         let json = snapshot.to_yang_json().unwrap();
