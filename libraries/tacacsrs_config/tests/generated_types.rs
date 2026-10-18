@@ -473,7 +473,7 @@ fn symmetric_key_format_all_and_allowed_values() {
 
 #[test]
 fn server_type_serialize_single_flag() {
-    let root = tacacsrs_config::model::YangConfigRoot {
+    let root = tacacsrs_config::YangConfigRoot {
         tacacs_plus: tacacsrs_config::TacacsPlus {
             client_credentials: vec![],
             server_credentials: vec![],
@@ -502,7 +502,7 @@ fn server_type_serialize_single_flag() {
 
 #[test]
 fn server_type_serialize_two_flags() {
-    let root = tacacsrs_config::model::YangConfigRoot {
+    let root = tacacsrs_config::YangConfigRoot {
         tacacs_plus: tacacsrs_config::TacacsPlus {
             client_credentials: vec![],
             server_credentials: vec![],
@@ -532,7 +532,7 @@ fn server_type_serialize_two_flags() {
 
 #[test]
 fn serialization_omits_absent_optionals_and_empty_lists() {
-    let root = tacacsrs_config::model::YangConfigRoot {
+    let root = tacacsrs_config::YangConfigRoot {
         tacacs_plus: TacacsPlusBuilder::new()
             .with_server(
                 TacacsPlusServerBuilder::new(

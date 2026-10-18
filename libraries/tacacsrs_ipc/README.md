@@ -32,7 +32,7 @@ tacacsrs_ipc
 ├── convert     - private conversions to shared protocol operations
 ├── health      - standard health client
 ├── server      - domain handler, bounded Unix listener, and health publication
-└── ipc         - generated protobuf/gRPC bindings
+└── proto       - generated protobuf/gRPC bindings
 ```
 
 ## Architecture overview
@@ -47,7 +47,7 @@ tacacsrs_ipc
 ┌──────────────────┐     ┌───────────────────┐
 │ ServiceClient    │────>│ IpcEndpoint       │
 └──────┬───────────┘     └───────────────────┘
-       │ converts to ipc types
+       │ converts to proto types
        │ gRPC call
        v
 ┌──────────────────────────────┐
@@ -91,7 +91,8 @@ Unix(path)  parse as SocketAddr
 
 The protobuf schema
 ([`proto/tacacsrs_agent.proto`](proto/tacacsrs_agent.proto))
-defines the on-the-wire contract. `tacacsrs_protocol::operations` defines the shared domain types:
+defines the on-the-wire contract. `tacacsrs_protocol::operations` defines the shared request and
+response domain types, and `tacacsrs_protocol::failure` defines the shared `ServiceError`:
 
 | Protobuf message      | Rust domain type                | Direction      |
 |-----------------------|---------------------------------|----------------|

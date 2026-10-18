@@ -1,17 +1,18 @@
 use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
-use tacacsrs_ipc::ipc;
+use tacacsrs_ipc::proto;
 use tacacsrs_protocol::failure::{DeliveryState, FailureCategory, FailureFacts, FailurePhase};
 use tacacsrs_protocol::operations::{
     AccountingOperationResponse, AccountingResponseStatus, AuthorizationArg,
-    AuthorizationOperationResponse, AuthorizationResponseStatus, ServiceError,
+    AuthorizationOperationResponse, AuthorizationResponseStatus,
 };
+use tacacsrs_protocol::failure::ServiceError;
 use tonic::Status;
 
 use crate::policy::{ErrorBody, ResponseBody};
 
-pub(crate) fn accounting_fields(request: &ipc::AccountingRequest) -> BTreeMap<String, Value> {
+pub(crate) fn accounting_fields(request: &proto::AccountingRequest) -> BTreeMap<String, Value> {
     BTreeMap::from([
         ("user".to_owned(), json!(request.user)),
         ("port".to_owned(), json!(request.port)),
@@ -21,7 +22,9 @@ pub(crate) fn accounting_fields(request: &ipc::AccountingRequest) -> BTreeMap<St
     ])
 }
 
-pub(crate) fn authorization_fields(request: &ipc::AuthorizationRequest) -> BTreeMap<String, Value> {
+pub(crate) fn authorization_fields(
+    request: &proto::AuthorizationRequest,
+) -> BTreeMap<String, Value> {
     let command = request
         .args
         .iter()

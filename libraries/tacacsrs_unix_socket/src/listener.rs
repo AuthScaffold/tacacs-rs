@@ -1,9 +1,20 @@
-//! Unix domain socket preparation for agent-owned listeners.
+//! Unix domain socket preparation with advisory locking and inode-aware cleanup.
 //!
 //! This module binds a Unix domain socket, removes only a stale unowned socket,
-//! holds an exclusive advisory lock, and cleans up an owned socket path. The raw
-//! TACACS+ proxy uses it. The local client API listener owns an equivalent
-//! implementation in the IPC crate; the agent does not depend on that crate.
+//! holds an exclusive advisory lock on `<path>.lock`, and returns a guard that
+//! cleans up the owned socket path. It is the single socket resource owner
+//! shared by cooperating service listeners, such as the central TACACS+ agent
+//! proxy listener and the local client API listener.
+//!
+//! # Security
+//!
+//! This module assumes a trusted parent directory and cooperating, well-behaved
+//! processes. The advisory lock and the `(dev, ino)` identity check coordinate
+//! service instances that follow the same protocol. They are not atomic against
+//! a hostile actor that can write to the parent directory and replace the path
+//! between a check and the next operation. The identity check reduces accidental
+//! removal of a successor socket, but it is best-effort. It does not defend
+//! against a deliberate time-of-check to time-of-use attack.
 
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -13,7 +24,7 @@ use rustix::fs::{FlockOperation, flock};
 
 /// Guards an owned Unix domain socket path and removes it on cleanup or drop.
 #[derive(Debug)]
-pub(crate) struct UnixSocketCleanupGuard {
+pub struct UnixSocketCleanupGuard {
     path: PathBuf,
     identity: (u64, u64),
     // Keep the exclusive lock until the listener or guard is dropped.
@@ -32,10 +43,20 @@ impl UnixSocketCleanupGuard {
         }
     }
 
-    pub(crate) async fn cleanup(mut self, label: &str) -> anyhow::Result<()> {
+    /// Removes the owned socket path and releases the advisory lock.
+    ///
+    /// This consumes the guard. It removes the socket only when the current
+    /// path still has the recorded `(dev, ino)` identity, so it never deletes a
+    /// successor bound by another instance. It never removes the `<path>.lock`
+    /// file; the lock releases when the guard drops.
+    ///
+    /// # Errors
+    /// Returns an error when removing the owned socket path fails for a reason
+    /// other than the path already being absent.
+    pub async fn cleanup(mut self) -> anyhow::Result<()> {
         if !self.owns_current_path() {
             log::debug!(
-                "{label} {} belongs to a different instance; leaving it in place",
+                "Unix domain socket {} belongs to a different instance; leaving it in place",
                 self.path.display()
             );
             self.disarm();
@@ -43,17 +64,18 @@ impl UnixSocketCleanupGuard {
         }
         match tokio::fs::remove_file(&self.path).await {
             Ok(()) => {
-                log::debug!("Removed {label} {}", self.path.display());
+                log::debug!("Removed Unix domain socket {}", self.path.display());
                 self.disarm();
                 Ok(())
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                log::debug!("{label} {} is already removed", self.path.display());
+                log::debug!("Unix domain socket {} is already removed", self.path.display());
                 self.disarm();
                 Ok(())
             }
-            Err(error) => Err(error)
-                .with_context(|| format!("Failed to remove {label} {}", self.path.display())),
+            Err(error) => Err(error).with_context(|| {
+                format!("Failed to remove Unix domain socket {}", self.path.display())
+            }),
         }
     }
 
@@ -108,7 +130,12 @@ impl Drop for UnixSocketCleanupGuard {
 ///
 /// # Errors
 /// Returns an error if the directory, lock, socket path, or bind fails.
-pub(crate) async fn prepare_unix_listener(
+///
+/// # Security
+/// This function assumes a trusted parent directory and cooperating processes.
+/// The advisory lock and the later `(dev, ino)` identity check are not atomic
+/// against a hostile actor that replaces the path between operations.
+pub async fn prepare_unix_listener(
     path: &Path,
     socket_mode: u32,
 ) -> anyhow::Result<(tokio::net::UnixListener, UnixSocketCleanupGuard)> {
@@ -144,6 +171,10 @@ fn instance_lock_path(path: &Path) -> PathBuf {
 }
 
 /// Takes the exclusive advisory lock for `path`.
+///
+/// The caller holds the returned file for the listener lifetime. Dropping the
+/// file or stopping the process releases the lock. This function never removes
+/// the lock file.
 fn acquire_instance_lock(path: &Path) -> anyhow::Result<std::fs::File> {
     let lock_path = instance_lock_path(path);
     let lock = std::fs::OpenOptions::new()
@@ -167,6 +198,9 @@ fn acquire_instance_lock(path: &Path) -> anyhow::Result<std::fs::File> {
 }
 
 /// Removes a stale, unowned Unix domain socket at `path`.
+///
+/// The caller must hold the instance lock. This function does not remove other
+/// file types.
 async fn reconcile_existing_socket_path(path: &Path) -> anyhow::Result<()> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -252,7 +286,7 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // Miri does not support Unix domain sockets or file-system I/O.
     async fn rejects_active_socket_path() {
-        let path = test_socket_path("proxy-active-socket");
+        let path = test_socket_path("active-socket");
         let existing = tokio::net::UnixListener::bind(&path).unwrap();
 
         let error = prepare_unix_listener(&path, 0o660).await.unwrap_err();
@@ -266,7 +300,7 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // Miri does not support Unix domain sockets or file-system I/O.
     async fn replaces_stale_socket_and_cleanup_removes_it() {
-        let path = test_socket_path("proxy-stale-socket");
+        let path = test_socket_path("stale-socket");
         let stale = tokio::net::UnixListener::bind(&path).unwrap();
         drop(stale);
 
@@ -274,7 +308,7 @@ mod tests {
         assert!(is_socket(&path));
 
         drop(listener);
-        guard.cleanup("Unix domain socket").await.unwrap();
+        guard.cleanup().await.unwrap();
         assert!(!tokio::fs::try_exists(&path).await.unwrap());
         cleanup_paths(&path).await;
     }
@@ -282,7 +316,7 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // Miri does not support file-system I/O.
     async fn refuses_to_remove_regular_file() {
-        let path = test_socket_path("proxy-regular-file");
+        let path = test_socket_path("regular-file");
         tokio::fs::write(&path, b"not a socket").await.unwrap();
 
         let error = prepare_unix_listener(&path, 0o660).await.unwrap_err();
@@ -293,9 +327,29 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Miri does not support file-system I/O.
+    async fn refuses_to_remove_symlink() {
+        let path = test_socket_path("symlink");
+        let target = test_socket_path("symlink-target");
+        tokio::fs::write(&target, b"target").await.unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+
+        let error = prepare_unix_listener(&path, 0o660).await.unwrap_err();
+
+        assert!(error.to_string().contains("not a Unix domain socket"));
+        assert!(std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(tokio::fs::try_exists(&target).await.unwrap());
+        cleanup_paths(&path).await;
+        cleanup_paths(&target).await;
+    }
+
+    #[tokio::test]
     #[cfg_attr(miri, ignore)] // Miri does not support Unix domain sockets or file-system I/O.
     async fn two_concurrent_starters_only_one_binds() {
-        let path = test_socket_path("proxy-concurrent");
+        let path = test_socket_path("concurrent");
 
         let (listener, guard) = prepare_unix_listener(&path, 0o660).await.unwrap();
 
@@ -308,5 +362,27 @@ mod tests {
         drop(listener);
         drop(guard);
         cleanup_paths(&path).await;
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Miri does not support Unix domain sockets or file-system I/O.
+    async fn cleanup_leaves_successor_socket_untouched() {
+        let path = test_socket_path("successor");
+        let moved = test_socket_path("successor-moved");
+
+        let (listener, guard) = prepare_unix_listener(&path, 0o660).await.unwrap();
+        // Move this socket to keep its inode allocated. The replacement at the
+        // original path then has a different inode.
+        tokio::fs::rename(&path, &moved).await.unwrap();
+        let successor = tokio::net::UnixListener::bind(&path).unwrap();
+
+        // The old guard must not remove the replacement, which has a different inode.
+        guard.cleanup().await.unwrap();
+        assert!(is_socket(&path));
+
+        drop(listener);
+        drop(successor);
+        cleanup_paths(&path).await;
+        cleanup_paths(&moved).await;
     }
 }

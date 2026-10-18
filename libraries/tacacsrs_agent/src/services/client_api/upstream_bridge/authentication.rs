@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use tacacsrs_protocol::operations::{
     AuthenticationResponseStatus, PapAuthenticationOperation, PapAuthenticationOperationResponse,
-    ServiceError,
 };
+use tacacsrs_protocol::failure::ServiceError;
 use tacacsrs_protocol::exchange::authentication::PapAuthenticationExchange;
 use tacacsrs_protocol::exchange::FixedExchange;
 

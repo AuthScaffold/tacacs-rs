@@ -395,9 +395,9 @@ The crate separates parsing and runtime preparation into three layers.
 If you need the submitted YANG model preserved exactly for round-tripping or reporting, use the raw pipeline:
 
 ```rust
-use tacacsrs_config::pipeline;
+use tacacsrs_config::parse_root_json;
 
-let raw_config = pipeline::parse_root_json(json_str)?;
+let raw_config = parse_root_json(json_str)?;
 # anyhow::Ok::<()>(())
 ```
 

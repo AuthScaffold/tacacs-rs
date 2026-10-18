@@ -10,7 +10,7 @@ use clap::{Parser, ValueEnum};
 
 /// Determines how the wrapper behaves when TACACS+ authorization cannot be completed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum FailPolicy {
+pub(super) enum FailPolicy {
     /// Deny the session when authorization cannot be completed.
     Closed,
 
@@ -22,7 +22,7 @@ pub enum FailPolicy {
 #[derive(Debug, Clone, Parser)]
 #[command(name = "session-wrapper", version, author)]
 #[command(about = "TACACS+-controlled session wrapper", long_about = None)]
-pub struct Cli {
+pub(super) struct Cli {
     /// Target username for the wrapped session.
     #[arg(long)]
     pub user: String,

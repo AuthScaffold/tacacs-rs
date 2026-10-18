@@ -19,7 +19,7 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::Context;
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
-use crate::runtime::task::DriverTask;
+use crate::connection::task::DriverTask;
 
 use crate::codec::{PacketReadResult, PacketReader, PacketWriter};
 use crate::exchange_error::protocol_failure;
@@ -189,7 +189,7 @@ impl ConnectionRuntime {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     log::error!(
-                        target: "tacacsrs_networking::runtime::multiplexed::handle_connection",
+                        target: "tacacsrs_networking::connection::multiplexed::handle_connection",
                         "Write task failed: {error}"
                     );
                     Err(error)
@@ -202,7 +202,7 @@ impl ConnectionRuntime {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     log::error!(
-                        target: "tacacsrs_networking::runtime::multiplexed::handle_connection",
+                        target: "tacacsrs_networking::connection::multiplexed::handle_connection",
                         "Read task failed: {error}"
                     );
 
@@ -255,7 +255,7 @@ impl ConnectionRuntime {
             let read_result = tokio::select! {
                 () = self.session_manager.wait_for_close() => {
                     log::info!(
-                        target: "tacacsrs_networking::runtime::multiplexed::read_handler",
+                        target: "tacacsrs_networking::connection::multiplexed::read_handler",
                         "The connection is retired and all sessions are complete."
                     );
                     return Ok(());
@@ -268,14 +268,14 @@ impl ConnectionRuntime {
                 PacketReadResult::Success(packet) => packet,
                 PacketReadResult::HeaderReadError(error) => {
                     log::error!(
-                        target: "tacacsrs_networking::runtime::multiplexed::read_handler",
+                        target: "tacacsrs_networking::connection::multiplexed::read_handler",
                         "Failed to read TACACS+ packet header: {error}"
                     );
                     return Err(error).context("failed to read TACACS+ packet header");
                 }
                 PacketReadResult::HeaderParseError(error) => {
                     log::error!(
-                        target: "tacacsrs_networking::runtime::multiplexed::read_handler",
+                        target: "tacacsrs_networking::connection::multiplexed::read_handler",
                         "Failed to parse TACACS+ packet header: {error}"
                     );
                     return Err(protocol_failure(
@@ -288,7 +288,7 @@ impl ConnectionRuntime {
                     max_length,
                 } => {
                     log::error!(
-                        target: "tacacsrs_networking::runtime::multiplexed::read_handler",
+                        target: "tacacsrs_networking::connection::multiplexed::read_handler",
                         "Rejected packet for session ID {session_id}: body length {body_length} exceeds maximum {max_length}. Closing the connection to prevent packet framing errors."
                     );
                     let error = protocol_failure(anyhow::Error::msg(format!(
@@ -301,14 +301,14 @@ impl ConnectionRuntime {
                 }
                 PacketReadResult::BodyReadError { session_id, error } => {
                     log::error!(
-                        target: "tacacsrs_networking::runtime::multiplexed::read_handler",
+                        target: "tacacsrs_networking::connection::multiplexed::read_handler",
                         "Failed to read packet body for session ID {session_id}: {error}"
                     );
                     return Err(error).context("failed to read TACACS+ packet body");
                 }
                 PacketReadResult::PacketCreateError { session_id, error } => {
                     log::error!(
-                        target: "tacacsrs_networking::runtime::multiplexed::read_handler",
+                        target: "tacacsrs_networking::connection::multiplexed::read_handler",
                         "Failed to create packet for session ID {session_id}: {error}"
                     );
                     continue;
@@ -324,7 +324,7 @@ impl ConnectionRuntime {
                     PacketDispatchError::UnknownSession(_) | PacketDispatchError::SessionClosed(_),
                 ) => {
                     log::debug!(
-                        target: "tacacsrs_networking::runtime::multiplexed::read_handler",
+                        target: "tacacsrs_networking::connection::multiplexed::read_handler",
                         "Ignoring response for a session that is no longer active"
                     );
                 }

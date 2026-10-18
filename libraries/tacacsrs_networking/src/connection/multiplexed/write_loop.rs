@@ -20,7 +20,7 @@ pub(super) async fn run_write_loop(
         let packet = tokio::select! {
             () = connection.wait_for_close() => {
                 log::info!(
-                    target: "tacacsrs_networking::runtime::multiplexed::write_loop",
+                    target: "tacacsrs_networking::connection::multiplexed::write_loop",
                     "Received close signal. Stopping the write handler."
                 );
                 let _ = writer.shutdown().await;
@@ -30,7 +30,7 @@ pub(super) async fn run_write_loop(
             packet = receiver.recv() => {
                 if let Some(packet) = packet { packet } else {
                     log::info!(
-                        target: "tacacsrs_networking::runtime::multiplexed::write_loop",
+                        target: "tacacsrs_networking::connection::multiplexed::write_loop",
                         "Channel closed. Stopping the write handler."
                     );
                     let _ = writer.shutdown().await;
@@ -42,20 +42,20 @@ pub(super) async fn run_write_loop(
         let session_id = packet.header().session_id;
 
         log::trace!(
-            target: "tacacsrs_networking::runtime::multiplexed::write_loop",
+            target: "tacacsrs_networking::connection::multiplexed::write_loop",
             "Received packet for session ID {session_id} to send on the connection"
         );
 
         match packet_writer.write_packet(writer, packet).await {
             PacketWriteResult::Success => {
                 log::trace!(
-                    target: "tacacsrs_networking::runtime::multiplexed::write_loop",
+                    target: "tacacsrs_networking::connection::multiplexed::write_loop",
                     "Sent packet for session ID {session_id}"
                 );
             }
             PacketWriteResult::WriteError(error) => {
                 log::error!(
-                    target: "tacacsrs_networking::runtime::multiplexed::write_loop",
+                    target: "tacacsrs_networking::connection::multiplexed::write_loop",
                     "Failed to write packet for session ID {session_id}: {error}"
                 );
                 return Err(error).context("failed to write TACACS+ packet");

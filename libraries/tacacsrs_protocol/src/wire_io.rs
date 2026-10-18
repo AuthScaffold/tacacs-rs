@@ -1,7 +1,9 @@
+//! Cursor helpers for reading length-prefixed TACACS+ wire fields.
+
 use std::io::{Cursor, Read};
 use anyhow::Context;
 
-pub fn read_bytes(cursor: &mut Cursor<&[u8]>, len: usize) -> Result<Vec<u8>, anyhow::Error> {
+pub(crate) fn read_bytes(cursor: &mut Cursor<&[u8]>, len: usize) -> Result<Vec<u8>, anyhow::Error> {
     // The packet data length bounds the cursor position. The length fits in usize.
     #[allow(clippy::cast_possible_truncation)]
     let remaining_buffer = cursor.get_ref().len() - cursor.position() as usize;
@@ -17,7 +19,7 @@ pub fn read_bytes(cursor: &mut Cursor<&[u8]>, len: usize) -> Result<Vec<u8>, any
     Ok(buffer)
 }
 
-pub fn read_string(cursor: &mut Cursor<&[u8]>, len: usize) -> Result<String, anyhow::Error> {
+pub(crate) fn read_string(cursor: &mut Cursor<&[u8]>, len: usize) -> Result<String, anyhow::Error> {
     // The packet data length bounds the cursor position. The length fits in usize.
     #[allow(clippy::cast_possible_truncation)]
     let remaining_buffer = cursor.get_ref().len() - cursor.position() as usize;

@@ -2,6 +2,7 @@
 name = "tacacsrs-bash-plugin"
 version = "0.0.0-dev"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "A SONiC Bash execve plug-in that uses the tacacsrs-agentd IPC endpoint."
@@ -17,5 +18,5 @@ tacacsrs-ipc = { path = "../tacacsrs_ipc" }
 tacacsrs-protocol = { path = "../tacacsrs_protocol" }
 tokio = { version = "1.52.3", features = ["rt-multi-thread"] }
 
-[lints.rust]
-unsafe_code = "allow"
+[lints]
+workspace = true

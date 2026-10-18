@@ -1,4 +1,4 @@
-use tacacsrs_config::{model, parse_yang_json};
+use tacacsrs_config::{parse_yang_json, TacacsPlusServerType};
 
 fn main() -> anyhow::Result<()> {
     let json = r#"{
@@ -25,7 +25,7 @@ fn main() -> anyhow::Result<()> {
 
     if server
         .server_type
-        .contains(model::TacacsPlusServerType::AUTHORIZATION)
+        .contains(TacacsPlusServerType::AUTHORIZATION)
     {
         println!("  │  server-type includes authorization");
     }

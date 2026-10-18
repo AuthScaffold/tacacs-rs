@@ -129,7 +129,7 @@ pub(crate) struct FakeConnector {
 }
 
 impl FakeConnector {
-    pub fn new(connections: HashMap<String, Arc<FakeConnection>>) -> Self {
+    pub(crate) fn new(connections: HashMap<String, Arc<FakeConnection>>) -> Self {
         Self {
             connections,
             connect_attempts: Mutex::new(HashMap::new()),
@@ -139,12 +139,12 @@ impl FakeConnector {
         }
     }
 
-    pub fn with_connect_delay(mut self, connect_delay: Duration) -> Self {
+    pub(crate) fn with_connect_delay(mut self, connect_delay: Duration) -> Self {
         self.connect_delay = connect_delay;
         self
     }
 
-    pub async fn connect_attempts_for(&self, address: &str) -> usize {
+    pub(crate) async fn connect_attempts_for(&self, address: &str) -> usize {
         *self
             .connect_attempts
             .lock()
@@ -153,7 +153,7 @@ impl FakeConnector {
             .unwrap_or(&0)
     }
 
-    pub fn max_in_flight_connects(&self) -> usize {
+    pub(crate) fn max_in_flight_connects(&self) -> usize {
         self.max_in_flight_connects.load(Ordering::Relaxed)
     }
 }

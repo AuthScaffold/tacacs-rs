@@ -5,6 +5,6 @@
 //! - [`authentication`] - Authenticate a user
 //! - [`authorization`] - Authorize a user action
 
-pub mod accounting;
-pub mod authentication;
-pub mod authorization;
+pub(crate) mod accounting;
+pub(crate) mod authentication;
+pub(crate) mod authorization;

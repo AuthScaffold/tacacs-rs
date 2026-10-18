@@ -1,7 +1,11 @@
-//! Failure facts shared by direct clients and local IPC adapters.
+//! Failure facts and the structured [`ServiceError`] returned by the local
+//! service.
 //!
 //! Delivery describes the failed logical operation, not transport connectivity.
 //! Unknown delivery never permits automatic replay, including authentication.
+//! [`FailureFacts`] records the cause, phase, and delivery state, and
+//! [`ServiceError`] pairs those facts with an operator-facing message and the
+//! optional server, runtime generation, and attempt number.
 
 /// The known cause of an operation failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +121,92 @@ impl FailureFacts {
         }
     }
 }
+
+/// Structured error returned by the local service when a request cannot be
+/// fulfilled.
+///
+/// Direct clients and IPC adapters preserve these facts without flattening them
+/// into message text. Replay advice derives from the known cause and delivery
+/// state. A temporary transport failure does not make unknown delivery safe.
+///
+/// # Builder pattern
+///
+/// ```
+/// # use tacacsrs_protocol::failure::{
+/// #     DeliveryState, FailureCategory, FailureFacts, FailurePhase, RetryAdvice, ServiceError,
+/// # };
+/// let facts = FailureFacts::new(
+///     FailureCategory::Unavailable,
+///     FailurePhase::Routing,
+///     DeliveryState::NotSent,
+/// );
+/// let error = ServiceError::new("connection unavailable before transmission", facts)
+///     .with_server("tacacs-a:49");
+///
+/// assert_eq!(error.message, "connection unavailable before transmission");
+/// assert_eq!(error.server.as_deref(), Some("tacacs-a:49"));
+/// assert_eq!(error.facts.retry_advice(), RetryAdvice::AfterRecovery);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceError {
+    /// Error text suitable for logs and operator-facing diagnostics.
+    pub message: String,
+    /// Upstream server associated with the error, if the service selected one.
+    pub server: Option<String>,
+    /// Known cause, phase, and delivery state. Replay advice derives from these facts.
+    pub facts: FailureFacts,
+    /// Captured routing generation, scoped to the running service instance.
+    pub runtime_generation: Option<u64>,
+    /// One-based attempt number within the captured request.
+    pub attempt: Option<std::num::NonZeroU32>,
+}
+
+impl ServiceError {
+    /// Creates an error from explicit facts without assuming delivery or retry safety.
+    #[must_use]
+    pub fn new(message: impl Into<String>, facts: FailureFacts) -> Self {
+        Self {
+            message: message.into(),
+            server: None,
+            facts,
+            runtime_generation: None,
+            attempt: None,
+        }
+    }
+
+    /// Associates an upstream server name with this error.
+    #[must_use]
+    pub fn with_server(mut self, server: impl Into<String>) -> Self {
+        self.server = Some(server.into());
+        self
+    }
+
+    /// Records the routing generation captured before admission.
+    #[must_use]
+    pub const fn with_runtime_generation(mut self, generation: u64) -> Self {
+        self.runtime_generation = Some(generation);
+        self
+    }
+
+    /// Records the one-based upstream attempt number.
+    #[must_use]
+    pub const fn with_attempt(mut self, attempt: std::num::NonZeroU32) -> Self {
+        self.attempt = Some(attempt);
+        self
+    }
+}
+
+impl std::fmt::Display for ServiceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)?;
+        if let Some(server) = &self.server {
+            write!(formatter, " via {server}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ServiceError {}
 
 #[cfg(test)]
 mod tests {

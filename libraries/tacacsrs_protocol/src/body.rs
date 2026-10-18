@@ -1,3 +1,6 @@
+//! TACACS+ message body serialization.
+
+/// Serializes a TACACS+ message body to its wire representation.
 pub trait TacacsBodyTrait {
     /// Serializes this message body to its TACACS+ wire representation.
     ///

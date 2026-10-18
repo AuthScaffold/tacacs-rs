@@ -14,8 +14,8 @@ use crate::{TacacsPlusServerType, ValidationOptions};
 pub struct CliDatastoreInput {
     pub(super) source: CliConfigSource,
     pub(super) validation_options: ValidationOptions,
-    pub(super) label: &'static str,
-    pub(super) debounce: Duration,
+    pub(crate) label: &'static str,
+    pub(crate) debounce: Duration,
 }
 
 impl CliDatastoreInput {
@@ -58,7 +58,7 @@ impl CliDatastoreInput {
         paths
     }
 
-    pub(super) async fn capture_paths(&mut self) -> anyhow::Result<()> {
+    pub(crate) async fn capture_paths(&mut self) -> anyhow::Result<()> {
         match &mut self.source {
             CliConfigSource::YangFile { path } => {
                 *path = capture_path(path).await?;

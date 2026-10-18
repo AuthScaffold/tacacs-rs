@@ -2,7 +2,7 @@
 
 use crate::authorization::{reply::AuthorizationReply, request::AuthorizationRequest};
 use crate::enumerations::{TacacsMinorVersion, TacacsType};
-use crate::traits::TacacsBodyTrait;
+use crate::body::TacacsBodyTrait;
 use crate::exchange::FixedExchange;
 
 /// One TACACS+ authorization request followed by one authorization reply.

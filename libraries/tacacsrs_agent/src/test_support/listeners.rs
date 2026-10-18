@@ -18,8 +18,8 @@ use tacacsrs_networking::routed::EndpointConnector;
 use tacacsrs_protocol::operations::{
     AccountingOperation, AccountingOperationResponse, AuthorizationOperation,
     AuthorizationOperationResponse, PapAuthenticationOperation, PapAuthenticationOperationResponse,
-    ServiceError,
 };
+use tacacsrs_protocol::failure::ServiceError;
 
 use crate::ListenerState;
 use crate::runtime::{

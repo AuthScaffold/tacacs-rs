@@ -1,4 +1,22 @@
-//! Immutable endpoint inputs and operation-scoped routing state.
+//! Catalog scope: endpoint identity and operation-scoped routing state.
+//!
+//! A [`Catalog`] is the per-publication routing table a
+//! [`RoutedClient`](super::RoutedClient) captures. It maps each eligible
+//! [`Endpoint`] to per-operation slots that cache a connection and track circuit
+//! state:
+//!
+//! ```text
+//! Catalog
+//!   -> EndpointSlot    (one per endpoint, keyed by cloned Endpoint identity)
+//!        -> OperationSlot    (one per operation kind)
+//!             -> CachedConnection    (reused until reconnect or retirement)
+//! ```
+//!
+//! [`Endpoint`] identity is an opaque `Arc`: cloning reuses a cache slot across
+//! replacement catalogs, while a fresh identity resets the cached connection and
+//! circuit. The catalog does not own transport lifetime directly; the
+//! [`lifecycle`](super::lifecycle) module owns setup and retirement, and the
+//! [`connection`](crate::connection) runtimes own packet I/O.
 
 use std::sync::{Arc, Mutex as StateMutex};
 use std::sync::atomic::AtomicU64;
