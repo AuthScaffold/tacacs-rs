@@ -331,6 +331,11 @@ jobs:
         if: matrix.config.deep_checks == 'true' && inputs.include-miri
         uses: ./.github/steps/run-miri
 
+      - name: Test fuzz smoke action
+        if: matrix.config.deep_checks == 'true' && inputs.include-fuzz
+        shell: bash
+        run: python3 .github/steps/run-fuzz-smoke/test_action.py
+
       - name: Run fuzz smoke tests
         if: matrix.config.deep_checks == 'true' && inputs.include-fuzz
         uses: ./.github/steps/run-fuzz-smoke
