@@ -398,6 +398,9 @@ mod tests {
             let mut context = SslContext::builder(SslMethod::tls_server()).unwrap();
             context.set_certificate(&certificate.build()).unwrap();
             context.set_private_key(&key).unwrap();
+            // The client intentionally closes after it rejects the certificate dates.
+            // Avoid unnecessary post-handshake ticket writes to the closed stream.
+            context.set_num_tickets(0).unwrap();
             let context = context.build();
             let config =
                 TlsClientConfig::prepare("localhost", None, CertificateTrust::Platform, None, true)
