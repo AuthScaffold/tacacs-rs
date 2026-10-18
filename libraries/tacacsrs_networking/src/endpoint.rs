@@ -179,22 +179,22 @@ impl PreparedEndpoint {
         self.options.timeout()
     }
 
-    /// Returns intrinsic validity for the configured client certificate, when present.
-    ///
-    /// These bounds do not describe provider metadata or negotiated peer certificates.
+    /// Returns the validity interval for prepared fetched OCSP and CRL evidence.
     #[must_use]
-    pub fn client_certificate_validity(&self) -> Option<crate::CertificateValidity> {
+    pub fn revocation_evidence_validity(&self) -> Option<crate::RevocationEvidenceValidity> {
         match &self.transport {
-            PreparedTransport::Tls(config) => config.client_validity,
+            PreparedTransport::Tls(config) => {
+                config.evidence_lifetime.map(|lifetime| lifetime.validity)
+            }
             _ => None,
         }
     }
 
-    /// Returns validity shared by prepared client credentials and CRL evidence.
-    #[must_use]
-    pub fn prepared_credential_validity(&self) -> Option<crate::CertificateValidity> {
-        self.prepared_credential_lifetime()
-            .map(|lifetime| lifetime.validity)
+    pub(crate) fn validate_client_certificate_dates(&self) -> anyhow::Result<()> {
+        match &self.transport {
+            PreparedTransport::Tls(config) => config.validate_client_certificate_dates(),
+            PreparedTransport::Tcp | PreparedTransport::Psk(_, _) => Ok(()),
+        }
     }
 
     /// Requires fresh full CRLs and explicitly paired deltas for the CA-authenticated server path.
@@ -234,11 +234,11 @@ impl PreparedEndpoint {
         Ok(self)
     }
 
-    pub(crate) fn prepared_credential_lifetime(
+    pub(crate) fn revocation_evidence_lifetime(
         &self,
-    ) -> Option<crate::transport::tls::CertificateLifetime> {
+    ) -> Option<crate::transport::tls::RevocationEvidenceLifetime> {
         match &self.transport {
-            PreparedTransport::Tls(config) => config.lifetime,
+            PreparedTransport::Tls(config) => config.evidence_lifetime,
             PreparedTransport::Tcp | PreparedTransport::Psk(_, _) => None,
         }
     }

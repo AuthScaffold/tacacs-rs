@@ -12,7 +12,7 @@ use openssl::x509::{X509, X509Ref, X509Crl, X509StoreContext, X509PurposeId};
 use openssl::x509::store::X509StoreBuilder;
 use openssl::x509::verify::X509VerifyFlags;
 
-use super::super::{CertificateLifetime, CertificateValidity};
+use super::super::{RevocationEvidenceLifetime, RevocationEvidenceValidity};
 use super::super::validity::system_time;
 use super::crl_scope::{CrlScope, ScopeSet};
 use super::crl_delta::{CrlMetadata, validate_pairs};
@@ -33,7 +33,7 @@ unsafe extern "C" {
 
 pub(in crate::transport::tls) struct CrlEvidence {
     lists: Vec<X509Crl>,
-    pub(in crate::transport::tls) lifetime: CertificateLifetime,
+    pub(in crate::transport::tls) lifetime: RevocationEvidenceLifetime,
 }
 
 impl CrlEvidence {
@@ -57,7 +57,7 @@ impl CrlEvidence {
             "CRL set exceeds the size limit"
         );
         let mut lists = Vec::with_capacity(encoded.len());
-        let mut validity: Option<CertificateValidity> = None;
+        let mut validity: Option<RevocationEvidenceValidity> = None;
         let mut scopes = ScopeSet::default();
         let mut metadata = Vec::with_capacity(encoded.len());
         for data in encoded {
@@ -83,7 +83,7 @@ impl CrlEvidence {
             let limit = start
                 .checked_add(maximum_age)
                 .context("CRL age exceeds the clock range")?;
-            let current = CertificateValidity::from_bounds(start, next.min(limit))?;
+            let current = RevocationEvidenceValidity::from_bounds(start, next.min(limit))?;
             ensure!(current.is_valid_at(SystemTime::now()), "CRL is stale or not yet valid");
             validity = Some(match validity {
                 Some(previous) => previous.intersect(current)?,
@@ -95,7 +95,7 @@ impl CrlEvidence {
         validate_pairs(&lists, &metadata)?;
         Ok(Self {
             lists,
-            lifetime: CertificateLifetime::new(
+            lifetime: RevocationEvidenceLifetime::new(
                 validity.context("Required CRL validity is missing")?,
             )?,
         })

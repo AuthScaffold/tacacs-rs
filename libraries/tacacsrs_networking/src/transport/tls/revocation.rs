@@ -18,7 +18,7 @@ use openssl::ocsp::{OcspCertId, OcspCertStatus, OcspResponse, OcspResponseStatus
 use openssl::ssl::{Ssl, SslRef, SslContextBuilder};
 use openssl::x509::{X509, X509VerifyResult};
 
-use super::validity::{CertificateValidity, generalized_system_time};
+use super::validity::{RevocationEvidenceValidity, generalized_system_time};
 
 /// Bounds untrusted OCSP parsing work during the TLS handshake.
 const MAXIMUM_STAPLE_BYTES: usize = 64 * 1024;
@@ -51,19 +51,22 @@ impl VerificationFailure {
 pub(super) struct ConnectionRevocation {
     policy: CertificateRevocationPolicy,
     issuers: Vec<X509>,
+    local_authentication_certificates: Vec<Vec<u8>>,
     provided: Option<ProvidedResponse>,
-    result: Mutex<Option<Result<CertificateValidity, VerificationFailure>>>,
+    result: Mutex<Option<Result<RevocationEvidenceValidity, VerificationFailure>>>,
 }
 
 impl ConnectionRevocation {
     pub(super) fn new(
         policy: CertificateRevocationPolicy,
         issuers: &[X509],
+        local_authentication_certificates: Vec<Vec<u8>>,
         provided: Option<ProvidedResponse>,
     ) -> Option<Self> {
         (policy.maximum_response_age().is_some() || provided.is_some()).then(|| Self {
             policy,
             issuers: issuers.to_vec(),
+            local_authentication_certificates,
             provided,
             result: Mutex::new(None),
         })
@@ -89,15 +92,18 @@ pub(super) fn configure_verifier(builder: &mut SslContextBuilder) -> anyhow::Res
         };
         let verified = connection
             .policy
-            .verify(ssl, &connection.issuers)
+            .verify(ssl, &connection.issuers, &connection.local_authentication_certificates)
             .and_then(|current| {
                 let extra = connection
                     .provided
                     .as_ref()
                     .map(|provided| {
-                        provided
-                            .policy
-                            .verify_encoded(ssl, &connection.issuers, &provided.encoded)
+                        provided.policy.verify_encoded(
+                            ssl,
+                            &connection.issuers,
+                            &connection.local_authentication_certificates,
+                            &provided.encoded,
+                        )
                     })
                     .transpose()?
                     .flatten();
@@ -129,7 +135,9 @@ pub(super) fn request(
     Ok(())
 }
 
-pub(super) fn verified_validity(ssl: &SslRef) -> anyhow::Result<Option<CertificateValidity>> {
+pub(super) fn verified_validity(
+    ssl: &SslRef,
+) -> anyhow::Result<Option<RevocationEvidenceValidity>> {
     let Some(connection) = ssl.ex_data(index()?) else {
         return Ok(None);
     };
@@ -204,22 +212,24 @@ impl CertificateRevocationPolicy {
         self,
         ssl: &SslRef,
         configured_issuers: &[X509],
-    ) -> anyhow::Result<Option<CertificateValidity>> {
+        local_authentication_certificates: &[Vec<u8>],
+    ) -> anyhow::Result<Option<RevocationEvidenceValidity>> {
         if self.maximum_age_seconds.is_none() {
             return Ok(None);
         }
         let encoded = ssl
             .ocsp_status()
             .context("Required stapled OCSP response is missing")?;
-        self.verify_encoded(ssl, configured_issuers, encoded)
+        self.verify_encoded(ssl, configured_issuers, local_authentication_certificates, encoded)
     }
 
     fn verify_encoded(
         self,
         ssl: &SslRef,
         configured_issuers: &[X509],
+        local_authentication_certificates: &[Vec<u8>],
         encoded: &[u8],
-    ) -> anyhow::Result<Option<CertificateValidity>> {
+    ) -> anyhow::Result<Option<RevocationEvidenceValidity>> {
         let Some(maximum_age) = self.maximum_age_seconds else {
             return Ok(None);
         };
@@ -258,7 +268,8 @@ impl CertificateRevocationPolicy {
                         .is_ok_and(|key| peer.verify(&key).unwrap_or(false))
             })
             .context("OCSP requires the authenticated peer's issuer certificate")?;
-        let signer_validity = responder::verify(&basic, issuer, ssl)?;
+        let signer_validity =
+            responder::verify(&basic, issuer, ssl, local_authentication_certificates)?;
         let mut status = None;
         for digest in [MessageDigest::sha1(), MessageDigest::sha256()] {
             let identifier = OcspCertId::from_cert(digest, &peer, issuer)?;
@@ -284,8 +295,9 @@ impl CertificateRevocationPolicy {
             .next_update()
             .map(generalized_system_time)
             .transpose()?;
-        let validity = freshness_interval(start, next, maximum_age, SystemTime::now())?
-            .intersect(signer_validity)?;
+        let freshness = freshness_interval(start, next, maximum_age, SystemTime::now())?;
+        let validity =
+            signer_validity.map_or(Ok(freshness), |signer| freshness.intersect(signer))?;
         ensure!(
             validity.is_valid_at(SystemTime::now()),
             "OCSP responder or evidence validity expired"
@@ -298,7 +310,7 @@ impl CertificateRevocationPolicy {
 pub(super) struct ProvidedResponse {
     encoded: Arc<[u8]>,
     policy: CertificateRevocationPolicy,
-    pub(super) lifetime: super::CertificateLifetime,
+    pub(super) lifetime: super::RevocationEvidenceLifetime,
 }
 
 #[allow(unsafe_code)]
@@ -383,7 +395,7 @@ impl ProvidedResponse {
         Ok(Self {
             encoded: Arc::from(encoded),
             policy,
-            lifetime: super::CertificateLifetime::new(validity)?,
+            lifetime: super::RevocationEvidenceLifetime::new(validity)?,
         })
     }
 }
@@ -393,11 +405,11 @@ fn freshness_interval(
     next: Option<SystemTime>,
     maximum_age: NonZeroU32,
     now: SystemTime,
-) -> anyhow::Result<CertificateValidity> {
+) -> anyhow::Result<RevocationEvidenceValidity> {
     let age_limit = start
         .checked_add(Duration::from_secs(u64::from(maximum_age.get())))
         .context("OCSP freshness exceeds the system clock range")?;
-    let validity = CertificateValidity::from_bounds(
+    let validity = RevocationEvidenceValidity::from_bounds(
         start,
         next.map_or(age_limit, |next| next.min(age_limit)),
     )?;

@@ -812,6 +812,22 @@ mod tests {
             signed_peer(&authority, &authority_key, &upper_key, (now - 60, now + 180), false, true);
         let intermediate =
             signed_peer(&upper, &upper_key, &intermediate_key, (now - 60, now + 60), false, true);
+        let expired_intermediate =
+            signed_peer(&upper, &upper_key, &intermediate_key, (0, 1), false, true)
+                .to_der()
+                .unwrap();
+        let future_intermediate =
+            signed_peer(&upper, &upper_key, &intermediate_key, (now + 60, now + 120), false, true)
+                .to_der()
+                .unwrap();
+        let expired_upper =
+            signed_peer(&authority, &authority_key, &upper_key, (0, 1), false, true)
+                .to_der()
+                .unwrap();
+        let future_upper =
+            signed_peer(&authority, &authority_key, &upper_key, (now + 60, now + 120), false, true)
+                .to_der()
+                .unwrap();
         let leaf = signed_peer(
             &intermediate,
             &intermediate_key,
@@ -854,6 +870,10 @@ mod tests {
             ("inline", vec![intermediate_der.clone()], false),
             ("inline", vec![upper_der.clone(), intermediate_der.clone()], false),
             ("inline", vec![wrong], false),
+            ("inline", vec![expired_intermediate, upper_der.clone()], false),
+            ("inline", vec![future_intermediate, upper_der.clone()], false),
+            ("inline", vec![intermediate_der.clone(), expired_upper], false),
+            ("inline", vec![intermediate_der.clone(), future_upper], false),
             ("inline", vec![intermediate_der.clone(), intermediate_der.clone()], false),
             (
                 "inline",
@@ -996,19 +1016,6 @@ mod tests {
         let Ok(endpoint) = endpoint else {
             return false;
         };
-        if !intermediates.is_empty() {
-            let expires = endpoint
-                .client_certificate_validity()
-                .unwrap()
-                .valid_until();
-            let remaining = expires
-                .duration_since(std::time::SystemTime::now())
-                .unwrap();
-            assert!(
-                remaining <= Duration::from_secs(60),
-                "intermediate expiry must bound the client identity"
-            );
-        }
         let peer = async {
             let (tcp, _) = listener.accept().await.unwrap();
             let mut stream =
@@ -1138,7 +1145,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn negotiated_chain_expiry_uses_selected_ca_or_pin_not_unused_trust() {
+    async fn established_ca_and_pin_connections_survive_certificate_expiry() {
         let (authority, authority_key) = fixture_certificate("ca");
         let (_, leaf_key) = fixture_certificate("server");
         let intermediate_key =
@@ -1154,7 +1161,7 @@ mod tests {
             &authority,
             &authority_key,
             &intermediate_key,
-            (now - 60, now + 60),
+            (now - 60, now + 4),
             false,
             true,
         );
@@ -1162,7 +1169,7 @@ mod tests {
             &intermediate,
             &intermediate_key,
             &leaf_key,
-            (now - 60, now + 600),
+            (now - 60, now + 4),
             false,
             false,
         );
@@ -1196,20 +1203,32 @@ mod tests {
                 name: "unused-pin".to_owned(),
                 cert_data: unused.to_der().unwrap(),
             });
-        for (policy, seconds) in [(ordinary, 61), (alternate, 61), (exact, 601)] {
-            probe_peer_expiry(
+        let expires_at =
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(u64::try_from(now + 4).unwrap());
+        let (ordinary_result, alternate_result, exact_result) = tokio::join!(
+            probe_peer_survives_expiry(
                 &leaf,
                 &leaf_key,
-                policy,
+                ordinary,
                 std::slice::from_ref(&intermediate),
-                std::time::Duration::from_secs(seconds),
-            )
-            .await;
-        }
+                expires_at,
+            ),
+            probe_peer_survives_expiry(
+                &leaf,
+                &leaf_key,
+                alternate,
+                std::slice::from_ref(&intermediate),
+                expires_at,
+            ),
+            probe_peer_survives_expiry(&leaf, &leaf_key, exact, &[], expires_at),
+        );
+        ordinary_result.unwrap();
+        alternate_result.unwrap();
+        exact_result.unwrap();
     }
 
     #[tokio::test]
-    async fn expired_peer_connection_recovers_with_a_fresh_certificate_without_reload() {
+    async fn disconnected_peer_recovers_with_a_fresh_non_resumed_handshake_without_reload() {
         use std::pin::Pin;
         use std::time::Duration;
         use openssl::ssl::{Ssl, SslContext, SslMethod};
@@ -1245,51 +1264,35 @@ mod tests {
         server.server_authentication = Some(server_trust(&authority, false));
         let original = server.clone();
         let endpoint = prepare_endpoint(&server, PrepareOptions::default()).unwrap();
-        let (closed, observed) = tokio::sync::oneshot::channel();
         let (handshakes, mut accepted) = tokio::sync::mpsc::channel(1);
         let peer = tokio::spawn(async move {
-            let mut closed = Some(closed);
-            for context in contexts {
+            for (index, context) in contexts.into_iter().enumerate() {
                 let (tcp, _) = listener.accept().await.unwrap();
                 let mut stream = SslStream::new(Ssl::new(&context).unwrap(), tcp).unwrap();
                 Pin::new(&mut stream).accept().await.unwrap();
-                handshakes.send(()).await.unwrap();
-                match stream.read(&mut [0_u8; 1]).await {
-                    Ok(0) => {}
-                    Err(error)
-                        if matches!(
-                            error.kind(),
-                            std::io::ErrorKind::ConnectionAborted
-                                | std::io::ErrorKind::ConnectionReset
-                                | std::io::ErrorKind::UnexpectedEof
-                                | std::io::ErrorKind::BrokenPipe
-                        ) => {}
-                    result => panic!("expected transport closure: {result:?}"),
-                }
-                if let Some(closed) = closed.take() {
-                    let _ = closed.send(());
+                handshakes
+                    .send(stream.ssl().session_reused())
+                    .await
+                    .unwrap();
+                if index != 0 {
+                    let _ = stream.read(&mut [0_u8; 1]).await;
                 }
             }
         });
         let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
         let mut original_session = client.open_conversation().await.unwrap();
-        tokio::time::timeout(Duration::from_secs(5), accepted.recv())
+        let reused = tokio::time::timeout(Duration::from_secs(5), accepted.recv())
             .await
             .expect("server must complete the initial TLS handshake")
             .expect("server handshake task must remain active");
-        tokio::time::pause();
-        tokio::time::advance(Duration::from_secs(61)).await;
-        tokio::time::resume();
-        tokio::time::timeout(Duration::from_secs(1), observed)
-            .await
-            .unwrap()
-            .unwrap();
+        assert!(!reused, "initial certificate handshake must not resume a session");
         original_session.complete().await;
         let mut replacement = client.open_conversation().await.unwrap();
-        tokio::time::timeout(Duration::from_secs(5), accepted.recv())
+        let reused = tokio::time::timeout(Duration::from_secs(5), accepted.recv())
             .await
             .expect("server must complete the replacement TLS handshake")
             .expect("server handshake task must remain active");
+        assert!(!reused, "replacement certificate handshake must not resume a session");
         replacement.complete().await;
         client
             .close_and_join(tacacsrs_networking::RequestDeadline::after(Duration::ZERO).unwrap())
@@ -1302,16 +1305,21 @@ mod tests {
         assert_eq!(server, original);
     }
 
-    async fn probe_peer_expiry(
+    async fn probe_peer_survives_expiry(
         certificate: &openssl::x509::X509,
         key: &openssl::pkey::PKey<openssl::pkey::Private>,
         policy: crate::TlsClientServerAuthentication,
         chain: &[openssl::x509::X509],
-        expiry: std::time::Duration,
-    ) {
+        expires_at: std::time::SystemTime,
+    ) -> anyhow::Result<()> {
         use std::pin::Pin;
         use std::time::Duration;
         use openssl::ssl::{Ssl, SslContext, SslMethod};
+        use tacacsrs_networking::{PacketReadResult, PacketReader, PacketWriteResult, PacketWriter};
+        use tacacsrs_protocol::accounting::reply::AccountingReply;
+        use tacacsrs_protocol::body::TacacsBodyTrait;
+        use tacacsrs_protocol::operations::AccountingOperation;
+        use tacacsrs_protocol::packet::{Packet, PacketTrait};
         use tokio::io::AsyncReadExt;
         use tokio::net::TcpListener;
         use tokio_openssl::SslStream;
@@ -1325,62 +1333,80 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut server = builder().with_tls_server_authentication().build();
         server.port = listener.local_addr().unwrap().port();
+        server.single_connection = true;
         server.server_authentication = Some(policy);
         let original = server.clone();
         let endpoint = prepare_endpoint(&server, PrepareOptions::default()).unwrap();
-        let (closed, mut observed) = tokio::sync::oneshot::channel();
         let (handshake, accepted) = tokio::sync::oneshot::channel();
         let peer = tokio::spawn(async move {
             let (tcp, _) = listener.accept().await.unwrap();
             let mut stream = SslStream::new(Ssl::new(&context).unwrap(), tcp).unwrap();
             Pin::new(&mut stream).accept().await.unwrap();
             let _ = handshake.send(());
-            match stream.read(&mut [0_u8; 1]).await {
-                Ok(0) => {}
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::ConnectionAborted
-                            | std::io::ErrorKind::ConnectionReset
-                            | std::io::ErrorKind::UnexpectedEof
-                            | std::io::ErrorKind::BrokenPipe
-                    ) => {}
-                result => {
-                    panic!("expired transport must close without application bytes: {result:?}")
+            for _ in 0..2 {
+                let request = match PacketReader::new(None).read_packet(&mut stream).await {
+                    PacketReadResult::Success(packet) => packet,
+                    result => panic!("expected application request: {result:?}"),
+                };
+                let body = AccountingReply {
+                    status: tacacsrs_protocol::enumerations::TacacsAccountingStatus::TacPlusAcctStatusSuccess,
+                    server_msg: "accepted".to_owned(),
+                    data: String::new(),
                 }
+                .to_bytes()
+                .unwrap();
+                let mut header = request.header().clone();
+                header.seq_no += 1;
+                header.length = u32::try_from(body.len()).unwrap();
+                let reply = Packet::new(header, body).unwrap();
+                assert!(matches!(
+                    PacketWriter::new(None)
+                        .write_packet(&mut stream, reply)
+                        .await,
+                    PacketWriteResult::Success
+                ));
             }
-            let _ = closed.send(());
+            let _ = stream.read(&mut [0_u8; 1]).await;
         });
         let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
-        let mut conversation = client.open_conversation().await.unwrap();
-        tokio::time::timeout(Duration::from_secs(5), accepted)
+        let operation = || {
+            AccountingOperation {
+                user: "test".to_owned(),
+                port: "test".to_owned(),
+                remote_address: "127.0.0.1".to_owned(),
+                command: "show".to_owned(),
+                command_arguments: Vec::new(),
+            }
+            .exchange()
+        };
+        let first = client.execute(operation());
+        tokio::pin!(first);
+        let (accepted, first) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(accepted, &mut first)
+        })
+        .await
+        .expect("server and client must complete the first exchange");
+        accepted.expect("server handshake task must remain active");
+        first?;
+        let remaining = expires_at
+            .duration_since(std::time::SystemTime::now())
+            .unwrap_or_default();
+        tokio::time::sleep(remaining + Duration::from_secs(1)).await;
+        tokio::time::timeout(Duration::from_secs(3), client.execute(operation()))
             .await
-            .expect("server must complete the TLS handshake")
-            .expect("server handshake task must remain active");
-        tokio::time::pause();
-        tokio::time::advance(Duration::from_secs(2)).await;
-        tokio::time::resume();
-        assert!(
-            tokio::time::timeout(Duration::from_millis(25), &mut observed)
-                .await
-                .is_err(),
-            "unused trust must not shorten this connection's lifetime"
-        );
-        tokio::time::pause();
-        tokio::time::advance(expiry).await;
-        tokio::time::resume();
-        let expired = tokio::time::timeout(Duration::from_millis(250), observed).await;
-        conversation.complete().await;
+            .expect("post-expiry exchange must complete")?;
         client
-            .close_and_join(tacacsrs_networking::RequestDeadline::after(Duration::ZERO).unwrap())
+            .close_and_join(
+                tacacsrs_networking::RequestDeadline::after(Duration::from_secs(2)).unwrap(),
+            )
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(5), peer)
             .await
             .unwrap()
             .unwrap();
-        assert!(expired.is_ok(), "selected certificate path must expire the connection");
         assert_eq!(server, original);
+        Ok(())
     }
 
     async fn probe_certificate_trust(

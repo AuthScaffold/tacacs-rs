@@ -495,7 +495,7 @@ After the first observed stale-source condition, retries, credential refresh, an
 At expiry the agent withdraws the upstream catalog, retires the old endpoints, and reports `SourceExpired`.
 Readiness becomes `NOT_SERVING`; liveness and configuration observation remain active.
 A valid source publication restores service without a process restart. Credential refresh alone cannot revive an expired unavailable source.
-The source budget is independent of credential freshness, certificate validity deadlines, and revocation retrieval.
+The source budget is independent of provider validity and revocation-evidence freshness.
 
 `credential-stale-timeout-seconds` defaults to 300 seconds and rejects zero.
 Relevant credential invalidation, failed refresh, or notification loss starts a grace period for referenced material.
@@ -504,7 +504,13 @@ Inline-only catalogs are not expired by loss of an unused credential notificatio
 Repeated failures and policy changes cannot renew the current grace period.
 Expiry withdraws the whole upstream catalog and reports `CredentialsExpired`, even if the source remains current.
 Fresh complete revalidation restores service. Pre-expiry work cannot revive withdrawn credentials, and credential recovery cannot bypass an expired source.
-These staleness budgets do not implement certificate validity deadlines or revocation retrieval.
+These staleness budgets do not implement provider validity or revocation retrieval.
+
+The daemon validates client-certificate dates during preparation and before each new connection.
+It validates peer certificates in the native TLS handshake.
+An established connection continues after an authentication certificate expires.
+Certificate dates do not withdraw a catalog or shorten a request deadline.
+Provider validity, source staleness, OCSP and CRL freshness, and administrative revocation remain independent limits.
 
 IPC and proxy clients share each operation's active capacity and bounded FIFO admission queue.
 The pending limit equals `max-concurrent-requests`. A full queue returns an immediate overload error without upstream I/O.

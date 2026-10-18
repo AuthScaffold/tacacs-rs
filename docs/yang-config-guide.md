@@ -161,7 +161,10 @@ The file loader preserves this order in canonical configuration. Native preparat
 The peer still decides whether the supplied path reaches one of its trust anchors; a missing intermediate can cause handshake rejection.
 
 Credential providers return ordered intermediate bytes with the leaf and key. Materialization installs them only in a derived server value.
-Authoritative snapshots and provider references remain unchanged. The earliest supplied certificate expiry bounds the prepared identity's lifetime.
+Authoritative snapshots and provider references remain unchanged.
+Preparation validates all supplied certificate dates. Each connection validates them before TCP setup and again before the TLS handshake.
+An established connection continues after a client or server authentication certificate expires.
+Certificate dates do not limit the prepared identity, the agent catalog, or a request deadline.
 Broader revocation retrieval remains a separate Stage 4 requirement.
 
 ## Required Stapled OCSP
@@ -198,7 +201,9 @@ OpenSSL verifies the response signature, delegation, and certificate path. Expir
 Freshness ends at the earlier of `nextUpdate` and `thisUpdate` plus the configured maximum age.
 If `nextUpdate` is absent, the maximum age still bounds use. No clock-skew allowance or stale-material grace extends this interval.
 The verified interval bounds the connection lifetime, including idle transports. A later connection must obtain fresh valid evidence.
-The actual signer's certificate validity also bounds this interval. Unused certificates embedded in the response do not shorten it.
+A distinct delegated responder's certificate validity also bounds this interval.
+The client identity, peer issuer, and certificates in the accepted TLS path do not add a post-handshake cutoff.
+Unused certificates embedded in the response do not shorten the interval.
 Accurate system time remains necessary; runtime scheduling limits still apply to physical transport closure.
 
 Stapling checks the peer leaf. The full-CRL requirement below can also check the CA-authenticated path and non-exempt delegated responders.
@@ -229,7 +234,8 @@ The prepared interval constrains refresh, publication, connection setup, and tra
 Native TLS verifies actual peer binding, signature, signer authorization, status, and freshness before client authentication.
 Wrong-certificate, forged, revoked, and unknown responses deny authentication. Required staples remain independent and cannot be replaced by fetched evidence.
 Fresh negative evidence can replace an older response and retire its connections immediately. Rejected or unavailable retrieval uses existing failure and expiry rules.
-Signer and peer certificate validity also bound the connection lifetime.
+A distinct delegated responder's certificate validity also bounds the evidence lifetime.
+Client-identity, peer, issuer, and accepted-path certificate dates apply during authentication only.
 PSK and disabled certificate verification cannot use this requirement.
 
 ## Required Full CRLs
@@ -276,10 +282,11 @@ Bad signatures, revoked leaves or intermediates, and incomplete evidence reject 
 This mode cannot be combined with exact peer pins, PSK authentication, or disabled certificate verification.
 It can be combined with required stapled OCSP in per-server policy or reusable credential bundles.
 Both checks must pass. A good staple cannot override a revoked CRL status, and a good CRL cannot replace a required staple.
-The earliest CRL, OCSP, responder, or peer-path deadline limits transport lifetime.
+The earliest CRL, OCSP, or distinct delegated-responder deadline limits transport lifetime.
 
 All supplied lists contribute to the prepared evidence deadline, not only lists later used by a connection.
-The deadline is the earliest `nextUpdate` or `thisUpdate` plus maximum age, further constrained by provider and client-certificate validity.
+The evidence deadline is the earliest `nextUpdate` or `thisUpdate` plus maximum age.
+Provider validity independently limits agent publication. Client-certificate dates do not limit publication or transport lifetime.
 Direct clients stop using expired evidence. The supervised agent withdraws expired catalogs while retaining source observation and the canonical configuration.
 Replace the inline source or publish a provider change to trigger fresh materialization. Provider references remain unchanged in the authoritative snapshot.
 New generations use refreshed evidence. A committed CRL policy or evidence change for an existing server installs an immediate cutoff on its replaced endpoints.

@@ -35,9 +35,9 @@
 //! - **Cancel and shutdown** ([`cache`]): the client marks the cache closed and
 //!   advances the epoch, moving the cached connection into retirement. Promotions
 //!   captured before that epoch cannot repopulate the slot.
-//! - **Epoch counters and validity**: the cache generation fences retirement.
-//!   The negotiation epoch fences abandoned probes and stale results. Promotion
-//!   checks both under the cache lock. The client enforces certificate validity.
+//! - **Epoch counters**: the cache generation fences retirement. The negotiation
+//!   epoch fences abandoned probes and stale results. Promotion checks both under
+//!   the cache lock.
 //!
 //! [`SingleConnectPromotion::observe_server_response`]: promotion::SingleConnectPromotion::observe_server_response
 //! [`SharedConnectionCache::publish_if_current`]: cache::SharedConnectionCache::publish_if_current

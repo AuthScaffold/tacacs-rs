@@ -1,4 +1,4 @@
-//! Provider and certificate validity checked against wall and monotonic clocks.
+//! Provider and revocation-evidence validity checked against wall and monotonic clocks.
 
 use std::time::SystemTime;
 

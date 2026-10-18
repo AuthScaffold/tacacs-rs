@@ -58,6 +58,11 @@ def test_pull_requests_run_on_the_diagnostics_stack_base():
     assert {"main", "review/yang-toolkit/**", "feature/agent-diagnostics"} <= set(branches)
 
 
+def test_pull_requests_run_on_the_armhf_stack_base():
+    branches = workflow("pullrequest_workflow.yml")["on"]["pull_request"]["branches"]
+    assert "fix/262-armhf" in branches
+
+
 def test_armhf_helper_builds_and_executes_the_affected_packages():
     helper = (ROOT / ".github/steps/armhf/verify.sh").read_text()
     assert "cargo build --locked --release --bins" in helper

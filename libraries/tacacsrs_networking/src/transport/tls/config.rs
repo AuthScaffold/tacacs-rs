@@ -8,7 +8,7 @@ use openssl::ssl::SslContext;
 use openssl::x509::X509;
 use tokio::net::TcpStream;
 
-use super::{connect_tls, TlsConfigurationBuilder, CertificateLifetime};
+use super::{connect_tls, RevocationEvidenceLifetime, TlsConfigurationBuilder};
 use crate::transport::BoxedTransport;
 
 /// DER encoding of a client private key.
@@ -56,11 +56,10 @@ pub(crate) struct TlsClientConfig {
     context: SslContext,
     peer_identity: String,
     sni_name: Option<String>,
-    pub(crate) lifetime: Option<CertificateLifetime>,
-    pub(crate) client_validity: Option<super::CertificateValidity>,
+    has_client_intermediates: bool,
+    pub(crate) evidence_lifetime: Option<RevocationEvidenceLifetime>,
     crls: Option<std::sync::Arc<super::revocation::crls::CrlEvidence>>,
     peer_pins: bool,
-    peer_validity_index: super::config_builder::PeerValidityIndex,
     pub(crate) revocation: super::CertificateRevocationPolicy,
     revocation_issuers: Vec<X509>,
     verification_disabled: bool,
@@ -111,7 +110,9 @@ impl TlsClientConfig {
             revocation_issuers.clone_from(&authorities);
             builder = builder.with_certificate_trust(authorities, end_entities);
         }
+        let mut has_client_intermediates = false;
         if let Some(identity) = identity {
+            has_client_intermediates = !identity.intermediates.is_empty();
             let certificate = parse_certificate_data(identity.certificate)
                 .context("Failed to parse TLS certificate")?;
             if let Some(public_key_info) = identity.public_key_info {
@@ -141,23 +142,19 @@ impl TlsClientConfig {
             }
             builder = builder.with_client_auth_der(chain, key);
         }
-        let prepared = builder
+        let context = builder
             .build()
             .context("Failed to build TLS configuration")?;
         Ok(Self {
-            context: prepared.context,
-            client_validity: prepared.validity,
+            context,
+            has_client_intermediates,
             crls: None,
             peer_pins,
-            peer_validity_index: prepared.peer_validity_index,
             revocation: super::CertificateRevocationPolicy::disabled(),
             revocation_issuers,
             verification_disabled: disable_verification,
             provided_ocsp: None,
-            lifetime: prepared
-                .validity
-                .map(CertificateLifetime::new)
-                .transpose()?,
+            evidence_lifetime: None,
             peer_identity: peer_identity.to_owned(),
             sni_name: sni_name.map(str::to_owned),
         })
@@ -185,7 +182,7 @@ impl TlsClientConfig {
             "CRL mode requires CA authentication with certificate verification enabled"
         );
         let evidence = super::revocation::crls::CrlEvidence::prepare(lists, maximum_age)?;
-        self.lifetime = Some(match self.lifetime {
+        self.evidence_lifetime = Some(match self.evidence_lifetime {
             Some(lifetime) => lifetime.intersect(evidence.lifetime)?,
             None => evidence.lifetime,
         });
@@ -193,66 +190,80 @@ impl TlsClientConfig {
         Ok(self)
     }
 
+    pub(crate) fn validate_client_certificate_dates(&self) -> Result<()> {
+        super::config_builder::validate_client_certificate_dates(
+            &self.context,
+            self.has_client_intermediates,
+        )
+    }
+
+    fn local_authentication_certificates(&self) -> Result<Vec<Vec<u8>>> {
+        let mut certificates = self
+            .context
+            .certificate()
+            .map(|certificate| certificate.to_der())
+            .transpose()?
+            .into_iter()
+            .collect::<Vec<_>>();
+        if self.has_client_intermediates {
+            certificates.extend(
+                self.context
+                    .extra_chain_certs()
+                    .iter()
+                    .map(openssl::x509::X509Ref::to_der)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+        }
+        Ok(certificates)
+    }
+
     pub(crate) async fn connect(&self, tcp_stream: TcpStream) -> Result<BoxedTransport> {
-        let handshake = connect_tls(
+        self.validate_client_certificate_dates()
+            .context(crate::statistics::CertificateFailure)?;
+        let (stream, verified_evidence) = connect_tls(
             &self.context,
             tcp_stream,
             &self.peer_identity,
             self.sni_name.as_deref(),
-            self.peer_validity_index,
             super::revocation::ConnectionRevocation::new(
                 self.revocation,
                 &self.revocation_issuers,
+                self.local_authentication_certificates()?,
                 self.provided_ocsp.clone(),
             ),
             self.crls.clone(),
-        );
-        let stream = match self.lifetime {
-            Some(lifetime) => lifetime.run(handshake).await,
-            None => handshake.await,
-        }
+        )
+        .await
         .context("Failed to establish TLS connection")?;
         let peer = stream
             .ssl()
             .peer_certificate()
             .context("TLS peer certificate is missing")?;
-        let validity = if stream
-            .ssl()
-            .verify_mode()
-            .contains(openssl::ssl::SslVerifyMode::PEER)
-        {
-            let selected = stream
-                .ssl()
-                .ex_data(self.peer_validity_index)
-                .and_then(|slot| {
-                    *slot
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                });
-            match selected {
-                Some(selected) => selected,
-                None => super::CertificateValidity::from_chain(
-                    stream
-                        .ssl()
-                        .verified_chain()
-                        .context("Verified TLS peer chain is missing")?,
-                )?,
+        if self.verification_disabled {
+            let now = std::time::SystemTime::now();
+            let valid_from = super::validity::system_time(peer.not_before())?;
+            let valid_until = super::validity::system_time(peer.not_after())?;
+            if !(valid_from <= now && now < valid_until) {
+                return Err(anyhow::anyhow!("Peer certificate validity excludes the current time")
+                    .context(crate::statistics::CertificateFailure));
             }
-        } else {
-            super::CertificateValidity::from_certificate(&peer)?
+        }
+        let lifetime = match verified_evidence {
+            Some(validity) => {
+                let verified = RevocationEvidenceLifetime::new(validity)?;
+                Some(
+                    self.evidence_lifetime
+                        .map_or(Ok(verified), |prepared| prepared.intersect(verified))?,
+                )
+            }
+            None => self.evidence_lifetime,
         };
-        let validity = match super::revocation::verified_validity(stream.ssl())? {
-            Some(evidence) => validity.intersect(evidence)?,
-            None => validity,
-        };
-        let peer_lifetime = CertificateLifetime::new(validity)?;
-        let lifetime = self
-            .lifetime
-            .map_or(Ok(peer_lifetime), |local| local.intersect(peer_lifetime))?;
         let details = crate::TlsDetails::from_ssl(stream.ssl());
-        Ok(BoxedTransport::new(stream)
-            .with_certificate_lifetime(lifetime)
-            .with_tls_details(details))
+        let transport = BoxedTransport::new(stream).with_tls_details(details);
+        Ok(match lifetime {
+            Some(lifetime) => transport.with_revocation_evidence_lifetime(lifetime),
+            None => transport,
+        })
     }
 
     pub(crate) fn with_ocsp_response(
@@ -265,7 +276,7 @@ impl TlsClientConfig {
             "Fetched OCSP requires certificate verification"
         );
         let response = super::revocation::ProvidedResponse::prepare(encoded, maximum_age)?;
-        self.lifetime = Some(match self.lifetime {
+        self.evidence_lifetime = Some(match self.evidence_lifetime {
             Some(current) => current.intersect(response.lifetime)?,
             None => response.lifetime,
         });
@@ -344,6 +355,78 @@ mod tests {
             false
         )
         .is_ok());
+    }
+
+    #[tokio::test]
+    async fn peer_dates_are_checked_at_connection_even_with_verification_disabled() {
+        use std::pin::Pin;
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+        use openssl::asn1::Asn1Time;
+        use openssl::ssl::{Ssl, SslMethod};
+        use openssl::x509::X509NameBuilder;
+        use tokio::net::TcpListener;
+        use tokio_openssl::SslStream;
+
+        let key = PKey::private_key_from_pem(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../lde/containers/config/certificates/server.key"
+        )))
+        .unwrap();
+        let mut name = X509NameBuilder::new().unwrap();
+        name.append_entry_by_text("CN", "localhost").unwrap();
+        let name = name.build();
+        let now = i64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap();
+        for (start, end) in [(now - 120, now - 60), (now + 60, now + 120)] {
+            let mut certificate = X509::builder().unwrap();
+            certificate.set_version(2).unwrap();
+            certificate.set_subject_name(&name).unwrap();
+            certificate.set_issuer_name(&name).unwrap();
+            certificate.set_pubkey(&key).unwrap();
+            certificate
+                .set_not_before(&Asn1Time::from_unix(start).unwrap())
+                .unwrap();
+            certificate
+                .set_not_after(&Asn1Time::from_unix(end).unwrap())
+                .unwrap();
+            certificate
+                .sign(&key, openssl::hash::MessageDigest::sha256())
+                .unwrap();
+            let mut context = SslContext::builder(SslMethod::tls_server()).unwrap();
+            context.set_certificate(&certificate.build()).unwrap();
+            context.set_private_key(&key).unwrap();
+            let context = context.build();
+            let config =
+                TlsClientConfig::prepare("localhost", None, CertificateTrust::Platform, None, true)
+                    .unwrap();
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let peer = async {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut stream = SslStream::new(Ssl::new(&context).unwrap(), tcp).unwrap();
+                Pin::new(&mut stream).accept().await.unwrap();
+            };
+            let connect = async {
+                let tcp = TcpStream::connect(listener.local_addr().unwrap())
+                    .await
+                    .unwrap();
+                config.connect(tcp).await
+            };
+            let (result, ()) =
+                tokio::time::timeout(Duration::from_secs(5), async { tokio::join!(connect, peer) })
+                    .await
+                    .unwrap();
+            let error = match result {
+                Ok(_) => panic!("invalid peer dates must reject a new connection"),
+                Err(error) => error,
+            };
+            assert!(format!("{error:#}").contains("Peer certificate validity excludes"));
+        }
     }
 
     #[test]

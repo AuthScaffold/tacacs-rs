@@ -23,7 +23,6 @@ impl TacacsClient {
     /// Networking assigns the session identifier and request sequence number,
     /// validates the complete reply header, and completes the underlying
     /// session on every success or error path.
-    /// A configured client certificate bounds execution even without a caller deadline.
     ///
     /// # Errors
     ///
@@ -51,11 +50,6 @@ impl TacacsClient {
     where
         Exchange: FixedExchange,
     {
-        if let Some(lifetime) = self.endpoint.prepared_credential_lifetime() {
-            return self
-                .execute_classified_until(exchange, lifetime.deadline)
-                .await;
-        }
         let expected =
             ExpectedResponseHeader::fixed(exchange.packet_type(), exchange.minor_version());
         let session = self
@@ -72,7 +66,6 @@ impl TacacsClient {
     /// # Errors
     /// Returns a classified expiry before transmission or an unknown outcome
     /// after the exchange starts. The deadline includes session establishment.
-    /// Client certificate expiry can shorten this deadline but cannot extend it.
     pub async fn execute_classified_until<Exchange>(
         &self,
         exchange: Exchange,
@@ -81,13 +74,6 @@ impl TacacsClient {
     where
         Exchange: FixedExchange,
     {
-        let lifetime = self.endpoint.prepared_credential_lifetime();
-        if let Some(lifetime) = lifetime {
-            lifetime.check().map_err(FixedExchangeError::not_sent)?;
-        }
-        let deadline = lifetime.map_or(deadline, |lifetime| {
-            crate::RequestDeadline::at(deadline.expires_at().min(lifetime.deadline.expires_at()))
-        });
         let expected =
             ExpectedResponseHeader::fixed(exchange.packet_type(), exchange.minor_version());
         let session = deadline
@@ -104,11 +90,6 @@ impl TacacsClient {
             .map_err(FixedExchangeError::outcome_unknown)
             .and_then(std::convert::identity);
         let _completed = deadline.run(session.complete()).await;
-        if let Some(lifetime) = lifetime {
-            lifetime
-                .check()
-                .map_err(FixedExchangeError::outcome_unknown)?;
-        }
         result
     }
 }

@@ -4,36 +4,6 @@ use openssl::x509::{X509, X509VerifyResult, X509StoreContext, X509PurposeId};
 use openssl::x509::store::X509StoreBuilder;
 use openssl::x509::verify::X509VerifyFlags;
 
-use super::CertificateValidity;
-
-pub(crate) type PeerValidityIndex =
-    openssl::ex_data::Index<openssl::ssl::Ssl, std::sync::Mutex<Option<CertificateValidity>>>;
-
-fn peer_validity_index() -> Result<PeerValidityIndex, openssl::error::ErrorStack> {
-    static INDEX: std::sync::OnceLock<Result<PeerValidityIndex, openssl::error::ErrorStack>> =
-        std::sync::OnceLock::new();
-    INDEX
-        .get_or_init(openssl::ssl::Ssl::new_ex_index)
-        .as_ref()
-        .copied()
-        .map_err(Clone::clone)
-}
-
-pub(crate) struct PreparedTlsContext {
-    pub(crate) context: SslContext,
-    pub(crate) validity: Option<CertificateValidity>,
-    pub(crate) peer_validity_index: PeerValidityIndex,
-}
-
-impl std::fmt::Debug for PreparedTlsContext {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("PreparedTlsContext")
-            .field("validity", &self.validity)
-            .finish_non_exhaustive()
-    }
-}
-
 /// Builds a native context from validated certificate and key objects.
 pub(crate) struct TlsConfigurationBuilder {
     root_certificates: Option<Vec<X509>>,
@@ -94,9 +64,12 @@ impl TlsConfigurationBuilder {
     ///
     /// Returns an error if a certificate chain was provided without a private
     /// key, or if OpenSSL rejects the supplied TLS material.
-    pub(crate) fn build(self) -> anyhow::Result<PreparedTlsContext> {
+    pub(crate) fn build(self) -> anyhow::Result<SslContext> {
         let mut builder = SslContext::builder(SslMethod::tls_client())?;
-        let peer_validity_index = peer_validity_index()?;
+        let has_extra_chain = self
+            .certificate_chain
+            .as_ref()
+            .is_some_and(|chain| chain.len() > 1);
 
         builder.set_min_proto_version(Some(SslVersion::TLS1_3))?;
         builder.set_max_proto_version(Some(SslVersion::TLS1_3))?;
@@ -111,7 +84,6 @@ impl TlsConfigurationBuilder {
                     &mut builder,
                     authorities,
                     self.end_entity_certificates,
-                    peer_validity_index,
                 )?;
             } else {
                 builder.set_default_verify_paths()?;
@@ -131,7 +103,6 @@ impl TlsConfigurationBuilder {
             }
         }
 
-        let mut validity: Option<CertificateValidity> = None;
         if let Some(mut cert_chain) = self.certificate_chain {
             let Some(key) = self.private_key else {
                 anyhow::bail!("Client private key was not provided");
@@ -140,14 +111,6 @@ impl TlsConfigurationBuilder {
                 anyhow::bail!("Client certificate chain was not provided");
             }
             validate_client_chain(&cert_chain)?;
-
-            for certificate in &cert_chain {
-                let current = CertificateValidity::from_certificate(certificate)?;
-                validity = Some(match validity {
-                    Some(previous) => previous.intersect(current)?,
-                    None => current,
-                });
-            }
 
             let leaf = cert_chain.remove(0);
             builder.set_certificate(&leaf)?;
@@ -158,16 +121,35 @@ impl TlsConfigurationBuilder {
             builder.check_private_key()?;
         }
 
+        let context = builder.build();
+        validate_client_certificate_dates(&context, has_extra_chain)?;
+        Ok(context)
+    }
+}
+
+pub(super) fn validate_client_certificate_dates(
+    context: &SslContext,
+    has_extra_chain: bool,
+) -> anyhow::Result<()> {
+    let now = std::time::SystemTime::now();
+    let validate = |certificate: &openssl::x509::X509Ref| -> anyhow::Result<()> {
+        let valid_from = super::validity::system_time(certificate.not_before())?;
+        let valid_until = super::validity::system_time(certificate.not_after())?;
         anyhow::ensure!(
-            validity.is_none_or(|bounds| bounds.is_valid_at(std::time::SystemTime::now())),
+            valid_from <= now && now < valid_until,
             "Client certificate validity excludes the current time"
         );
-        Ok(PreparedTlsContext {
-            context: builder.build(),
-            validity,
-            peer_validity_index,
-        })
+        Ok(())
+    };
+    if let Some(certificate) = context.certificate() {
+        validate(certificate)?;
     }
+    if has_extra_chain {
+        for certificate in context.extra_chain_certs() {
+            validate(certificate)?;
+        }
+    }
+    Ok(())
 }
 
 fn validate_client_chain(chain: &[X509]) -> anyhow::Result<()> {
@@ -223,7 +205,6 @@ fn configure_certificate_trust(
     builder: &mut SslContextBuilder,
     authorities: Vec<X509>,
     end_entities: Vec<X509>,
-    peer_validity_index: PeerValidityIndex,
 ) -> anyhow::Result<()> {
     let authority_der = authorities
         .iter()
@@ -274,35 +255,25 @@ fn configure_certificate_trust(
                     .to_der()
                     .is_ok_and(|der| authority_der.contains(&der))
             });
-        let selected = if exact_peer {
-            context
-                .current_cert()
-                .and_then(|certificate| CertificateValidity::from_certificate(certificate).ok())
-        } else if authority_path {
-            context
-                .chain()
-                .and_then(|chain| CertificateValidity::from_chain(chain).ok())
+        let accepted = if exact_peer || authority_path {
+            true
         } else {
-            authority_store.as_ref().and_then(|store| {
-                let certificate = context.current_cert()?;
-                let ssl = context.ex_data(ssl_index)?;
-                let chain = ssl.peer_cert_chain()?;
-                X509StoreContext::new()
-                    .and_then(|mut verification| {
-                        verification.init(store, certificate, chain, |verified| {
-                            if !verified.verify_cert()? {
-                                return Ok(None);
-                            }
-                            Ok(verified
-                                .chain()
-                                .and_then(|chain| CertificateValidity::from_chain(chain).ok()))
+            authority_store
+                .as_ref()
+                .and_then(|store| {
+                    let certificate = context.current_cert()?;
+                    let ssl = context.ex_data(ssl_index)?;
+                    let chain = ssl.peer_cert_chain()?;
+                    X509StoreContext::new()
+                        .and_then(|mut verification| {
+                            verification
+                                .init(store, certificate, chain, |verified| verified.verify_cert())
                         })
-                    })
-                    .ok()
-                    .flatten()
-            })
+                        .ok()
+                })
+                .unwrap_or(false)
         };
-        if let Some(validity) = selected {
+        if accepted {
             if context
                 .ex_data(ssl_index)
                 .is_some_and(|ssl| super::revocation::crls::verify(ssl, context.chain()).is_err())
@@ -310,15 +281,7 @@ fn configure_certificate_trust(
                 context.set_error(X509VerifyResult::APPLICATION_VERIFICATION);
                 return false;
             }
-            if let Some(slot) = context
-                .ex_data(ssl_index)
-                .and_then(|ssl| ssl.ex_data(peer_validity_index))
-            {
-                *slot
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(validity);
-                return true;
-            }
+            return true;
         }
         context.set_error(X509VerifyResult::APPLICATION_VERIFICATION);
         false

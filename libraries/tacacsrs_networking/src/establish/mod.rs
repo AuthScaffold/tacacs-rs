@@ -54,6 +54,8 @@ impl ConnectOptions {
 
     /// Returns options with TLS certificate verification disabled when
     /// `disabled` is true.
+    ///
+    /// Client and presented peer certificate dates still apply to each new connection.
     #[must_use]
     pub const fn with_certificate_verification_disabled(mut self, disabled: bool) -> Self {
         self.disable_certificate_verification = disabled;
@@ -117,11 +119,23 @@ async fn establish_transport(
     endpoint: &PreparedEndpoint,
     attempt: &mut crate::statistics::ConnectionAttempt,
 ) -> Result<BoxedTransport> {
-    if let Some(lifetime) = endpoint.prepared_credential_lifetime() {
-        lifetime
-            .check()
-            .context(crate::statistics::CertificateFailure)?;
+    endpoint
+        .validate_client_certificate_dates()
+        .context(crate::statistics::CertificateFailure)?;
+    let operation = establish_transport_inner(endpoint, attempt);
+    match endpoint.revocation_evidence_lifetime() {
+        Some(lifetime) => lifetime
+            .run(operation)
+            .await
+            .context(crate::statistics::CertificateFailure),
+        None => operation.await,
     }
+}
+
+async fn establish_transport_inner(
+    endpoint: &PreparedEndpoint,
+    attempt: &mut crate::statistics::ConnectionAttempt,
+) -> Result<BoxedTransport> {
     let address = endpoint.address();
     let options = &endpoint.options;
 
@@ -161,5 +175,67 @@ async fn establish_transport(
             let details = crate::TlsDetails::from_ssl(stream.ssl());
             Ok(BoxedTransport::new(stream).with_tls_details(details))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, SystemTime};
+
+    use tokio::io::AsyncReadExt;
+
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn evidence_deadline_bounds_stalled_handshake_before_transport_registration() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut endpoint = PreparedEndpoint::tcp(
+            listener.local_addr().unwrap().to_string(),
+            false,
+            None,
+            ConnectOptions::default().with_certificate_verification_disabled(true),
+        )
+        .with_certificate_tls("localhost", None, crate::CertificateTrust::Platform, None)
+        .unwrap();
+        let now = SystemTime::now();
+        let validity = crate::transport::tls::RevocationEvidenceValidity::from_bounds(
+            now - Duration::from_secs(1),
+            now + Duration::from_secs(60),
+        )
+        .unwrap();
+        let PreparedTransport::Tls(config) = &mut endpoint.transport else {
+            panic!("test endpoint must use certificate TLS");
+        };
+        config.evidence_lifetime = Some(crate::transport::tls::RevocationEvidenceLifetime {
+            validity,
+            deadline: crate::RequestDeadline::after(Duration::from_secs(1)).unwrap(),
+        });
+        let (connected, observed) = tokio::sync::oneshot::channel();
+        let peer = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _ = connected.send(());
+            let mut received = Vec::new();
+            stream.read_to_end(&mut received).await.unwrap();
+            received
+        });
+        let setup = establish_stream(&endpoint);
+        tokio::pin!(setup);
+        tokio::select! {
+            result = &mut setup => match result {
+                Ok(_) => panic!("setup completed before TCP connected"),
+                Err(error) => panic!("setup failed before TCP connected: {error:#}"),
+            },
+            result = observed => result.unwrap(),
+        }
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let error = match setup.await {
+            Ok(_) => panic!("setup completed after evidence expired"),
+            Err(error) => error,
+        };
+        assert!(
+            format!("{error:#}").contains("request deadline expired"),
+            "unexpected setup error: {error:#}"
+        );
+        assert!(!peer.await.unwrap().is_empty(), "TLS must start before evidence expiry");
     }
 }

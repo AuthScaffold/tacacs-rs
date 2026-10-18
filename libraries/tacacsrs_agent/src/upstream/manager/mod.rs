@@ -156,7 +156,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         let credential_lifetime = servers
             .iter()
             .try_fold(crate::runtime::CredentialLifetime::unbounded(), |lifetime, server| {
-                lifetime.intersect(server.certificate_lifetime)
+                lifetime.intersect(server.evidence_lifetime)
             })?;
         let server_set = Arc::new(ServerSet::new(servers, connector));
         Ok(Self {
