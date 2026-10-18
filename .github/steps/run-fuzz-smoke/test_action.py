@@ -22,6 +22,8 @@ FUZZ_STEPS = {
     "Fuzz accounting request parsing": "fuzz_accounting_request_parse",
     "Fuzz accounting reply parsing": "fuzz_accounting_reply_parse",
     "Fuzz accounting request packet parsing": "fuzz_accounting_request_packet_parse",
+    "Fuzz authentication message parsing": "fuzz_authentication_parse",
+    "Fuzz authorization message parsing": "fuzz_authorization_parse",
     "Fuzz all protocol message families": "fuzz_protocol_parse",
 }
 
