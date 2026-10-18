@@ -69,11 +69,14 @@ jobs:
           echo "skip_release=${skip_release} (${reason})"
 
   # ── Compute versions from Git tags ───────────────────────
+  # Versions are computed on every push, including a no-release push. The
+  # no-release marker suppresses publication, not version computation, so the
+  # rehearsal path still hydrates manifests and records a release manifest.
   compute-versions:
     name: Compute Versions
     runs-on: ubuntu-latest
     needs: [release-policy]
-    if: github.event_name == 'push' && needs.release-policy.outputs.skip-release != 'true'
+    if: github.event_name == 'push'
     permissions:
       contents: read
     outputs:
@@ -91,8 +94,8 @@ jobs:
         uses: ./.github/steps/setup-rust
         with:
           cache-key: stable
-          install-libseccomp-dev: 'false'
-          install-openssl: 'false'
+          install-libseccomp-dev: 'true'
+          install-openssl: 'true'
 
       - name: Compute versions
         id: compute
@@ -115,7 +118,7 @@ jobs:
       include-fmt: false
       include-proto-compat: false
       include-outdated: false
-      include-container-build: ${{ github.event_name != 'push' || needs.compute-versions.outputs.has-release != 'true' }}
+      include-container-build: ${{ github.event_name != 'push' || needs.release-policy.outputs.skip-release == 'true' || needs.compute-versions.outputs.has-release != 'true' }}
       container-registry: ghcr.io/authscaffold
       products: |
         [
@@ -125,17 +128,27 @@ jobs:
           {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacacsrs-bash-plugin-linux-gnu-x86_64", "package_name": "tacacsrs-bash-plugin", "package_root": "libraries/tacacsrs_bash_plugin", "artifact_name": "tacacsrs_bash_plugin", "artifact_kind": "cdylib", "features": "", "sbom_describe": "all-cargo-targets"},
           {"os": "windows-latest", "target": "x86_64-pc-windows-msvc", "asset_name": "tacon-windows-msvc-x86_64", "package_name": "tacon", "package_root": "executables/tacon", "artifact_name": "tacon", "artifact_kind": "bin", "features": "", "sbom_describe": "binaries"}
         ]
-      versions: ${{ needs.release-policy.outputs.skip-release == 'true' && '{}' || needs.compute-versions.outputs.versions || '{}' }}
+      versions: ${{ needs.compute-versions.outputs.versions || '{}' }}
     secrets: inherit
 
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [pipeline]
+    needs: [pipeline, compute-versions, release-policy]
     if: always()
     steps:
       - name: Make sure that the pipeline succeeded
         if: needs.pipeline.result != 'success'
+        run: exit 1
+
+      # Version computation and release policy run outside the pipeline. The
+      # pipeline's always() must not mask their failures. A skipped
+      # compute-versions is allowed because it does not run on schedule events.
+      - name: Make sure release policy and version computation succeeded
+        if: >-
+          needs.release-policy.result != 'success' ||
+          (needs.compute-versions.result != 'success' &&
+           needs.compute-versions.result != 'skipped')
         run: exit 1
 
   container-stage:

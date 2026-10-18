@@ -92,6 +92,37 @@ permissions:
   packages: read
 
 jobs:
+  automation-tests:
+    name: Delivery Automation Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: ./.github/steps/setup-rust
+        with:
+          toolchain: '1.91.0'
+          components: clippy rustfmt
+          cache-key: delivery-tools
+          install-libseccomp-dev: 'false'
+          install-openssl: 'true'
+      - name: Install pinned test prerequisites
+        shell: bash
+        run: |
+          python3 -m pip install pytest==8.4.2 PyYAML==6.0.3
+          rustup toolchain install nightly-2025-11-23 --profile minimal
+      - name: Test delivery scripts and workflow contracts
+        shell: bash
+        run: python3 -m pytest .github/steps/cargo-metadata .github/steps/check-architecture .github/steps/compute-versions .github/steps/inject-versions .github/steps/release-manifest
+      - name: Test API classification against real Git fixtures
+        shell: bash
+        run: env -u CARGO_TARGET_DIR cargo +1.91.0 test --manifest-path .github/tools/api-classifier/Cargo.toml --locked
+      - name: Install dependency auditor
+        uses: taiki-e/install-action@7be9fd86bd1707236395105d6e9329dd1511a7e1 # v2.79.0
+        with:
+          tool: cargo-audit
+      - name: Audit API classifier dependencies
+        shell: bash
+        run: cargo audit --file .github/tools/api-classifier/Cargo.lock
+
   msrv:
     name: Minimum Rust 1.88
     runs-on: ubuntu-latest
@@ -160,6 +191,7 @@ jobs:
         uses: ./.github/steps/resolve-cargo-metadata
         with:
           metadata-target: ${{ matrix.config.metadata_target }}
+          profile: ${{ matrix.config.cache_key }}
 
   pre-tests:
     name: Pre-Tests (${{ matrix.config.name }})
@@ -263,6 +295,10 @@ jobs:
           against-ref: ${{ inputs.proto-compat-ref }}
           github-token: ${{ github.token }}
 
+      - name: Verify the pinned YANG artifacts (offline)
+        if: matrix.config.metadata_checks == 'true'
+        uses: ./.github/steps/verify-yang
+
   testing:
     name: Testing (${{ matrix.config.name }})
     needs: [pre-tests]
@@ -312,6 +348,7 @@ jobs:
           target: ${{ matrix.config.target }}
           feature-args: ${{ matrix.config.feature_args }}
           build-release: ${{ inputs.build-release }}
+          products: ${{ inputs.products }}
 
       - name: Generate coverage
         if: matrix.config.coverage == 'true'
@@ -339,6 +376,53 @@ jobs:
       - name: Run fuzz smoke tests
         if: matrix.config.deep_checks == 'true' && inputs.include-fuzz
         uses: ./.github/steps/run-fuzz-smoke
+
+  consumer-profiles:
+    name: Consumer Profile (${{ matrix.config.name }})
+    needs: [pre-tests]
+    if: ${{ !cancelled() && !failure() }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          # The protocol and secrets crates must build and test with no native
+          # system dependency. OpenSSL and libseccomp are not installed.
+          - name: Protocol (no native dependencies)
+            package_args: '--package tacacsrs-protocol --package tacacsrs-secrets'
+            install_openssl: 'false'
+            install_libseccomp_dev: 'false'
+          # A direct TACACS+ client consumer uses configuration and networking.
+          # Networking needs OpenSSL, but not libseccomp or IPC.
+          - name: Direct toolkit (OpenSSL)
+            package_args: '--package tacacsrs-config --package tacacsrs-networking'
+            install_openssl: 'true'
+            install_libseccomp_dev: 'false'
+          # The local IPC crate is Linux-only through its Unix socket ownership.
+          - name: IPC (Linux)
+            package_args: '--package tacacsrs-ipc'
+            install_openssl: 'false'
+            install_libseccomp_dev: 'false'
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install stable Rust
+        uses: ./.github/steps/setup-rust
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-gnu
+          cache-key: stable
+          install-libseccomp-dev: ${{ matrix.config.install_libseccomp_dev }}
+          install-openssl: ${{ matrix.config.install_openssl }}
+
+      - name: Build and test the isolated selection
+        shell: bash
+        run: |
+          cargo test \
+            ${{ matrix.config.package_args }} \
+            --target x86_64-unknown-linux-gnu \
+            --all-features \
+            --locked
 
   official-build:
     name: Official Build (${{ matrix.config.target }})
@@ -407,6 +491,32 @@ jobs:
           sbom-describe: ${{ matrix.config.sbom_describe }}
           features: ${{ matrix.config.features }}
 
+      - name: Capture build provenance
+        shell: bash
+        env:
+          PROVENANCE_ASSET: ${{ matrix.config.asset_name }}
+          PROVENANCE_PACKAGE_ROOT: ${{ matrix.config.package_root }}
+          PROVENANCE_TARGET: ${{ matrix.config.target }}
+          PROVENANCE_FEATURES: ${{ matrix.config.features }}
+          PROVENANCE_SOURCE: ${{ github.sha }}
+          PROVENANCE_VERSIONS: ${{ inputs.versions }}
+        run: |
+          set -euo pipefail
+          python .github/steps/release-manifest/build_provenance.py \
+            --workspace "$GITHUB_WORKSPACE" \
+            --package-root "$PROVENANCE_PACKAGE_ROOT" \
+            --package-dir "$PACKAGE_DIR" \
+            --upload-dir packaged \
+            --asset-name "$PROVENANCE_ASSET" \
+            --package-name "$PACKAGE_NAME" \
+            --artifact-filename "$ARTIFACT_FILENAME" \
+            --artifact-kind "$ARTIFACT_KIND" \
+            --source "$PROVENANCE_SOURCE" \
+            --target "$PROVENANCE_TARGET" \
+            --profile "$PROFILE" \
+            --features "$PROVENANCE_FEATURES" \
+            --versions-json "$PROVENANCE_VERSIONS"
+
       - name: Create Windows archive
         if: runner.os == 'Windows'
         uses: ./.github/steps/create-windows-archive
@@ -462,6 +572,13 @@ jobs:
       - name: Stage release assets
         uses: ./.github/steps/stage-release-assets
 
+      - name: Generate the release manifest
+        uses: ./.github/steps/release-manifest
+        with:
+          source-commit: ${{ github.sha }}
+          versions: ${{ inputs.versions }}
+          provenance-directory: raw/packages
+
       - name: Generate checksums
         uses: ./.github/steps/generate-checksums
 
@@ -477,10 +594,12 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     needs:
+      - automation-tests
       - msrv
       - cache-preflight
       - pre-tests
       - testing
+      - consumer-profiles
       - official-build
       - container-build
       - finalize-release-assets

@@ -52,8 +52,16 @@ async fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => {
+            let informational = matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            );
             let _ = error.print();
-            return ExitCode::from(EXIT_INVOCATION_ERROR);
+            return if informational {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(EXIT_INVOCATION_ERROR)
+            };
         }
     };
     let Ok(endpoint) = IpcEndpoint::from_str(&cli.endpoint) else {

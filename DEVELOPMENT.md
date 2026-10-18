@@ -185,6 +185,20 @@ The Linux `session-wrapper` has more smoke tests and integration tests. These te
 
 For the test procedure, read [Session Wrapper Testing](docs/session-wrapper-testing.md).
 
+### Parser fuzz smoke tests
+
+The protocol parsers have libFuzzer targets in `fuzz/`. CI runs them as blocking smoke tests through the `.github/steps/run-fuzz-smoke` action. Each target runs for 30 seconds.
+
+```bash
+# Run one target (requires nightly + cargo-fuzz)
+cargo +nightly fuzz run fuzz_authentication_parse -- -max_total_time=30
+
+# List all targets
+cargo +nightly fuzz list
+```
+
+The targets are `fuzz_header_parse`, `fuzz_accounting_request_parse`, `fuzz_accounting_reply_parse`, `fuzz_accounting_request_packet_parse`, `fuzz_authentication_parse`, `fuzz_authorization_parse`, and `fuzz_protocol_parse`. The dedicated `fuzz_authentication_parse` and `fuzz_authorization_parse` targets parse each message body with `from_bytes` and `from_packet`, then confirm that every parsed value re-serializes to identical bytes. The `fuzz_protocol_parse` target exercises every message family together.
+
 ### Code Coverage
 
 ```bash
@@ -214,6 +228,14 @@ cargo +nightly fmt --all
 Blocking checks include default Clippy, checked numeric conversions, error and panic documentation, unsafe-block explanations, and internal API visibility.
 Broad pedantic and nursery checks are advisory. Function length is not a design requirement.
 Keep a cohesive state transition together when extraction would hide its sequencing or ownership.
+
+The workspace allows `assert_is_empty` and `chunks_exact_to_as_chunks`.
+Simple emptiness assertions avoid extra type annotations and do not print collection contents or secret bytes on failure.
+Checked chunk iterators keep argument grouping and remainder validation together.
+Keep correctness checks enabled. Add a specific global allowance when a style rule makes the code less clear.
+
+Dependency freshness is a report, not a requirement to adopt unrelated major upgrades.
+Security audits, unused-dependency checks, and tool execution failures remain blocking.
 
 ```bash
 # Run clippy
@@ -311,15 +333,30 @@ The `feature-flags.ini` file controls upstream and project features. Project fea
 
 The cache must use a detached HEAD at the specified commit. Use `--clean` to replace an old cache. The generator does not use a different revision.
 
-Before you commit generated changes, run:
+Before you commit generated changes, run the generator unit tests and the full regeneration check:
 
 ```bash
 cd libraries/tacacsrs_config/yang
-python -m unittest -v test_expand_yang_tree.py
+python -m unittest discover -v -p 'test_*.py'
 python verify_generated.py --clean
 ```
 
+`verify_generated.py --clean` clones the pinned `YangModels/yang` commit, regenerates the tree and Rust types, and compares them against the checked-in artifacts. It needs network access for the clone. Run it when you change the pinned source, the feature flags, or the generator.
+
 The verifier compares canonical LF content. Thus, Windows and Linux checkouts produce the same result.
+
+### Offline consistency check
+
+For a fast gate that needs no network access and does not regenerate anything, run:
+
+```bash
+cd libraries/tacacsrs_config/yang
+python verify_generated.py --check
+```
+
+The offline check validates the recorded SHA-256 hashes of the pinned source identity, the pyang version, the reviewed feature flags, the secret-field manifest, the checked-in YANG module, and the generated outputs. It confirms that the checked-in tree still matches the manifest. It is a consistency gate, not a proof of deterministic regeneration.
+
+CI runs the generator unit tests and the offline check through the `.github/steps/verify-yang` action. CI installs the pinned `pyang` version from `requirements.txt` and performs no branch writes. CI does not clone the upstream source or regenerate the artifacts; run `verify_generated.py --clean` locally when you change the source or generator.
 
 `.gitattributes` keeps generation inputs and outputs at LF. Do not recreate `feature-flags.ini` with `--list-features` before you review each value.
 
@@ -357,6 +394,8 @@ When you open a pull request, these jobs run:
 | **Documentation** | Builds documentation without warnings |
 | **Coverage** | Generate and upload code coverage |
 | **Security Audit** | Finds known vulnerabilities after dependency changes |
+| **YANG Verification** | Offline hash and version check plus generator unit tests for the pinned model (Linux) |
+| **Fuzz Smoke** | Blocking libFuzzer smoke tests for the protocol parsers (Linux, nightly) |
 
 All jobs must pass before you merge the pull request.
 

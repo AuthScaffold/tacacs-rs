@@ -11,6 +11,8 @@ case "$(findmnt -n -o FSTYPE -T "$PWD")" in
 esac
 
 cargo fetch --locked
+cargo +1.91.0 install --path .github/tools/api-classifier --locked \
+    --root "$HOME/.local" --target-dir "${CARGO_TARGET_DIR:-target}/api-classifier"
 python3 -m unittest discover -s .devcontainer -p 'test_*.py' -v
 
 printf '\nWorkspace ready: %s\n' "$PWD"

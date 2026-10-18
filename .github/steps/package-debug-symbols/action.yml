@@ -12,10 +12,12 @@ runs:
     - name: Package debug symbols (Unix)
       if: runner.os != 'Windows'
       shell: bash
-      run: |
-        if ls target/${{ inputs.target }}/${PROFILE}/*.dwp 1> /dev/null 2>&1; then
-          cp target/${{ inputs.target }}/${PROFILE}/*.dwp "$PACKAGE_DIR/"
-        fi
+      env:
+        # Pass the caller input through the environment so it never reaches the
+        # shell as code. PROFILE, ARTIFACT_FILENAME, and PACKAGE_DIR already live
+        # in the job environment from compute-package-names.
+        TARGET: ${{ inputs.target }}
+      run: bash "${{ github.action_path }}/run.sh"
 
     - name: Package debug symbols (Windows)
       if: runner.os == 'Windows'
