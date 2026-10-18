@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -9,6 +10,7 @@ import unittest
 
 class ProtocSelectionTests(unittest.TestCase):
     def test_explicit_unset_invalid_and_changed_compiler(self):
+        compiler = os.environ.get("PROTOC", "/usr/bin/protoc")
         with tempfile.TemporaryDirectory(prefix="protoc-selection-") as directory:
             root = Path(directory)
             log = root / "invocations"
@@ -36,7 +38,7 @@ class ProtocSelectionTests(unittest.TestCase):
                 wrapper.write_text(
                     "#!/bin/sh\nset -eu\n"
                     f'printf "{label} %s\\n" "$*" >> "$PROTOC_TEST_LOG"\n'
-                    'exec /usr/bin/protoc "$@"\n'
+                    f'exec {shlex.quote(compiler)} "$@"\n'
                 )
                 wrapper.chmod(0o755)
                 check(wrapper, True)
@@ -51,7 +53,7 @@ class ProtocSelectionTests(unittest.TestCase):
             before = log.read_text()
             check(None, True)
             self.assertEqual(log.read_text(), before)
-            check("/usr/bin/protoc", True)
+            check(compiler, True)
 
 
 if __name__ == "__main__":
