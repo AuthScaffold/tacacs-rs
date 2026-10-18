@@ -23,21 +23,20 @@ use tacacsrs_config::source::{ConfigDatastore, InitialLoadPolicy};
 use tacacsrs_config::source::policy::{
     FilePolicyObservation, PolicyChange, PolicyFile, PolicyObservation,
 };
-use tacacsrs_credential_resolution::{CredentialChangeSource, CredentialResolver};
-use tacacsrs_sonic::{
-    SonicConfigDb, SonicConnection, SonicCredentialChangeSource, SonicCredentialPolicy,
-    SonicCredentialResolver, SonicCredentialRoots,
-};
+use tacacsrs_sonic::{SonicConfigDb, SonicConnection};
 use tokio_util::sync::CancellationToken;
 
 mod cli;
 mod config_filter;
+mod credential_provider;
 mod host_integration;
 mod local_services;
+mod statistics;
 
 use crate::cli::{Cli, ServiceMode};
 use crate::cli::PskKeyExchange;
 use crate::config_filter::config_filter_from_local_services;
+use crate::credential_provider::CredentialProvider;
 use crate::host_integration::HostIntegration;
 
 /// Initializes the logger based on verbosity level.
@@ -205,6 +204,7 @@ struct PreparedService {
     credential_provider: CredentialProvider,
     host_integration: HostIntegration,
     policy_observation: Option<FilePolicyObservation>,
+    statistics_file: Option<statistics::StatisticsFile>,
 }
 
 impl PreparedService {
@@ -217,6 +217,7 @@ impl PreparedService {
             credential_provider,
             host_integration,
             policy_observation,
+            statistics_file,
         } = self;
         let (credential_resolver, credential_change_source) = credential_provider;
         let datastore_policy = datastore.runtime_policy();
@@ -246,7 +247,20 @@ impl PreparedService {
 
         let host_task = {
             let cancellation = cancellation.clone();
-            tokio::spawn(host_integration.run(health.subscribe(), cancellation))
+            let statistics_service = service.clone();
+            let health = health.subscribe();
+            tokio::spawn(async move {
+                let reporting = async {
+                    if let Some(file) = statistics_file {
+                        file.run(statistics_service, cancellation.clone()).await
+                    } else {
+                        cancellation.cancelled().await;
+                        Ok(())
+                    }
+                };
+                tokio::try_join!(host_integration.run(health, cancellation.clone()), reporting)?;
+                Ok(())
+            })
         };
 
         let supervisor_task = {
@@ -420,25 +434,6 @@ fn supervisor_exit_to_fatal_error(
     }
 }
 
-type CredentialProvider =
-    (Option<Arc<dyn CredentialResolver>>, Option<Arc<dyn CredentialChangeSource>>);
-
-fn build_credential_provider(cli: &Cli) -> CredentialProvider {
-    if !cli.sonic {
-        return (None, None);
-    }
-    let resolver = Arc::new(SonicCredentialResolver::reloadable(
-        SonicCredentialRoots::default(),
-        SonicCredentialPolicy::production_from_root_group(),
-    )) as Arc<dyn CredentialResolver>;
-    let settings = sonic_connection_from_cli(cli);
-    let change_source = settings.credential_watch_root.map(|root| {
-        Arc::new(SonicCredentialChangeSource::new(root, settings.debounce))
-            as Arc<dyn CredentialChangeSource>
-    });
-    (Some(resolver), change_source)
-}
-
 /// Starts the central TACACS+ client service process.
 ///
 /// The service listens on the configured local IPC endpoint. It maintains
@@ -512,10 +507,58 @@ async fn run_until(
 }
 
 async fn prepare_service(cli: Cli) -> anyhow::Result<PreparedService> {
+    let statistics_file = match &cli.statistics_file {
+        Some(path) => {
+            let mut protected = Vec::new();
+            protected.extend(
+                cli.config
+                    .iter()
+                    .chain(cli.runtime_policy.iter())
+                    .chain(cli.local_services.iter())
+                    .map(PathBuf::as_path),
+            );
+            protected.extend(
+                cli.client_certificate
+                    .iter()
+                    .chain(cli.client_key.iter())
+                    .map(std::path::Path::new),
+            );
+            protected.extend(
+                cli.http_crl_certificate
+                    .chunks_exact(2)
+                    .map(|values| std::path::Path::new(&values[1])),
+            );
+            protected.extend(
+                cli.http_ocsp_source
+                    .chunks_exact(4)
+                    .flat_map(|values| [&values[2], &values[3]])
+                    .map(std::path::Path::new),
+            );
+            protected.extend(
+                cli.http_ocsp_certificate
+                    .chunks_exact(3)
+                    .flat_map(|values| [&values[1], &values[2]])
+                    .map(std::path::Path::new),
+            );
+            Some(statistics::StatisticsFile::new(path, &protected).await?)
+        }
+        None => None,
+    };
+    let credential_provider = credential_provider::build(&cli).await?;
     let host_integration = HostIntegration::from_environment(cli.host_integration)?;
     let sonic_forwarder = sonic_forwarder_from_cli(&cli).await?;
     let local_services = local_services::load(&cli, sonic_forwarder).await?;
     let prepared = tacacsrs_config::local_services::prepare_local_services(&local_services)?;
+    if let Some(statistics) = &statistics_file {
+        if let Some(path) = prepared.client_api() {
+            statistics.protect_listener(path).await?;
+        }
+        if let Some(tacacsrs_config::local_services::ListenerEndpoint::Unix(path)) =
+            prepared.tacacs_proxy()
+        {
+            statistics.protect_listener(path).await?;
+        }
+    }
     let enabled_services =
         EnabledServices::new(prepared.client_api().is_some(), prepared.tacacs_proxy().is_some());
     log::info!("Local service listeners: {prepared:?}");
@@ -550,7 +593,6 @@ async fn prepare_service(cli: Cli) -> anyhow::Result<PreparedService> {
         )
         .context("Failed to build TACACS+ client service configuration")?,
     );
-    let credential_provider = build_credential_provider(&cli);
     Ok(PreparedService {
         datastore,
         service,
@@ -559,6 +601,7 @@ async fn prepare_service(cli: Cli) -> anyhow::Result<PreparedService> {
         credential_provider,
         host_integration,
         policy_observation,
+        statistics_file,
     })
 }
 

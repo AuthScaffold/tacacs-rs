@@ -27,6 +27,8 @@ pub enum PrivateKeyEncoding {
 pub struct CertificateIdentity<'a> {
     /// End-entity certificate in DER format.
     pub certificate: &'a [u8],
+    /// DER intermediate certificates in issuer order, excluding the leaf and root.
+    pub intermediates: &'a [&'a [u8]],
     /// Optional DER `SubjectPublicKeyInfo` that must match the certificate's key.
     pub public_key_info: Option<&'a [u8]>,
     /// Private key corresponding to the certificate.
@@ -56,7 +58,14 @@ pub(crate) struct TlsClientConfig {
     peer_identity: String,
     sni_name: Option<String>,
     pub(crate) lifetime: Option<CertificateLifetime>,
+    pub(crate) client_validity: Option<super::CertificateValidity>,
+    crls: Option<std::sync::Arc<super::revocation::crls::CrlEvidence>>,
+    peer_pins: bool,
     peer_validity_index: super::config_builder::PeerValidityIndex,
+    pub(crate) revocation: super::CertificateRevocationPolicy,
+    revocation_issuers: Vec<X509>,
+    verification_disabled: bool,
+    provided_ocsp: Option<super::revocation::ProvidedResponse>,
 }
 
 impl TlsClientConfig {
@@ -81,6 +90,8 @@ impl TlsClientConfig {
         }
         let mut builder = TlsConfigurationBuilder::new()
             .with_certificate_verification_disabled(disable_verification);
+        let peer_pins = matches!(&trust, CertificateTrust::Certificates { end_entities, .. } if !end_entities.is_empty());
+        let mut revocation_issuers = Vec::new();
         if let CertificateTrust::Certificates {
             authorities,
             end_entities,
@@ -98,6 +109,7 @@ impl TlsClientConfig {
                 .iter()
                 .map(|data| parse_certificate_data(data))
                 .collect::<Result<Vec<_>>>()?;
+            revocation_issuers.clone_from(&authorities);
             builder = builder.with_certificate_trust(authorities, end_entities);
         }
         if let Some(identity) = identity {
@@ -120,14 +132,29 @@ impl TlsClientConfig {
             }
             let key = parse_private_key_data(identity.private_key, identity.private_key_encoding)
                 .context("Failed to parse TLS private key")?;
-            builder = builder.with_client_auth_der(vec![certificate], key);
+            let mut chain = Vec::with_capacity(identity.intermediates.len() + 1);
+            chain.push(certificate);
+            for intermediate in identity.intermediates {
+                chain.push(
+                    parse_certificate_data(intermediate)
+                        .context("Failed to parse TLS client intermediate certificate")?,
+                );
+            }
+            builder = builder.with_client_auth_der(chain, key);
         }
         let prepared = builder
             .build()
             .context("Failed to build TLS configuration")?;
         Ok(Self {
             context: prepared.context,
+            client_validity: prepared.validity,
+            crls: None,
+            peer_pins,
             peer_validity_index: prepared.peer_validity_index,
+            revocation: super::CertificateRevocationPolicy::disabled(),
+            revocation_issuers,
+            verification_disabled: disable_verification,
+            provided_ocsp: None,
             lifetime: prepared
                 .validity
                 .map(CertificateLifetime::new)
@@ -137,6 +164,36 @@ impl TlsClientConfig {
         })
     }
 
+    pub(crate) fn with_revocation_policy(
+        mut self,
+        policy: super::CertificateRevocationPolicy,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            !self.verification_disabled || policy.maximum_response_age().is_none(),
+            "Required OCSP evidence cannot be combined with disabled certificate verification"
+        );
+        self.revocation = policy;
+        Ok(self)
+    }
+
+    pub(crate) fn with_crls(
+        mut self,
+        lists: &[&[u8]],
+        maximum_age: std::time::Duration,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            !self.verification_disabled && !self.peer_pins,
+            "CRL mode requires CA authentication with certificate verification enabled"
+        );
+        let evidence = super::revocation::crls::CrlEvidence::prepare(lists, maximum_age)?;
+        self.lifetime = Some(match self.lifetime {
+            Some(lifetime) => lifetime.intersect(evidence.lifetime)?,
+            None => evidence.lifetime,
+        });
+        self.crls = Some(std::sync::Arc::new(evidence));
+        Ok(self)
+    }
+
     pub(crate) async fn connect(&self, tcp_stream: TcpStream) -> Result<BoxedTransport> {
         let handshake = connect_tls(
             &self.context,
@@ -144,6 +201,12 @@ impl TlsClientConfig {
             &self.peer_identity,
             self.sni_name.as_deref(),
             self.peer_validity_index,
+            super::revocation::ConnectionRevocation::new(
+                self.revocation,
+                &self.revocation_issuers,
+                self.provided_ocsp.clone(),
+            ),
+            self.crls.clone(),
         );
         let stream = match self.lifetime {
             Some(lifetime) => lifetime.run(handshake).await,
@@ -179,11 +242,33 @@ impl TlsClientConfig {
         } else {
             super::CertificateValidity::from_certificate(&peer)?
         };
+        let validity = match super::revocation::verified_validity(stream.ssl())? {
+            Some(evidence) => validity.intersect(evidence)?,
+            None => validity,
+        };
         let peer_lifetime = CertificateLifetime::new(validity)?;
         let lifetime = self
             .lifetime
             .map_or(Ok(peer_lifetime), |local| local.intersect(peer_lifetime))?;
         Ok(BoxedTransport::new(stream).with_certificate_lifetime(lifetime))
+    }
+
+    pub(crate) fn with_ocsp_response(
+        mut self,
+        encoded: &[u8],
+        maximum_age: std::time::Duration,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            !self.verification_disabled,
+            "Fetched OCSP requires certificate verification"
+        );
+        let response = super::revocation::ProvidedResponse::prepare(encoded, maximum_age)?;
+        self.lifetime = Some(match self.lifetime {
+            Some(current) => current.intersect(response.lifetime)?,
+            None => response.lifetime,
+        });
+        self.provided_ocsp = Some(response);
+        Ok(self)
     }
 }
 
@@ -270,6 +355,7 @@ mod tests {
             None,
             CertificateTrust::Platform,
             Some(CertificateIdentity {
+                intermediates: &[],
                 certificate: &der,
                 public_key_info: None,
                 private_key: &key,
@@ -302,6 +388,7 @@ mod tests {
                     );
                 }
                 let identity = CertificateIdentity {
+                    intermediates: &[],
                     certificate: &combined,
                     public_key_info: None,
                     private_key: &key,

@@ -62,6 +62,7 @@ fn epsk_server() -> tacacsrs_config::TacacsPlusServer {
 
 fn certificate_material() -> ResolvedCredential {
     ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
+        intermediates: Vec::new(),
         validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
         public_key_format: None,
         public_key: None,

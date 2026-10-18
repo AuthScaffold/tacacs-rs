@@ -271,6 +271,23 @@ fn install_credential(
 ) -> Result<(), MaterializationError> {
     let server_name = server.name.clone();
     match credential {
+        ResolvedCredential::OcspResponse(material) => {
+            if field_path == "server-authentication/tacacsrs:require-ocsp" {
+                server
+                    .server_authentication
+                    .as_mut()
+                    .and_then(|auth| auth.require_ocsp.as_mut())
+                    .map(|policy| {
+                        policy.response = Some(material.response.into_bytes());
+                        policy.evidence_reference = None;
+                    })
+            } else {
+                None
+            }
+        }
+        ResolvedCredential::CertificateRevocationLists(material) => {
+            install_revocation_lists(server, field_path, material)
+        }
         ResolvedCredential::CertificateWithKey(material) => {
             install_certificate_with_key(server, field_path, material)
         }
@@ -293,6 +310,30 @@ fn install_credential(
     })
 }
 
+fn install_revocation_lists(
+    server: &mut TacacsPlusServer,
+    field_path: &str,
+    material: tacacsrs_credential_resolution::CertificateRevocationListsMaterial,
+) -> Option<()> {
+    if field_path != "server-authentication/tacacsrs:require-crls" {
+        return None;
+    }
+    let policy = server
+        .server_authentication
+        .as_mut()?
+        .require_crls
+        .as_mut()?;
+    policy.crl = Some(
+        material
+            .lists
+            .into_iter()
+            .map(PublicBytes::into_bytes)
+            .collect(),
+    );
+    policy.evidence_reference = None;
+    Some(())
+}
+
 fn install_certificate_with_key(
     server: &mut TacacsPlusServer,
     field_path: &'static str,
@@ -311,6 +352,11 @@ fn install_certificate_with_key(
         private_key_format: Some(material.private_key_format.into()),
         cleartext_private_key: Some(material.private_key),
         cert_data: Some(material.certificate.into_bytes()),
+        intermediate_certificate: material
+            .intermediates
+            .into_iter()
+            .map(PublicBytes::into_bytes)
+            .collect(),
     });
     certificate.central_keystore_reference = None;
     Some(())

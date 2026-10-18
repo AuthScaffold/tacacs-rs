@@ -211,7 +211,31 @@ impl MaterializationCoordinator {
         scope: &CredentialChangeScope,
         health: Option<&crate::RuntimeHealthPublisher>,
     ) -> Option<MaterializationAttempt> {
+        self.begin_credential_update(scope, health, false).await
+    }
+
+    pub(crate) async fn refresh_credentials(&self) -> Option<MaterializationAttempt> {
+        self.begin_credential_update(&CredentialChangeScope::Unknown, None, true)
+            .await
+    }
+
+    async fn begin_credential_update(
+        &self,
+        scope: &CredentialChangeScope,
+        health: Option<&crate::RuntimeHealthPublisher>,
+        scheduled: bool,
+    ) -> Option<MaterializationAttempt> {
         let mut state = self.state.lock().await;
+        if scheduled
+            && (self.resolver.is_none()
+                || state
+                    .desired_dependencies
+                    .as_ref()
+                    .is_none_or(BTreeMap::is_empty)
+                || state.expired.contains(MaterialExpiry::Source))
+        {
+            return None;
+        }
         let Some(runtime_source) = state.desired_runtime_source.clone() else {
             if state.desired_source.is_some() {
                 state.revision.credentials.advance();
@@ -345,11 +369,16 @@ impl MaterializationCoordinator {
         let mut next_lifetimes = BTreeMap::new();
         let mut validity = super::CredentialLifetime::unbounded();
         for desired in &prepared.attempt.runtime_source.server {
-            let lifetime = candidate_by_name
+            let mut lifetime = candidate_by_name
                 .get(&desired.name)
                 .map(|(_, lifetime)| *lifetime)
                 .or_else(|| state.active_lifetimes.get(&desired.name).copied())
                 .ok_or_else(|| anyhow::anyhow!("active credential validity is missing"))?;
+            if let Some(previous) = state.active_lifetimes.get(&desired.name) {
+                if previous.validity == lifetime.validity {
+                    lifetime = previous.intersect(lifetime)?;
+                }
+            }
             validity = validity.intersect(lifetime)?;
             next_lifetimes.insert(desired.name.clone(), lifetime);
             let server = if let Some((candidate, _)) = candidate_by_name.get(&desired.name) {

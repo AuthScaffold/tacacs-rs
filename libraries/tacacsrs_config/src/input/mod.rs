@@ -15,7 +15,7 @@ pub use builder::{tacacs_plus_from_cli_input, tacacs_plus_from_file, tacacs_plus
 pub use datastore::CliFileDatastore;
 pub use files::{
     load_client_certificate, load_client_private_key, normalize_cli_certificate_data,
-    normalize_cli_private_key_data,
+    ClientCertificateChain, normalize_cli_private_key_data,
 };
 pub use model::{
     CertKeyIdentity, CliConfigSource, CliDatastoreInput, CliSecurity, CliSecurityInputs,

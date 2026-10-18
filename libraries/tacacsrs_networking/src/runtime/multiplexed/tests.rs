@@ -60,7 +60,7 @@ fn test_connection_without_obfuscation() {
 
 #[tokio::test]
 async fn final_driver_owner_drop_closes_transport_without_a_join_caller() {
-    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
     let (client, mut peer) = tokio::io::duplex(256);
     let (reader, writer) = tokio::io::split(client);
     connection.run_with_halves(reader, writer);
@@ -76,7 +76,7 @@ async fn final_driver_owner_drop_closes_transport_without_a_join_caller() {
 
 #[tokio::test]
 async fn explicit_close_joins_idle_driver_and_is_repeatable() {
-    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
     let (client, mut peer) = tokio::io::duplex(256);
     let (reader, writer) = tokio::io::split(client);
     connection.run_with_halves(reader, writer);
@@ -89,7 +89,7 @@ async fn explicit_close_joins_idle_driver_and_is_repeatable() {
 
 #[tokio::test(start_paused = true)]
 async fn forced_close_joins_driver_and_wakes_active_session() {
-    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
     let session = connection.create_session().unwrap();
     let (client, mut peer) = tokio::io::duplex(256);
     let (reader, writer) = tokio::io::split(client);
@@ -104,7 +104,7 @@ async fn forced_close_joins_driver_and_wakes_active_session() {
 
 #[tokio::test]
 async fn retirement_closes_idle_transport_without_peer_cooperation() {
-    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
     let (client, mut peer) = tokio::io::duplex(256);
     let (reader, writer) = tokio::io::split(client);
     connection.disable_new_sessions();
@@ -121,7 +121,7 @@ async fn retirement_closes_idle_transport_without_peer_cooperation() {
 
 #[tokio::test]
 async fn retirement_waits_for_active_session_then_closes_transport() {
-    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
     let session = connection.create_session().unwrap();
     let (client, mut peer) = tokio::io::duplex(256);
     let (reader, writer) = tokio::io::split(client);
@@ -141,7 +141,7 @@ async fn retirement_waits_for_active_session_then_closes_transport() {
 
 #[tokio::test]
 async fn cancelled_fixed_exchange_releases_route_and_allows_retirement() {
-    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
     let session = connection
         .create_fixed_session(ExpectedResponseHeader::fixed(
             TacacsType::TacPlusAuthorisation,
@@ -171,7 +171,7 @@ async fn cancelled_fixed_exchange_releases_route_and_allows_retirement() {
 
 #[tokio::test]
 async fn routes_out_of_order_replies_by_session_id() {
-    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
     let first = connection.create_session().unwrap();
     let second = connection.create_session().unwrap();
 
@@ -197,7 +197,7 @@ async fn routes_out_of_order_replies_by_session_id() {
 
 #[tokio::test]
 async fn completed_session_rejects_late_reply() {
-    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
     let session = connection.create_session().unwrap();
     let session_id = session.session_id();
 
@@ -212,7 +212,7 @@ async fn completed_session_rejects_late_reply() {
 
 #[tokio::test]
 async fn routes_out_of_order_fixed_replies_by_session_id() {
-    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
     let first = connection.create_session().unwrap();
     let second = connection.create_session().unwrap();
     let first_receiver = connection
@@ -252,7 +252,7 @@ async fn routes_out_of_order_fixed_replies_by_session_id() {
 
 #[tokio::test]
 async fn rejects_invalid_fixed_response_metadata() {
-    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
     let session = connection.create_session().unwrap();
     let receiver = connection
         .session_manager
@@ -275,7 +275,7 @@ async fn rejects_invalid_fixed_response_metadata() {
 
 #[tokio::test]
 async fn later_unset_flag_does_not_close_confirmed_connection() {
-    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
     let session = connection.create_session().unwrap();
     let receiver = connection
         .session_manager
@@ -309,7 +309,7 @@ async fn later_unset_flag_does_not_close_confirmed_connection() {
 
 #[tokio::test]
 async fn conversation_enforces_multi_round_sequence_progression() {
-    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
     let session = connection.create_session().unwrap();
     let session_id = session.session_id();
     let mut conversation =
@@ -366,7 +366,7 @@ async fn retained_conversation_rejects_expired_client_certificate_without_sendin
         validity: CertificateValidity::from_certificate(&certificate).unwrap(),
         deadline: crate::RequestDeadline::after(Duration::from_secs(1)).unwrap(),
     };
-    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
     let session = connection.create_session().unwrap();
     let session_id = session.session_id();
     let mut conversation =
@@ -381,7 +381,7 @@ async fn retained_conversation_rejects_expired_client_certificate_without_sendin
 
 #[tokio::test]
 async fn invalid_conversation_reply_completes_session() {
-    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
     let session = connection.create_session().unwrap();
     let session_id = session.session_id();
     let mut conversation =
@@ -415,7 +415,7 @@ async fn invalid_conversation_reply_completes_session() {
 async fn shared_session_routing_burst_baseline() {
     const EXCHANGE_COUNT: u32 = 512;
 
-    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
     let started = Instant::now();
     let mut sessions = Vec::with_capacity(usize::try_from(EXCHANGE_COUNT).unwrap());
 
@@ -446,7 +446,7 @@ async fn shared_session_routing_burst_baseline() {
 async fn direct_fixed_routing_burst_baseline() {
     const EXCHANGE_COUNT: u32 = 512;
 
-    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None));
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
     let mut outbound = connection.session_manager.take_receiver().unwrap();
     let drain_task = tokio::spawn(async move { while outbound.recv().await.is_some() {} });
     let started = Instant::now();

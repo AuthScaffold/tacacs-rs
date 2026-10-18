@@ -7,7 +7,7 @@ use std::fmt;
 
 use crate::TacacsPlusServer;
 
-/// RFC credential usage for one central reference slot.
+/// Credential usage for one canonical central reference slot.
 #[derive(Debug, Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum CentralCredentialUsage {
     /// TLS client certificate and its private key.
@@ -18,6 +18,10 @@ pub enum CentralCredentialUsage {
     ServerCaCertificateBag,
     /// End-entity certificate bag for exact server authentication.
     ServerEeCertificateBag,
+    /// Complete server certificate revocation evidence.
+    ServerCertificateRevocationLists,
+    /// Independently fetched OCSP evidence.
+    ServerOcspResponse,
 }
 
 impl CentralCredentialUsage {
@@ -25,10 +29,12 @@ impl CentralCredentialUsage {
     #[must_use]
     pub const fn field_path(self) -> &'static str {
         match self {
+            Self::ServerOcspResponse => "server-authentication/tacacsrs:require-ocsp",
             Self::ClientCertificateWithKey => "client-identity/certificate",
             Self::ClientTls13Epsk => "client-identity/tls13-epsk",
             Self::ServerCaCertificateBag => "server-authentication/ca-certs",
             Self::ServerEeCertificateBag => "server-authentication/ee-certs",
+            Self::ServerCertificateRevocationLists => "server-authentication/tacacsrs:require-crls",
         }
     }
 }
@@ -47,11 +53,23 @@ pub enum CentralCredentialReference<'a> {
     SymmetricKey(&'a str),
     /// Opaque central truststore certificate-bag reference.
     CertificateBag(&'a str),
+    /// Opaque provider reference to complete CRL evidence.
+    CertificateRevocationLists(&'a str),
+    /// Opaque provider reference to an OCSP response.
+    OcspResponse(&'a str),
 }
 
 impl fmt::Debug for CentralCredentialReference<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::OcspResponse(_) => formatter
+                .debug_tuple("OcspResponse")
+                .field(&"<redacted>")
+                .finish(),
+            Self::CertificateRevocationLists(_) => formatter
+                .debug_tuple("CertificateRevocationLists")
+                .field(&"<redacted>")
+                .finish(),
             Self::CertificateWithKey { .. } => formatter
                 .debug_struct("CertificateWithKey")
                 .field("reference", &"<redacted>")
@@ -162,7 +180,7 @@ impl std::error::Error for EnumerationRequiredError {}
 /// Inspect central references on one direct or enumerated server.
 ///
 /// The function returns slots in stable field order: client certificate, client EPSK,
-/// server CA bag, then server end-entity bag. Inline fields produce no slot.
+/// server CA bag, server end-entity bag, then CRL evidence. Inline fields produce no slot.
 /// The function preserves incomplete central containers as slots. The
 /// resolution planning layer decides if it can create a usable request.
 ///
@@ -194,7 +212,7 @@ pub fn inspect_central_references(
         });
     }
 
-    let mut slots = Vec::with_capacity(4);
+    let mut slots = Vec::with_capacity(5);
     if let Some(identity) = &server.client_identity {
         if let Some(reference) = identity
             .certificate
@@ -243,6 +261,28 @@ pub fn inspect_central_references(
                 server_name: &server.name,
                 usage: CentralCredentialUsage::ServerEeCertificateBag,
                 reference: CentralCredentialReference::CertificateBag(reference),
+            });
+        }
+        if let Some(reference) = authentication
+            .require_crls
+            .as_ref()
+            .and_then(|policy| policy.evidence_reference.as_deref())
+        {
+            slots.push(CentralCredentialSlot {
+                server_name: &server.name,
+                usage: CentralCredentialUsage::ServerCertificateRevocationLists,
+                reference: CentralCredentialReference::CertificateRevocationLists(reference),
+            });
+        }
+        if let Some(reference) = authentication
+            .require_ocsp
+            .as_ref()
+            .and_then(|policy| policy.evidence_reference.as_deref())
+        {
+            slots.push(CentralCredentialSlot {
+                server_name: &server.name,
+                usage: CentralCredentialUsage::ServerOcspResponse,
+                reference: CentralCredentialReference::OcspResponse(reference),
             });
         }
     }

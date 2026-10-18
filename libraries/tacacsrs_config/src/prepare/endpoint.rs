@@ -149,16 +149,79 @@ pub fn prepare_endpoint(
             end_entities: &peers,
         }
     };
-    let identity = certificate_identity(server)?;
-    endpoint.with_certificate_tls(
-        certificate_peer_identity(server),
-        tls_sni_name(server)?,
-        trust,
-        identity,
-    )
+    let intermediates = server
+        .client_identity
+        .iter()
+        .filter_map(|identity| identity.certificate.as_ref())
+        .filter_map(|certificate| certificate.inline_definition.as_ref())
+        .flat_map(|inline| inline.intermediate_certificate.iter().map(Vec::as_slice))
+        .collect::<Vec<_>>();
+    let identity = certificate_identity(server, &intermediates)?;
+    let endpoint = endpoint
+        .with_certificate_tls(
+            certificate_peer_identity(server),
+            tls_sni_name(server)?,
+            trust,
+            identity,
+        )?
+        .with_certificate_revocation(certificate_revocation(server)?)?;
+    apply_crl_evidence(endpoint, server)
 }
 
-fn certificate_identity(server: &TacacsPlusServer) -> Result<Option<CertificateIdentity<'_>>> {
+fn apply_crl_evidence(
+    mut endpoint: PreparedEndpoint,
+    server: &TacacsPlusServer,
+) -> Result<PreparedEndpoint> {
+    if let Some(policy) = server
+        .server_authentication
+        .as_ref()
+        .and_then(|auth| auth.require_ocsp.as_ref())
+    {
+        endpoint = endpoint.with_certificate_ocsp_response(
+            policy
+                .response
+                .as_deref()
+                .context("Resolve OCSP evidence before endpoint preparation")?,
+            std::time::Duration::from_secs(u64::from(policy.max_response_age_seconds)),
+        )?;
+    }
+    if let Some(policy) = server
+        .server_authentication
+        .as_ref()
+        .and_then(|authentication| authentication.require_crls.as_ref())
+    {
+        let lists = policy
+            .crl
+            .as_ref()
+            .context("Resolve CRL evidence before endpoint preparation")?;
+        return endpoint.with_certificate_crls(
+            &lists.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+            std::time::Duration::from_secs(u64::from(policy.max_age_seconds)),
+        );
+    }
+    Ok(endpoint)
+}
+
+fn certificate_revocation(
+    server: &TacacsPlusServer,
+) -> Result<tacacsrs_networking::CertificateRevocationPolicy> {
+    server
+        .server_authentication
+        .as_ref()
+        .and_then(|authentication| authentication.require_stapled_ocsp.as_ref())
+        .map(|policy| {
+            tacacsrs_networking::CertificateRevocationPolicy::require_stapled_ocsp(
+                std::time::Duration::from_secs(u64::from(policy.max_response_age_seconds)),
+            )
+        })
+        .transpose()
+        .map(Option::unwrap_or_default)
+}
+
+fn certificate_identity<'a>(
+    server: &'a TacacsPlusServer,
+    intermediates: &'a [&'a [u8]],
+) -> Result<Option<CertificateIdentity<'a>>> {
     server
         .client_identity
         .as_ref()
@@ -169,6 +232,7 @@ fn certificate_identity(server: &TacacsPlusServer) -> Result<Option<CertificateI
                 .as_ref()
                 .context("TLS client certificate requires materialized inline credentials")?;
             Ok::<_, anyhow::Error>(CertificateIdentity {
+                intermediates,
                 public_key_info: match (inline.public_key_format, inline.public_key.as_deref()) {
                     (None, None) => None,
                     (Some(PublicKeyFormat::SubjectPublicKeyInfoFormat), Some(bytes)) => Some(bytes),
@@ -345,6 +409,9 @@ mod tests {
                 central_truststore_reference: None,
             };
             server.server_authentication = Some(crate::TlsClientServerAuthentication {
+                require_crls: None,
+                require_ocsp: None,
+                require_stapled_ocsp: None,
                 ca_certs: (!end_entity).then(|| bag.clone()),
                 ee_certs: end_entity.then_some(bag),
                 credentials_reference: None,
@@ -602,6 +669,9 @@ mod tests {
             central_truststore_reference: None,
         };
         crate::TlsClientServerAuthentication {
+            require_crls: None,
+            require_ocsp: None,
+            require_stapled_ocsp: None,
             credentials_reference: None,
             ca_certs: (!end_entity).then(|| trust.clone()),
             ee_certs: end_entity.then_some(trust),
@@ -657,10 +727,15 @@ mod tests {
         use openssl::x509::{X509, X509NameBuilder};
         use openssl::x509::extension::{BasicConstraints, ExtendedKeyUsage, SubjectAlternativeName};
         let mut name = X509NameBuilder::new().unwrap();
+        let fingerprint = openssl::sha::sha256(&peer_key.public_key_to_der().unwrap());
+        let authority_name = format!(
+            "Intermediate-{:016x}",
+            u64::from_be_bytes(fingerprint[..8].try_into().unwrap())
+        );
         name.append_entry_by_text(
             "CN",
             if is_ca {
-                "Trust Intermediate"
+                &authority_name
             } else {
                 "localhost"
             },
@@ -715,6 +790,261 @@ mod tests {
             .sign(authority_key, openssl::hash::MessageDigest::sha256())
             .unwrap();
         certificate.build()
+    }
+
+    #[tokio::test]
+    async fn canonical_client_chains_authenticate_with_native_mtls_without_source_rewrites() {
+        let (authority, authority_key) = fixture_certificate("ca");
+        let (peer_certificate, peer_key) = fixture_certificate("server");
+        let (_, client_key) = fixture_certificate("client");
+        let intermediate_key =
+            openssl::pkey::PKey::from_rsa(openssl::rsa::Rsa::generate(2048).unwrap()).unwrap();
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap();
+        let upper_key =
+            openssl::pkey::PKey::from_rsa(openssl::rsa::Rsa::generate(2048).unwrap()).unwrap();
+        let upper =
+            signed_peer(&authority, &authority_key, &upper_key, (now - 60, now + 180), false, true);
+        let intermediate =
+            signed_peer(&upper, &upper_key, &intermediate_key, (now - 60, now + 60), false, true);
+        let leaf = signed_peer(
+            &intermediate,
+            &intermediate_key,
+            &client_key,
+            (now - 60, now + 600),
+            true,
+            false,
+        );
+        let leaf_der = leaf.to_der().unwrap();
+        let intermediate_der = intermediate.to_der().unwrap();
+        let upper_der = upper.to_der().unwrap();
+        let wrong =
+            signed_peer(&authority, &authority_key, &peer_key, (now - 60, now + 600), false, true)
+                .to_der()
+                .unwrap();
+        let mut context =
+            openssl::ssl::SslContext::builder(openssl::ssl::SslMethod::tls_server()).unwrap();
+        context
+            .set_min_proto_version(Some(openssl::ssl::SslVersion::TLS1_3))
+            .unwrap();
+        context
+            .set_max_proto_version(Some(openssl::ssl::SslVersion::TLS1_3))
+            .unwrap();
+        context.set_certificate(&peer_certificate).unwrap();
+        context.set_private_key(&peer_key).unwrap();
+        context
+            .cert_store_mut()
+            .add_cert(authority.clone())
+            .unwrap();
+        context.set_verify(
+            openssl::ssl::SslVerifyMode::PEER | openssl::ssl::SslVerifyMode::FAIL_IF_NO_PEER_CERT,
+        );
+        let context = context.build();
+        for (mode, intermediates, expected) in [
+            ("inline", vec![intermediate_der.clone(), upper_der.clone()], true),
+            ("pem", vec![intermediate_der.clone(), upper_der.clone()], true),
+            ("bundle", vec![intermediate_der.clone(), upper_der.clone()], true),
+            ("provider", vec![intermediate_der.clone(), upper_der.clone()], true),
+            ("inline", Vec::new(), false),
+            ("inline", vec![intermediate_der.clone()], false),
+            ("inline", vec![upper_der.clone(), intermediate_der.clone()], false),
+            ("inline", vec![wrong], false),
+            ("inline", vec![intermediate_der.clone(), intermediate_der.clone()], false),
+            (
+                "inline",
+                vec![
+                    intermediate_der.clone(),
+                    upper_der,
+                    authority.to_der().unwrap(),
+                ],
+                false,
+            ),
+            ("inline", vec![leaf_der.clone(), intermediate_der.clone()], false),
+            (
+                "inline",
+                vec![[intermediate_der.as_slice(), intermediate_der.as_slice()].concat()],
+                false,
+            ),
+        ] {
+            let (source, resolver) =
+                client_chain_source(mode, &leaf_der, &intermediates, &client_key, &authority);
+            assert_eq!(
+                probe_client_chain(source, &resolver, &context, &intermediates).await,
+                expected,
+                "{mode}"
+            );
+        }
+    }
+
+    fn client_chain_source(
+        mode: &str,
+        leaf: &[u8],
+        intermediates: &[Vec<u8>],
+        key: &openssl::pkey::PKey<openssl::pkey::Private>,
+        authority: &openssl::x509::X509,
+    ) -> (crate::TacacsPlus, tacacsrs_credential_resolution::FakeCredentialResolver) {
+        use tacacsrs_credential_resolution::{
+            CertificateWithKeyMaterial, CredentialValidity, FakeCredentialResolver, PublicBytes,
+            RequestSlot, ResolvedCredential,
+        };
+        let chain = if mode == "pem" {
+            let mut pem = openssl::x509::X509::from_der(leaf)
+                .unwrap()
+                .to_pem()
+                .unwrap();
+            for intermediate in intermediates {
+                pem.extend(
+                    openssl::x509::X509::from_der(intermediate)
+                        .unwrap()
+                        .to_pem()
+                        .unwrap(),
+                );
+            }
+            crate::input::normalize_cli_certificate_data(&pem).unwrap()
+        } else {
+            crate::input::ClientCertificateChain {
+                leaf: leaf.to_vec(),
+                intermediates: intermediates.to_vec(),
+            }
+        };
+        let mut server = builder()
+            .with_tls_client_certificate_chain(
+                Some(chain.leaf),
+                chain.intermediates,
+                Some(key.private_key_to_pkcs8().unwrap()),
+                None,
+            )
+            .build();
+        server.server_authentication = Some(server_trust(authority, false));
+        let mut source = crate::TacacsPlus {
+            client_credentials: Vec::new(),
+            server_credentials: Vec::new(),
+            server: vec![server],
+        };
+        let mut resolver = FakeCredentialResolver::new();
+        let identity = source.server[0].client_identity.as_mut().unwrap();
+        if mode == "bundle" {
+            source.client_credentials.push(crate::ClientCredentials {
+                id: "chain-bundle".to_owned(),
+                certificate: identity.certificate.take(),
+                tls13_epsk: None,
+            });
+            identity.credentials_reference = Some("chain-bundle".to_owned());
+        } else if mode == "provider" {
+            identity.certificate = Some(crate::ClientIdentityCertificate {
+                inline_definition: None,
+                central_keystore_reference: Some(
+                    crate::keystore::EndEntityCertWithKeyCentralKeystoreReference {
+                        asymmetric_key: Some("opaque-key".to_owned()),
+                        certificate: Some("opaque-certificate".to_owned()),
+                    },
+                ),
+            });
+            resolver = resolver.with_response(
+                RequestSlot::from_index(0),
+                ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
+                    validity: CredentialValidity::unbounded(),
+                    public_key_format: None,
+                    public_key: None,
+                    private_key_format:
+                        tacacsrs_credential_resolution::PrivateKeyFormat::OneAsymmetricKeyFormat,
+                    certificate: PublicBytes::new(leaf.to_vec()),
+                    intermediates: intermediates
+                        .iter()
+                        .cloned()
+                        .map(PublicBytes::new)
+                        .collect(),
+                    private_key: tacacsrs_secrets::SecretBytes::new(
+                        key.private_key_to_pkcs8().unwrap(),
+                    ),
+                }),
+            );
+        }
+        (source, resolver)
+    }
+
+    async fn probe_client_chain(
+        mut source: crate::TacacsPlus,
+        resolver: &dyn tacacsrs_credential_resolution::CredentialResolver,
+        context: &openssl::ssl::SslContext,
+        intermediates: &[Vec<u8>],
+    ) -> bool {
+        use std::pin::Pin;
+        use std::time::Duration;
+        use tokio::io::AsyncReadExt;
+        use tacacsrs_protocol::operations::AccountingOperation;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        source.server[0].port = listener.local_addr().unwrap().port();
+        let original = source.clone();
+        let materialized = crate::prepare::enumerate_materialized_servers(
+            &source,
+            resolver,
+            &crate::ValidationOptions::default(),
+        )
+        .await;
+        assert_eq!(source, original);
+        let Ok(materialized) = materialized else {
+            return false;
+        };
+        let endpoint = prepare_endpoint(materialized[0].server(), PrepareOptions::default());
+        assert_eq!(source, original);
+        let Ok(endpoint) = endpoint else {
+            return false;
+        };
+        if !intermediates.is_empty() {
+            let expires = endpoint
+                .client_certificate_validity()
+                .unwrap()
+                .valid_until();
+            let remaining = expires
+                .duration_since(std::time::SystemTime::now())
+                .unwrap();
+            assert!(
+                remaining <= Duration::from_secs(60),
+                "intermediate expiry must bound the client identity"
+            );
+        }
+        let peer = async {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut stream =
+                tokio_openssl::SslStream::new(openssl::ssl::Ssl::new(context).unwrap(), tcp)
+                    .unwrap();
+            if Pin::new(&mut stream).accept().await.is_err() {
+                return false;
+            }
+            let verified = stream.ssl().verified_chain().unwrap();
+            for intermediate in intermediates {
+                assert!(verified
+                    .iter()
+                    .any(|certificate| certificate.to_der().unwrap() == *intermediate));
+            }
+            stream.read(&mut [0]).await.unwrap_or(0) != 0
+        };
+        let client = async {
+            let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+            let _ = client
+                .execute(
+                    AccountingOperation {
+                        user: "chain-test".to_owned(),
+                        port: "test".to_owned(),
+                        remote_address: "127.0.0.1".to_owned(),
+                        command: "show".to_owned(),
+                        command_arguments: Vec::new(),
+                    }
+                    .exchange(),
+                )
+                .await;
+        };
+        let (received, ()) =
+            tokio::time::timeout(Duration::from_secs(5), async { tokio::join!(peer, client) })
+                .await
+                .unwrap();
+        received
     }
 
     #[tokio::test]
@@ -999,16 +1329,19 @@ mod tests {
         let original = server.clone();
         let endpoint = prepare_endpoint(&server, PrepareOptions::default()).unwrap();
         let (closed, mut observed) = tokio::sync::oneshot::channel();
+        let (handshake, accepted) = tokio::sync::oneshot::channel();
         let peer = tokio::spawn(async move {
             let (tcp, _) = listener.accept().await.unwrap();
             let mut stream = SslStream::new(Ssl::new(&context).unwrap(), tcp).unwrap();
             Pin::new(&mut stream).accept().await.unwrap();
-            match stream.read(&mut [0]).await {
+            let _ = handshake.send(());
+            match stream.read(&mut [0_u8; 1]).await {
                 Ok(0) => {}
                 Err(error)
                     if matches!(
                         error.kind(),
-                        std::io::ErrorKind::ConnectionReset
+                        std::io::ErrorKind::ConnectionAborted
+                            | std::io::ErrorKind::ConnectionReset
                             | std::io::ErrorKind::UnexpectedEof
                             | std::io::ErrorKind::BrokenPipe
                     ) => {}
@@ -1020,6 +1353,10 @@ mod tests {
         });
         let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
         let mut conversation = client.open_conversation().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), accepted)
+            .await
+            .expect("server must complete the TLS handshake")
+            .expect("server handshake task must remain active");
         tokio::time::pause();
         tokio::time::advance(Duration::from_secs(2)).await;
         tokio::time::resume();
