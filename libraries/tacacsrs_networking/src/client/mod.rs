@@ -788,7 +788,7 @@ where
         || header.major_version != TacacsMajorVersion::TacacsPlusMajor1
         || header.minor_version != minor_version
     {
-        return Err(FixedExchangeError::outcome_unknown(anyhow::anyhow!(
+        return Err(FixedExchangeError::protocol_outcome_unknown(anyhow::anyhow!(
             "unexpected fixed TACACS+ response header: session_id={:#x}, seq_no={}, type={}, version={:?}.{:?}; expected session_id={:#x}, seq_no={}, type={}, version={:?}.{:?}",
             header.session_id,
             header.seq_no,
@@ -806,7 +806,7 @@ where
     session.record_terminal_reply(&response);
     let reply = exchange
         .decode_reply(response.body())
-        .map_err(FixedExchangeError::outcome_unknown)?;
+        .map_err(FixedExchangeError::protocol_outcome_unknown)?;
     Ok(reply)
 }
 
@@ -945,13 +945,19 @@ mod tests {
 
     use tacacsrs_protocol::accounting::reply::AccountingReply;
     use tacacsrs_protocol::accounting::request::AccountingRequest;
+    use tacacsrs_protocol::authentication::reply::AuthenticationReply;
+    use tacacsrs_protocol::authorization::reply::AuthorizationReply;
     use tacacsrs_protocol::enumerations::{
-        TacacsAccountingFlags, TacacsAccountingStatus, TacacsFlags, TacacsMajorVersion,
+        TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationReplyFlags,
+        TacacsAuthenticationStatus, TacacsAuthorizationStatus, TacacsFlags, TacacsMajorVersion,
         TacacsMinorVersion, TacacsType,
     };
+    use tacacsrs_protocol::exchange::authentication::PapAuthenticationExchange;
+    use tacacsrs_protocol::failure::FailureCategory;
     use tacacsrs_protocol::header::Header;
     use tacacsrs_protocol::packet::{Packet, PacketTrait};
     use tacacsrs_protocol::traits::TacacsBodyTrait;
+    use tacacsrs_secrets::SecretBytes;
 
     use super::{TacacsClient, accounting_watchdog_preflight_request};
     use crate::PreparedEndpoint;
@@ -979,6 +985,28 @@ mod tests {
 
         fn decode_reply(self, body: &[u8]) -> anyhow::Result<Self::Reply> {
             AccountingReply::from_bytes(body)
+        }
+    }
+
+    struct TestAuthorizationExchange;
+
+    impl FixedExchange for TestAuthorizationExchange {
+        type Reply = AuthorizationReply;
+
+        fn packet_type(&self) -> TacacsType {
+            TacacsType::TacPlusAuthorisation
+        }
+
+        fn minor_version(&self) -> TacacsMinorVersion {
+            TacacsMinorVersion::TacacsPlusMinorVerDefault
+        }
+
+        fn encode_request(&self) -> anyhow::Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+
+        fn decode_reply(self, body: &[u8]) -> anyhow::Result<Self::Reply> {
+            AuthorizationReply::from_bytes(body)
         }
     }
 
@@ -1022,6 +1050,47 @@ mod tests {
             body,
         )
         .unwrap()
+    }
+
+    async fn execute_with_response<Exchange>(
+        exchange: Exchange,
+        body: Vec<u8>,
+        mutate_header: fn(&mut Header),
+    ) -> Result<Exchange::Reply, crate::FixedExchangeError>
+    where
+        Exchange: FixedExchange,
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let PacketReadResult::Success(request) =
+                PacketReader::new(None).read_packet(&mut stream).await
+            else {
+                panic!("request must decode");
+            };
+            let mut header = request.header().clone();
+            header.seq_no = header.seq_no.wrapping_add(1);
+            header.flags = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG;
+            header.length = u32::try_from(body.len()).unwrap();
+            mutate_header(&mut header);
+            let response = Packet::new(header, body).unwrap();
+            stream.write_all(&response.to_bytes()).await.unwrap();
+        });
+
+        let mut endpoint = server_template();
+        endpoint.address = address.to_string();
+        endpoint.single_connection = false;
+        let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+        let result =
+            tokio::time::timeout(Duration::from_secs(1), client.execute_classified(exchange))
+                .await
+                .expect("the fixed exchange must finish");
+        tokio::time::timeout(Duration::from_secs(1), server_task)
+            .await
+            .expect("the test server must finish")
+            .unwrap();
+        result
     }
 
     fn spawn_accounting_server(
@@ -1555,6 +1624,174 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dedicated_fixed_exchange_marks_valid_wrong_type_and_minor_as_protocol() {
+        let body = AccountingReply {
+            status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
+            server_msg: String::new(),
+            data: String::new(),
+        }
+        .to_bytes()
+        .unwrap();
+        for mutate in [
+            (|header: &mut Header| header.tacacs_type = TacacsType::TacPlusAuthorisation)
+                as fn(&mut Header),
+            |header| header.minor_version = TacacsMinorVersion::TacacsPlusMinorVerOne,
+        ] {
+            let result = execute_with_response(
+                TestAccountingExchange(accounting_watchdog_preflight_request()),
+                body.clone(),
+                mutate,
+            )
+            .await;
+            let Err(error) = result else {
+                panic!("the invalid response header must fail");
+            };
+            assert_eq!(error.transmission_state(), crate::TransmissionState::OutcomeUnknown);
+            assert_eq!(error.known_category(), Some(FailureCategory::Protocol));
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_fixed_reply_bodies_and_pap_getpass_are_protocol_failures() {
+        let malformed_accounting = execute_with_response(
+            TestAccountingExchange(accounting_watchdog_preflight_request()),
+            vec![0],
+            |_| {},
+        )
+        .await;
+        let malformed_authorization =
+            execute_with_response(TestAuthorizationExchange, vec![0], |_| {}).await;
+        let malformed_authentication = execute_with_response(
+            PapAuthenticationExchange::new(
+                "admin",
+                SecretBytes::new(b"password".to_vec()),
+                "tty0",
+                "192.0.2.1",
+                15,
+            ),
+            vec![0],
+            |_| {},
+        )
+        .await;
+        let getpass = AuthenticationReply {
+            status: TacacsAuthenticationStatus::TacPlusAuthenStatusGetpass,
+            flags: TacacsAuthenticationReplyFlags::empty(),
+            server_msg: "Password:".to_owned(),
+            data: Vec::new(),
+        }
+        .to_bytes()
+        .unwrap();
+        let nonterminal_pap = execute_with_response(
+            PapAuthenticationExchange::new(
+                "admin",
+                SecretBytes::new(b"password".to_vec()),
+                "tty0",
+                "192.0.2.1",
+                15,
+            ),
+            getpass,
+            |_| {},
+        )
+        .await;
+
+        for result in [
+            malformed_accounting.map(|_| ()),
+            malformed_authorization.map(|_| ()),
+            malformed_authentication.map(|_| ()),
+            nonterminal_pap.map(|_| ()),
+        ] {
+            let error = result.unwrap_err();
+            assert_eq!(error.transmission_state(), crate::TransmissionState::OutcomeUnknown);
+            assert_eq!(error.known_category(), Some(FailureCategory::Protocol));
+        }
+    }
+
+    #[tokio::test]
+    async fn valid_terminal_denial_and_server_error_remain_successful_replies() {
+        for status in [
+            TacacsAuthenticationStatus::TacPlusAuthenStatusFail,
+            TacacsAuthenticationStatus::TacPlusAuthenStatusError,
+        ] {
+            let body = AuthenticationReply {
+                status,
+                flags: TacacsAuthenticationReplyFlags::empty(),
+                server_msg: String::new(),
+                data: Vec::new(),
+            }
+            .to_bytes()
+            .unwrap();
+            let reply = execute_with_response(
+                PapAuthenticationExchange::new(
+                    "admin",
+                    SecretBytes::new(b"password".to_vec()),
+                    "tty0",
+                    "192.0.2.1",
+                    15,
+                ),
+                body,
+                |_| {},
+            )
+            .await
+            .unwrap();
+            assert_eq!(reply.status, status);
+        }
+
+        let authorization = AuthorizationReply {
+            status: TacacsAuthorizationStatus::TacPlusError,
+            server_msg: String::new(),
+            data: String::new(),
+            args: Vec::new(),
+        }
+        .to_bytes()
+        .unwrap();
+        assert_eq!(
+            execute_with_response(TestAuthorizationExchange, authorization, |_| {})
+                .await
+                .unwrap()
+                .status,
+            TacacsAuthorizationStatus::TacPlusError
+        );
+    }
+
+    #[tokio::test]
+    async fn header_and_body_eof_remain_uncategorized_transport_failures() {
+        for body_eof in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server_task = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let PacketReadResult::Success(request) =
+                    PacketReader::new(None).read_packet(&mut stream).await
+                else {
+                    panic!("request must decode");
+                };
+                if body_eof {
+                    let mut header = request.header().clone();
+                    header.seq_no = 2;
+                    header.length = 1;
+                    stream.write_all(&header.to_bytes()).await.unwrap();
+                } else {
+                    stream.write_all(&[0xc0]).await.unwrap();
+                }
+                stream.shutdown().await.unwrap();
+            });
+            let mut endpoint = server_template();
+            endpoint.address = address.to_string();
+            endpoint.single_connection = false;
+            let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+            let result = client
+                .execute_classified(TestAccountingExchange(accounting_watchdog_preflight_request()))
+                .await;
+            let Err(error) = result else {
+                panic!("the truncated response must fail");
+            };
+            assert_eq!(error.known_category(), None);
+            assert_eq!(error.transmission_state(), crate::TransmissionState::OutcomeUnknown);
+            server_task.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn expired_exchange_does_not_open_a_connection() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut endpoint = server_template();
@@ -1569,6 +1806,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.transmission_state(), crate::TransmissionState::NotSent);
+        assert_eq!(error.known_category(), None);
         let accept = listener.accept();
         tokio::pin!(accept);
         assert!(futures::poll!(&mut accept).is_pending());
@@ -1616,14 +1854,16 @@ mod tests {
             })
             .await
             .unwrap();
+            let error = result.unwrap_err();
             assert_eq!(
-                result.unwrap_err().transmission_state(),
+                error.transmission_state(),
                 if tls {
                     TransmissionState::NotSent
                 } else {
                     TransmissionState::OutcomeUnknown
                 }
             );
+            assert_eq!(error.known_category(), None);
         }
     }
 

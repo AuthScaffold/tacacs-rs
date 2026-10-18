@@ -53,9 +53,10 @@ impl UpstreamRequestError {
             TransmissionState::NotSent => AttemptFailureKind::NotSent,
             TransmissionState::OutcomeUnknown => AttemptFailureKind::OutcomeUnknown,
         };
+        let category = error.known_category();
         Self {
             kind,
-            category: None,
+            category,
             source: error.into_error().context(context),
         }
     }

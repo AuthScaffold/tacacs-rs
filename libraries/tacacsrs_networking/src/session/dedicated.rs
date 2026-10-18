@@ -16,6 +16,7 @@ use tacacsrs_protocol::enumerations::TacacsFlags;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
 
 use crate::client::SharedConnectionCache;
+use crate::exchange_error::protocol_failure;
 use crate::runtime::DedicatedConnection;
 use crate::single_connect::NegotiationState;
 use crate::session::random_nonzero_session_id;
@@ -237,13 +238,13 @@ impl DedicatedSession {
         let header = packet.header();
 
         if header.session_id != self.session_id || header.seq_no != expected_sequence {
-            anyhow::bail!(
+            return Err(protocol_failure(anyhow::anyhow!(
                 "unexpected TACACS+ response header: session_id={:#x}, seq_no={}, expected_session_id={:#x}, expected_seq_no={}",
                 header.session_id,
                 header.seq_no,
                 self.session_id,
                 expected_sequence,
-            );
+            )));
         }
 
         Ok(())
@@ -288,6 +289,7 @@ mod tests {
     use tacacsrs_protocol::packet::{Packet, PacketTrait};
 
     use super::{DedicatedSession, SingleConnectPromotion, with_single_connect_flag};
+    use crate::exchange_error::ProtocolFailure;
     use crate::single_connect::{NegotiationState, SingleConnectionState};
     use crate::transport::BoxedTransport;
     use crate::transport::mock::MockTransport;
@@ -396,42 +398,48 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use crate::{PacketReader, PacketReadResult};
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let (transport, peer) = tokio::join!(
-            tokio::net::TcpStream::connect(listener.local_addr().unwrap()),
-            listener.accept(),
-        );
-        let mut peer = peer.unwrap().0;
-        let session = DedicatedSession::new(BoxedTransport::new(transport.unwrap()), None, None);
-        let session_id = session.session_id();
-        session
-            .send_packet(test_packet(
-                session_id,
-                1,
-                TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
-                b"request",
-            ))
+        for (session_delta, sequence) in [(0, 4), (1, 2)] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let (transport, peer) = tokio::join!(
+                tokio::net::TcpStream::connect(listener.local_addr().unwrap()),
+                listener.accept(),
+            );
+            let mut peer = peer.unwrap().0;
+            let session =
+                DedicatedSession::new(BoxedTransport::new(transport.unwrap()), None, None);
+            let session_id = session.session_id();
+            session
+                .send_packet(test_packet(
+                    session_id,
+                    1,
+                    TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+                    b"request",
+                ))
+                .await
+                .unwrap();
+            assert!(matches!(
+                PacketReader::new(None).read_packet(&mut peer).await,
+                PacketReadResult::Success(_)
+            ));
+            peer.write_all(
+                &test_packet(
+                    session_id.wrapping_add(session_delta),
+                    sequence,
+                    TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+                    b"invalid header",
+                )
+                .to_bytes(),
+            )
             .await
             .unwrap();
-        assert!(matches!(
-            PacketReader::new(None).read_packet(&mut peer).await,
-            PacketReadResult::Success(_)
-        ));
-        peer.write_all(
-            &test_packet(session_id, 4, TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG, b"wrong sequence")
-                .to_bytes(),
-        )
-        .await
-        .unwrap();
-        let error = tokio::time::timeout(Duration::from_secs(1), session.receive_packet())
-            .await
-            .expect("invalid headers must not deadlock the connection lock")
-            .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("unexpected TACACS+ response header"));
-        assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
-        session.complete().await;
+            let error = tokio::time::timeout(Duration::from_secs(1), session.receive_packet())
+                .await
+                .expect("invalid headers must not deadlock the connection lock")
+                .unwrap_err();
+            assert!(error.is::<ProtocolFailure>(), "unexpected error: {error:#}");
+            assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+            session.complete().await;
+        }
     }
 
     #[tokio::test]
