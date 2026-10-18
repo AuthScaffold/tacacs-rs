@@ -27,64 +27,72 @@ impl<T: Transport> ErasedTransport for T {
 ///
 /// Use [`BoxedTransport::new`] with a concrete [`Transport`] implementation,
 /// such as `TcpStream` or `TlsStream<TcpStream>`.
-pub(crate) struct BoxedTransport(
-    Box<dyn ErasedTransport>,
-    Option<super::tls::CertificateLifetime>,
-    Option<crate::ServerCounters>,
-    Option<std::sync::Arc<crate::statistics::ConnectionRecord>>,
-    Option<crate::TlsDetails>,
-);
+pub(crate) struct BoxedTransport {
+    transport: Box<dyn ErasedTransport>,
+    revocation_evidence_lifetime: Option<super::tls::RevocationEvidenceLifetime>,
+    counters: Option<crate::ServerCounters>,
+    connection_record: Option<std::sync::Arc<crate::statistics::ConnectionRecord>>,
+    tls_details: Option<crate::TlsDetails>,
+}
 
 impl BoxedTransport {
     /// Wraps a concrete transport in a type-erased wrapper.
     pub(crate) fn new<T: Transport>(transport: T) -> Self {
         let counters = transport.counters();
-        Self(Box::new(transport), None, counters, None, None)
+        Self {
+            transport: Box::new(transport),
+            revocation_evidence_lifetime: None,
+            counters,
+            connection_record: None,
+            tls_details: None,
+        }
     }
 
     pub(crate) fn with_counters(mut self, counters: crate::ServerCounters) -> Self {
-        self.3 =
+        self.connection_record =
             Some(std::sync::Arc::new(crate::statistics::ConnectionRecord::new(counters.clone())));
-        self.2 = Some(counters);
+        self.counters = Some(counters);
         self
     }
 
     pub(crate) fn connection_record(
         &self,
     ) -> Option<std::sync::Arc<crate::statistics::ConnectionRecord>> {
-        self.3.clone()
+        self.connection_record.clone()
     }
 
     pub(crate) fn with_tls_details(mut self, details: crate::TlsDetails) -> Self {
-        self.4 = Some(details);
+        self.tls_details = Some(details);
         self
     }
 
     pub(crate) fn tls_details(&self) -> Option<crate::TlsDetails> {
-        self.4.clone()
+        self.tls_details.clone()
     }
 
-    pub(crate) fn with_certificate_lifetime(
+    pub(crate) fn with_revocation_evidence_lifetime(
         mut self,
-        lifetime: super::tls::CertificateLifetime,
+        lifetime: super::tls::RevocationEvidenceLifetime,
     ) -> Self {
-        self.1 = Some(lifetime);
+        self.revocation_evidence_lifetime = Some(lifetime);
         self
     }
 
-    pub(crate) const fn certificate_lifetime(&self) -> Option<super::tls::CertificateLifetime> {
-        self.1
+    pub(crate) const fn revocation_evidence_lifetime(
+        &self,
+    ) -> Option<super::tls::RevocationEvidenceLifetime> {
+        self.revocation_evidence_lifetime
     }
 }
 
 impl Transport for BoxedTransport {
     fn counters(&self) -> Option<crate::ServerCounters> {
-        self.2.clone()
+        self.counters.clone()
     }
     type ReadHalf = Box<dyn AsyncRead + Unpin + Send>;
     type WriteHalf = Box<dyn AsyncWrite + Unpin + Send>;
 
     fn split(self) -> (Self::ReadHalf, Self::WriteHalf) {
-        self.0.split_boxed()
+        self.transport.split_boxed()
     }
 }

@@ -131,11 +131,21 @@ fn peer_context_with_version(
 ) -> Result<SslContext> {
     let certificate = X509::from_pem(&std::fs::read(fixtures().join("server.crt"))?)?;
     let key = PKey::private_key_from_pem(&std::fs::read(fixtures().join("server.key"))?)?;
+    peer_context_with_identity(staple, issuer, &certificate, &key, version)
+}
+
+fn peer_context_with_identity(
+    staple: Option<Vec<u8>>,
+    issuer: &X509,
+    certificate: &X509,
+    key: &PKey<openssl::pkey::Private>,
+    version: SslVersion,
+) -> Result<SslContext> {
     let mut context = SslContext::builder(SslMethod::tls_server())?;
     context.set_min_proto_version(Some(version))?;
     context.set_max_proto_version(Some(version))?;
-    context.set_certificate(&certificate)?;
-    context.set_private_key(&key)?;
+    context.set_certificate(certificate)?;
+    context.set_private_key(key)?;
     context.cert_store_mut().add_cert(issuer.clone())?;
     context.set_verify(
         openssl::ssl::SslVerifyMode::PEER | openssl::ssl::SslVerifyMode::FAIL_IF_NO_PEER_CERT,
@@ -256,6 +266,8 @@ enum ResponderCase {
     Expired,
     Future,
     WrongIssuer,
+    AuthenticationPeer,
+    LocalAuthentication,
 }
 
 fn delegated_responder(case: ResponderCase) -> Result<(X509, PKey<openssl::pkey::Private>)> {
@@ -283,6 +295,9 @@ fn delegated_responder(case: ResponderCase) -> Result<(X509, PKey<openssl::pkey:
     let (start, end) = match case {
         ResponderCase::Expired => (now - 120, now - 60),
         ResponderCase::Future => (now + 60, now + 120),
+        ResponderCase::AuthenticationPeer | ResponderCase::LocalAuthentication => {
+            (now - 60, now + 8)
+        }
         _ => (now - 60, now + 60),
     };
     certificate.set_not_before(Asn1Time::from_unix(start.try_into()?)?.as_ref())?;
@@ -303,8 +318,21 @@ fn delegated_responder(case: ResponderCase) -> Result<(X509, PKey<openssl::pkey:
             usage.server_auth();
         } else {
             usage.other("OCSPSigning");
+            if matches!(case, ResponderCase::AuthenticationPeer) {
+                usage.server_auth();
+            } else if matches!(case, ResponderCase::LocalAuthentication) {
+                usage.client_auth();
+            }
         }
         certificate.append_extension(usage.build()?)?;
+    }
+    if matches!(case, ResponderCase::AuthenticationPeer) {
+        certificate.append_extension(
+            openssl::x509::extension::SubjectAlternativeName::new()
+                .dns("localhost")
+                .ip("127.0.0.1")
+                .build(&certificate.x509v3_context(Some(&issuer), None))?,
+        )?;
     }
     if !matches!(case, ResponderCase::MissingNoCheck) {
         let no_check = Asn1Object::from_str("1.3.6.1.5.5.7.48.1.5")?;
@@ -368,6 +396,144 @@ async fn delegated_staple_uses_authorized_responder_and_its_expiry() -> Result<(
         probe(Some(response), Some(Duration::from_secs(61))).await?,
         "unused expired certificates must not constrain the selected responder"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn tls_peer_that_signs_ocsp_adds_no_post_handshake_certificate_cutoff() -> Result<()> {
+    probe_authentication_certificate_ocsp_signer(ResponderCase::AuthenticationPeer, false).await
+}
+
+#[tokio::test]
+async fn local_mtls_leaf_that_signs_ocsp_adds_no_post_handshake_certificate_cutoff() -> Result<()> {
+    probe_authentication_certificate_ocsp_signer(ResponderCase::LocalAuthentication, false).await
+}
+
+#[tokio::test]
+async fn short_peer_with_issuer_signed_ocsp_uses_only_the_evidence_deadline() -> Result<()> {
+    probe_authentication_certificate_ocsp_signer(ResponderCase::AuthenticationPeer, true).await
+}
+
+async fn probe_authentication_certificate_ocsp_signer(
+    case: ResponderCase,
+    issuer_signed: bool,
+) -> Result<()> {
+    let directory = Directory::new()?;
+    let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
+    let (signer, signer_key) = delegated_responder(case)?;
+    let (peer_certificate, peer_key, client_certificate, client_key) = match case {
+        ResponderCase::AuthenticationPeer => (
+            signer.clone(),
+            signer_key.clone(),
+            X509::from_pem(&std::fs::read(fixtures().join("client.crt"))?)?,
+            PKey::private_key_from_pem(&std::fs::read(fixtures().join("client.key"))?)?,
+        ),
+        ResponderCase::LocalAuthentication => (
+            X509::from_pem(&std::fs::read(fixtures().join("server.crt"))?)?,
+            PKey::private_key_from_pem(&std::fs::read(fixtures().join("server.key"))?)?,
+            signer.clone(),
+            signer_key.clone(),
+        ),
+        _ => anyhow::bail!("test signer must authenticate the TLS connection"),
+    };
+    let response = signed_response_with_responder(
+        &directory.0,
+        &peer_certificate,
+        "good",
+        Some(1440),
+        (!issuer_signed).then_some((&signer, &signer_key)),
+        None,
+    )
+    .await?;
+    let context = peer_context_with_identity(
+        Some(response),
+        &issuer,
+        &peer_certificate,
+        &peer_key,
+        SslVersion::TLS1_3,
+    )?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let mut server = TacacsPlusServerBuilder::new(
+        "ocsp-dual-role",
+        TacacsPlusServerType::all(),
+        "127.0.0.1",
+        listener.local_addr()?.port(),
+    )
+    .with_tls_client_certificate(
+        Some(client_certificate.to_der()?),
+        Some(client_key.private_key_to_pkcs8()?),
+    )
+    .build();
+    server.single_connection = true;
+    server.server_authentication = Some(tacacsrs_config::TlsClientServerAuthentication::default());
+    let authentication = server
+        .server_authentication
+        .as_mut()
+        .context("test server authentication")?;
+    authentication.ca_certs = Some(tacacsrs_config::ServerAuthenticationCaCerts {
+        central_truststore_reference: None,
+        inline_definition: Some(tacacsrs_config::truststore::CertsInlineDefinition {
+            certificate: vec![tacacsrs_config::truststore::CertsCertificate {
+                name: "issuer".to_owned(),
+                cert_data: issuer.to_der()?,
+            }],
+        }),
+    });
+    authentication.require_stapled_ocsp = Some(tacacsrs_config::tacacsrs::RequireStapledOcsp {
+        max_response_age_seconds: 300,
+    });
+    let endpoint = prepare_endpoint(&server, PrepareOptions::default())?;
+    let (handshake, accepted) = tokio::sync::oneshot::channel();
+    let (closed, closure_observed) = tokio::sync::oneshot::channel();
+    let peer = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await?;
+        let mut stream = SslStream::new(Ssl::new(&context)?, tcp)?;
+        Pin::new(&mut stream).accept().await?;
+        let _ = handshake.send(());
+        super::reply_to_accounting(&mut stream, None, true).await?;
+        super::reply_to_accounting(&mut stream, None, false).await?;
+        assert_eq!(stream.read(&mut [0_u8; 1]).await?, 0);
+        let _ = closed.send(());
+        Ok::<_, anyhow::Error>(())
+    });
+    let client = TacacsClient::connect_prepared(endpoint).await?;
+    let first = client.execute(tacacsrs_protocol::exchange::accounting::AccountingExchange::new(
+        super::accounting_request(),
+    ));
+    tokio::pin!(first);
+    let (accepted, first) =
+        tokio::time::timeout(Duration::from_secs(5), async { tokio::join!(accepted, &mut first) })
+            .await?;
+    accepted?;
+    first?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let now = openssl::asn1::Asn1Time::from_unix(now.try_into()?)?;
+    let remaining = now.diff(signer.not_after())?;
+    let remaining = u64::try_from(remaining.days)? * 86_400 + u64::try_from(remaining.secs)?;
+    tokio::time::sleep(Duration::from_secs(remaining + 1)).await;
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        client.execute(tacacsrs_protocol::exchange::accounting::AccountingExchange::new(
+            super::accounting_request(),
+        )),
+    )
+    .await??;
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(301)).await;
+    tokio::time::resume();
+    tokio::time::timeout(Duration::from_secs(2), closure_observed).await??;
+    if let Err(error) = client
+        .close_and_join(RequestDeadline::after(Duration::from_secs(2))?)
+        .await
+    {
+        anyhow::ensure!(
+            format!("{error:#}").contains("TLS revocation evidence expired"),
+            "unexpected post-evidence-expiry close error: {error:#}"
+        );
+    }
+    tokio::time::timeout(Duration::from_secs(2), peer).await???;
     Ok(())
 }
 
@@ -470,11 +636,13 @@ async fn probe_with_evidence(
     let original = server.clone();
     let endpoint = prepare_endpoint(&server, PrepareOptions::default())?;
     assert_eq!(server, original);
+    let (handshake_complete, handshake_observed) = tokio::sync::oneshot::channel();
     let (closed, observed) = tokio::sync::oneshot::channel();
     let peer = tokio::spawn(async move {
         let (tcp, _) = listener.accept().await?;
         let mut stream = SslStream::new(Ssl::new(&context)?, tcp)?;
         if Pin::new(&mut stream).accept().await.is_ok() {
+            let _ = handshake_complete.send(());
             assert!(
                 stream.ssl().peer_certificate().is_some(),
                 "good evidence must permit client authentication"
@@ -509,6 +677,9 @@ async fn probe_with_evidence(
         }
     }
     assert_eq!(counters.snapshot().diagnostics.handshake_successes, u64::from(accepted));
+    if accepted {
+        tokio::time::timeout(Duration::from_secs(5), handshake_observed).await??;
+    }
     if let Some(expiry) = expiry.filter(|_| accepted) {
         tokio::time::pause();
         tokio::time::advance(expiry).await;

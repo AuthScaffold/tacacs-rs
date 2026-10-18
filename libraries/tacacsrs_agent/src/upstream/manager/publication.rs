@@ -331,7 +331,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
 
         let validity = new_server_slots.iter().try_fold(
             validity.unwrap_or(crate::runtime::CredentialLifetime::unbounded()),
-            |lifetime, server| lifetime.intersect(server.certificate_lifetime),
+            |lifetime, server| lifetime.intersect(server.evidence_lifetime),
         )?;
 
         let client = previous

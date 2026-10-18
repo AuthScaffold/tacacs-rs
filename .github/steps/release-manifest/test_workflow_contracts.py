@@ -58,13 +58,18 @@ def test_pull_requests_run_on_the_diagnostics_stack_base():
     assert {"main", "review/yang-toolkit/**", "feature/agent-diagnostics"} <= set(branches)
 
 
+def test_pull_requests_run_on_the_armhf_stack_base():
+    branches = workflow("pullrequest_workflow.yml")["on"]["pull_request"]["branches"]
+    assert "fix/262-armhf" in branches
+
+
 def test_armhf_helper_builds_and_executes_the_affected_packages():
     helper = (ROOT / ".github/steps/armhf/verify.sh").read_text()
     assert "cargo build --locked --release --bins" in helper
     assert "cargo test --locked" in helper
     assert "--no-run" not in helper
     for package in ("tacacsrs-agentd", "tacacsrs-agent-health", "tacon",
-                    "tacacsrs-networking", "tacacsrs-agent",
+                    "tacacsrs-networking", "tacacsrs-config", "tacacsrs-agent",
                     "tacacsrs-sonic", "tacacsrs-ipc", "tacacsrs-agent-ipc-emulator"):
         assert f"-p {package} " in helper
     for check in ("ELF32", "Machine: +ARM", "hard-float ABI", '"${binary}" --help'):

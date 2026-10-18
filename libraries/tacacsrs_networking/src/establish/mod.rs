@@ -2,12 +2,13 @@
 //!
 //! The dispatcher uses prepared transport values without interpreting configuration.
 
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::endpoint::PreparedEndpoint;
 use crate::destination::connect_tcp;
+use crate::endpoint::{ConnectionGuard, PreparedEndpoint};
 use crate::transport::BoxedTransport;
 use crate::transport::{tls, tls_psk};
 
@@ -54,6 +55,8 @@ impl ConnectOptions {
 
     /// Returns options with TLS certificate verification disabled when
     /// `disabled` is true.
+    ///
+    /// Client and presented peer certificate dates still apply to each new connection.
     #[must_use]
     pub const fn with_certificate_verification_disabled(mut self, disabled: bool) -> Self {
         self.disable_certificate_verification = disabled;
@@ -113,15 +116,47 @@ pub(crate) async fn establish_stream_until(
     }
 }
 
+struct CertificateTlsConnectionGuard<'a> {
+    endpoint: &'a PreparedEndpoint,
+    host_guard: Option<&'a dyn ConnectionGuard>,
+}
+
+impl ConnectionGuard for CertificateTlsConnectionGuard<'_> {
+    fn check_destination(&self, destination: SocketAddr) -> Result<()> {
+        if let Some(host_guard) = self.host_guard {
+            host_guard.check_destination(destination)?;
+        }
+        self.endpoint
+            .validate_client_certificate_dates()
+            .context(crate::statistics::CertificateFailure)
+    }
+
+    fn check_connected(&self, peer: SocketAddr, local: SocketAddr) -> Result<()> {
+        match self.host_guard {
+            Some(host_guard) => host_guard.check_connected(peer, local),
+            None => Ok(()),
+        }
+    }
+}
+
 async fn establish_transport(
     endpoint: &PreparedEndpoint,
     attempt: &mut crate::statistics::ConnectionAttempt,
 ) -> Result<BoxedTransport> {
-    if let Some(lifetime) = endpoint.prepared_credential_lifetime() {
-        lifetime
-            .check()
-            .context(crate::statistics::CertificateFailure)?;
+    endpoint
+        .validate_client_certificate_dates()
+        .context(crate::statistics::CertificateFailure)?;
+    let operation = establish_transport_inner(endpoint, attempt);
+    match endpoint.revocation_evidence_lifetime() {
+        Some(lifetime) => lifetime.run(operation).await,
+        None => operation.await,
     }
+}
+
+async fn establish_transport_inner(
+    endpoint: &PreparedEndpoint,
+    attempt: &mut crate::statistics::ConnectionAttempt,
+) -> Result<BoxedTransport> {
     let address = endpoint.address();
     let options = &endpoint.options;
 
@@ -131,14 +166,23 @@ async fn establish_transport(
         options.timeout,
     );
 
+    let certificate_tls_guard =
+        matches!(&endpoint.transport, PreparedTransport::Tls(_)).then(|| {
+            CertificateTlsConnectionGuard {
+                endpoint,
+                host_guard: endpoint.connection_guard.as_deref(),
+            }
+        });
+    let connection_guard = certificate_tls_guard
+        .as_ref()
+        .map(|guard| guard as &dyn ConnectionGuard)
+        .or(endpoint.connection_guard.as_deref());
     let tcp_stream = match options.timeout {
-        Some(dur) => {
-            tokio::time::timeout(dur, connect_tcp(address, endpoint.connection_guard.as_deref()))
-                .await
-                .with_context(|| format!("Connection to TACACS+ server {address} timed out"))?
-                .with_context(|| format!("Failed to establish TCP connection to {address}"))?
-        }
-        None => connect_tcp(address, endpoint.connection_guard.as_deref())
+        Some(dur) => tokio::time::timeout(dur, connect_tcp(address, connection_guard))
+            .await
+            .with_context(|| format!("Connection to TACACS+ server {address} timed out"))?
+            .with_context(|| format!("Failed to establish TCP connection to {address}"))?,
+        None => connect_tcp(address, connection_guard)
             .await
             .with_context(|| format!("Failed to establish TCP connection to {address}"))?,
     };
@@ -161,5 +205,67 @@ async fn establish_transport(
             let details = crate::TlsDetails::from_ssl(stream.ssl());
             Ok(BoxedTransport::new(stream).with_tls_details(details))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, SystemTime};
+
+    use tokio::io::AsyncReadExt;
+
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn evidence_deadline_bounds_stalled_handshake_before_transport_registration() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut endpoint = PreparedEndpoint::tcp(
+            listener.local_addr().unwrap().to_string(),
+            false,
+            None,
+            ConnectOptions::default().with_certificate_verification_disabled(true),
+        )
+        .with_certificate_tls("localhost", None, crate::CertificateTrust::Platform, None)
+        .unwrap();
+        let now = SystemTime::now();
+        let validity = crate::transport::tls::RevocationEvidenceValidity::from_bounds(
+            now - Duration::from_secs(1),
+            now + Duration::from_secs(60),
+        )
+        .unwrap();
+        let PreparedTransport::Tls(config) = &mut endpoint.transport else {
+            panic!("test endpoint must use certificate TLS");
+        };
+        config.evidence_lifetime = Some(crate::transport::tls::RevocationEvidenceLifetime {
+            validity,
+            deadline: crate::RequestDeadline::after(Duration::from_secs(1)).unwrap(),
+        });
+        let (connected, observed) = tokio::sync::oneshot::channel();
+        let peer = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _ = connected.send(());
+            let mut received = Vec::new();
+            stream.read_to_end(&mut received).await.unwrap();
+            received
+        });
+        let setup = establish_stream(&endpoint);
+        tokio::pin!(setup);
+        tokio::select! {
+            result = &mut setup => match result {
+                Ok(_) => panic!("setup completed before TCP connected"),
+                Err(error) => panic!("setup failed before TCP connected: {error:#}"),
+            },
+            result = observed => result.unwrap(),
+        }
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let error = match setup.await {
+            Ok(_) => panic!("setup completed after evidence expired"),
+            Err(error) => error,
+        };
+        assert!(
+            format!("{error:#}").contains("request deadline expired"),
+            "unexpected setup error: {error:#}"
+        );
+        assert!(!peer.await.unwrap().is_empty(), "TLS must start before evidence expiry");
     }
 }

@@ -2,6 +2,8 @@
 //!
 //! Native contexts use borrowed DER material and explicit verification settings.
 //! Each context supports repeated handshakes without reparsing credentials.
+//! Client certificate dates are checked before each connection and again before
+//! its handshake. Established connections retain no certificate-date cutoff.
 
 mod config_builder;
 mod config;
@@ -13,9 +15,9 @@ mod tls;
 pub(crate) use config_builder::TlsConfigurationBuilder;
 pub(crate) use config::TlsClientConfig;
 pub use config::{CertificateIdentity, CertificateTrust, PrivateKeyEncoding};
-pub use validity::CertificateValidity;
+pub use validity::RevocationEvidenceValidity;
 pub use revocation::CertificateRevocationPolicy;
-pub(crate) use validity::CertificateLifetime;
+pub(crate) use validity::RevocationEvidenceLifetime;
 
 use anyhow::Context;
 use openssl::ssl::Ssl;
@@ -39,12 +41,10 @@ async fn connect_tls(
     stream: TcpStream,
     peer_identity: &str,
     sni_name: Option<&str>,
-    peer_validity_index: config_builder::PeerValidityIndex,
     revocation: Option<revocation::ConnectionRevocation>,
     crls: Option<std::sync::Arc<revocation::crls::CrlEvidence>>,
-) -> anyhow::Result<SslStream<TcpStream>> {
+) -> anyhow::Result<(SslStream<TcpStream>, Option<RevocationEvidenceValidity>)> {
     let mut ssl = Ssl::new(context).context("OpenSSL failed to allocate TLS SSL object")?;
-    ssl.set_ex_data(peer_validity_index, std::sync::Mutex::new(None));
     revocation::request(&mut ssl, revocation)?;
     revocation::crls::attach(&mut ssl, crls)?;
     ssl.param_mut()
@@ -73,19 +73,18 @@ async fn connect_tls(
     let certificate_failed = stream.ssl().verify_result() != openssl::x509::X509VerifyResult::OK
         || crl_failed
         || ocsp_failed;
-    let result = (|| {
+    let result = (|| -> anyhow::Result<Option<RevocationEvidenceValidity>> {
         if crl_failed {
-            return revocation::crls::require_verified(stream.ssl());
+            return revocation::crls::require_verified(stream.ssl()).map(|()| None);
         }
         if ocsp_failed {
-            return revocation::verified_validity(stream.ssl()).map(|_| ());
+            return revocation::verified_validity(stream.ssl());
         }
         handshake.context("OpenSSL TLS handshake failed")?;
         revocation::crls::require_verified(stream.ssl())?;
-        revocation::verified_validity(stream.ssl())?;
-        Ok(())
+        revocation::verified_validity(stream.ssl())
     })();
-    if certificate_failed {
+    let evidence_validity = if certificate_failed {
         result
             .map_err(|error| {
                 if error.is::<crate::statistics::CertificateVerificationCode>() {
@@ -96,10 +95,10 @@ async fn connect_tls(
                     ))
                 }
             })
-            .context(crate::statistics::CertificateFailure)?;
+            .context(crate::statistics::CertificateFailure)?
     } else {
-        result?;
-    }
+        result?
+    };
 
-    Ok(stream)
+    Ok((stream, evidence_validity))
 }

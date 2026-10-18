@@ -12,9 +12,9 @@
 //! connected socket before TLS or TACACS+ I/O. Endpoint clones share the guard.
 //! The host owns listener state and interface discovery. Networking does not interpret YANG.
 //!
-//! Certificate TLS connections retain the validity of the accepted peer path and
-//! configured client identity. Owned expiry tasks close both transport halves,
-//! including idle connections. New connections can verify replacement peer credentials.
+//! Certificate TLS validates local and peer authentication dates during each
+//! handshake. Established connections continue after those dates expire.
+//! Independent OCSP and CRL freshness can still close a transport.
 
 mod client;
 pub mod admission;
@@ -41,8 +41,8 @@ pub use deadline::{DeadlineElapsed, RequestDeadline};
 pub use codec::{PacketReadResult, PacketReader, PacketWriteResult, PacketWriter};
 pub use endpoint::{ConnectionGuard, PreparedEndpoint};
 pub use transport::tls::{
-    CertificateIdentity, CertificateTrust, CertificateValidity, CertificateRevocationPolicy,
-    PrivateKeyEncoding,
+    CertificateIdentity, CertificateTrust, CertificateRevocationPolicy, PrivateKeyEncoding,
+    RevocationEvidenceValidity,
 };
 pub use transport::tls_psk::{PskHash, PskDheGroup};
 pub use establish::{ConnectOptions, ConnectPreflight};

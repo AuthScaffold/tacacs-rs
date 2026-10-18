@@ -9,7 +9,7 @@ use tacacsrs_networking::routed::{Endpoint, OperationKind};
 pub(super) struct PreparedServer {
     pub(super) server: Arc<TacacsPlusServer>,
     pub(super) endpoint: Endpoint,
-    pub(super) certificate_lifetime: crate::runtime::CredentialLifetime,
+    pub(super) evidence_lifetime: crate::runtime::CredentialLifetime,
     pub(super) counters: tacacsrs_networking::ServerCounters,
 }
 
@@ -20,7 +20,7 @@ impl PreparedServer {
     ) -> anyhow::Result<Self> {
         let prepared = tacacsrs_config::prepare::prepare_endpoint(&server, options)?;
         let counters = prepared.counters();
-        let certificate_lifetime = match prepared.prepared_credential_validity() {
+        let evidence_lifetime = match prepared.revocation_evidence_validity() {
             Some(validity) => crate::runtime::CredentialLifetime::new(
                 tacacsrs_credential_resolution::CredentialValidity::new(
                     Some(validity.valid_from()),
@@ -42,7 +42,7 @@ impl PreparedServer {
         Ok(Self {
             server,
             endpoint,
-            certificate_lifetime,
+            evidence_lifetime,
             counters,
         })
     }

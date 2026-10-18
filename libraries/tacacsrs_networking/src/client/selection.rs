@@ -149,11 +149,7 @@ impl TacacsClient {
         deadline: Option<crate::RequestDeadline>,
     ) -> anyhow::Result<ClientSession> {
         self.lifecycle.ensure_open()?;
-        let operation = Box::pin(self.create_open_session(expected, deadline));
-        let session = match self.endpoint.prepared_credential_lifetime() {
-            Some(lifetime) => lifetime.run(operation).await?,
-            None => operation.await?,
-        };
+        let session = self.create_open_session(expected, deadline).await?;
         self.lifecycle.ensure_open()?;
         Ok(session.with_counters(self.endpoint.counters()))
     }
@@ -208,9 +204,7 @@ impl TacacsClient {
     ///
     /// Returns an error when a dedicated or shared session cannot be created.
     pub async fn open_conversation(&self) -> anyhow::Result<ClientConversation> {
-        self.create_session().await.map(|session| {
-            ClientConversation::new(session, self.endpoint.prepared_credential_lifetime())
-        })
+        self.create_session().await.map(ClientConversation::new)
     }
 
     async fn create_session_after_shared_miss(

@@ -1,22 +1,21 @@
-//! Intrinsic validity dates decoded from native X.509 objects.
+//! Validity intervals for signed revocation evidence.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, ensure};
 use foreign_types::ForeignTypeRef;
 use openssl::asn1::{Asn1GeneralizedTimeRef, Asn1Time, Asn1TimeRef};
-use openssl::x509::X509Ref;
 
 /// ASN.1 time differences express whole days separately from seconds.
 const SECONDS_PER_DAY: i64 = 86_400;
 
 #[derive(Clone, Copy)]
-pub(crate) struct CertificateLifetime {
-    pub(crate) validity: CertificateValidity,
+pub(crate) struct RevocationEvidenceLifetime {
+    pub(crate) validity: RevocationEvidenceValidity,
     pub(crate) deadline: crate::RequestDeadline,
 }
 
-impl CertificateLifetime {
+impl RevocationEvidenceLifetime {
     pub(crate) fn intersect(self, other: Self) -> Result<Self> {
         Ok(Self {
             validity: self.validity.intersect(other.validity)?,
@@ -26,13 +25,16 @@ impl CertificateLifetime {
         })
     }
 
-    pub(crate) fn new(validity: CertificateValidity) -> Result<Self> {
+    pub(crate) fn new(validity: RevocationEvidenceValidity) -> Result<Self> {
         let monotonic = tokio::time::Instant::now();
         let now = SystemTime::now();
-        ensure!(validity.is_valid_at(now), "Certificate validity excludes the current time");
+        ensure!(
+            validity.is_valid_at(now),
+            "Revocation evidence validity excludes the current time"
+        );
         let deadline = monotonic
             .checked_add(validity.valid_until.duration_since(now)?)
-            .context("Certificate validity exceeds the runtime clock range")?;
+            .context("Revocation evidence validity exceeds the runtime clock range")?;
         Ok(Self {
             validity,
             deadline: crate::RequestDeadline::at(deadline),
@@ -42,7 +44,7 @@ impl CertificateLifetime {
     pub(crate) fn check(self) -> Result<()> {
         ensure!(
             self.validity.is_valid_at(SystemTime::now()),
-            "Certificate validity excludes the current time"
+            "Revocation evidence validity excludes the current time"
         );
         self.deadline.check()?;
         Ok(())
@@ -52,54 +54,46 @@ impl CertificateLifetime {
         self,
         operation: impl std::future::Future<Output = Result<Output>>,
     ) -> Result<Output> {
-        self.check()?;
-        let result = self.deadline.run(operation).await??;
-        self.check()?;
+        self.check()
+            .context(crate::statistics::CertificateFailure)?;
+        let result = match self.deadline.run(operation).await {
+            Ok(result) => result?,
+            Err(error) => {
+                return Err(error).context(crate::statistics::CertificateFailure);
+            }
+        };
+        self.check()
+            .context(crate::statistics::CertificateFailure)?;
         Ok(result)
     }
 }
 
-/// Absolute validity of a certificate or selected certificate chain.
+/// Absolute validity of prepared revocation evidence.
 ///
 /// Runtime use includes the lower bound and excludes the upper bound.
-/// Alternative trust paths must be evaluated separately, not intersected together.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct CertificateValidity {
+pub struct RevocationEvidenceValidity {
     valid_from: SystemTime,
     valid_until: SystemTime,
 }
 
-impl CertificateValidity {
+impl RevocationEvidenceValidity {
     pub(crate) fn from_bounds(valid_from: SystemTime, valid_until: SystemTime) -> Result<Self> {
-        ensure!(valid_from < valid_until, "Certificate evidence validity interval is empty");
+        ensure!(valid_from < valid_until, "Revocation evidence validity interval is empty");
         Ok(Self {
             valid_from,
             valid_until,
         })
     }
 
-    pub(crate) fn from_chain(
-        chain: &openssl::stack::StackRef<openssl::x509::X509>,
-    ) -> Result<Self> {
-        let first = chain
-            .get(0)
-            .context("Verified certificate chain is empty")?;
-        chain
-            .iter()
-            .skip(1)
-            .try_fold(Self::from_certificate(first)?, |validity, certificate| {
-                validity.intersect(Self::from_certificate(certificate)?)
-            })
-    }
-
-    pub(crate) fn from_certificate(certificate: &X509Ref) -> Result<Self> {
+    pub(crate) fn from_certificate(certificate: &openssl::x509::X509Ref) -> Result<Self> {
         let validity = Self {
             valid_from: system_time(certificate.not_before())?,
             valid_until: system_time(certificate.not_after())?,
         };
         ensure!(
             validity.valid_from < validity.valid_until,
-            "Certificate validity interval is empty"
+            "Revocation evidence validity interval is empty"
         );
         Ok(validity)
     }
@@ -111,18 +105,18 @@ impl CertificateValidity {
         };
         ensure!(
             validity.valid_from < validity.valid_until,
-            "Certificate validity intervals do not overlap"
+            "Revocation evidence validity intervals do not overlap"
         );
         Ok(validity)
     }
 
-    /// Returns the inclusive start of the certificate interval.
+    /// Returns the inclusive start of the evidence interval.
     #[must_use]
     pub const fn valid_from(self) -> SystemTime {
         self.valid_from
     }
 
-    /// Returns the exclusive end of the certificate interval.
+    /// Returns the exclusive end of the evidence interval.
     #[must_use]
     pub const fn valid_until(self) -> SystemTime {
         self.valid_until
@@ -172,7 +166,7 @@ mod tests {
             let time = openssl::asn1::Asn1GeneralizedTime::from_str(encoded).unwrap();
             assert_eq!(generalized_system_time(&time).unwrap(), expected);
         }
-        assert!(CertificateValidity::from_bounds(UNIX_EPOCH, UNIX_EPOCH).is_err());
+        assert!(RevocationEvidenceValidity::from_bounds(UNIX_EPOCH, UNIX_EPOCH).is_err());
     }
 
     #[test]

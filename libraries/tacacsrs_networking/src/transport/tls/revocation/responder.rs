@@ -13,7 +13,7 @@ use openssl::x509::{X509Ref, X509VerifyResult};
 use openssl::x509::store::X509StoreBuilder;
 use openssl::x509::verify::X509VerifyFlags;
 
-use super::super::CertificateValidity;
+use super::super::RevocationEvidenceValidity;
 
 /// The No Check extension has the DER encoding of ASN.1 NULL.
 const DER_NULL: &[u8] = &[0x05, 0x00];
@@ -32,7 +32,8 @@ pub(super) fn verify(
     response: &OcspBasicResponseRef,
     issuer: &X509Ref,
     ssl: &SslRef,
-) -> anyhow::Result<CertificateValidity> {
+    local_authentication_certificates: &[Vec<u8>],
+) -> anyhow::Result<Option<RevocationEvidenceValidity>> {
     let mut certificates = Stack::new()?;
     certificates.push(issuer.to_owned())?;
     let mut store = X509StoreBuilder::new()?;
@@ -51,7 +52,9 @@ pub(super) fn verify(
     // SAFETY: The pointer was checked above, and both possible owners remain
     // alive until all signer reads finish. No borrowed reference escapes.
     let signer = unsafe { X509Ref::from_ptr(signer) };
-    if signer.to_der()? != issuer.to_der()? {
+    let signer_der = signer.to_der()?;
+    let issuer_signed = signer_der == issuer.to_der()?;
+    if !issuer_signed {
         ensure!(
             issuer.issued(signer) == X509VerifyResult::OK,
             "OCSP responder must be issued directly by the peer issuer"
@@ -69,8 +72,19 @@ pub(super) fn verify(
             super::crls::verify_responder(ssl, signer, issuer)?;
         }
     }
-    CertificateValidity::from_certificate(signer)?
-        .intersect(CertificateValidity::from_certificate(issuer)?)
+    let authentication_certificate = ssl.verified_chain().is_some_and(|chain| {
+        chain
+            .iter()
+            .any(|certificate| certificate.to_der().is_ok_and(|der| der == signer_der))
+    }) || ssl
+        .peer_certificate()
+        .is_some_and(|certificate| certificate.to_der().is_ok_and(|der| der == signer_der))
+        || local_authentication_certificates.contains(&signer_der);
+    if issuer_signed || authentication_certificate {
+        Ok(None)
+    } else {
+        Ok(Some(RevocationEvidenceValidity::from_certificate(signer)?))
+    }
 }
 
 #[allow(unsafe_code)]

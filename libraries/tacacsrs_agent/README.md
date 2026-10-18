@@ -140,7 +140,9 @@ Inline-only catalogs do not expire because an unused credential watcher is unava
 At expiry, the runtime withdraws the entire catalog and reports `CredentialsExpired`, while source observation and liveness remain active.
 An attempt started before expiry cannot revive the old material. Complete revalidation can restore service without changing canonical source references.
 Repeated failures and policy changes do not renew grace. Source and credential expiry remain independently enforced after either withdraws the catalog.
-Absolute credential validity, certificate expiry, and revocation require separate policy and metadata.
+Provider validity and revocation-evidence freshness remain separate limits.
+Authentication certificate dates apply to each new TLS connection.
+Established connections and catalogs continue after those certificate dates expire.
 
 Use `with_credential_resolver` and `with_credential_changes` to configure credential providers.
 Notifications require a resolver. Provider configuration is checked before source I/O.

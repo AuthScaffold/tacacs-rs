@@ -355,12 +355,14 @@ async fn probe_with_resolver(
     let Ok(endpoint) = endpoint else {
         return Ok(false);
     };
-    assert!(endpoint.prepared_credential_validity().is_some());
+    assert!(endpoint.revocation_evidence_validity().is_some());
+    let (handshake_complete, handshake_observed) = tokio::sync::oneshot::channel();
     let (closed, observed) = tokio::sync::oneshot::channel();
     let peer = tokio::spawn(async move {
         let (tcp, _) = listener.accept().await?;
         let mut stream = SslStream::new(Ssl::new(&context)?, tcp)?;
         if Pin::new(&mut stream).accept().await.is_ok() {
+            let _ = handshake_complete.send(());
             assert!(stream.ssl().peer_certificate().is_some());
             match stream.read(&mut [0]).await {
                 Ok(0) => {}
@@ -393,6 +395,9 @@ async fn probe_with_resolver(
     }
     let accepted = session.is_ok();
     assert_eq!(counters.snapshot().diagnostics.handshake_successes, u64::from(accepted));
+    if accepted {
+        tokio::time::timeout(Duration::from_secs(5), handshake_observed).await??;
+    }
     if accepted && expect_expiry {
         tokio::time::pause();
         tokio::time::advance(Duration::from_secs(301)).await;
@@ -465,11 +470,95 @@ async fn crl_policy_verifies_provider_and_inline_evidence_and_bounds_use() -> Re
     Ok(())
 }
 
+#[tokio::test]
+async fn short_peer_with_longer_crl_uses_only_the_evidence_deadline() -> Result<()> {
+    let directory = Directory::new()?;
+    let crl = make_crl(&directory.0, false, false).await?;
+    let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
+    let issuer_key = PKey::private_key_from_pem(&std::fs::read(fixtures().join("ca.key"))?)?;
+    let peer_identity =
+        issued_peer_with_lifetime(&issuer, &issuer_key, false, 9090, Some(Duration::from_secs(8)))?;
+    let context = peer_context(&issuer, Some(&peer_identity))?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let mut source = source_for(
+        &issuer,
+        listener.local_addr()?.port(),
+        std::slice::from_ref(&crl),
+        false,
+        false,
+    )?;
+    source.server[0].single_connection = true;
+    let endpoint = prepare_endpoint(&source.server[0], PrepareOptions::default())?;
+    let (handshake_complete, handshake_observed) = tokio::sync::oneshot::channel();
+    let (closed, closure_observed) = tokio::sync::oneshot::channel();
+    let peer = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await?;
+        let mut stream = SslStream::new(Ssl::new(&context)?, tcp)?;
+        Pin::new(&mut stream).accept().await?;
+        let _ = handshake_complete.send(());
+        super::reply_to_accounting(&mut stream, None, true).await?;
+        super::reply_to_accounting(&mut stream, None, false).await?;
+        assert_eq!(stream.read(&mut [0_u8; 1]).await?, 0);
+        let _ = closed.send(());
+        Ok::<_, anyhow::Error>(())
+    });
+    let client = TacacsClient::connect_prepared(endpoint).await?;
+    let first = client.execute(tacacsrs_protocol::exchange::accounting::AccountingExchange::new(
+        super::accounting_request(),
+    ));
+    tokio::pin!(first);
+    let (handshake, first) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(handshake_observed, &mut first)
+    })
+    .await?;
+    handshake?;
+    first?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let now = openssl::asn1::Asn1Time::from_unix(now.try_into()?)?;
+    let remaining = now.diff(peer_identity.certificate.not_after())?;
+    let remaining = u64::try_from(remaining.days)? * 86_400 + u64::try_from(remaining.secs)?;
+    tokio::time::sleep(Duration::from_secs(remaining + 1)).await;
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        client.execute(tacacsrs_protocol::exchange::accounting::AccountingExchange::new(
+            super::accounting_request(),
+        )),
+    )
+    .await??;
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(301)).await;
+    tokio::time::resume();
+    tokio::time::timeout(Duration::from_secs(2), closure_observed).await??;
+    if let Err(error) = client
+        .close_and_join(RequestDeadline::after(Duration::from_secs(2))?)
+        .await
+    {
+        anyhow::ensure!(
+            format!("{error:#}").contains("TLS revocation evidence expired"),
+            "unexpected post-evidence-expiry close error: {error:#}"
+        );
+    }
+    tokio::time::timeout(Duration::from_secs(2), peer).await???;
+    Ok(())
+}
+
 fn issued_peer(
     issuer: &X509,
     issuer_key: &PKey<openssl::pkey::Private>,
     is_ca: bool,
     serial: u32,
+) -> Result<PeerIdentity> {
+    issued_peer_with_lifetime(issuer, issuer_key, is_ca, serial, None)
+}
+
+fn issued_peer_with_lifetime(
+    issuer: &X509,
+    issuer_key: &PKey<openssl::pkey::Private>,
+    is_ca: bool,
+    serial: u32,
+    lifetime: Option<Duration>,
 ) -> Result<PeerIdentity> {
     use openssl::asn1::Asn1Time;
     use openssl::hash::MessageDigest;
@@ -497,8 +586,21 @@ fn issued_peer(
     certificate.set_subject_name(&name.build())?;
     certificate.set_issuer_name(issuer.subject_name())?;
     certificate.set_pubkey(&key)?;
-    certificate.set_not_before(Asn1Time::days_from_now(0)?.as_ref())?;
-    certificate.set_not_after(Asn1Time::days_from_now(1)?.as_ref())?;
+    match lifetime {
+        Some(lifetime) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs();
+            certificate.set_not_before(Asn1Time::from_unix((now - 60).try_into()?)?.as_ref())?;
+            certificate.set_not_after(
+                Asn1Time::from_unix((now + lifetime.as_secs()).try_into()?)?.as_ref(),
+            )?;
+        }
+        None => {
+            certificate.set_not_before(Asn1Time::days_from_now(0)?.as_ref())?;
+            certificate.set_not_after(Asn1Time::days_from_now(1)?.as_ref())?;
+        }
+    }
     if is_ca {
         certificate.append_extension(BasicConstraints::new().critical().ca().build()?)?;
         certificate.append_extension(
