@@ -69,7 +69,7 @@ def test_armhf_helper_builds_and_executes_the_affected_packages():
     assert "cargo test --locked" in helper
     assert "--no-run" not in helper
     for package in ("tacacsrs-agentd", "tacacsrs-agent-health", "tacon",
-                    "tacacsrs-networking", "tacacsrs-agent",
+                    "tacacsrs-networking", "tacacsrs-config", "tacacsrs-agent",
                     "tacacsrs-sonic", "tacacsrs-ipc", "tacacsrs-agent-ipc-emulator"):
         assert f"-p {package} " in helper
     for check in ("ELF32", "Machine: +ARM", "hard-float ABI", '"${binary}" --help'):

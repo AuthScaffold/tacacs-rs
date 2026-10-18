@@ -68,12 +68,20 @@ async fn connect_tls(
         .context("OpenSSL failed to attach the TLS SSL object to the TCP connection")?;
 
     let handshake = SslStream::connect(std::pin::Pin::new(&mut stream)).await;
+    let crl_failed = revocation::crls::verification_failed(stream.ssl());
+    let ocsp_failed = revocation::verification_failed(stream.ssl());
     let certificate_failed = stream.ssl().verify_result() != openssl::x509::X509VerifyResult::OK
-        || revocation::verification_failed(stream.ssl())
-        || revocation::crls::verification_failed(stream.ssl());
-    let result = (|| {
-        revocation::crls::require_verified(stream.ssl())?;
+        || crl_failed
+        || ocsp_failed;
+    let result = (|| -> anyhow::Result<Option<RevocationEvidenceValidity>> {
+        if crl_failed {
+            return revocation::crls::require_verified(stream.ssl()).map(|()| None);
+        }
+        if ocsp_failed {
+            return revocation::verified_validity(stream.ssl());
+        }
         handshake.context("OpenSSL TLS handshake failed")?;
+        revocation::crls::require_verified(stream.ssl())?;
         revocation::verified_validity(stream.ssl())
     })();
     let evidence_validity = if certificate_failed {

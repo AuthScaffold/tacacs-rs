@@ -238,12 +238,21 @@ fn assert_external_default_is_missing(api: &public_api::PublicApi, json: &serde_
     assert_eq!(implementation["items"], serde_json::json!([]));
 }
 
-fn run_tool(repo: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_api-classifier"))
-        .args(["--package", "fixture-lib", "--baseline-rev", BASELINE_TAG])
+fn tool_command(repo: &Path, baseline_rev: &str) -> Command {
+    assert!(repo.is_absolute(), "fixture repository path must be absolute");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_api-classifier"));
+    command
+        .args(["--package", "fixture-lib", "--baseline-rev", baseline_rev])
         .arg("--manifest-path")
         .arg(repo.join("Cargo.toml"))
-        .current_dir(repo)
+        .args(["--toolchain", TOOLCHAIN])
+        .env("CARGO_TARGET_DIR", repo.join("target"))
+        .current_dir(repo);
+    command
+}
+
+fn run_tool(repo: &Path) -> Output {
+    tool_command(repo, BASELINE_TAG)
         .output()
         .expect("run api-classifier")
 }
@@ -272,6 +281,27 @@ fn unchanged_api_is_patch() {
     let output = run_tool(&repo.path);
     assert_eq!(bump_of(&output), "patch");
     assert!(!String::from_utf8_lossy(&output.stderr).contains("api-classifier: warning:"));
+}
+
+#[test]
+fn tool_commands_use_distinct_fixture_targets() {
+    let first = TempRepo::new();
+    let second = TempRepo::new();
+    let target = |command: &Command| {
+        command
+            .get_envs()
+            .find_map(|(key, value)| {
+                (key == "CARGO_TARGET_DIR").then(|| PathBuf::from(value.unwrap()))
+            })
+            .expect("classifier command has a target directory")
+    };
+
+    let first_target = target(&tool_command(&first.path, BASELINE_TAG));
+    let second_target = target(&tool_command(&second.path, BASELINE_TAG));
+    assert_eq!(first_target, first.path.join("target"));
+    assert_eq!(second_target, second.path.join("target"));
+    assert!(first_target.is_absolute());
+    assert_ne!(first_target, second_target);
 }
 
 #[test]
@@ -433,12 +463,7 @@ fn missing_baseline_revision_fails_closed() {
     // the caller never mistakes the failure for a bump.
     let lib = "pub fn alpha() {}\n";
     let repo = setup(lib, lib);
-    let output = Command::new(env!("CARGO_BIN_EXE_api-classifier"))
-        .args(["--package", "fixture-lib", "--baseline-rev", "no-such-tag"])
-        .arg("--manifest-path")
-        .arg(repo.path.join("Cargo.toml"))
-        .args(["--toolchain", TOOLCHAIN])
-        .current_dir(&repo.path)
+    let output = tool_command(&repo.path, "no-such-tag")
         .output()
         .expect("run api-classifier");
     assert!(!output.status.success(), "expected a non-zero exit for a missing baseline");

@@ -715,6 +715,8 @@ mod tests {
         (certificate, key)
     }
 
+    // The checked conversion narrows to the native 32-bit time_t on ARMhf.
+    #[allow(clippy::useless_conversion)]
     fn signed_peer(
         authority: &openssl::x509::X509,
         authority_key: &openssl::pkey::PKey<openssl::pkey::Private>,
@@ -757,10 +759,10 @@ mod tests {
             .unwrap();
         certificate.set_pubkey(peer_key).unwrap();
         certificate
-            .set_not_before(&Asn1Time::from_unix(validity.0).unwrap())
+            .set_not_before(&Asn1Time::from_unix(validity.0.try_into().unwrap()).unwrap())
             .unwrap();
         certificate
-            .set_not_after(&Asn1Time::from_unix(validity.1).unwrap())
+            .set_not_after(&Asn1Time::from_unix(validity.1.try_into().unwrap()).unwrap())
             .unwrap();
         let mut constraints = BasicConstraints::new();
         if is_ca {

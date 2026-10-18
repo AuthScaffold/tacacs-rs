@@ -101,6 +101,12 @@ impl ClientSession {
         }
     }
 
+    pub(crate) async fn reject_malformed_response(&self) {
+        if let ClientSessionInner::Dedicated(session) = &self.inner {
+            session.reject_malformed_response().await;
+        }
+    }
+
     pub(crate) async fn fixed_round_trip(&self, packet: Packet) -> anyhow::Result<Packet> {
         match &self.inner {
             ClientSessionInner::Shared(_) => {

@@ -293,6 +293,96 @@ async fn public_facade_uses_concrete_native_connector_through_ipc_and_shutdown()
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri does not support Unix domain sockets or TCP listeners.
+async fn native_protocol_failure_survives_routing_and_ipc_without_backup_replay() {
+    use tokio::io::AsyncWriteExt;
+
+    use tacacsrs_networking::{PacketReadResult, PacketReader};
+    use tacacsrs_protocol::enumerations::TacacsFlags;
+    use tacacsrs_protocol::failure::{DeliveryState, FailureCategory, FailurePhase, RetryAdvice};
+    use tacacsrs_protocol::packet::{Packet, PacketTrait};
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let primary = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let backup = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let primary_address = primary.local_addr().unwrap().to_string();
+        let backup_address = backup.local_addr().unwrap().to_string();
+        let primary_task = tokio::spawn(async move {
+            let (mut stream, _) = primary.accept().await.unwrap();
+            let PacketReadResult::Success(request) =
+                PacketReader::new(Some(b"test-secret".to_vec()))
+                    .read_packet(&mut stream)
+                    .await
+            else {
+                panic!("the authorization request must decode");
+            };
+            let body = vec![0];
+            let mut header = request.header().clone();
+            header.seq_no = header.seq_no.wrapping_add(1);
+            header.flags = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG;
+            header.length = u32::try_from(body.len()).unwrap();
+            stream
+                .write_all(&Packet::new(header, body).unwrap().to_bytes())
+                .await
+                .unwrap();
+        });
+        let backup_task = tokio::spawn(async move {
+            tokio::time::timeout(Duration::from_millis(250), backup.accept())
+                .await
+                .is_ok()
+        });
+
+        let endpoint = test_endpoint("native-protocol-failure-ipc");
+        let config = service_config(
+            endpoint.clone(),
+            vec![test_server(&primary_address), test_server(&backup_address)],
+        );
+        let service = test_service(config).unwrap();
+        let service_task =
+            tokio::spawn(async move { service.serve_until_for_test(std::future::pending()).await });
+        let client = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Ok(client) = ServiceClient::connect(endpoint.clone()).await {
+                    break client;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the IPC listener must become ready");
+        let request = AuthorizationOperation::builder(
+            "admin",
+            0,
+            tacacsrs_protocol::operations::AuthorizationAuthenticationContext::TacacsAscii,
+        )
+        .port("pts/1")
+        .remote_address("127.0.0.1")
+        .service("shell")
+        .command("/bin/echo")
+        .build()
+        .unwrap();
+
+        let error = client.send_authorization(request).await.unwrap_err();
+        assert_eq!(error.server.as_deref(), Some(primary_address.as_str()));
+        assert_eq!(error.attempt.map(std::num::NonZeroU32::get), Some(1));
+        assert_eq!(error.facts.category(), FailureCategory::Protocol);
+        assert_eq!(error.facts.phase(), FailurePhase::Upstream);
+        assert_eq!(error.facts.delivery(), DeliveryState::OutcomeUnknown);
+        assert_eq!(error.facts.retry_advice(), RetryAdvice::Never);
+        primary_task.await.unwrap();
+        assert!(!backup_task.await.unwrap(), "the request must not reach the backup");
+
+        service_task.abort();
+        let _ = service_task.await;
+        if let IpcEndpoint::Unix(path) = endpoint {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+    })
+    .await
+    .expect("the native IPC regression must finish");
+}
+
+#[tokio::test]
 async fn downstream_credential_preparation_and_publication_preserve_active_generation() {
     use tacacsrs_config::proxy_policy::prepare_proxy_policy;
     use tacacsrs_config::tacacsrs::ProxyCredentialSource;

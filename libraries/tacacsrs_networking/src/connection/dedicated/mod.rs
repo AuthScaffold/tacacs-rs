@@ -13,6 +13,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tacacsrs_protocol::packet::Packet;
 
 use crate::codec::{PacketReadResult, PacketReader, PacketWriteResult, PacketWriter};
+use crate::exchange_error::protocol_failure;
 use crate::transport::Transport;
 
 use super::MultiplexedConnection;
@@ -86,7 +87,7 @@ where
                 Err(error).context("failed to read TACACS+ response header")
             }
             PacketReadResult::HeaderParseError(error) => {
-                Err(error).context("failed to parse TACACS+ response header")
+                Err(protocol_failure(error.context("failed to parse TACACS+ response header")))
             }
             PacketReadResult::BodyReadError { error, .. } => {
                 Err(error).context("failed to read TACACS+ response body")
@@ -95,9 +96,9 @@ where
                 body_length,
                 max_length,
                 ..
-            } => {
-                anyhow::bail!("response body length {body_length} exceeds maximum {max_length}");
-            }
+            } => Err(protocol_failure(anyhow::anyhow!(
+                "response body length {body_length} exceeds maximum {max_length}"
+            ))),
             PacketReadResult::PacketCreateError { error, .. } => {
                 Err(error).context("failed to create packet from response")
             }

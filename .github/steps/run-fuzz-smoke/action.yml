@@ -9,37 +9,53 @@ runs:
       with:
         tool: cargo-fuzz
 
+    - name: Select nightly compiler host
+      id: compiler_host
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! rustc_version="$(rustc +nightly -vV)"; then
+          echo "::error::Failed to read the nightly compiler host." >&2
+          exit 1
+        fi
+        compiler_host="$(sed -n 's/^host: //p' <<<"${rustc_version}")"
+        if [[ -z "${compiler_host}" ]]; then
+          echo "::error::The nightly compiler did not report a host." >&2
+          exit 1
+        fi
+        printf 'host=%s\n' "${compiler_host}" >>"${GITHUB_OUTPUT}"
+
     - name: Fuzz header parsing
       shell: bash
       run: |
-        cargo +nightly fuzz run fuzz_header_parse -- -max_total_time=30
+        cargo +nightly fuzz run fuzz_header_parse --target "${{ steps.compiler_host.outputs.host }}" -- -max_total_time=30
 
     - name: Fuzz accounting request parsing
       shell: bash
       run: |
-        cargo +nightly fuzz run fuzz_accounting_request_parse -- -max_total_time=30
+        cargo +nightly fuzz run fuzz_accounting_request_parse --target "${{ steps.compiler_host.outputs.host }}" -- -max_total_time=30
 
     - name: Fuzz accounting reply parsing
       shell: bash
       run: |
-        cargo +nightly fuzz run fuzz_accounting_reply_parse -- -max_total_time=30
+        cargo +nightly fuzz run fuzz_accounting_reply_parse --target "${{ steps.compiler_host.outputs.host }}" -- -max_total_time=30
 
     - name: Fuzz accounting request packet parsing
       shell: bash
       run: |
-        cargo +nightly fuzz run fuzz_accounting_request_packet_parse -- -max_total_time=30
+        cargo +nightly fuzz run fuzz_accounting_request_packet_parse --target "${{ steps.compiler_host.outputs.host }}" -- -max_total_time=30
 
     - name: Fuzz authentication message parsing
       shell: bash
       run: |
-        cargo +nightly fuzz run fuzz_authentication_parse -- -max_total_time=30
+        cargo +nightly fuzz run fuzz_authentication_parse --target "${{ steps.compiler_host.outputs.host }}" -- -max_total_time=30
 
     - name: Fuzz authorization message parsing
       shell: bash
       run: |
-        cargo +nightly fuzz run fuzz_authorization_parse -- -max_total_time=30
+        cargo +nightly fuzz run fuzz_authorization_parse --target "${{ steps.compiler_host.outputs.host }}" -- -max_total_time=30
 
     - name: Fuzz all protocol message families
       shell: bash
       run: |
-        cargo +nightly fuzz run fuzz_protocol_parse -- -max_total_time=30
+        cargo +nightly fuzz run fuzz_protocol_parse --target "${{ steps.compiler_host.outputs.host }}" -- -max_total_time=30

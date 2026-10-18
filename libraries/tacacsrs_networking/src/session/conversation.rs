@@ -70,7 +70,10 @@ impl ClientConversation {
         let _reply_wait = session.awaiting_reply(&request);
         session.send_packet(request).await?;
         let response = session.receive_packet().await?;
-        self.state.validate_response(response.header())?;
+        if let Err(error) = self.state.validate_response(response.header()) {
+            session.reject_malformed_response().await;
+            return Err(error);
+        }
         session.record_terminal_reply(&response);
         Ok(response)
     }

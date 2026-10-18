@@ -595,6 +595,38 @@ impl tacacsrs_networking::ConnectionGuard for DelayConnected {
     }
 }
 
+struct DelayDestinationUntilCertificateExpires {
+    expires_at: std::time::SystemTime,
+    invoked: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl tacacsrs_networking::ConnectionGuard for DelayDestinationUntilCertificateExpires {
+    fn check_destination(&self, _: SocketAddr) -> Result<()> {
+        let entered_at = std::time::SystemTime::now();
+        anyhow::ensure!(
+            entered_at < self.expires_at,
+            "client certificate must be valid when the destination guard starts"
+        );
+        self.invoked
+            .store(true, std::sync::atomic::Ordering::Release);
+        let remaining = self.expires_at.duration_since(entered_at)?;
+        anyhow::ensure!(
+            remaining <= Duration::from_secs(3),
+            "destination guard wait must remain bounded"
+        );
+        std::thread::sleep(remaining);
+        anyhow::ensure!(
+            std::time::SystemTime::now() >= self.expires_at,
+            "client certificate must expire before the destination guard returns"
+        );
+        Ok(())
+    }
+
+    fn check_connected(&self, _: SocketAddr, _: SocketAddr) -> Result<()> {
+        Ok(())
+    }
+}
+
 fn certificate_source(address: SocketAddr, valid_for: Duration) -> Result<CertificateFixture> {
     use openssl::asn1::Asn1Time;
     use openssl::pkey::PKey;
@@ -1064,6 +1096,54 @@ async fn client_certificate_expiry_between_tcp_and_handshake_sends_no_tls_bytes(
     assert_eq!(error.transmission_state(), tacacsrs_networking::TransmissionState::NotSent);
     assert!(format!("{error:#}").contains("Client certificate validity excludes"));
     tokio::time::timeout(Duration::from_secs(2), peer).await???;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn client_certificate_expiry_in_destination_guard_prevents_tcp_attempt() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let fixture = certificate_source(listener.local_addr()?, Duration::from_secs(3))?;
+    let certificate = fixture.certificate.as_slice();
+    let guard_invoked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let endpoint = PreparedEndpoint::tcp(
+        listener.local_addr()?.to_string(),
+        false,
+        None,
+        tacacsrs_networking::ConnectOptions::default(),
+    )
+    .with_certificate_tls(
+        "localhost",
+        None,
+        tacacsrs_networking::CertificateTrust::Certificates {
+            authorities: &[],
+            end_entities: &[certificate],
+        },
+        Some(tacacsrs_networking::CertificateIdentity {
+            certificate,
+            intermediates: &[],
+            public_key_info: None,
+            private_key: &fixture.private_key,
+            private_key_encoding: tacacsrs_networking::PrivateKeyEncoding::Pkcs8,
+        }),
+    )?
+    .with_connection_guard(DelayDestinationUntilCertificateExpires {
+        expires_at: fixture.expires_at,
+        invoked: guard_invoked.clone(),
+    });
+    let client = TacacsClient::connect_prepared(endpoint).await?;
+    let error = tokio::time::timeout(
+        Duration::from_secs(6),
+        client.execute_classified(AccountingExchange::new(accounting_request())),
+    )
+    .await?
+    .unwrap_err();
+    assert_eq!(error.transmission_state(), tacacsrs_networking::TransmissionState::NotSent);
+    assert!(format!("{error:#}").contains("Client certificate validity excludes"));
+    assert!(guard_invoked.load(std::sync::atomic::Ordering::Acquire));
+    assert!(std::time::SystemTime::now() >= fixture.expires_at);
+    assert!(tokio::time::timeout(Duration::from_millis(100), listener.accept())
+        .await
+        .is_err());
     Ok(())
 }
 

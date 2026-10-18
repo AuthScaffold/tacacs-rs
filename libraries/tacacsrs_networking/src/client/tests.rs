@@ -73,19 +73,54 @@ async fn operational_counters_cover_shared_sessions_and_connection_outcomes() {
     assert_eq!(snapshot.connection_aborts, 0);
     assert_eq!(snapshot.connection_failures, 0);
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let reserved_socket = tokio::net::TcpSocket::new_v4().unwrap();
+    reserved_socket
+        .bind("127.0.0.1:0".parse().unwrap())
+        .unwrap();
     let endpoint = PreparedEndpoint::tcp(
-        listener.local_addr().unwrap().to_string(),
+        reserved_socket.local_addr().unwrap().to_string(),
         false,
         None,
-        ConnectOptions::default(),
+        ConnectOptions::default().with_timeout(Duration::from_millis(100)),
     );
     let failed = endpoint.counters();
-    drop(listener);
-    assert!(crate::establish::establish_stream(&endpoint).await.is_err());
-    assert_eq!(failed.snapshot().connection_opens, 1);
-    assert_eq!(failed.snapshot().connection_failures, 1);
-    assert_eq!(failed.snapshot().messages_sent, 0);
+    let result =
+        tokio::time::timeout(Duration::from_secs(2), crate::establish::establish_stream(&endpoint))
+            .await
+            .expect("the bounded TCP connection attempt must finish");
+    let Err(error) = result else {
+        panic!("the bound non-listening TCP socket must refuse the connection");
+    };
+    let native_refusal = error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == std::io::ErrorKind::ConnectionRefused)
+    });
+    let configured_timeout = error.chain().any(|cause| {
+        cause
+            .downcast_ref::<tokio::time::error::Elapsed>()
+            .is_some()
+    });
+    assert!(native_refusal ^ configured_timeout, "unexpected connection error: {error:#}");
+    let snapshot = failed.snapshot();
+    assert_eq!(snapshot.connection_opens, 1);
+    assert_eq!(snapshot.connection_successes, 0);
+    assert_eq!(snapshot.connection_failures, 1);
+    assert_eq!(
+        snapshot.connection_timeouts,
+        if configured_timeout {
+            1
+        } else {
+            0
+        }
+    );
+    assert_eq!(snapshot.connection_closes, 0);
+    assert_eq!(snapshot.connection_aborts, 0);
+    assert_eq!(snapshot.messages_sent, 0);
+    assert_eq!(snapshot.messages_received, 0);
+    assert_eq!(snapshot.errors_received, 0);
+    assert_eq!(snapshot.sessions, 0);
+    assert_eq!(snapshot.diagnostics.connecting, 0);
 }
 
 #[tokio::test]
@@ -107,20 +142,26 @@ use tokio::sync::mpsc;
 
 use tacacsrs_protocol::accounting::reply::AccountingReply;
 use tacacsrs_protocol::accounting::request::AccountingRequest;
+use tacacsrs_protocol::authentication::reply::AuthenticationReply;
+use tacacsrs_protocol::authorization::reply::AuthorizationReply;
+use tacacsrs_protocol::body::TacacsBodyTrait;
 use tacacsrs_protocol::enumerations::{
-    TacacsAccountingFlags, TacacsAccountingStatus, TacacsFlags, TacacsMajorVersion,
+    TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationReplyFlags,
+    TacacsAuthenticationStatus, TacacsAuthorizationStatus, TacacsFlags, TacacsMajorVersion,
     TacacsMinorVersion, TacacsType,
 };
+use tacacsrs_protocol::exchange::FixedExchange;
+use tacacsrs_protocol::exchange::authentication::PapAuthenticationExchange;
+use tacacsrs_protocol::failure::FailureCategory;
 use tacacsrs_protocol::header::Header;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
-use tacacsrs_protocol::body::TacacsBodyTrait;
+use tacacsrs_secrets::SecretBytes;
 
 use super::TacacsClient;
 use super::preflight::{AccountingWatchdogExchange, accounting_watchdog_preflight_request};
 use crate::PreparedEndpoint;
 use crate::codec::{PacketReadResult, PacketReader};
 use crate::establish::{ConnectOptions, ConnectPreflight};
-use tacacsrs_protocol::exchange::FixedExchange;
 use crate::single_connect::SingleConnectionState;
 
 struct TestAccountingExchange(AccountingRequest);
@@ -142,6 +183,28 @@ impl FixedExchange for TestAccountingExchange {
 
     fn decode_reply(self, body: &[u8]) -> anyhow::Result<Self::Reply> {
         AccountingReply::from_bytes(body)
+    }
+}
+
+struct TestAuthorizationExchange;
+
+impl FixedExchange for TestAuthorizationExchange {
+    type Reply = AuthorizationReply;
+
+    fn packet_type(&self) -> TacacsType {
+        TacacsType::TacPlusAuthorisation
+    }
+
+    fn minor_version(&self) -> TacacsMinorVersion {
+        TacacsMinorVersion::TacacsPlusMinorVerDefault
+    }
+
+    fn encode_request(&self) -> anyhow::Result<Vec<u8>> {
+        Ok(Vec::new())
+    }
+
+    fn decode_reply(self, body: &[u8]) -> anyhow::Result<Self::Reply> {
+        AuthorizationReply::from_bytes(body)
     }
 }
 
@@ -185,6 +248,95 @@ fn accounting_success_reply(request: &Packet, flags: TacacsFlags) -> Packet {
         body,
     )
     .unwrap()
+}
+
+fn authentication_request(session_id: u32, sequence: u8) -> Packet {
+    Packet::new(
+        Header {
+            major_version: TacacsMajorVersion::TacacsPlusMajor1,
+            minor_version: TacacsMinorVersion::TacacsPlusMinorVerOne,
+            tacacs_type: TacacsType::TacPlusAuthentication,
+            seq_no: sequence,
+            flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+            session_id,
+            length: 0,
+        },
+        Vec::new(),
+    )
+    .unwrap()
+}
+
+fn authentication_reply(
+    request: &Packet,
+    status: TacacsAuthenticationStatus,
+    flags: TacacsFlags,
+) -> Packet {
+    let body = AuthenticationReply {
+        status,
+        flags: TacacsAuthenticationReplyFlags::empty(),
+        server_msg: String::new(),
+        data: Vec::new(),
+    }
+    .to_bytes()
+    .unwrap();
+    let mut header = request.header().clone();
+    header.seq_no = header.seq_no.wrapping_add(1);
+    header.flags = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG | flags;
+    header.length = u32::try_from(body.len()).unwrap();
+    Packet::new(header, body).unwrap()
+}
+
+async fn execute_with_response_diagnostics<Exchange>(
+    exchange: Exchange,
+    body: Vec<u8>,
+    mutate_header: fn(&mut Header),
+) -> (Result<Exchange::Reply, crate::FixedExchangeError>, crate::StatisticsSnapshot)
+where
+    Exchange: FixedExchange,
+{
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server_task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let PacketReadResult::Success(request) =
+            PacketReader::new(None).read_packet(&mut stream).await
+        else {
+            panic!("request must decode");
+        };
+        let mut header = request.header().clone();
+        header.seq_no = header.seq_no.wrapping_add(1);
+        header.flags = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG;
+        header.length = u32::try_from(body.len()).unwrap();
+        mutate_header(&mut header);
+        let response = Packet::new(header, body).unwrap();
+        stream.write_all(&response.to_bytes()).await.unwrap();
+    });
+
+    let mut endpoint = server_template();
+    endpoint.address = address.to_string();
+    endpoint.single_connection = false;
+    let counters = endpoint.counters();
+    let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(1), client.execute_classified(exchange))
+        .await
+        .expect("the fixed exchange must finish");
+    tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .expect("the test server must finish")
+        .unwrap();
+    (result, counters.snapshot())
+}
+
+fn assert_malformed_exchange_diagnostics(snapshot: &crate::StatisticsSnapshot) {
+    assert_eq!(snapshot.diagnostics.malformed_disconnects, 1);
+    assert_eq!(snapshot.diagnostics.resets, 1);
+    assert_eq!(snapshot.diagnostics.connected, 0);
+    assert_eq!(snapshot.diagnostics.expected_replies, 0);
+    assert_eq!(snapshot.sessions, 0);
+    assert_eq!(
+        snapshot.diagnostics.last_disconnect_reason,
+        Some(crate::DisconnectReason::MalformedPacket)
+    );
 }
 
 fn spawn_accounting_server(
@@ -264,6 +416,66 @@ async fn run_session_exchange(session: &crate::session::ClientSession) {
         .await
         .unwrap();
     session.receive_packet().await.unwrap();
+}
+
+async fn run_two_round_authentication_conversation(
+    second_type: TacacsType,
+) -> (anyhow::Result<Packet>, crate::StatisticsSnapshot, SingleConnectionState, bool) {
+    tokio::time::timeout(Duration::from_secs(3), async move {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let reader = PacketReader::new(None);
+            let PacketReadResult::Success(first) = reader.read_packet(&mut stream).await else {
+                panic!("the first authentication request must decode");
+            };
+            let first_reply = authentication_reply(
+                &first,
+                TacacsAuthenticationStatus::TacPlusAuthenStatusGetpass,
+                TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+            );
+            stream.write_all(&first_reply.to_bytes()).await.unwrap();
+
+            let PacketReadResult::Success(second) = reader.read_packet(&mut stream).await else {
+                panic!("the second authentication request must decode");
+            };
+            let mut second_reply = authentication_reply(
+                &second,
+                TacacsAuthenticationStatus::TacPlusAuthenStatusPass,
+                TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+            );
+            if second_type != TacacsType::TacPlusAuthentication {
+                let mut header = second_reply.header().clone();
+                header.tacacs_type = second_type;
+                second_reply = Packet::new(header, second_reply.body().to_vec()).unwrap();
+            }
+            stream.write_all(&second_reply.to_bytes()).await.unwrap();
+        });
+
+        let mut endpoint = server_template();
+        endpoint.address = address.to_string();
+        let counters = endpoint.counters();
+        let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+        let mut conversation = client.open_conversation().await.unwrap();
+        let session_id = conversation.session_id().unwrap();
+        conversation
+            .round_trip(authentication_request(session_id, 1))
+            .await
+            .unwrap();
+        let result = conversation
+            .round_trip(authentication_request(session_id, 3))
+            .await;
+        if result.is_ok() {
+            conversation.complete().await;
+        }
+        server_task.await.unwrap();
+        let state = client.single_connection_state();
+        let cached = client.shared_connection.current().await.is_some();
+        (result, counters.snapshot(), state, cached)
+    })
+    .await
+    .expect("the two-round native authentication conversation must finish")
 }
 
 #[tokio::test]
@@ -437,9 +649,19 @@ async fn terminal_close_cancels_stalled_tls_setup_without_polling_its_caller() {
     let opening = client.open_conversation();
     tokio::pin!(opening);
     assert!(futures::poll!(&mut opening).is_pending());
-    let (mut peer, _) = listener.accept().await.unwrap();
-    let mut hello = [0; 4096];
-    assert!(peer.read(&mut hello).await.unwrap() > 0);
+    let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
+    let peer = tokio::spawn(async move {
+        let (mut peer, _) = listener.accept().await.unwrap();
+        let mut hello = [0; 4096];
+        assert!(peer.read(&mut hello).await.unwrap() > 0);
+        ready_sender.send(()).unwrap();
+        let mut remaining = Vec::new();
+        peer.read_to_end(&mut remaining).await.unwrap();
+    });
+    tokio::time::timeout(Duration::from_secs(1), ready_receiver)
+        .await
+        .expect("the TLS peer must read ClientHello before terminal close")
+        .unwrap();
     tokio::time::timeout(
         Duration::from_secs(1),
         client.close_and_join(RequestDeadline::after(Duration::from_secs(5)).unwrap()),
@@ -447,8 +669,10 @@ async fn terminal_close_cancels_stalled_tls_setup_without_polling_its_caller() {
     .await
     .unwrap()
     .unwrap();
-    let mut remaining = Vec::new();
-    peer.read_to_end(&mut remaining).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(1), peer)
+        .await
+        .expect("the stalled TLS peer must close")
+        .unwrap();
     assert!(opening.await.is_err());
     assert!(client.open_conversation().await.is_err());
 }
@@ -714,6 +938,441 @@ async fn executes_fixed_exchange_over_dedicated_transport() {
 }
 
 #[tokio::test]
+async fn dedicated_fixed_exchange_marks_valid_wrong_type_and_minor_as_protocol() {
+    let body = AccountingReply {
+        status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
+        server_msg: String::new(),
+        data: String::new(),
+    }
+    .to_bytes()
+    .unwrap();
+    for mutate in [
+        (|header: &mut Header| header.tacacs_type = TacacsType::TacPlusAuthorisation)
+            as fn(&mut Header),
+        |header| header.minor_version = TacacsMinorVersion::TacacsPlusMinorVerOne,
+    ] {
+        let (result, snapshot) = execute_with_response_diagnostics(
+            TestAccountingExchange(accounting_watchdog_preflight_request()),
+            body.clone(),
+            mutate,
+        )
+        .await;
+        let Err(error) = result else {
+            panic!("the invalid response header must fail");
+        };
+        assert_eq!(error.transmission_state(), crate::TransmissionState::OutcomeUnknown);
+        assert_eq!(error.known_category(), Some(FailureCategory::Protocol));
+        assert_malformed_exchange_diagnostics(&snapshot);
+    }
+}
+
+#[tokio::test]
+async fn malformed_fixed_reply_bodies_and_pap_getpass_are_protocol_failures() {
+    let malformed_accounting = execute_with_response_diagnostics(
+        TestAccountingExchange(accounting_watchdog_preflight_request()),
+        vec![0],
+        |_| {},
+    )
+    .await;
+    let malformed_authorization =
+        execute_with_response_diagnostics(TestAuthorizationExchange, vec![0], |_| {}).await;
+    let malformed_authentication = execute_with_response_diagnostics(
+        PapAuthenticationExchange::new(
+            "admin",
+            SecretBytes::new(b"password".to_vec()),
+            "tty0",
+            "192.0.2.1",
+            15,
+        ),
+        vec![0],
+        |_| {},
+    )
+    .await;
+    let getpass = AuthenticationReply {
+        status: TacacsAuthenticationStatus::TacPlusAuthenStatusGetpass,
+        flags: TacacsAuthenticationReplyFlags::empty(),
+        server_msg: "Password:".to_owned(),
+        data: Vec::new(),
+    }
+    .to_bytes()
+    .unwrap();
+    let nonterminal_pap = execute_with_response_diagnostics(
+        PapAuthenticationExchange::new(
+            "admin",
+            SecretBytes::new(b"password".to_vec()),
+            "tty0",
+            "192.0.2.1",
+            15,
+        ),
+        getpass,
+        |_| {},
+    )
+    .await;
+
+    for (result, snapshot) in [
+        (malformed_accounting.0.map(|_| ()), malformed_accounting.1),
+        (malformed_authorization.0.map(|_| ()), malformed_authorization.1),
+        (malformed_authentication.0.map(|_| ()), malformed_authentication.1),
+        (nonterminal_pap.0.map(|_| ()), nonterminal_pap.1),
+    ] {
+        let error = result.unwrap_err();
+        assert_eq!(error.transmission_state(), crate::TransmissionState::OutcomeUnknown);
+        assert_eq!(error.known_category(), Some(FailureCategory::Protocol));
+        assert_malformed_exchange_diagnostics(&snapshot);
+    }
+}
+
+#[tokio::test]
+async fn early_dedicated_header_rejections_count_one_malformed_disconnect() {
+    for mutate in [
+        (|header: &mut Header| header.session_id = header.session_id.wrapping_add(1))
+            as fn(&mut Header),
+        |header| header.seq_no = header.seq_no.wrapping_add(2),
+    ] {
+        let body = AccountingReply {
+            status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
+            server_msg: String::new(),
+            data: String::new(),
+        }
+        .to_bytes()
+        .unwrap();
+        let (result, snapshot) = execute_with_response_diagnostics(
+            TestAccountingExchange(accounting_watchdog_preflight_request()),
+            body,
+            mutate,
+        )
+        .await;
+        let error = result.unwrap_err();
+        assert_eq!(error.transmission_state(), crate::TransmissionState::OutcomeUnknown);
+        assert_eq!(error.known_category(), Some(FailureCategory::Protocol));
+        assert_malformed_exchange_diagnostics(&snapshot);
+    }
+}
+
+#[tokio::test]
+async fn dedicated_parser_rejection_counts_one_malformed_disconnect() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server_task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let PacketReadResult::Success(_) = PacketReader::new(None).read_packet(&mut stream).await
+        else {
+            panic!("the request must decode");
+        };
+        stream.write_all(&[0; 12]).await.unwrap();
+    });
+    let mut endpoint = server_template();
+    endpoint.address = address.to_string();
+    endpoint.single_connection = false;
+    let counters = endpoint.counters();
+    let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+    let error = client
+        .execute_classified(TestAccountingExchange(accounting_watchdog_preflight_request()))
+        .await
+        .unwrap_err();
+    assert_eq!(error.transmission_state(), crate::TransmissionState::OutcomeUnknown);
+    assert_eq!(error.known_category(), Some(FailureCategory::Protocol));
+    tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_malformed_exchange_diagnostics(&counters.snapshot());
+}
+
+#[tokio::test]
+async fn invalid_single_connect_first_reply_is_not_promoted() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server_task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let PacketReadResult::Success(request) =
+            PacketReader::new(None).read_packet(&mut stream).await
+        else {
+            panic!("the request must decode");
+        };
+        let mut reply =
+            accounting_success_reply(&request, TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG);
+        let mut header = reply.header().clone();
+        header.tacacs_type = TacacsType::TacPlusAuthorisation;
+        reply = Packet::new(header, reply.body().to_vec()).unwrap();
+        stream.write_all(&reply.to_bytes()).await.unwrap();
+    });
+    let mut endpoint = server_template();
+    endpoint.address = address.to_string();
+    let counters = endpoint.counters();
+    let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+    let error = tokio::time::timeout(
+        Duration::from_secs(1),
+        client.execute_classified(TestAccountingExchange(accounting_watchdog_preflight_request())),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(error.known_category(), Some(FailureCategory::Protocol));
+    tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(client.shared_connection.current().await.is_none());
+    assert_eq!(client.single_connection_state(), SingleConnectionState::Initial);
+    assert_malformed_exchange_diagnostics(&counters.snapshot());
+}
+
+#[tokio::test]
+async fn late_dedicated_conversation_header_rejection_cancels_promotion() {
+    let (result, snapshot, state, cached) =
+        run_two_round_authentication_conversation(TacacsType::TacPlusAccounting).await;
+    assert!(result.is_err());
+    assert_eq!(state, SingleConnectionState::Initial);
+    assert!(!cached);
+    assert_malformed_exchange_diagnostics(&snapshot);
+}
+
+#[tokio::test]
+async fn valid_interactive_conversation_promotes_after_terminal_reply() {
+    let (result, snapshot, state, cached) =
+        run_two_round_authentication_conversation(TacacsType::TacPlusAuthentication).await;
+    assert_eq!(
+        AuthenticationReply::from_packet(&result.unwrap())
+            .unwrap()
+            .status,
+        TacacsAuthenticationStatus::TacPlusAuthenStatusPass
+    );
+    assert_eq!(state, SingleConnectionState::Supported);
+    assert!(cached);
+    assert_eq!(snapshot.diagnostics.malformed_disconnects, 0);
+    assert_eq!(snapshot.sessions, 1);
+}
+
+#[tokio::test]
+async fn local_conversation_request_rejection_sends_no_packet_and_is_not_malformed() {
+    use tokio::io::AsyncReadExt;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server_task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut byte = [0];
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), stream.read(&mut byte))
+                .await
+                .is_err(),
+            "local request rejection must not send bytes"
+        );
+    });
+    let mut endpoint = server_template();
+    endpoint.address = address.to_string();
+    endpoint.single_connection = false;
+    let counters = endpoint.counters();
+    let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+    let mut conversation = tokio::time::timeout(Duration::from_secs(1), client.open_conversation())
+        .await
+        .expect("the local-validation conversation setup must finish")
+        .unwrap();
+    let wrong_session = conversation.session_id().unwrap().wrapping_add(1);
+    assert!(tokio::time::timeout(
+        Duration::from_secs(1),
+        conversation.round_trip(authentication_request(wrong_session, 1)),
+    )
+    .await
+    .expect("the local request rejection must finish")
+    .is_err());
+    tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .unwrap()
+        .unwrap();
+    let snapshot = counters.snapshot();
+    assert_eq!(snapshot.messages_sent, 0);
+    assert_eq!(snapshot.diagnostics.malformed_disconnects, 0);
+    assert_eq!(snapshot.sessions, 0);
+}
+
+#[tokio::test]
+async fn shared_body_decoder_failure_does_not_abort_another_live_session() {
+    use tokio::io::AsyncReadExt;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (release_sender, release_receiver) = tokio::sync::oneshot::channel();
+    let server_task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let reader = PacketReader::new(None);
+        let PacketReadResult::Success(probe) = reader.read_packet(&mut stream).await else {
+            panic!("the probe request must decode");
+        };
+        stream
+            .write_all(
+                &accounting_success_reply(&probe, TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG)
+                    .to_bytes(),
+            )
+            .await
+            .unwrap();
+        let PacketReadResult::Success(first) = reader.read_packet(&mut stream).await else {
+            panic!("the first shared request must decode");
+        };
+        let PacketReadResult::Success(second) = reader.read_packet(&mut stream).await else {
+            panic!("the second shared request must decode");
+        };
+        let mut malformed_header = first.header().clone();
+        malformed_header.seq_no = malformed_header.seq_no.wrapping_add(1);
+        malformed_header.flags = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG;
+        malformed_header.length = 1;
+        stream
+            .write_all(&Packet::new(malformed_header, vec![0]).unwrap().to_bytes())
+            .await
+            .unwrap();
+        stream
+            .write_all(&accounting_success_reply(&second, TacacsFlags::empty()).to_bytes())
+            .await
+            .unwrap();
+        let _ = release_receiver.await;
+        let mut remaining = Vec::new();
+        let _ = stream.read_to_end(&mut remaining).await;
+    });
+    let mut endpoint = server_template();
+    endpoint.address = address.to_string();
+    let counters = endpoint.counters();
+    let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        client.execute(TestAccountingExchange(accounting_watchdog_preflight_request())),
+    )
+    .await
+    .expect("the shared-connection probe must finish")
+    .unwrap();
+    let first =
+        client.execute_classified(TestAccountingExchange(accounting_watchdog_preflight_request()));
+    let second =
+        client.execute_classified(TestAccountingExchange(accounting_watchdog_preflight_request()));
+    let (first, second) =
+        tokio::time::timeout(Duration::from_secs(1), async { tokio::join!(first, second) })
+            .await
+            .unwrap();
+    let results = [first.map(|_| ()), second.map(|_| ())];
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    let error = results.into_iter().find_map(Result::err).unwrap();
+    assert_eq!(error.known_category(), Some(FailureCategory::Protocol));
+    assert!(client.shared_connection.current().await.is_some());
+    let snapshot = counters.snapshot();
+    assert_eq!(snapshot.diagnostics.malformed_disconnects, 0);
+    assert_eq!(snapshot.sessions, 2);
+    let _ = release_sender.send(());
+    client
+        .close_and_join(crate::RequestDeadline::after(Duration::from_secs(1)).unwrap())
+        .await
+        .unwrap_or_else(|error| {
+            assert!(
+                error.chain().any(|cause| cause
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::UnexpectedEof)),
+                "unexpected shutdown error: {error:#}"
+            );
+        });
+    tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn valid_terminal_denial_and_server_error_remain_successful_replies() {
+    for status in [
+        TacacsAuthenticationStatus::TacPlusAuthenStatusFail,
+        TacacsAuthenticationStatus::TacPlusAuthenStatusError,
+    ] {
+        let body = AuthenticationReply {
+            status,
+            flags: TacacsAuthenticationReplyFlags::empty(),
+            server_msg: String::new(),
+            data: Vec::new(),
+        }
+        .to_bytes()
+        .unwrap();
+        let (reply, snapshot) = execute_with_response_diagnostics(
+            PapAuthenticationExchange::new(
+                "admin",
+                SecretBytes::new(b"password".to_vec()),
+                "tty0",
+                "192.0.2.1",
+                15,
+            ),
+            body,
+            |_| {},
+        )
+        .await;
+        let reply = reply.unwrap();
+        assert_eq!(reply.status, status);
+        assert_eq!(snapshot.diagnostics.malformed_disconnects, 0);
+        assert_eq!(snapshot.sessions, 1);
+    }
+
+    let authorization = AuthorizationReply {
+        status: TacacsAuthorizationStatus::TacPlusError,
+        server_msg: String::new(),
+        data: String::new(),
+        args: Vec::new(),
+    }
+    .to_bytes()
+    .unwrap();
+    let (reply, snapshot) =
+        execute_with_response_diagnostics(TestAuthorizationExchange, authorization, |_| {}).await;
+    assert_eq!(reply.unwrap().status, TacacsAuthorizationStatus::TacPlusError);
+    assert_eq!(snapshot.diagnostics.malformed_disconnects, 0);
+    assert_eq!(snapshot.sessions, 1);
+}
+
+#[tokio::test]
+async fn header_and_body_eof_remain_uncategorized_transport_failures() {
+    for body_eof in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let PacketReadResult::Success(request) =
+                PacketReader::new(None).read_packet(&mut stream).await
+            else {
+                panic!("request must decode");
+            };
+            if body_eof {
+                let mut header = request.header().clone();
+                header.seq_no = 2;
+                header.length = 1;
+                stream.write_all(&header.to_bytes()).await.unwrap();
+            } else {
+                stream.write_all(&[0xc0]).await.unwrap();
+            }
+            stream.shutdown().await.unwrap();
+        });
+        let mut endpoint = server_template();
+        endpoint.address = address.to_string();
+        endpoint.single_connection = false;
+        let counters = endpoint.counters();
+        let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+        let result = client
+            .execute_classified(TestAccountingExchange(accounting_watchdog_preflight_request()))
+            .await;
+        let Err(error) = result else {
+            panic!("the truncated response must fail");
+        };
+        assert_eq!(error.known_category(), None);
+        assert_eq!(error.transmission_state(), crate::TransmissionState::OutcomeUnknown);
+        client
+            .close_and_join(crate::RequestDeadline::after(Duration::from_secs(1)).unwrap())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), server_task)
+            .await
+            .unwrap()
+            .unwrap();
+        let diagnostics = counters.snapshot().diagnostics;
+        assert_eq!(diagnostics.read_errors, 1);
+        assert_eq!(diagnostics.resets, 1);
+        assert_eq!(diagnostics.peer_disconnects, 1);
+        assert_eq!(diagnostics.malformed_disconnects, 0);
+    }
+}
+
+#[tokio::test]
 async fn expired_exchange_does_not_open_a_connection() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut endpoint = server_template();
@@ -728,6 +1387,7 @@ async fn expired_exchange_does_not_open_a_connection() {
         .await
         .unwrap_err();
     assert_eq!(error.transmission_state(), crate::TransmissionState::NotSent);
+    assert_eq!(error.known_category(), None);
     let accept = listener.accept();
     tokio::pin!(accept);
     assert!(futures::poll!(&mut accept).is_pending());
@@ -788,6 +1448,7 @@ async fn deadline_classifies_stalled_tls_and_sent_requests() {
         let snapshot = counters.snapshot();
         assert_eq!(snapshot.diagnostics.connecting, 0);
         assert_eq!(snapshot.diagnostics.expected_replies, 0);
+        assert_eq!(snapshot.diagnostics.malformed_disconnects, 0);
         if tls {
             assert_eq!(snapshot.connection_failures, 1);
             assert_eq!(snapshot.connection_timeouts, 1);

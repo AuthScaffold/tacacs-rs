@@ -220,7 +220,7 @@ impl AsyncRead for ManagedReader {
         match &result {
             Poll::Ready(Ok(())) if has_capacity && buffer.filled().len() == before => {
                 if let Some(counters) = &self.0.counters {
-                    counters.disconnect_reason(crate::DisconnectReason::Peer);
+                    counters.io_error(&io::Error::from(io::ErrorKind::UnexpectedEof), false);
                 }
                 self.0.graceful.store(true, Ordering::Release);
             }
@@ -301,6 +301,32 @@ impl AsyncWrite for ManagedWriter {
 mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use super::*;
+
+    async fn bounded_native_io<T>(future: impl std::future::Future<Output = T>) -> T {
+        tokio::time::timeout(std::time::Duration::from_secs(3), future)
+            .await
+            .expect("native test I/O must finish")
+    }
+
+    async fn counted_tcp_transport(
+    ) -> (BoxedTransport, Arc<TransportControl>, tokio::net::TcpStream, crate::ServerCounters) {
+        let listener = bounded_native_io(tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .await
+            .unwrap();
+        let (client, peer) = bounded_native_io(async {
+            tokio::join!(
+                tokio::net::TcpStream::connect(listener.local_addr().unwrap()),
+                listener.accept()
+            )
+        })
+        .await;
+        let owner = crate::ServerCounters::default();
+        let counters = owner.for_connection(None, None);
+        let transport = BoxedTransport::new(client.unwrap()).with_counters(counters);
+        let (transport, control) =
+            TransportControl::wrap(transport, Arc::new(TransportActivity::default()));
+        (transport, control, peer.unwrap().0, owner)
+    }
 
     async fn expiring_transport() -> (BoxedTransport, tokio::net::TcpStream) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -396,5 +422,241 @@ mod tests {
             writer.write_all(b"late").await.unwrap_err().kind(),
             io::ErrorKind::ConnectionAborted
         );
+    }
+
+    #[tokio::test]
+    async fn peer_eof_and_higher_layer_report_count_one_read_error() {
+        let (transport, control, mut peer, owner) = counted_tcp_transport().await;
+        let (mut reader, writer) = transport.split();
+        bounded_native_io(peer.shutdown()).await.unwrap();
+        let mut byte = [0; 1];
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), reader.read(&mut byte))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        assert_eq!(bounded_native_io(reader.read(&mut byte)).await.unwrap(), 0);
+        control
+            .counters
+            .as_ref()
+            .unwrap()
+            .io_error(&io::Error::from(io::ErrorKind::UnexpectedEof), false);
+        let diagnostics = owner.snapshot().diagnostics;
+        assert_eq!(diagnostics.read_errors, 1);
+        assert_eq!(diagnostics.write_errors, 0);
+        assert_eq!(diagnostics.peer_disconnects, 0);
+        drop(reader);
+        drop(writer);
+        control.close();
+        let diagnostics = owner.snapshot().diagnostics;
+        assert_eq!(diagnostics.read_errors, 1);
+        assert_eq!(diagnostics.resets, 1);
+        assert_eq!(diagnostics.peer_disconnects, 1);
+        assert_eq!(diagnostics.malformed_disconnects, 0);
+    }
+
+    #[tokio::test]
+    async fn zero_capacity_read_does_not_record_eof() {
+        let (transport, control, mut peer, owner) = counted_tcp_transport().await;
+        let (mut reader, writer) = transport.split();
+        bounded_native_io(peer.shutdown()).await.unwrap();
+        let mut empty = [];
+        let mut empty_buffer = ReadBuf::new(&mut empty);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            std::future::poll_fn(|context| {
+                Pin::new(&mut reader).poll_read(context, &mut empty_buffer)
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let diagnostics = owner.snapshot().diagnostics;
+        assert_eq!(diagnostics.read_errors, 0);
+        assert_eq!(diagnostics.peer_disconnects, 0);
+        assert!(diagnostics.last_disconnect_reason.is_none());
+        drop(reader);
+        drop(writer);
+        control.close();
+        assert_eq!(owner.snapshot().diagnostics.read_errors, 0);
+    }
+
+    #[tokio::test]
+    async fn valid_reads_and_writes_do_not_change_error_counters() {
+        let (transport, control, mut peer, owner) = counted_tcp_transport().await;
+        let (mut reader, mut writer) = transport.split();
+        bounded_native_io(peer.write_all(b"x")).await.unwrap();
+        let mut byte = [0; 1];
+        bounded_native_io(reader.read_exact(&mut byte))
+            .await
+            .unwrap();
+        assert_eq!(&byte, b"x");
+        bounded_native_io(writer.write_all(b"y")).await.unwrap();
+        bounded_native_io(peer.read_exact(&mut byte)).await.unwrap();
+        assert_eq!(&byte, b"y");
+        let snapshot = owner.snapshot();
+        assert_eq!(snapshot.messages_received, 0);
+        assert_eq!(snapshot.messages_sent, 0);
+        assert_eq!(snapshot.diagnostics.read_errors, 0);
+        assert_eq!(snapshot.diagnostics.write_errors, 0);
+        control.close();
+    }
+
+    #[tokio::test]
+    async fn native_tls_close_notify_counts_one_tls_read_error() {
+        use openssl::pkey::PKey;
+        use openssl::ssl::{SslContext, SslMethod, SslVersion, Ssl};
+        use openssl::x509::X509;
+
+        let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../lde/containers/config/certificates");
+        let mut context = SslContext::builder(SslMethod::tls_server()).unwrap();
+        context
+            .set_min_proto_version(Some(SslVersion::TLS1_3))
+            .unwrap();
+        context
+            .set_max_proto_version(Some(SslVersion::TLS1_3))
+            .unwrap();
+        context
+            .set_certificate(
+                X509::from_pem(&std::fs::read(fixtures.join("server.crt")).unwrap())
+                    .unwrap()
+                    .as_ref(),
+            )
+            .unwrap();
+        context
+            .set_private_key(
+                PKey::private_key_from_pem(&std::fs::read(fixtures.join("server.key")).unwrap())
+                    .unwrap()
+                    .as_ref(),
+            )
+            .unwrap();
+        context.check_private_key().unwrap();
+        let context = context.build();
+        let authority = X509::from_pem(&std::fs::read(fixtures.join("ca.crt")).unwrap())
+            .unwrap()
+            .to_der()
+            .unwrap();
+        let listener = bounded_native_io(tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .await
+            .unwrap();
+        let endpoint = crate::PreparedEndpoint::tcp(
+            listener.local_addr().unwrap().to_string(),
+            false,
+            None,
+            crate::ConnectOptions::default(),
+        )
+        .with_certificate_tls(
+            "localhost",
+            None,
+            crate::CertificateTrust::Certificates {
+                authorities: &[&authority],
+                end_entities: &[],
+            },
+            None,
+        )
+        .unwrap();
+        let owner = endpoint.counters();
+        let server_handshake_barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let client_handshake_barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let server_barrier = server_handshake_barrier.clone();
+        let client_barrier = client_handshake_barrier.clone();
+        let (close_sender, close_receiver) = tokio::sync::oneshot::channel();
+        let server_task = tokio::spawn(async move {
+            let (tcp, _) =
+                tokio::time::timeout(std::time::Duration::from_secs(1), listener.accept())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            let mut stream =
+                tokio_openssl::SslStream::new(Ssl::new(&context).unwrap(), tcp).unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(1), Pin::new(&mut stream).accept())
+                .await
+                .unwrap()
+                .unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(1), server_barrier.wait())
+                .await
+                .unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(1), client_barrier.wait())
+                .await
+                .unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(1), close_receiver)
+                .await
+                .unwrap()
+                .unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(1), stream.shutdown())
+                .await
+                .unwrap()
+                .unwrap();
+        });
+        let transport = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            crate::establish::establish_stream(&endpoint),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), server_handshake_barrier.wait())
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), client_handshake_barrier.wait())
+            .await
+            .unwrap();
+        let (transport, control) =
+            TransportControl::wrap(transport, Arc::new(TransportActivity::default()));
+        let (mut reader, writer) = transport.split();
+        let mut byte = [0; 1];
+        let length = {
+            let read = reader.read(&mut byte);
+            tokio::pin!(read);
+            assert!(futures::poll!(&mut read).is_pending());
+            close_sender.send(()).unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(1), &mut read)
+                .await
+                .unwrap()
+                .unwrap()
+        };
+        assert_eq!(length, 0);
+        let diagnostics = owner.snapshot().diagnostics;
+        assert_eq!(diagnostics.read_errors, 1);
+        assert_eq!(diagnostics.tls_read_errors, 1);
+        assert_eq!(diagnostics.write_errors, 0);
+        assert_eq!(diagnostics.tls_write_errors, 0);
+        drop(reader);
+        drop(writer);
+        control.close();
+        tokio::time::timeout(std::time::Duration::from_secs(1), server_task)
+            .await
+            .unwrap()
+            .unwrap();
+        let diagnostics = owner.snapshot().diagnostics;
+        assert_eq!(diagnostics.read_errors, 1);
+        assert_eq!(diagnostics.tls_read_errors, 1);
+        assert_eq!(diagnostics.resets, 1);
+        assert_eq!(diagnostics.peer_disconnects, 1);
+        assert_eq!(diagnostics.malformed_disconnects, 0);
+    }
+
+    #[tokio::test]
+    async fn existing_disconnect_reason_remains_authoritative_at_eof() {
+        let (transport, control, mut peer, owner) = counted_tcp_transport().await;
+        control
+            .counters
+            .as_ref()
+            .unwrap()
+            .disconnect_reason(crate::DisconnectReason::MalformedPacket);
+        let (mut reader, writer) = transport.split();
+        bounded_native_io(peer.shutdown()).await.unwrap();
+        assert_eq!(bounded_native_io(reader.read(&mut [0; 1])).await.unwrap(), 0);
+        assert_eq!(owner.snapshot().diagnostics.read_errors, 0);
+        drop(reader);
+        drop(writer);
+        control.close();
+        let diagnostics = owner.snapshot().diagnostics;
+        assert_eq!(diagnostics.resets, 1);
+        assert_eq!(diagnostics.peer_disconnects, 0);
+        assert_eq!(diagnostics.malformed_disconnects, 1);
     }
 }

@@ -54,9 +54,16 @@ impl RevocationEvidenceLifetime {
         self,
         operation: impl std::future::Future<Output = Result<Output>>,
     ) -> Result<Output> {
-        self.check()?;
-        let result = self.deadline.run(operation).await??;
-        self.check()?;
+        self.check()
+            .context(crate::statistics::CertificateFailure)?;
+        let result = match self.deadline.run(operation).await {
+            Ok(result) => result?,
+            Err(error) => {
+                return Err(error).context(crate::statistics::CertificateFailure);
+            }
+        };
+        self.check()
+            .context(crate::statistics::CertificateFailure)?;
         Ok(result)
     }
 }

@@ -17,7 +17,6 @@ from types import SimpleNamespace
 import pytest
 
 import build_provenance
-from build_provenance import ProvenanceError, capture_provenance, collect_build_provenance
 
 # Import the sibling module (pytest prepends the test directory to sys.path).
 from release_manifest import (
@@ -93,7 +92,7 @@ def _build_records(workspace, artifacts, source="s", version="0.0.0-dev"):
             text = f"tacon {version}" if command[-1] == "--version" and command[0] not in ("rustc", "cargo") else f"{command[0]} build-host-version"
             return SimpleNamespace(returncode=0, stdout=text)
 
-        capture_provenance(
+        build_provenance.capture_provenance(
             workspace=workspace, package_root=package_root, package_dir=staging,
             upload_dir=upload_dir, asset_name=asset_name, package_name="tacon",
             artifact_filename=artifact_filename, artifact_kind="bin", source=source,
@@ -442,29 +441,35 @@ def evidence(tmp_path):
 
 
 def test_provenance_rejects_source_and_version_mismatches(evidence):
-    with pytest.raises(ProvenanceError, match="source mismatch"):
-        collect_build_provenance(**dict(evidence, source="other"))
-    with pytest.raises(ProvenanceError, match="version mismatch"):
-        collect_build_provenance(**dict(evidence, versions={"tacon": "9.9.9"}))
+    with pytest.raises(build_provenance.ProvenanceError, match="source mismatch"):
+        build_provenance.collect_build_provenance(**dict(evidence, source="other"))
+    with pytest.raises(build_provenance.ProvenanceError, match="version mismatch"):
+        build_provenance.collect_build_provenance(
+            **dict(evidence, versions={"tacon": "9.9.9"})
+        )
 
 
 def test_provenance_checks_source_version_without_computed_override(evidence):
     manifest = evidence["workspace"] / "executables/tacon/Cargo.toml"
     manifest.write_text('[package]\nname = "tacon"\nversion = "9.9.9"\n')
-    with pytest.raises(ProvenanceError, match="version mismatch"):
-        collect_build_provenance(**evidence)
+    with pytest.raises(build_provenance.ProvenanceError, match="version mismatch"):
+        build_provenance.collect_build_provenance(**evidence)
 
 
 def test_provenance_requires_a_record_for_every_archive(evidence):
     next(evidence["provenance_dir"].iterdir()).unlink()
-    with pytest.raises(ProvenanceError, match="every release archive"):
-        collect_build_provenance(**evidence)
+    with pytest.raises(
+        build_provenance.ProvenanceError, match="every release archive"
+    ):
+        build_provenance.collect_build_provenance(**evidence)
 
 
 def test_provenance_rejects_stale_archive(evidence):
     (evidence["artifacts_dir"] / "stale.tar.gz").write_bytes(b"stale")
-    with pytest.raises(ProvenanceError, match="every release archive"):
-        collect_build_provenance(**evidence)
+    with pytest.raises(
+        build_provenance.ProvenanceError, match="every release archive"
+    ):
+        build_provenance.collect_build_provenance(**evidence)
 
 
 def test_provenance_rejects_changed_uploaded_record(evidence):
@@ -472,8 +477,8 @@ def test_provenance_rejects_changed_uploaded_record(evidence):
     record = json.loads(path.read_text())
     record["toolchain"]["rustc"] = "another compiler"
     path.write_text(json.dumps(record))
-    with pytest.raises(ProvenanceError, match="embedded provenance"):
-        collect_build_provenance(**evidence)
+    with pytest.raises(build_provenance.ProvenanceError, match="embedded provenance"):
+        build_provenance.collect_build_provenance(**evidence)
 
 
 @pytest.mark.parametrize("asset,filename,extension", [
@@ -484,15 +489,17 @@ def test_provenance_rejects_changed_archived_payload(evidence, asset, filename, 
     staging = evidence["workspace"].parent / "staging" / asset
     (staging / filename).write_bytes(b"tampered binary")
     _archive(staging, evidence["artifacts_dir"] / (asset + extension))
-    with pytest.raises(ProvenanceError, match="file hashes"):
-        collect_build_provenance(**evidence)
+    with pytest.raises(build_provenance.ProvenanceError, match="file hashes"):
+        build_provenance.collect_build_provenance(**evidence)
 
 
 def test_provenance_rejects_changed_staged_sidecar(evidence):
     path = next(evidence["provenance_dir"].iterdir())
     (evidence["artifacts_dir"] / path.name).write_text("different record")
-    with pytest.raises(ProvenanceError, match="staged provenance differs"):
-        collect_build_provenance(**evidence)
+    with pytest.raises(
+        build_provenance.ProvenanceError, match="staged provenance differs"
+    ):
+        build_provenance.collect_build_provenance(**evidence)
 
 
 def test_provenance_cli_captures_hydrated_version_and_identical_copies(tmp_path, monkeypatch):
@@ -543,5 +550,5 @@ def test_capture_requires_build_tool_versions(evidence, monkeypatch, tool):
     def runner(command, **kwargs):
         return SimpleNamespace(returncode=1 if command[0] == tool else 0, stdout="version")
 
-    with pytest.raises(ProvenanceError, match="cannot inspect"):
+    with pytest.raises(build_provenance.ProvenanceError, match="cannot inspect"):
         build_provenance.tool_output([tool, "--version"], runner)

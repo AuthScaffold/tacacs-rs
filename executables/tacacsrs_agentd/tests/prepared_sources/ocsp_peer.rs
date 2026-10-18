@@ -121,9 +121,17 @@ async fn signed_response_with_responder(
 }
 
 fn peer_context(staple: Option<Vec<u8>>, issuer: &X509) -> Result<SslContext> {
+    peer_context_with_version(staple, issuer, SslVersion::TLS1_3)
+}
+
+fn peer_context_with_version(
+    staple: Option<Vec<u8>>,
+    issuer: &X509,
+    version: SslVersion,
+) -> Result<SslContext> {
     let certificate = X509::from_pem(&std::fs::read(fixtures().join("server.crt"))?)?;
     let key = PKey::private_key_from_pem(&std::fs::read(fixtures().join("server.key"))?)?;
-    peer_context_with_identity(staple, issuer, &certificate, &key)
+    peer_context_with_identity(staple, issuer, &certificate, &key, version)
 }
 
 fn peer_context_with_identity(
@@ -131,10 +139,11 @@ fn peer_context_with_identity(
     issuer: &X509,
     certificate: &X509,
     key: &PKey<openssl::pkey::Private>,
+    version: SslVersion,
 ) -> Result<SslContext> {
     let mut context = SslContext::builder(SslMethod::tls_server())?;
-    context.set_min_proto_version(Some(SslVersion::TLS1_3))?;
-    context.set_max_proto_version(Some(SslVersion::TLS1_3))?;
+    context.set_min_proto_version(Some(version))?;
+    context.set_max_proto_version(Some(version))?;
     context.set_certificate(certificate)?;
     context.set_private_key(key)?;
     context.cert_store_mut().add_cert(issuer.clone())?;
@@ -148,6 +157,99 @@ fn peer_context_with_identity(
         })?;
     }
     Ok(context.build())
+}
+
+async fn protocol_mismatch_with_required_evidence(
+    require_staple: bool,
+    crls: Option<Vec<Vec<u8>>>,
+) -> Result<()> {
+    let issuer = X509::from_pem(&std::fs::read(fixtures().join("ca.crt"))?)?;
+    let context = peer_context_with_version(None, &issuer, SslVersion::TLS1_2)?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let client_certificate = X509::from_pem(&std::fs::read(fixtures().join("client.crt"))?)?;
+    let client_key = PKey::private_key_from_pem(&std::fs::read(fixtures().join("client.key"))?)?;
+    let mut server = TacacsPlusServerBuilder::new(
+        "protocol-mismatch",
+        TacacsPlusServerType::all(),
+        "127.0.0.1",
+        listener.local_addr()?.port(),
+    )
+    .with_tls_client_certificate(
+        Some(client_certificate.to_der()?),
+        Some(client_key.private_key_to_pkcs8()?),
+    )
+    .build();
+    server.server_authentication = Some(tacacsrs_config::TlsClientServerAuthentication::default());
+    let authentication = server
+        .server_authentication
+        .as_mut()
+        .context("test server authentication")?;
+    authentication.ca_certs = Some(tacacsrs_config::ServerAuthenticationCaCerts {
+        central_truststore_reference: None,
+        inline_definition: Some(tacacsrs_config::truststore::CertsInlineDefinition {
+            certificate: vec![tacacsrs_config::truststore::CertsCertificate {
+                name: "issuer".to_owned(),
+                cert_data: issuer.to_der()?,
+            }],
+        }),
+    });
+    authentication.require_stapled_ocsp =
+        require_staple.then_some(tacacsrs_config::tacacsrs::RequireStapledOcsp {
+            max_response_age_seconds: 300,
+        });
+    authentication.require_crls = crls.map(|lists| tacacsrs_config::tacacsrs::RequireCrls {
+        max_age_seconds: 300,
+        crl: Some(lists),
+        evidence_reference: None,
+    });
+    let endpoint = prepare_endpoint(&server, PrepareOptions::default())?;
+    let counters = endpoint.counters();
+    let peer = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await?;
+        let mut stream = SslStream::new(Ssl::new(&context)?, tcp)?;
+        anyhow::ensure!(
+            Pin::new(&mut stream).accept().await.is_err(),
+            "the TLS protocol mismatch must reject the peer"
+        );
+        Ok::<(), anyhow::Error>(())
+    });
+
+    let client = TacacsClient::connect_prepared(endpoint).await?;
+    let conversation =
+        tokio::time::timeout(Duration::from_secs(5), client.open_conversation()).await?;
+    let Err(error) = conversation else {
+        anyhow::bail!("the TLS protocol mismatch must reject the client");
+    };
+    assert!(
+        error
+            .chain()
+            .any(|cause| cause.downcast_ref::<openssl::error::ErrorStack>().is_some()),
+        "the native TLS error must remain in the chain: {error:#}"
+    );
+    let diagnostics = counters.snapshot().diagnostics;
+    assert_eq!(diagnostics.handshake_attempts, 1);
+    assert_eq!(diagnostics.handshake_failures, 1);
+    assert_eq!(diagnostics.tls_protocol_mismatches, 1);
+    assert_eq!(diagnostics.tls_other_errors, 0);
+    assert_eq!(diagnostics.tls_certificate_errors, 0);
+    assert_eq!(counters.snapshot().cert_errors, 0);
+    client
+        .close_and_join(RequestDeadline::after(Duration::ZERO)?)
+        .await?;
+    tokio::time::timeout(Duration::from_secs(5), peer).await???;
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_protocol_failure_precedes_missing_required_evidence() -> Result<()> {
+    let directory = Directory::new()?;
+    let crl = super::crl_peer::make_crl(&directory.0, false, false).await?;
+    tokio::time::timeout(Duration::from_secs(20), async {
+        protocol_mismatch_with_required_evidence(true, None).await?;
+        protocol_mismatch_with_required_evidence(false, Some(vec![crl.clone()])).await?;
+        protocol_mismatch_with_required_evidence(true, Some(vec![crl])).await
+    })
+    .await?
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -343,8 +445,13 @@ async fn probe_authentication_certificate_ocsp_signer(
         None,
     )
     .await?;
-    let context =
-        peer_context_with_identity(Some(response), &issuer, &peer_certificate, &peer_key)?;
+    let context = peer_context_with_identity(
+        Some(response),
+        &issuer,
+        &peer_certificate,
+        &peer_key,
+        SslVersion::TLS1_3,
+    )?;
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let mut server = TacacsPlusServerBuilder::new(
         "ocsp-dual-role",

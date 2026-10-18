@@ -376,13 +376,10 @@ mod tests {
         let mut name = X509NameBuilder::new().unwrap();
         name.append_entry_by_text("CN", "localhost").unwrap();
         let name = name.build();
-        let now = i64::try_from(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        )
-        .unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         for (start, end) in [(now - 120, now - 60), (now + 60, now + 120)] {
             let mut certificate = X509::builder().unwrap();
             certificate.set_version(2).unwrap();
@@ -390,10 +387,10 @@ mod tests {
             certificate.set_issuer_name(&name).unwrap();
             certificate.set_pubkey(&key).unwrap();
             certificate
-                .set_not_before(&Asn1Time::from_unix(start).unwrap())
+                .set_not_before(&Asn1Time::from_unix(start.try_into().unwrap()).unwrap())
                 .unwrap();
             certificate
-                .set_not_after(&Asn1Time::from_unix(end).unwrap())
+                .set_not_after(&Asn1Time::from_unix(end.try_into().unwrap()).unwrap())
                 .unwrap();
             certificate
                 .sign(&key, openssl::hash::MessageDigest::sha256())

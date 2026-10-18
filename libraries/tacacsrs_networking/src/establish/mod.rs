@@ -2,12 +2,13 @@
 //!
 //! The dispatcher uses prepared transport values without interpreting configuration.
 
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::endpoint::PreparedEndpoint;
 use crate::destination::connect_tcp;
+use crate::endpoint::{ConnectionGuard, PreparedEndpoint};
 use crate::transport::BoxedTransport;
 use crate::transport::{tls, tls_psk};
 
@@ -115,6 +116,29 @@ pub(crate) async fn establish_stream_until(
     }
 }
 
+struct CertificateTlsConnectionGuard<'a> {
+    endpoint: &'a PreparedEndpoint,
+    host_guard: Option<&'a dyn ConnectionGuard>,
+}
+
+impl ConnectionGuard for CertificateTlsConnectionGuard<'_> {
+    fn check_destination(&self, destination: SocketAddr) -> Result<()> {
+        if let Some(host_guard) = self.host_guard {
+            host_guard.check_destination(destination)?;
+        }
+        self.endpoint
+            .validate_client_certificate_dates()
+            .context(crate::statistics::CertificateFailure)
+    }
+
+    fn check_connected(&self, peer: SocketAddr, local: SocketAddr) -> Result<()> {
+        match self.host_guard {
+            Some(host_guard) => host_guard.check_connected(peer, local),
+            None => Ok(()),
+        }
+    }
+}
+
 async fn establish_transport(
     endpoint: &PreparedEndpoint,
     attempt: &mut crate::statistics::ConnectionAttempt,
@@ -124,10 +148,7 @@ async fn establish_transport(
         .context(crate::statistics::CertificateFailure)?;
     let operation = establish_transport_inner(endpoint, attempt);
     match endpoint.revocation_evidence_lifetime() {
-        Some(lifetime) => lifetime
-            .run(operation)
-            .await
-            .context(crate::statistics::CertificateFailure),
+        Some(lifetime) => lifetime.run(operation).await,
         None => operation.await,
     }
 }
@@ -145,14 +166,23 @@ async fn establish_transport_inner(
         options.timeout,
     );
 
+    let certificate_tls_guard =
+        matches!(&endpoint.transport, PreparedTransport::Tls(_)).then(|| {
+            CertificateTlsConnectionGuard {
+                endpoint,
+                host_guard: endpoint.connection_guard.as_deref(),
+            }
+        });
+    let connection_guard = certificate_tls_guard
+        .as_ref()
+        .map(|guard| guard as &dyn ConnectionGuard)
+        .or(endpoint.connection_guard.as_deref());
     let tcp_stream = match options.timeout {
-        Some(dur) => {
-            tokio::time::timeout(dur, connect_tcp(address, endpoint.connection_guard.as_deref()))
-                .await
-                .with_context(|| format!("Connection to TACACS+ server {address} timed out"))?
-                .with_context(|| format!("Failed to establish TCP connection to {address}"))?
-        }
-        None => connect_tcp(address, endpoint.connection_guard.as_deref())
+        Some(dur) => tokio::time::timeout(dur, connect_tcp(address, connection_guard))
+            .await
+            .with_context(|| format!("Connection to TACACS+ server {address} timed out"))?
+            .with_context(|| format!("Failed to establish TCP connection to {address}"))?,
+        None => connect_tcp(address, connection_guard)
             .await
             .with_context(|| format!("Failed to establish TCP connection to {address}"))?,
     };

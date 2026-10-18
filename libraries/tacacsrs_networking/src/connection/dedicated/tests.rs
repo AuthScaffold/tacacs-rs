@@ -1,8 +1,10 @@
 use tacacsrs_protocol::enumerations::{TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType};
+use tacacsrs_protocol::constants::TACACS_MAX_BODY_LENGTH;
 use tacacsrs_protocol::header::Header;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
 
 use super::DedicatedConnection;
+use crate::exchange_error::ProtocolFailure;
 use crate::single_connect::SingleConnectionState;
 use crate::transport::mock::MockTransport;
 
@@ -109,4 +111,30 @@ async fn upgrade_reuses_stream_for_multiplexed_connection() {
 
     let connection = dedicated.upgrade();
     assert_eq!(connection.single_connection_state(), SingleConnectionState::Supported);
+}
+
+#[tokio::test]
+async fn invalid_header_and_excessive_body_are_protocol_failures() {
+    let invalid_header = [0xff; 12];
+    let mut excessive_header = test_packet(2, TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG, &[])
+        .header()
+        .clone();
+    excessive_header.length = TACACS_MAX_BODY_LENGTH + 1;
+
+    for bytes in [invalid_header, excessive_header.to_bytes()] {
+        let mock = MockTransport::new();
+        let coordinator = mock.coordinator();
+        coordinator
+            .add_reply_bytes(TEST_SESSION_ID, 2, bytes.to_vec())
+            .await
+            .unwrap();
+        let mut connection = DedicatedConnection::new(mock, None);
+        connection
+            .write_packet(test_packet(1, TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG, b"request"))
+            .await
+            .unwrap();
+
+        let error = connection.read_packet().await.unwrap_err();
+        assert!(error.is::<ProtocolFailure>(), "unexpected error: {error:#}");
+    }
 }

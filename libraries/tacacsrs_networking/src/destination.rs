@@ -55,6 +55,7 @@ async fn connect_after_resolution(
     resolution: impl std::future::Future<Output = anyhow::Result<Vec<SocketAddr>>> + Send,
     guard: Option<&dyn ConnectionGuard>,
 ) -> anyhow::Result<tokio::net::TcpStream> {
+    let mut last_error = None;
     for server_address in resolution.await? {
         if let Some(guard) = guard {
             guard.check_destination(server_address)?;
@@ -80,11 +81,15 @@ async fn connect_after_resolution(
                 log::error!(
                     target: "tacacsrs_networking::destination::connect_tcp",
                     "Failed to connect to TACACS+ server {server_address}: {e}");
+                last_error = Some(e);
             }
         }
     }
 
-    Err(anyhow::Error::msg("Failed to connect to any TACACS+ server address"))
+    match last_error {
+        Some(error) => Err(error).context("Failed to connect to any TACACS+ server address"),
+        None => Err(anyhow::Error::msg("Failed to connect to any TACACS+ server address")),
+    }
 }
 
 /// Resolves server addresses off the runtime threads.
@@ -100,6 +105,60 @@ async fn resolve_server_addresses(hostname: &str) -> anyhow::Result<Vec<SocketAd
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn all_failed_addresses_preserve_last_native_error() {
+        use super::connect_after_resolution;
+
+        let failed_address = "127.0.0.1:0".parse().unwrap();
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            connect_after_resolution(std::future::ready(Ok(vec![failed_address])), None),
+        )
+        .await
+        .expect("the invalid native destination must finish")
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "Failed to connect to any TACACS+ server address");
+        assert!(error
+            .chain()
+            .any(|cause| cause.downcast_ref::<std::io::Error>().is_some()));
+    }
+
+    #[tokio::test]
+    async fn failed_address_does_not_prevent_later_success() {
+        use super::connect_after_resolution;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listening_address = listener.local_addr().unwrap();
+        let stream = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            connect_after_resolution(
+                std::future::ready(Ok(vec!["127.0.0.1:0".parse().unwrap(), listening_address])),
+                None,
+            ),
+        )
+        .await
+        .expect("the available native destination must finish")
+        .unwrap();
+
+        assert_eq!(stream.peer_addr().unwrap(), listening_address);
+    }
+
+    #[tokio::test]
+    async fn empty_resolution_has_no_native_error_cause() {
+        use super::{SocketAddr, connect_after_resolution};
+
+        let error =
+            connect_after_resolution(std::future::ready(Ok(Vec::<SocketAddr>::new())), None)
+                .await
+                .unwrap_err();
+
+        assert_eq!(error.to_string(), "Failed to connect to any TACACS+ server address");
+        assert!(!error
+            .chain()
+            .any(|cause| cause.downcast_ref::<std::io::Error>().is_some()));
+    }
+
     #[tokio::test]
     async fn changed_resolution_cannot_bypass_destination_guard() {
         use super::{ConnectionGuard, SocketAddr, connect_after_resolution};

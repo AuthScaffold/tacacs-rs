@@ -19,31 +19,6 @@ import pytest
 import build_provenance
 import rehearse_linux
 
-# Import the sibling module (pytest prepends the test directory to sys.path).
-from rehearse_linux import (
-    BASH_PLUGIN_EXPORTS,
-    DEFAULT_TARGET,
-    PRODUCTS,
-    RehearsalError,
-    asset_suffix,
-    build_product_command,
-    export_source,
-    ldd_missing_libraries,
-    linux_artifact_names,
-    main,
-    missing_dynamic_exports,
-    parse_dynamic_exports,
-    preflight_tools,
-    read_versions_file,
-    rehearse,
-    require_empty_output,
-    sbom_command,
-    sha256_file,
-    verify_recorded_digests,
-    version_output_matches,
-    write_checksums,
-)
-
 
 def _write(path: Path, content: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -57,7 +32,7 @@ def _write(path: Path, content: str) -> Path:
 
 
 def test_products_are_the_four_supported_linux_products() -> None:
-    names = [product["asset_name"] for product in PRODUCTS]
+    names = [product["asset_name"] for product in rehearse_linux.PRODUCTS]
     assert names == [
         "tacon-linux-gnu-x86_64",
         "tacacsrs-agentd-linux-gnu-x86_64",
@@ -65,42 +40,47 @@ def test_products_are_the_four_supported_linux_products() -> None:
         "tacacsrs-bash-plugin-linux-gnu-x86_64",
     ]
     # Exactly one cdylib (the Bash plugin); the rest are executables.
-    kinds = [product["artifact_kind"] for product in PRODUCTS]
+    kinds = [product["artifact_kind"] for product in rehearse_linux.PRODUCTS]
     assert kinds.count("cdylib") == 1
     assert kinds.count("bin") == 3
 
 
 def test_linux_artifact_names_bin() -> None:
-    assert linux_artifact_names("tacon", "bin") == ("tacon", "tacon")
+    assert rehearse_linux.linux_artifact_names("tacon", "bin") == ("tacon", "tacon")
 
 
 def test_linux_artifact_names_cdylib() -> None:
-    assert linux_artifact_names("tacacsrs_bash_plugin", "cdylib") == (
+    assert rehearse_linux.linux_artifact_names("tacacsrs_bash_plugin", "cdylib") == (
         "libtacacsrs_bash_plugin.so",
         "libtacacsrs_bash_plugin",
     )
 
 
 def test_linux_artifact_names_rejects_unknown_kind() -> None:
-    with pytest.raises(RehearsalError):
-        linux_artifact_names("tacon", "staticlib")
+    with pytest.raises(rehearse_linux.RehearsalError):
+        rehearse_linux.linux_artifact_names("tacon", "staticlib")
 
 
 def test_asset_suffix_strips_package_prefix() -> None:
-    assert asset_suffix("tacon-linux-gnu-x86_64", "tacon") == "linux-gnu-x86_64"
     assert (
-        asset_suffix("tacacsrs-agentd-linux-gnu-x86_64", "tacacsrs-agentd")
+        rehearse_linux.asset_suffix("tacon-linux-gnu-x86_64", "tacon")
+        == "linux-gnu-x86_64"
+    )
+    assert (
+        rehearse_linux.asset_suffix(
+            "tacacsrs-agentd-linux-gnu-x86_64", "tacacsrs-agentd"
+        )
         == "linux-gnu-x86_64"
     )
 
 
 def test_asset_suffix_without_prefix_returns_asset() -> None:
-    assert asset_suffix("custom-asset", "tacon") == "custom-asset"
+    assert rehearse_linux.asset_suffix("custom-asset", "tacon") == "custom-asset"
 
 
 def test_asset_suffix_rejects_bare_package_name() -> None:
-    with pytest.raises(RehearsalError):
-        asset_suffix("tacon", "tacon")
+    with pytest.raises(rehearse_linux.RehearsalError):
+        rehearse_linux.asset_suffix("tacon", "tacon")
 
 
 # ---------------------------------------------------------------------------
@@ -110,29 +90,29 @@ def test_asset_suffix_rejects_bare_package_name() -> None:
 
 def test_read_versions_file_valid(tmp_path: Path) -> None:
     path = _write(tmp_path / "v.json", json.dumps({"tacon": "2026.424.0"}))
-    assert read_versions_file(path) == {"tacon": "2026.424.0"}
+    assert rehearse_linux.read_versions_file(path) == {"tacon": "2026.424.0"}
 
 
 def test_read_versions_file_empty_object(tmp_path: Path) -> None:
     path = _write(tmp_path / "v.json", "{}")
-    assert read_versions_file(path) == {}
+    assert rehearse_linux.read_versions_file(path) == {}
 
 
 def test_read_versions_file_rejects_non_object(tmp_path: Path) -> None:
     path = _write(tmp_path / "v.json", "[]")
-    with pytest.raises(RehearsalError):
-        read_versions_file(path)
+    with pytest.raises(rehearse_linux.RehearsalError):
+        rehearse_linux.read_versions_file(path)
 
 
 def test_read_versions_file_rejects_non_string_values(tmp_path: Path) -> None:
     path = _write(tmp_path / "v.json", json.dumps({"tacon": 1}))
-    with pytest.raises(RehearsalError):
-        read_versions_file(path)
+    with pytest.raises(rehearse_linux.RehearsalError):
+        rehearse_linux.read_versions_file(path)
 
 
 def test_preflight_tools_reports_missing_in_order() -> None:
     present = {"git", "cargo", "tar"}
-    missing = preflight_tools(
+    missing = rehearse_linux.preflight_tools(
         ["git", "objcopy", "cargo", "nm"],
         which=lambda tool: tool if tool in present else None,
     )
@@ -140,14 +120,16 @@ def test_preflight_tools_reports_missing_in_order() -> None:
 
 
 def test_preflight_tools_all_present() -> None:
-    assert preflight_tools(["git"], which=lambda tool: "/usr/bin/git") == []
+    assert rehearse_linux.preflight_tools(
+        ["git"], which=lambda tool: "/usr/bin/git"
+    ) == []
 
 
 def test_output_accepts_new_or_empty_directory(tmp_path):
     output = tmp_path / "output"
-    require_empty_output(output)
+    rehearse_linux.require_empty_output(output)
     output.mkdir()
-    require_empty_output(output)
+    rehearse_linux.require_empty_output(output)
 
 
 @pytest.mark.parametrize("existing", ["release/stale.tar.gz", "source/Cargo.toml", ".hidden"])
@@ -159,23 +141,30 @@ def test_rehearsal_rejects_repeated_output_before_tools(tmp_path, monkeypatch, e
         pytest.fail("a tool ran before the output guard")
 
     monkeypatch.setattr("rehearse_linux.preflight_tools", unexpected)
-    with pytest.raises(RehearsalError, match="new or empty directory"):
-        rehearse(source=str(tmp_path), revision="HEAD", versions_path="unused", output=str(output))
+    with pytest.raises(rehearse_linux.RehearsalError, match="new or empty directory"):
+        rehearse_linux.rehearse(
+            source=str(tmp_path),
+            revision="HEAD",
+            versions_path="unused",
+            output=str(output),
+        )
     assert stale.read_text() == "keep this file"
 
 
 def test_build_cache_never_writes_into_source_checkout(tmp_path):
-    from rehearse_linux import build_directory
     source = tmp_path / "source"
     output = tmp_path / "rehearsal"
-    assert build_directory(source, output, None) == output / "build"
-    assert build_directory(source, output, str(tmp_path / "cache")) == tmp_path / "cache"
+    assert rehearse_linux.build_directory(source, output, None) == output / "build"
+    assert (
+        rehearse_linux.build_directory(source, output, str(tmp_path / "cache"))
+        == tmp_path / "cache"
+    )
     forbidden_paths = [source, source / "target", output]
     for name in ("source", "staging", "packaged", "release", "rollback"):
         forbidden_paths.extend((output / name, output / name / "target"))
     for forbidden in forbidden_paths:
-        with pytest.raises(RehearsalError, match="build cache"):
-            build_directory(source, output, str(forbidden))
+        with pytest.raises(rehearse_linux.RehearsalError, match="build cache"):
+            rehearse_linux.build_directory(source, output, str(forbidden))
 
 
 def test_output_rejects_file_and_symlink(tmp_path):
@@ -183,8 +172,10 @@ def test_output_rejects_file_and_symlink(tmp_path):
     link = tmp_path / "link"
     link.symlink_to(tmp_path / "absent", target_is_directory=True)
     for output in (regular, link):
-        with pytest.raises(RehearsalError, match="new or empty directory"):
-            require_empty_output(output)
+        with pytest.raises(
+            rehearse_linux.RehearsalError, match="new or empty directory"
+        ):
+            rehearse_linux.require_empty_output(output)
 
 
 # ---------------------------------------------------------------------------
@@ -193,14 +184,16 @@ def test_output_rejects_file_and_symlink(tmp_path):
 
 
 def test_build_product_command_bin_release() -> None:
-    command = build_product_command(PRODUCTS[0], DEFAULT_TARGET, ["--release"])
+    command = rehearse_linux.build_product_command(
+        rehearse_linux.PRODUCTS[0], rehearse_linux.DEFAULT_TARGET, ["--release"]
+    )
     assert command == [
         "cargo",
         "build",
         "--release",
         "--locked",
         "--target",
-        DEFAULT_TARGET,
+        rehearse_linux.DEFAULT_TARGET,
         "--package",
         "tacon",
         "--bins",
@@ -208,13 +201,15 @@ def test_build_product_command_bin_release() -> None:
 
 
 def test_build_product_command_cdylib_debug() -> None:
-    command = build_product_command(PRODUCTS[3], DEFAULT_TARGET, [])
+    command = rehearse_linux.build_product_command(
+        rehearse_linux.PRODUCTS[3], rehearse_linux.DEFAULT_TARGET, []
+    )
     assert command == [
         "cargo",
         "build",
         "--locked",
         "--target",
-        DEFAULT_TARGET,
+        rehearse_linux.DEFAULT_TARGET,
         "--package",
         "tacacsrs-bash-plugin",
         "--lib",
@@ -222,14 +217,19 @@ def test_build_product_command_cdylib_debug() -> None:
 
 
 def test_build_product_command_adds_features() -> None:
-    product = dict(PRODUCTS[0], features="extra feature")
-    command = build_product_command(product, DEFAULT_TARGET, ["--release"])
+    product = dict(rehearse_linux.PRODUCTS[0], features="extra feature")
+    command = rehearse_linux.build_product_command(
+        product, rehearse_linux.DEFAULT_TARGET, ["--release"]
+    )
     assert command[-2:] == ["--features", "extra feature"]
 
 
 def test_sbom_command_matches_generate_sbom_flags() -> None:
-    command = sbom_command(
-        Path("/w/executables/tacon/Cargo.toml"), "binaries", DEFAULT_TARGET, "json"
+    command = rehearse_linux.sbom_command(
+        Path("/w/executables/tacon/Cargo.toml"),
+        "binaries",
+        rehearse_linux.DEFAULT_TARGET,
+        "json",
     )
     assert command == [
         "cargo",
@@ -241,16 +241,16 @@ def test_sbom_command_matches_generate_sbom_flags() -> None:
         "--describe",
         "binaries",
         "--target",
-        DEFAULT_TARGET,
+        rehearse_linux.DEFAULT_TARGET,
         "--target-in-filename",
     ]
 
 
 def test_sbom_command_appends_features_after_target_in_filename() -> None:
-    command = sbom_command(
+    command = rehearse_linux.sbom_command(
         Path("/w/libraries/tacacsrs_bash_plugin/Cargo.toml"),
         "all-cargo-targets",
-        DEFAULT_TARGET,
+        rehearse_linux.DEFAULT_TARGET,
         "xml",
         "feat-a feat-b",
     )
@@ -273,19 +273,26 @@ _NM_SAMPLE = """\
 
 
 def test_parse_dynamic_exports_keeps_defined_symbols() -> None:
-    exports = parse_dynamic_exports(_NM_SAMPLE)
+    exports = rehearse_linux.parse_dynamic_exports(_NM_SAMPLE)
     assert {"on_shell_execve", "plugin_init", "plugin_uninit", "some_data"} <= exports
     assert "__errno_location" not in exports
     assert "__cxa_finalize" not in exports
 
 
 def test_missing_dynamic_exports_none_when_all_present() -> None:
-    assert missing_dynamic_exports(_NM_SAMPLE, BASH_PLUGIN_EXPORTS) == []
+    assert (
+        rehearse_linux.missing_dynamic_exports(
+            _NM_SAMPLE, rehearse_linux.BASH_PLUGIN_EXPORTS
+        )
+        == []
+    )
 
 
 def test_missing_dynamic_exports_reports_absent() -> None:
     nm_output = "0000000000003990 T plugin_init\n"
-    missing = missing_dynamic_exports(nm_output, BASH_PLUGIN_EXPORTS)
+    missing = rehearse_linux.missing_dynamic_exports(
+        nm_output, rehearse_linux.BASH_PLUGIN_EXPORTS
+    )
     assert missing == ["plugin_uninit", "on_shell_execve"]
 
 
@@ -295,17 +302,23 @@ def test_ldd_missing_libraries_detects_not_found() -> None:
         "\tlibssl.so.3 => /lib/x86_64-linux-gnu/libssl.so.3 (0x00007f00)\n"
         "\tlibmissing.so.1 => not found\n"
     )
-    assert ldd_missing_libraries(ldd_output) == ["libmissing.so.1 => not found"]
+    assert rehearse_linux.ldd_missing_libraries(ldd_output) == [
+        "libmissing.so.1 => not found"
+    ]
 
 
 def test_ldd_missing_libraries_empty_when_resolved() -> None:
     ldd_output = "\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f00)\n"
-    assert ldd_missing_libraries(ldd_output) == []
+    assert rehearse_linux.ldd_missing_libraries(ldd_output) == []
 
 
 def test_version_output_matches() -> None:
-    assert version_output_matches("tacon 2026.424.0\n", "2026.424.0")
-    assert not version_output_matches("tacon 2026.424.0\n", "2026.424.1")
+    assert rehearse_linux.version_output_matches(
+        "tacon 2026.424.0\n", "2026.424.0"
+    )
+    assert not rehearse_linux.version_output_matches(
+        "tacon 2026.424.0\n", "2026.424.1"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -318,9 +331,11 @@ def test_verify_recorded_digests_matches(tmp_path: Path) -> None:
     archive = _write(release / "tacon-linux-gnu-x86_64.tar.gz", "archive-bytes")
     manifest = _write(
         tmp_path / "manifest.json",
-        json.dumps({"artifacts": {archive.name: sha256_file(archive)}}),
+        json.dumps(
+            {"artifacts": {archive.name: rehearse_linux.sha256_file(archive)}}
+        ),
     )
-    assert verify_recorded_digests(manifest, release) == []
+    assert rehearse_linux.verify_recorded_digests(manifest, release) == []
 
 
 def test_verify_recorded_digests_detects_corruption(tmp_path: Path) -> None:
@@ -328,10 +343,12 @@ def test_verify_recorded_digests_detects_corruption(tmp_path: Path) -> None:
     archive = _write(release / "a.tar.gz", "original")
     manifest = _write(
         tmp_path / "manifest.json",
-        json.dumps({"artifacts": {archive.name: sha256_file(archive)}}),
+        json.dumps(
+            {"artifacts": {archive.name: rehearse_linux.sha256_file(archive)}}
+        ),
     )
     archive.write_text("tampered", encoding="utf-8")
-    errors = verify_recorded_digests(manifest, release)
+    errors = rehearse_linux.verify_recorded_digests(manifest, release)
     assert errors and "digest mismatch" in errors[0]
 
 
@@ -342,7 +359,7 @@ def test_verify_recorded_digests_detects_missing(tmp_path: Path) -> None:
         tmp_path / "manifest.json",
         json.dumps({"artifacts": {"gone.tar.gz": "0" * 64}}),
     )
-    errors = verify_recorded_digests(manifest, release)
+    errors = rehearse_linux.verify_recorded_digests(manifest, release)
     assert errors and "is missing" in errors[0]
 
 
@@ -350,11 +367,11 @@ def test_write_checksums_covers_other_files_only(tmp_path: Path) -> None:
     release = tmp_path / "release"
     first = _write(release / "a.tar.gz", "alpha")
     second = _write(release / "b.tar.gz", "bravo")
-    checksums = write_checksums(release)
+    checksums = rehearse_linux.write_checksums(release)
     assert checksums.name == "checksums-sha256.txt"
     lines = checksums.read_text(encoding="utf-8").splitlines()
-    assert f"{sha256_file(first)}  a.tar.gz" in lines
-    assert f"{sha256_file(second)}  b.tar.gz" in lines
+    assert f"{rehearse_linux.sha256_file(first)}  a.tar.gz" in lines
+    assert f"{rehearse_linux.sha256_file(second)}  b.tar.gz" in lines
     # The checksums file never lists itself.
     assert all("checksums-sha256.txt" not in line for line in lines)
     assert lines == sorted(lines)
@@ -393,7 +410,7 @@ def test_export_source_excludes_untracked(tmp_path: Path) -> None:
     _write(repo / "untracked.txt", "working tree only")
 
     destination = tmp_path / "export"
-    export_source(repo, "HEAD", destination)
+    rehearse_linux.export_source(repo, "HEAD", destination)
 
     assert (destination / "committed.txt").read_text(encoding="utf-8") == "tracked content"
     assert (destination / "nested" / "keep.txt").is_file()
@@ -407,11 +424,11 @@ def test_export_source_excludes_untracked(tmp_path: Path) -> None:
 
 def test_main_reports_rehearsal_error(monkeypatch, capsys, tmp_path: Path) -> None:
     def _fail(**_kwargs):
-        raise RehearsalError("boom")
+        raise rehearse_linux.RehearsalError("boom")
 
     monkeypatch.setattr("rehearse_linux.rehearse", _fail)
     versions = _write(tmp_path / "v.json", "{}")
-    code = main(
+    code = rehearse_linux.main(
         [
             "--source",
             str(tmp_path),
@@ -431,21 +448,31 @@ def test_main_reports_rehearsal_error(monkeypatch, capsys, tmp_path: Path) -> No
 def test_validate_artifact_rejects_every_ldd_failure(tmp_path, monkeypatch, output):
     _write(tmp_path / "tacon", "binary")
     monkeypatch.setattr(rehearse_linux, "_capture_lenient", lambda *args, **kwargs: (1, output))
-    with pytest.raises(RehearsalError, match="native dependency inspection failed"):
-        rehearse_linux.validate_artifact(PRODUCTS[0], staging_dir=tmp_path, artifact_filename="tacon", versions={})
+    with pytest.raises(
+        rehearse_linux.RehearsalError,
+        match="native dependency inspection failed",
+    ):
+        rehearse_linux.validate_artifact(
+            rehearse_linux.PRODUCTS[0],
+            staging_dir=tmp_path,
+            artifact_filename="tacon",
+            versions={},
+        )
 
 
 def test_local_sbom_generates_both_formats_then_delegates_to_shared_helper(tmp_path, monkeypatch):
     export = tmp_path / "source"
-    package_root = export / PRODUCTS[0]["package_root"]
+    package_root = export / rehearse_linux.PRODUCTS[0]["package_root"]
     package_root.mkdir(parents=True)
     commands = []
-    product = dict(PRODUCTS[0], features="feature-a")
+    product = dict(rehearse_linux.PRODUCTS[0], features="feature-a")
 
     monkeypatch.setattr(rehearse_linux, "_run", lambda command, **kwargs: commands.append(command))
     staged = rehearse_linux.generate_and_stage_sbom(
         product=product, export_dir=export, staging_dir=tmp_path / "staged",
-        suffix="linux", target=DEFAULT_TARGET, versions={"tacon": "1.2.3"},
+        suffix="linux",
+        target=rehearse_linux.DEFAULT_TARGET,
+        versions={"tacon": "1.2.3"},
         env={"GITHUB_WORKSPACE": "/private/checkout", "GITHUB_REPOSITORY": "AuthScaffold/tacacs-rs"},
         python="python-fixture",
     )
@@ -475,7 +502,7 @@ def test_local_product_uses_capture_cli_before_archive(tmp_path, monkeypatch):
     output = tmp_path / "output"
     release = output / "release"
     release.mkdir(parents=True)
-    product = PRODUCTS[0]
+    product = rehearse_linux.PRODUCTS[0]
     _write(export / product["package_root"] / "Cargo.toml", '[package]\nname="tacon"\nversion="1.2.3"\n')
     _write(export / "Cargo.lock", "hydrated lock")
     commands = []
@@ -499,7 +526,10 @@ def test_local_product_uses_capture_cli_before_archive(tmp_path, monkeypatch):
     monkeypatch.setattr(build_provenance, "tool_output", lambda *args, **kwargs: "tacon 1.2.3")
     archive = rehearse_linux.process_product(
         product, export_dir=export, output_dir=output, build_dir=output / "build",
-        release_dir=release, target=DEFAULT_TARGET, profile="release", versions={"tacon": "1.2.3"},
+        release_dir=release,
+        target=rehearse_linux.DEFAULT_TARGET,
+        profile="release",
+        versions={"tacon": "1.2.3"},
         base_env={}, commit="committed-source", python="python-fixture",
     )
     assert archive.is_file()
@@ -507,7 +537,11 @@ def test_local_product_uses_capture_cli_before_archive(tmp_path, monkeypatch):
     record = json.loads(sidecar.read_text())
     assert record["source"]["commit"] == "committed-source"
     assert record["package"]["version"] == "1.2.3"
-    assert record["build"] == {"target": DEFAULT_TARGET, "profile": "release", "features": {"requested": [], "defaultEnabled": True}}
+    assert record["build"] == {
+        "target": rehearse_linux.DEFAULT_TARGET,
+        "profile": "release",
+        "features": {"requested": [], "defaultEnabled": True},
+    }
     embedded = output / "staging" / product["asset_name"] / "build-provenance.json"
     assert sidecar.read_bytes() == embedded.read_bytes()
     capture_index = next(index for index, command in enumerate(commands) if command[0] == "python-fixture")

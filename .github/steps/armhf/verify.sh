@@ -26,7 +26,7 @@ echo "==> ARMhf unit and integration tests (including subprocess execution)"
 timeout --signal=TERM --kill-after=30s 40m \
     cargo test --locked \
         -p tacacsrs-agentd -p tacacsrs-agent-health -p tacon \
-        -p tacacsrs-networking -p tacacsrs-agent \
+        -p tacacsrs-networking -p tacacsrs-config -p tacacsrs-agent \
         -p tacacsrs-sonic -p tacacsrs-ipc -p tacacsrs-agent-ipc-emulator \
         -- --test-threads=2
 
