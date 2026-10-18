@@ -92,6 +92,27 @@ permissions:
   packages: read
 
 jobs:
+  armhf:
+    name: ARMhf Build and Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Enable ARM subprocess execution
+        run: docker run --rm --privileged tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0 --install arm
+      - name: Build and execute ARMhf coverage
+        run: |
+          docker buildx build --platform linux/amd64 \
+            --file .github/steps/armhf/Dockerfile \
+            --no-cache-filter verify \
+            --output "type=local,dest=${RUNNER_TEMP}/armhf-evidence" .
+      - name: Upload ARMhf evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: armhf-verification
+          path: ${{ runner.temp }}/armhf-evidence
+          if-no-files-found: error
+
   automation-tests:
     name: Delivery Automation Tests
     runs-on: ubuntu-latest
@@ -594,6 +615,7 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     needs:
+      - armhf
       - automation-tests
       - msrv
       - cache-preflight
@@ -604,6 +626,9 @@ jobs:
       - container-build
       - finalize-release-assets
     steps:
+      - name: Require executed ARMhf coverage
+        if: needs.armhf.result != 'success'
+        run: exit 1
       - name: Make sure that all jobs succeeded
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
         run: exit 1
