@@ -19,6 +19,7 @@ pub(crate) enum AttemptFailureKind {
 #[derive(Debug)]
 pub(crate) struct UpstreamRequestError {
     kind: AttemptFailureKind,
+    category: Option<FailureCategory>,
     source: anyhow::Error,
 }
 
@@ -26,6 +27,7 @@ impl UpstreamRequestError {
     pub(crate) fn invalid_request(source: impl Into<anyhow::Error>) -> Self {
         Self {
             kind: AttemptFailureKind::InvalidRequest,
+            category: None,
             source: source.into(),
         }
     }
@@ -33,6 +35,15 @@ impl UpstreamRequestError {
     pub(crate) fn outcome_unknown(source: impl Into<anyhow::Error>) -> Self {
         Self {
             kind: AttemptFailureKind::OutcomeUnknown,
+            category: None,
+            source: source.into(),
+        }
+    }
+
+    pub(crate) fn protocol_error(source: impl Into<anyhow::Error>) -> Self {
+        Self {
+            kind: AttemptFailureKind::OutcomeUnknown,
+            category: Some(FailureCategory::Protocol),
             source: source.into(),
         }
     }
@@ -42,8 +53,10 @@ impl UpstreamRequestError {
             TransmissionState::NotSent => AttemptFailureKind::NotSent,
             TransmissionState::OutcomeUnknown => AttemptFailureKind::OutcomeUnknown,
         };
+        let category = error.known_category();
         Self {
             kind,
+            category,
             source: error.into_error().context(context),
         }
     }
@@ -65,11 +78,15 @@ impl UpstreamRequestError {
                 (FailureCategory::Transport, FailurePhase::Upstream, DeliveryState::OutcomeUnknown)
             }
         };
-        let category = if self.source.is::<tokio::time::error::Elapsed>() {
-            FailureCategory::Deadline
-        } else {
-            category
-        };
+        let category = self.category.unwrap_or_else(|| {
+            if self.source.is::<tokio::time::error::Elapsed>()
+                || self.source.is::<tacacsrs_networking::DeadlineElapsed>()
+            {
+                FailureCategory::Deadline
+            } else {
+                category
+            }
+        });
         ServiceError::new(self.to_string(), FailureFacts::new(category, phase, delivery))
     }
 }
@@ -97,15 +114,27 @@ mod tests {
             UpstreamRequestError::invalid_request(anyhow::anyhow!("failure")).into_service_error();
         let uncertain =
             UpstreamRequestError::outcome_unknown(anyhow::anyhow!("failure")).into_service_error();
+        let malformed_reply =
+            UpstreamRequestError::protocol_error(anyhow::anyhow!("malformed reply"))
+                .into_service_error();
+        let deadline = UpstreamRequestError::outcome_unknown(tacacsrs_networking::DeadlineElapsed)
+            .into_service_error();
         assert_eq!(invalid.message, uncertain.message);
         assert_eq!(invalid.facts.retry_advice(), RetryAdvice::Never);
         assert_eq!(uncertain.facts.retry_advice(), RetryAdvice::Never);
+        assert_eq!(malformed_reply.facts.category(), FailureCategory::Protocol);
+        assert_eq!(malformed_reply.facts.delivery(), DeliveryState::OutcomeUnknown);
+        assert_eq!(malformed_reply.facts.retry_advice(), RetryAdvice::Never);
+        assert_eq!(deadline.facts.category(), FailureCategory::Deadline);
+        assert_eq!(deadline.facts.delivery(), DeliveryState::OutcomeUnknown);
+        assert_eq!(deadline.facts.retry_advice(), RetryAdvice::Never);
         assert_eq!(invalid.facts.delivery(), DeliveryState::NotSent);
         assert_eq!(uncertain.facts.delivery(), DeliveryState::OutcomeUnknown);
         assert_ne!(invalid.facts.category(), uncertain.facts.category());
 
         let unsent = UpstreamRequestError {
             kind: AttemptFailureKind::NotSent,
+            category: None,
             source: anyhow::anyhow!("failure"),
         }
         .into_service_error();

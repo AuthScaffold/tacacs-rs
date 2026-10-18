@@ -256,9 +256,6 @@ def validate_forbidden_guards(metadata: dict, rules: dict) -> list:
     return errors
 
 
-_LIBRARY_KINDS = {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
-
-
 def _has_product_target(pkg: dict, artifact_name: str, artifact_kind: str) -> bool:
     """Return True when a package builds the requested artifact target.
 

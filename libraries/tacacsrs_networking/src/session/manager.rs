@@ -8,6 +8,7 @@ use tacacsrs_protocol::enumerations::{TacacsMajorVersion, TacacsMinorVersion, Ta
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
 use tokio::sync::{Notify, mpsc, oneshot};
 
+use crate::exchange_error::{copy_protocol_failure, protocol_failure};
 use crate::single_connect::SingleConnectionState;
 
 use super::{DuplexChannel, ReservedSessionId, SessionIdAllocator, SharedFixedSession, SharedSession};
@@ -81,7 +82,7 @@ impl ExpectedResponseHeader {
             || header.tacacs_type != self.tacacs_type
             || header.seq_no != self.seq_no
         {
-            anyhow::bail!(
+            return Err(protocol_failure(anyhow::anyhow!(
                 "unexpected TACACS+ response header for session {:#x}: seq_no={}, type={}, version={:?}.{:?}; expected seq_no={}, type={}, version={:?}.{:?}",
                 header.session_id,
                 header.seq_no,
@@ -92,7 +93,7 @@ impl ExpectedResponseHeader {
                 self.tacacs_type,
                 self.major_version,
                 self.minor_version,
-            );
+            )));
         }
         Ok(())
     }
@@ -452,8 +453,23 @@ impl SessionManager {
     ///
     /// Waiting session receivers get `None` and can stop.
     pub(crate) fn close_all_sessions(&self) {
+        self.close_all_sessions_with_error(None);
+    }
+
+    pub(crate) fn close_all_sessions_with_error(&self, error: Option<&anyhow::Error>) {
         let mut duplex_channels = self.routes();
         let session_count = duplex_channels.len();
+        if let Some(error) = error {
+            for entry in duplex_channels.values_mut() {
+                if let ActiveSessionRoute::Fixed { sender, .. } = &mut entry.route {
+                    if let (Some(protocol_error), Some(sender)) =
+                        (copy_protocol_failure(error), sender.take())
+                    {
+                        let _ = sender.send(Err(protocol_error));
+                    }
+                }
+            }
+        }
         duplex_channels.clear();
         drop(duplex_channels);
 
@@ -461,6 +477,44 @@ impl SessionManager {
             target: "tacacsrs_networking::session::manager::close_all_sessions",
             "Closed all {session_count} sessions in the session registry"
         );
+    }
+
+    pub(crate) fn reject_fixed_response(
+        &self,
+        session_id: u32,
+        error: anyhow::Error,
+    ) -> PacketDispatchError {
+        let message = format!("{error:#}");
+        let sender = {
+            let mut routes = self.routes();
+            match routes.get_mut(&session_id) {
+                Some(ActiveSessionEntry {
+                    route: ActiveSessionRoute::Fixed { sender, .. },
+                    ..
+                }) => sender.take(),
+                Some(ActiveSessionEntry {
+                    route: ActiveSessionRoute::Conversation(_),
+                    ..
+                }) => {
+                    return PacketDispatchError::ProtocolViolation {
+                        session_id,
+                        message,
+                    };
+                }
+                None => return PacketDispatchError::UnknownSession(session_id),
+            }
+        };
+
+        match sender {
+            Some(sender) => {
+                let _ = sender.send(Err(error));
+                PacketDispatchError::ProtocolViolation {
+                    session_id,
+                    message,
+                }
+            }
+            None => PacketDispatchError::SessionClosed(session_id),
+        }
     }
 
     /// # Errors
@@ -513,7 +567,7 @@ impl SessionManager {
             }
             DispatchTarget::Fixed { sender, expected } => {
                 if let Err(error) = expected.validate(&packet) {
-                    let message = error.to_string();
+                    let message = format!("{error:#}");
                     let _ = sender.send(Err(error));
                     return Err(PacketDispatchError::ProtocolViolation {
                         session_id,
