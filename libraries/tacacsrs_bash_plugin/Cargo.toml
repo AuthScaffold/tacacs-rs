@@ -13,7 +13,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 anyhow = "1.0.102"
 libc = "0.2"
-tacacsrs-agent-client = { path = "../tacacsrs_agent_client" }
+tacacsrs-ipc = { path = "../tacacsrs_ipc" }
 tacacsrs-protocol = { path = "../tacacsrs_protocol" }
 tokio = { version = "1.52.3", features = ["rt-multi-thread"] }
 

@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use tacacsrs_agent_client::IpcEndpoint;
+use tacacsrs_config::local_services::ListenerEndpoint;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::task::JoinSet;
 
@@ -14,7 +14,7 @@ mod tcp;
 mod unix;
 
 pub(super) async fn serve<Connector: tacacsrs_networking::routed::EndpointConnector>(
-    endpoint: &IpcEndpoint,
+    endpoint: &ListenerEndpoint,
     service: TacacsProxyService<Connector>,
     options: ListenerOptions,
     shutdown: ShutdownReceiver,
@@ -24,10 +24,10 @@ where
     Connector::Connection: crate::upstream::UpstreamConnection,
 {
     match endpoint {
-        IpcEndpoint::Unix(path) => {
+        ListenerEndpoint::Unix(path) => {
             unix::serve(path, service, options, shutdown, registration).await
         }
-        IpcEndpoint::Tcp(address) => {
+        ListenerEndpoint::Tcp(address) => {
             tcp::serve(*address, service, options, shutdown, registration).await
         }
     }

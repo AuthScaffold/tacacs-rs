@@ -6,8 +6,8 @@ use anyhow::Context;
 
 use super::{ProxyListener, accept_loop};
 use crate::runtime::{ListenerRegistration, ShutdownReceiver};
-use crate::services::client_api::listener as client_api_listener;
 use crate::services::tacacs_proxy::TacacsProxyService;
+use crate::services::unix_socket;
 
 pub(super) async fn serve<Connector: tacacsrs_networking::routed::EndpointConnector>(
     path: &Path,
@@ -20,7 +20,7 @@ where
     Connector::Connection: crate::upstream::UpstreamConnection,
 {
     let (listener, socket_guard) =
-        client_api_listener::prepare_unix_listener(path, options.socket_mode()).await?;
+        unix_socket::prepare_unix_listener(path, options.socket_mode()).await?;
     registration.mark_bound();
 
     log::info!(

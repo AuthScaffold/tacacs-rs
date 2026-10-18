@@ -27,6 +27,7 @@ use tacacsrs_sonic::{SonicConfigDb, SonicConnection};
 use tokio_util::sync::CancellationToken;
 
 mod cli;
+mod client_api_listener;
 mod config_filter;
 mod credential_provider;
 mod host_integration;
@@ -287,8 +288,9 @@ impl PreparedService {
             })
         };
 
+        let client_api_listeners = client_api_listener::client_api_listeners(&service);
         supervise_tasks(
-            service.serve_until(cancellation.cancelled()),
+            service.serve_until(cancellation.cancelled(), client_api_listeners),
             host_task,
             supervisor_task,
             cancellation.clone(),

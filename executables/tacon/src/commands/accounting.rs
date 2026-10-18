@@ -1,8 +1,8 @@
 //! TACACS+ Accounting command implementation
 
 use anyhow::Context;
-use tacacsrs_protocol::accounting::{reply::AccountingReply, request::AccountingRequest};
-use tacacsrs_protocol::operations::AccountingOperation;
+use tacacsrs_protocol::accounting::request::AccountingRequest;
+use tacacsrs_protocol::operations::{AccountingOperation, AccountingOperationResponse};
 use tacacsrs_protocol::exchange::accounting::AccountingExchange;
 
 use crate::connection::Connection;
@@ -28,7 +28,7 @@ pub async fn send_accounting_request(
     rem_address: &str,
     cmd: &str,
     cmd_args: Option<&Vec<String>>,
-) -> anyhow::Result<AccountingReply> {
+) -> anyhow::Result<AccountingOperationResponse> {
     let request = build_accounting_request(user, port, rem_address, cmd, cmd_args);
 
     let response = connection
@@ -38,7 +38,7 @@ pub async fn send_accounting_request(
 
     log::info!("Received accounting response: {response:?}");
 
-    Ok(response)
+    Ok(AccountingOperationResponse::from_reply(connection.server_name(), response))
 }
 
 /// Constructs an [`AccountingRequest`] from CLI-level arguments.

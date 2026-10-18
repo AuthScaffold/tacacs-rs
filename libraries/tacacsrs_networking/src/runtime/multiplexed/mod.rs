@@ -22,6 +22,7 @@ use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use crate::runtime::task::DriverTask;
 
 use crate::codec::{PacketReadResult, PacketReader, PacketWriter};
+use crate::exchange_error::protocol_failure;
 
 mod write_loop;
 
@@ -213,7 +214,8 @@ impl ConnectionRuntime {
         let result = tokio::try_join!(write_future, read_future);
 
         self.session_manager.disable_new_sessions();
-        self.session_manager.close_all_sessions();
+        self.session_manager
+            .close_all_sessions_with_error(result.as_ref().err());
 
         result?;
         Ok(())
@@ -276,7 +278,9 @@ impl ConnectionRuntime {
                         target: "tacacsrs_networking::runtime::multiplexed::read_handler",
                         "Failed to parse TACACS+ packet header: {error}"
                     );
-                    return Err(error).context("failed to parse TACACS+ packet header");
+                    return Err(protocol_failure(
+                        error.context("failed to parse TACACS+ packet header"),
+                    ));
                 }
                 PacketReadResult::BodyLengthExceeded {
                     session_id,
@@ -287,9 +291,13 @@ impl ConnectionRuntime {
                         target: "tacacsrs_networking::runtime::multiplexed::read_handler",
                         "Rejected packet for session ID {session_id}: body length {body_length} exceeds maximum {max_length}. Closing the connection to prevent packet framing errors."
                     );
-                    return Err(anyhow::Error::msg(format!(
+                    let error = protocol_failure(anyhow::Error::msg(format!(
                         "Packet body length {body_length} exceeds maximum {max_length}"
                     )));
+                    return Err(self
+                        .session_manager
+                        .reject_fixed_response(session_id, error)
+                        .into());
                 }
                 PacketReadResult::BodyReadError { session_id, error } => {
                     log::error!(

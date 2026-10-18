@@ -31,7 +31,7 @@ impl RoutedOperation for AuthorizationRoute {
             .map_err(UpstreamRequestError::invalid_request)?;
         let reply = connection.send_authorization(request, deadline).await?;
         AuthorizationOperationResponse::from_reply(connection.server_address(), reply)
-            .map_err(UpstreamRequestError::outcome_unknown)
+            .map_err(UpstreamRequestError::protocol_error)
     }
 
     fn is_server_error(response: &Self::Response) -> bool {
@@ -56,7 +56,7 @@ where
     ///
     /// Authorization and accounting use the same server selection and failover
     /// model. The networking layer controls connection reuse.
-    pub(in crate::services::client_api) async fn execute_authorization_request(
+    pub(crate) async fn execute_authorization_request(
         &self,
         request: AuthorizationOperation,
     ) -> Result<AuthorizationOperationResponse, ServiceError> {

@@ -1,6 +1,6 @@
 use std::os::raw::c_int;
 
-use tacacsrs_agent_client::{IpcEndpoint, ServiceClient};
+use tacacsrs_ipc::{IpcEndpoint, ServiceClient};
 use tacacsrs_protocol::operations::{
     AuthorizationArg, AuthorizationAuthenticationContext, AuthorizationKey, AuthorizationOperation,
     AuthorizationResponseStatus,
@@ -66,7 +66,10 @@ pub(crate) fn authorize_command(
 
     let response = runtime.block_on(async move {
         let client = connect_client(flags, endpoint).await?;
-        client.send_authorization(request).await
+        client
+            .send_authorization(request)
+            .await
+            .map_err(anyhow::Error::from)
     });
 
     match response {
@@ -124,44 +127,22 @@ fn truncate_arg(value: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn mandatory_response_changes_are_denied() {
-        let args = [AuthorizationArg::mandatory_key(
-            AuthorizationKey::Cmd,
-            "replacement",
-        )];
-        for status in [
-            AuthorizationResponseStatus::PassAdd,
-            AuthorizationResponseStatus::PassRepl,
-        ] {
-            assert_eq!(response_decision(status, &args), AuthorizationDecision::Deny);
-        }
+    mod conformance {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../tacacsrs_protocol/test_support/authorization.rs"
+        ));
     }
 
     #[test]
-    fn pass_replies_without_mandatory_changes_are_allowed() {
-        let optional = [AuthorizationArg {
-            name: "optional-attribute".to_owned(),
-            mandatory: false,
-            value: "value".to_owned(),
-        }];
-        for status in [
-            AuthorizationResponseStatus::PassAdd,
-            AuthorizationResponseStatus::PassRepl,
-        ] {
-            assert_eq!(response_decision(status, &[]), AuthorizationDecision::Allow);
-            assert_eq!(response_decision(status, &optional), AuthorizationDecision::Allow);
-        }
-    }
-
-    #[test]
-    fn nonpass_responses_never_allow_local_fallback() {
-        for status in [
-            AuthorizationResponseStatus::Fail,
-            AuthorizationResponseStatus::Error,
-            AuthorizationResponseStatus::Follow,
-        ] {
-            assert_eq!(response_decision(status, &[]), AuthorizationDecision::Deny);
+    fn shared_unchanged_execution_conformance() {
+        for (name, response, allowed) in conformance::unchanged_execution_cases() {
+            let expected = if allowed {
+                AuthorizationDecision::Allow
+            } else {
+                AuthorizationDecision::Deny
+            };
+            assert_eq!(response_decision(response.status, &response.args), expected, "{name}");
         }
     }
 }

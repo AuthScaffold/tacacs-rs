@@ -15,20 +15,21 @@ if-addrs = "0.15.0"
 log = "0.4.30"
 rand = "0.10.0"
 rustix = { version = "1.1.4", features = ["fs"] }
-tacacsrs-agent-client = { path = "../tacacsrs_agent_client" }
 tacacsrs-config = { path = "../tacacsrs_config" }
 tacacsrs-credential-resolution = { path = "../tacacsrs_credential_resolution" }
 tacacsrs-protocol = { path = "../tacacsrs_protocol" }
 tacacsrs-networking = { path = "../tacacsrs_networking" }
 tacacsrs-secrets = { path = "../tacacsrs_secrets" }
 tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "net", "parking_lot", "rt", "rt-multi-thread", "sync", "time"] }
-tokio-stream = { version = "0.1.18", features = ["net"] }
 tokio-util = "0.7.18"
-tonic = "0.14.6"
-tonic-health = "0.14.6"
 
+# The agent runtime does not own the IPC transport. The IPC crate and its stream
+# and async helpers are development dependencies used only by the integration
+# tests that compose the client API listener with the runtime.
 [dev-dependencies]
+tacacsrs-ipc = { path = "../tacacsrs_ipc" }
 tokio = { version = "1.52.3", features = ["test-util"] }
+tokio-stream = { version = "0.1.18", features = ["net"] }
 
 [lints]
 workspace = true

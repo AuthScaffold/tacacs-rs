@@ -9,6 +9,7 @@ mod client_service;
 mod config_filter;
 mod config_supervisor;
 mod health;
+mod listener_service;
 mod materialization_coordinator;
 mod policy_supervisor;
 mod proxy_loop_guard;
@@ -17,9 +18,10 @@ mod revision;
 mod server_catalog;
 mod shutdown;
 
-pub use client_service::TacacsClientService;
+pub use client_service::{ListenerSettings, TacacsClientService};
 pub use config_filter::{FilteredTacacsPlus, NoopTacacsPlusFilter, TacacsPlusFilter};
 pub use config_supervisor::ConfigSupervisor;
+pub use listener_service::RuntimeListenerService;
 pub use policy_supervisor::PolicySupervisor;
 pub use revision::{
     CredentialRevision, MaterializationRevision, PolicyRevision, PolicyUpdate, SourceRevision,
@@ -37,4 +39,5 @@ pub(crate) use server_catalog::REQUIRED_SERVER_TYPES;
 pub(crate) use server_catalog::enumerate_supported_servers;
 pub(crate) use proxy_loop_guard::{ProxyLoopGuard, ProxyListenerBinding};
 pub(crate) use request_tracker::{RequestGuard, RequestTracker};
-pub(crate) use shutdown::{ListenerRegistration, ShutdownCoordinator, ShutdownReceiver};
+pub use shutdown::{ListenerRegistration, ShutdownReceiver};
+pub(crate) use shutdown::ShutdownCoordinator;

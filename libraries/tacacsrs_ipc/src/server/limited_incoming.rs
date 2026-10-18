@@ -16,7 +16,7 @@ use tonic::transport::server::Connected;
 
 type AcceptFuture = Pin<Box<dyn Future<Output = io::Result<LimitedStream>> + Send>>;
 
-pub(super) struct LimitedIncoming {
+pub(crate) struct LimitedIncoming {
     listener: Arc<UnixListener>,
     capacity: Arc<Semaphore>,
     lifetime: Duration,
@@ -36,7 +36,7 @@ struct StreamState {
     write_waker: Option<Waker>,
 }
 
-pub(super) struct TransportGuard(Arc<Mutex<TransportRegistry>>);
+pub(crate) struct TransportGuard(Arc<Mutex<TransportRegistry>>);
 
 impl Drop for TransportGuard {
     fn drop(&mut self) {
@@ -67,7 +67,7 @@ impl Drop for TransportGuard {
 }
 
 impl LimitedIncoming {
-    pub(super) fn new(listener: UnixListener, limit: usize, lifetime: Duration) -> Self {
+    pub(crate) fn new(listener: UnixListener, limit: usize, lifetime: Duration) -> Self {
         Self {
             listener: Arc::new(listener),
             capacity: Arc::new(Semaphore::new(limit)),
@@ -77,7 +77,7 @@ impl LimitedIncoming {
         }
     }
 
-    pub(super) fn close_guard(&self) -> TransportGuard {
+    pub(crate) fn close_guard(&self) -> TransportGuard {
         TransportGuard(self.registry.clone())
     }
 }
@@ -134,7 +134,7 @@ impl Stream for LimitedIncoming {
     }
 }
 
-pub(super) struct LimitedStream {
+pub(crate) struct LimitedStream {
     stream: Arc<Mutex<StreamState>>,
     connect_info: <UnixStream as Connected>::ConnectInfo,
     _permit: OwnedSemaphorePermit,

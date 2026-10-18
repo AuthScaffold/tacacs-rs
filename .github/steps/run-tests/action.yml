@@ -61,6 +61,36 @@ runs:
           }
           END { exit failed }'
 
+    - name: Check IPC-independent agent dependencies
+      shell: bash
+      run: |
+        cargo tree --package tacacsrs-agent --edges normal --prefix none |
+          awk '/^(tonic|prost|tacacsrs-ipc)[ -]/ {
+            print "Forbidden agent dependency: " $0
+            failed = 1
+          }
+          END { exit failed }'
+
+    - name: Check runtime-independent IPC dependencies
+      shell: bash
+      run: |
+        cargo tree --package tacacsrs-ipc --edges normal --prefix none |
+          awk '/^(redis|tacacsrs-config|tacacsrs-networking|tacacsrs-credential-resolution|tacacsrs-agent|tacacsrs-sonic)[ -]/ {
+            print "Forbidden IPC dependency: " $0
+            failed = 1
+          }
+          END { exit failed }'
+
+    - name: Check supported core dependencies
+      shell: bash
+      run: |
+        cargo tree --edges normal --prefix none |
+          awk '/^(session-wrapper|tacacsrs-agent-ipc-emulator|tacacsrs-agent-ipc-emulatord|regorus|libseccomp)[ -]/ {
+            print "Experimental dependency in supported core: " $0
+            failed = 1
+          }
+          END { exit failed }'
+
     - name: Run unit tests
       shell: bash
       run: |

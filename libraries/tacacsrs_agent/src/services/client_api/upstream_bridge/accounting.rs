@@ -52,7 +52,7 @@ where
     ///
     /// The networking layer controls connection reuse and single-connection
     /// negotiation.
-    pub(in crate::services::client_api) async fn execute_accounting_request(
+    pub(crate) async fn execute_accounting_request(
         &self,
         request: AccountingOperation,
     ) -> Result<AccountingOperationResponse, ServiceError> {

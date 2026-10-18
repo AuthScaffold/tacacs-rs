@@ -1199,7 +1199,7 @@ async fn committed_crl_refresh_interrupts_active_peer_without_waiting_for_reques
 ) -> Result<()> {
     use std::sync::Arc;
     use tacacsrs_agent::{RuntimeHealthPublisher, RuntimeLifecycle, ServiceConfig, TacacsClientService};
-    use tacacsrs_agent_client::{IpcEndpoint, ServiceClient};
+    use tacacsrs_ipc::{IpcEndpoint, ServiceClient};
     use tacacsrs_protocol::operations::AccountingOperation;
     let directory = Directory::new()?;
     let good = make_crl(&directory.0, false, false).await?;
@@ -1229,7 +1229,9 @@ async fn committed_crl_refresh_interrupts_active_peer_without_waiting_for_reques
     let stop = tokio_util::sync::CancellationToken::new();
     let running = service.clone();
     let shutdown = stop.clone();
-    let serving = tokio::spawn(async move { running.serve_until(shutdown.cancelled()).await });
+    let listeners = crate::client_api::client_api_listeners(&service);
+    let serving =
+        tokio::spawn(async move { running.serve_until(shutdown.cancelled(), listeners).await });
     tokio::time::timeout(
         Duration::from_secs(5),
         health
