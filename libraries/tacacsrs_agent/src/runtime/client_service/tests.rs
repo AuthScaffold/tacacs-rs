@@ -1,3 +1,22 @@
+#[tokio::test]
+async fn diagnostics_handle_does_not_retain_the_agent_runtime() {
+    let service = super::TacacsClientService::waiting_for_configuration(
+        crate::ServiceConfig {
+            local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
+            tacacs_plus: tacacsrs_config::TacacsPlus::empty(),
+            validation_options: tacacsrs_config::ValidationOptions::default(),
+            runtime_policy: crate::RuntimePolicy::default(),
+            disable_certificate_verification: false,
+        },
+        crate::RuntimeHealthPublisher::new(crate::EnabledServices::CLIENT_API),
+    )
+    .unwrap();
+    let diagnostics = service.diagnostics_handle();
+    assert!(diagnostics.statistics_json(None, 4096).is_ok());
+    drop(service);
+    assert!(diagnostics.statistics_json(None, 4096).is_err());
+}
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

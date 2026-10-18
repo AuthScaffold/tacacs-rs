@@ -91,14 +91,16 @@ impl TacacsClient {
         let expected =
             ExpectedResponseHeader::fixed(exchange.packet_type(), exchange.minor_version());
         let session = deadline
-            .run(self.create_fixed_session(expected))
+            .run(self.create_fixed_session_until(expected, deadline))
             .await
             .map_err(FixedExchangeError::not_sent)?
             .map_err(FixedExchangeError::not_sent)?;
         deadline.check().map_err(FixedExchangeError::not_sent)?;
-        let result = deadline
-            .run(execute_on_session(&session, exchange))
-            .await
+        let execution = deadline.run(execute_on_session(&session, exchange)).await;
+        if execution.is_err() {
+            session.record_timeout();
+        }
+        let result = execution
             .map_err(FixedExchangeError::outcome_unknown)
             .and_then(std::convert::identity);
         let _completed = deadline.run(session.complete()).await;
@@ -144,6 +146,7 @@ where
     )
     .map_err(FixedExchangeError::not_sent)?;
 
+    let _reply_wait = session.awaiting_reply(&request);
     let response = session
         .fixed_round_trip(request)
         .await
@@ -156,6 +159,7 @@ where
         || header.major_version != TacacsMajorVersion::TacacsPlusMajor1
         || header.minor_version != minor_version
     {
+        session.reject_malformed_response().await;
         return Err(FixedExchangeError::protocol_outcome_unknown(anyhow::anyhow!(
             "unexpected fixed TACACS+ response header: session_id={:#x}, seq_no={}, type={}, version={:?}.{:?}; expected session_id={:#x}, seq_no={}, type={}, version={:?}.{:?}",
             header.session_id,
@@ -171,9 +175,13 @@ where
         )));
     }
 
+    let reply = match exchange.decode_reply(response.body()) {
+        Ok(reply) => reply,
+        Err(error) => {
+            session.reject_malformed_response().await;
+            return Err(FixedExchangeError::protocol_outcome_unknown(error));
+        }
+    };
     session.record_terminal_reply(&response);
-    let reply = exchange
-        .decode_reply(response.body())
-        .map_err(FixedExchangeError::protocol_outcome_unknown)?;
     Ok(reply)
 }

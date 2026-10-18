@@ -19,4 +19,4 @@ mod request_tracker;
 
 pub use handler::Handler;
 pub use health::HealthStatus;
-pub use listener::{ListenerOptions, serve_unix};
+pub use listener::{ListenerOptions, serve_unix, serve_unix_with_diagnostics};

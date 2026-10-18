@@ -137,6 +137,9 @@ where
             self.writer.obfuscation_key(),
             self.writer.counters(),
         ));
+        if let Some(counters) = self.writer.counters() {
+            counters.single_connect(true);
+        }
         connection.run_with_halves(self.reader_half, self.writer_half);
         connection
     }

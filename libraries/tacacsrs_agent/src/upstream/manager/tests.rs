@@ -97,6 +97,36 @@ fn materialized_server(secret: &[u8]) -> TacacsPlusServer {
     server
 }
 
+#[tokio::test]
+async fn diagnostics_are_read_only_filtered_bounded_and_secret_free() {
+    let connector = Arc::new(FakeConnector::new(HashMap::new()));
+    let mut server = test_server("192.0.2.10:49");
+    server.shared_secret =
+        Some(tacacsrs_secrets::SecretString::new("diagnostics-secret-sentinel".to_owned()));
+    let state = UpstreamManager::new(
+        vec![server, test_server("192.0.2.11:49")],
+        connector.clone() as Arc<UpstreamConnector>,
+        Duration::from_secs(1),
+        RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
+    );
+    let json = state
+        .diagnostics_json(Some("192.0.2.10:49"), 120 * 1024)
+        .unwrap();
+    assert!(!json.contains("diagnostics-secret-sentinel"));
+    assert!(!json.contains("shared-secret"));
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let servers = parsed["ietf-system-tacacs-plus:tacacs-plus"]["server"]
+        .as_array()
+        .unwrap();
+    assert_eq!(servers.len(), 1);
+    assert_eq!(servers[0]["tacacsrs:diagnostics"]["state"], "not-attempted");
+    assert_eq!(servers[0]["statistics"]["connection-opens"], "0");
+    assert!(state.diagnostics_json(Some("missing"), 120 * 1024).is_err());
+    assert!(state.diagnostics_json(None, 16).is_err());
+    assert_eq!(connector.connect_attempts_for("192.0.2.10:49").await, 0);
+    assert!(tacacsrs_config::parse_yang_json(&json).is_err());
+}
+
 fn bound_secret(bound: &BoundServer<super::ServiceConnector>) -> &[u8] {
     bound
         .server()

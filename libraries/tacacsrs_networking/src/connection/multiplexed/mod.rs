@@ -329,6 +329,9 @@ impl ConnectionRuntime {
                     );
                 }
                 Err(error @ PacketDispatchError::ProtocolViolation { .. }) => {
+                    if let Some(counters) = self.packet_writer.counters() {
+                        counters.disconnect_reason(crate::DisconnectReason::MalformedPacket);
+                    }
                     return Err(error.into());
                 }
             }

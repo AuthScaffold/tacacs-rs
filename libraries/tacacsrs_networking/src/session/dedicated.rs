@@ -14,10 +14,10 @@ use tacacsrs_protocol::enumerations::TacacsFlags;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
 
 use crate::connection::{BoxedDedicatedConnection, DedicatedConnection};
-use crate::exchange_error::protocol_failure;
+use crate::exchange_error::{ProtocolFailure, protocol_failure};
 use crate::session::random_nonzero_session_id;
 use crate::single_connect::SingleConnectPromotion;
-use crate::transport::BoxedTransport;
+use crate::transport::{BoxedTransport, Transport};
 
 pub(crate) struct DedicatedSession {
     connection: Mutex<Option<BoxedDedicatedConnection>>,
@@ -25,6 +25,7 @@ pub(crate) struct DedicatedSession {
     expected_response_sequence: Mutex<Option<u8>>,
     complete: AtomicBool,
     single_connect_promotion: std::sync::Mutex<Option<SingleConnectPromotion>>,
+    counters: Option<crate::ServerCounters>,
 }
 
 impl DedicatedSession {
@@ -34,6 +35,7 @@ impl DedicatedSession {
         single_connect_promotion: Option<SingleConnectPromotion>,
     ) -> Self {
         Self {
+            counters: transport.counters(),
             connection: Mutex::new(Some(DedicatedConnection::new(transport, obfuscation_key))),
             session_id: random_nonzero_session_id(),
             expected_response_sequence: Mutex::new(None),
@@ -95,25 +97,61 @@ impl DedicatedSession {
 
     pub(crate) async fn receive_packet(&self) -> anyhow::Result<Packet> {
         let mut connection = self.connection.lock().await;
-        let packet = connection
+        let packet = match connection
             .as_mut()
             .context("dedicated TACACS+ session is already complete")?
             .read_packet()
-            .await?;
+            .await
+        {
+            Ok(packet) => packet,
+            Err(error) => {
+                if error.is::<ProtocolFailure>() {
+                    self.record_malformed_response();
+                    connection.take();
+                }
+                return Err(error);
+            }
+        };
 
         if let Err(error) = self.validate_response_header(&packet).await {
+            self.record_malformed_response();
             connection.take();
             return Err(error);
         }
-        if let Some(promotion) = self
+        let promotion = self
             .single_connect_promotion
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-        {
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if packet.header().seq_no == 2 {
+            if let Some(counters) = &self.counters {
+                counters.single_connect(
+                    promotion.is_some()
+                        && packet
+                            .header()
+                            .flags
+                            .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG),
+                );
+            }
+        }
+        if let Some(promotion) = promotion.as_ref() {
             promotion.observe_server_response(&packet);
         }
         Ok(packet)
+    }
+
+    pub(crate) async fn reject_malformed_response(&self) {
+        self.record_malformed_response();
+        self.connection.lock().await.take();
+    }
+
+    fn record_malformed_response(&self) {
+        if let Some(counters) = &self.counters {
+            counters.disconnect_reason(crate::DisconnectReason::MalformedPacket);
+        }
+        self.single_connect_promotion
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
     }
 
     async fn validate_response_header(&self, packet: &Packet) -> anyhow::Result<()> {
@@ -158,6 +196,12 @@ impl DedicatedSession {
             connection.shutdown().await;
         }
     }
+
+    pub(crate) fn record_timeout(&self) {
+        if let Some(counters) = &self.counters {
+            counters.disconnect_reason(crate::DisconnectReason::NoResponse);
+        }
+    }
 }
 
 fn with_single_connect_flag(packet: &Packet) -> anyhow::Result<Packet> {
@@ -183,6 +227,53 @@ mod tests {
     use crate::transport::mock::MockTransport;
 
     const TEST_SESSION_ID: u32 = 0xCAFE_BABE;
+
+    struct PendingShutdown {
+        entered: Arc<std::sync::atomic::AtomicBool>,
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl crate::transport::Transport for PendingShutdown {
+        type ReadHalf = tokio::io::Empty;
+        type WriteHalf = Self;
+
+        fn split(self) -> (Self::ReadHalf, Self::WriteHalf) {
+            (tokio::io::empty(), self)
+        }
+    }
+
+    impl tokio::io::AsyncWrite for PendingShutdown {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            bytes: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Ok(bytes.len()))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            self.entered
+                .store(true, std::sync::atomic::Ordering::Release);
+            std::task::Poll::Pending
+        }
+    }
+
+    impl Drop for PendingShutdown {
+        fn drop(&mut self) {
+            self.dropped
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
 
     #[tokio::test]
     async fn completion_without_a_reply_releases_negotiation() {
@@ -227,54 +318,6 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_shutdown_releases_pending_probe_and_preserves_unsupported_result() {
-        use std::io;
-        use std::pin::Pin;
-        use std::sync::atomic::{AtomicBool, Ordering};
-        use std::task::{Context, Poll};
-
-        use tokio::io::AsyncWrite;
-
-        use crate::transport::Transport;
-
-        struct PendingShutdown {
-            entered: Arc<AtomicBool>,
-            dropped: Arc<AtomicBool>,
-        }
-
-        impl Transport for PendingShutdown {
-            type ReadHalf = tokio::io::Empty;
-            type WriteHalf = Self;
-
-            fn split(self) -> (Self::ReadHalf, Self::WriteHalf) {
-                (tokio::io::empty(), self)
-            }
-        }
-
-        impl AsyncWrite for PendingShutdown {
-            fn poll_write(
-                self: Pin<&mut Self>,
-                _: &mut Context<'_>,
-                bytes: &[u8],
-            ) -> Poll<io::Result<usize>> {
-                Poll::Ready(Ok(bytes.len()))
-            }
-
-            fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
-                Poll::Ready(Ok(()))
-            }
-
-            fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
-                self.entered.store(true, Ordering::Release);
-                Poll::Pending
-            }
-        }
-
-        impl Drop for PendingShutdown {
-            fn drop(&mut self) {
-                self.dropped.store(true, Ordering::Release);
-            }
-        }
-
         for unsupported in [false, true] {
             let state = Arc::new(NegotiationState::new(SingleConnectionState::Initial));
             let cache = Arc::default();
@@ -288,8 +331,8 @@ mod tests {
                     b"reply",
                 ));
             }
-            let entered = Arc::new(AtomicBool::new(false));
-            let dropped = Arc::new(AtomicBool::new(false));
+            let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let session = DedicatedSession::new(
                 BoxedTransport::new(PendingShutdown {
                     entered: entered.clone(),
@@ -300,12 +343,12 @@ mod tests {
             );
             let mut completion = Box::pin(session.complete());
             assert!(futures::poll!(&mut completion).is_pending());
-            assert!(entered.load(Ordering::Acquire));
-            assert!(!dropped.load(Ordering::Acquire));
+            assert!(entered.load(std::sync::atomic::Ordering::Acquire));
+            assert!(!dropped.load(std::sync::atomic::Ordering::Acquire));
             let mut current = Box::pin(cache.current());
-            assert!(matches!(futures::poll!(&mut current), Poll::Ready(None)));
+            assert!(matches!(futures::poll!(&mut current), std::task::Poll::Ready(None)));
             drop(completion);
-            assert!(dropped.load(Ordering::Acquire));
+            assert!(dropped.load(std::sync::atomic::Ordering::Acquire));
             assert!(session.connection.lock().await.is_none());
             assert!(session.single_connect_promotion.lock().unwrap().is_none());
             assert_eq!(
@@ -317,6 +360,38 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[tokio::test]
+    async fn malformed_response_discards_pending_shutdown_without_polling_it() {
+        let state = Arc::new(NegotiationState::new(SingleConnectionState::Initial));
+        let cache = Arc::default();
+        let promotion = SingleConnectPromotion::begin(Arc::clone(&cache), state.clone()).unwrap();
+        let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let session = DedicatedSession::new(
+            BoxedTransport::new(PendingShutdown {
+                entered: entered.clone(),
+                dropped: dropped.clone(),
+            }),
+            None,
+            Some(promotion),
+        );
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            session.reject_malformed_response(),
+        )
+        .await
+        .unwrap();
+
+        assert!(!entered.load(std::sync::atomic::Ordering::Acquire));
+        assert!(dropped.load(std::sync::atomic::Ordering::Acquire));
+        assert!(session.connection.lock().await.is_none());
+        assert!(session.single_connect_promotion.lock().unwrap().is_none());
+        assert!(cache.current().await.is_none());
+        assert_eq!(state.snapshot(), SingleConnectionState::Initial);
+        session.complete().await;
     }
 
     #[tokio::test]

@@ -187,17 +187,77 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
 
     pub(crate) fn statistics(&self) -> tacacsrs_config::OperationalStatistics {
         let runtime = self.current_runtime();
+        Self::statistics_from_runtime(&runtime, None)
+    }
+
+    pub(crate) fn diagnostics_json(
+        &self,
+        filter: Option<&str>,
+        limit: usize,
+    ) -> anyhow::Result<String> {
+        let runtime = self.current_runtime();
+        let mut count = 0;
+        for server in runtime
+            .server_set
+            .servers
+            .iter()
+            .filter(|server| filter.is_none_or(|name| name == server.server.name))
+        {
+            count += 1;
+            anyhow::ensure!(
+                count <= 128,
+                "Too many servers for one diagnostics response; select a server"
+            );
+            for text in [
+                Some(server.server.name.as_str()),
+                Some(server.server.address.as_str()),
+                server.server.source_ip.as_deref(),
+                server.server.vrf_instance.as_deref(),
+            ] {
+                anyhow::ensure!(
+                    text.is_none_or(|text| text.len() <= 1024),
+                    "Server metadata exceeds the diagnostics limit"
+                );
+            }
+        }
+        anyhow::ensure!(filter.is_none() || count != 0, "No server matches the requested name");
+        Self::statistics_from_runtime(&runtime, filter).to_yang_json_bounded(limit)
+    }
+
+    fn statistics_from_runtime(
+        runtime: &server_set::RuntimeRoutingSnapshot<Connector>,
+        filter: Option<&str>,
+    ) -> tacacsrs_config::OperationalStatistics {
         tacacsrs_config::OperationalStatistics {
             runtime_generation: runtime.generation,
             servers: runtime
                 .server_set
                 .servers
                 .iter()
+                .filter(|server| filter.is_none_or(|name| name == server.server.name))
                 .map(|server| {
                     let snapshot = server.counters.snapshot();
                     tacacsrs_config::ServerOperationalStatistics {
                         name: server.server.name.clone(),
                         counter_epoch: snapshot.epoch,
+                        diagnostics: Some(tacacsrs_config::ServerDiagnostics::new(
+                            &server.server,
+                            snapshot.diagnostics.clone(),
+                            tacacsrs_networking::routed::OperationKind::ALL
+                                .into_iter()
+                                .map(|operation| {
+                                    let circuit = runtime
+                                        .server_set
+                                        .client
+                                        .circuit_open(&server.server.name, operation);
+                                    tacacsrs_config::RoutingStatus {
+                                        operation: operation.name(),
+                                        eligible: circuit.is_some(),
+                                        on_hold: circuit.unwrap_or(false),
+                                    }
+                                })
+                                .collect(),
+                        )),
                         statistics: snapshot.into(),
                     }
                 })

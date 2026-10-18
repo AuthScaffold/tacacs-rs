@@ -13,6 +13,89 @@ use tonic_health::ServingStatus;
 const EXIT_NOT_SERVING: i32 = 1;
 const EXIT_CHECK_ERROR: i32 = 3;
 
+#[derive(Default)]
+struct DiagnosticFixture;
+
+#[tonic::async_trait]
+impl tacacsrs_ipc::proto::diagnostics_server::Diagnostics for DiagnosticFixture {
+    async fn statistics(
+        &self,
+        request: tonic::Request<tacacsrs_ipc::proto::StatisticsRequest>,
+    ) -> Result<tonic::Response<tacacsrs_ipc::proto::StatisticsReply>, tonic::Status> {
+        if request.into_inner().server.as_deref() != Some("primary") {
+            return Err(tonic::Status::not_found("Unknown server"));
+        }
+        Ok(tonic::Response::new(tacacsrs_ipc::proto::StatisticsReply {
+            yang_json: r#"{"ietf-system-tacacs-plus:tacacs-plus":{"tacacsrs:runtime-generation":"2","server":[{"name":"primary","tacacsrs:counter-epoch":"4","statistics":{"connection-opens":"10","messages-sent":"29"},"tacacsrs:diagnostics":{"address":"192.0.2.1","port":49,"state":"connected","connection":[{"connection-id":"1","tls-version":"TLSv1.3","tls-cipher":"TLS_AES_256_GCM_SHA384"}]}}]}}"#.to_owned(),
+        }))
+    }
+}
+
+#[tokio::test]
+async fn statistics_command_reads_text_and_json_without_changing_health_probes() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (reporter, health) = tonic_health::server::health_reporter();
+    reporter
+        .set_service_status(READINESS_HEALTH_SERVICE, ServingStatus::NotServing)
+        .await;
+    let cancellation = CancellationToken::new();
+    let stop = cancellation.clone();
+    let task = tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(health)
+            .add_service(tacacsrs_ipc::proto::diagnostics_server::DiagnosticsServer::new(
+                DiagnosticFixture,
+            ))
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), stop.cancelled_owned())
+            .await
+            .unwrap();
+    });
+    for format in ["text", "json"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_tacacsrs-agent-health"))
+            .args([
+                "statistics",
+                "--endpoint",
+                &address.to_string(),
+                "--server",
+                "primary",
+                "--format",
+                format,
+            ])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(stdout.contains("TLS_AES_256_GCM_SHA384"));
+        if format == "json" {
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&stdout).unwrap()
+                    ["ietf-system-tacacs-plus:tacacs-plus"]["server"][0]["statistics"]
+                    ["connection-opens"],
+                "10"
+            );
+        } else {
+            assert!(stdout.contains("Server: primary"));
+        }
+    }
+    assert_eq!(
+        run_probe(&address.to_string(), "readiness", 2)
+            .await
+            .status
+            .code(),
+        Some(EXIT_NOT_SERVING)
+    );
+    let invalid = Command::new(env!("CARGO_BIN_EXE_tacacsrs-agent-health"))
+        .args(["--check", "readiness", "statistics"])
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(invalid.status.code(), Some(2));
+    cancellation.cancel();
+    task.await.unwrap();
+}
+
 #[tokio::test]
 async fn informational_flags_succeed_without_contacting_the_agent() {
     for flag in ["--help", "--version"] {

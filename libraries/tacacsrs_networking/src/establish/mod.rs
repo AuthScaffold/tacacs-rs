@@ -86,19 +86,28 @@ impl ConnectOptions {
 /// Returns an error if:
 /// - TCP connection fails or times out
 /// - the prepared backend fails to complete its handshake
+#[cfg(test)]
 pub(crate) async fn establish_stream(endpoint: &PreparedEndpoint) -> Result<BoxedTransport> {
-    let mut attempt = crate::statistics::ConnectionAttempt::new(endpoint.counters());
+    establish_stream_until(endpoint, None).await
+}
+
+pub(crate) async fn establish_stream_until(
+    endpoint: &PreparedEndpoint,
+    deadline: Option<crate::RequestDeadline>,
+) -> Result<BoxedTransport> {
+    let mut attempt =
+        crate::statistics::ConnectionAttempt::new(endpoint.counters()).with_deadline(deadline);
     let result = establish_transport(endpoint, &mut attempt).await;
     match result {
         Ok(transport) => {
             attempt.succeeded();
-            Ok(transport.with_counters(endpoint.counters()))
+            let counters = endpoint
+                .counters()
+                .for_connection(attempt.peer_address(), transport.tls_details());
+            Ok(transport.with_counters(counters))
         }
         Err(error) => {
-            attempt.failed(
-                error.is::<tokio::time::error::Elapsed>(),
-                error.is::<crate::statistics::CertificateFailure>(),
-            );
+            attempt.failed_error(&error);
             Err(error)
         }
     }
@@ -136,14 +145,21 @@ async fn establish_transport(
 
     log::debug!("TCP connection to {address} established");
     attempt.connected();
+    attempt.peer(tcp_stream.peer_addr().ok());
 
     match &endpoint.transport {
         PreparedTransport::Tcp => Ok(BoxedTransport::new(tcp_stream)),
-        PreparedTransport::Tls(config) => config.connect(tcp_stream).await,
-        PreparedTransport::Psk(config, server_name) => Ok(BoxedTransport::new(
-            config
+        PreparedTransport::Tls(config) => {
+            attempt.handshake();
+            config.connect(tcp_stream).await
+        }
+        PreparedTransport::Psk(config, server_name) => {
+            attempt.handshake();
+            let stream = config
                 .connect(address, server_name.as_deref(), tcp_stream)
-                .await?,
-        )),
+                .await?;
+            let details = crate::TlsDetails::from_ssl(stream.ssl());
+            Ok(BoxedTransport::new(stream).with_tls_details(details))
+        }
     }
 }
