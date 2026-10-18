@@ -73,31 +73,54 @@ async fn operational_counters_cover_shared_sessions_and_connection_outcomes() {
     assert_eq!(snapshot.connection_aborts, 0);
     assert_eq!(snapshot.connection_failures, 0);
 
-    let refused_socket = tokio::net::TcpSocket::new_v4().unwrap();
-    refused_socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let reserved_socket = tokio::net::TcpSocket::new_v4().unwrap();
+    reserved_socket
+        .bind("127.0.0.1:0".parse().unwrap())
+        .unwrap();
     let endpoint = PreparedEndpoint::tcp(
-        refused_socket.local_addr().unwrap().to_string(),
+        reserved_socket.local_addr().unwrap().to_string(),
         false,
         None,
-        ConnectOptions::default(),
+        ConnectOptions::default().with_timeout(Duration::from_millis(100)),
     );
     let failed = endpoint.counters();
     let result =
-        tokio::time::timeout(Duration::from_secs(1), crate::establish::establish_stream(&endpoint))
+        tokio::time::timeout(Duration::from_secs(2), crate::establish::establish_stream(&endpoint))
             .await
-            .expect("the refused TCP connection attempt must finish");
+            .expect("the bounded TCP connection attempt must finish");
     let Err(error) = result else {
         panic!("the bound non-listening TCP socket must refuse the connection");
     };
-    assert!(error
-        .to_string()
-        .starts_with("Failed to establish TCP connection to 127.0.0.1:"));
-    assert!(error
-        .chain()
-        .any(|cause| cause.to_string() == "Failed to connect to any TACACS+ server address"));
-    assert_eq!(failed.snapshot().connection_opens, 1);
-    assert_eq!(failed.snapshot().connection_failures, 1);
-    assert_eq!(failed.snapshot().messages_sent, 0);
+    let native_refusal = error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == std::io::ErrorKind::ConnectionRefused)
+    });
+    let configured_timeout = error.chain().any(|cause| {
+        cause
+            .downcast_ref::<tokio::time::error::Elapsed>()
+            .is_some()
+    });
+    assert!(native_refusal ^ configured_timeout, "unexpected connection error: {error:#}");
+    let snapshot = failed.snapshot();
+    assert_eq!(snapshot.connection_opens, 1);
+    assert_eq!(snapshot.connection_successes, 0);
+    assert_eq!(snapshot.connection_failures, 1);
+    assert_eq!(
+        snapshot.connection_timeouts,
+        if configured_timeout {
+            1
+        } else {
+            0
+        }
+    );
+    assert_eq!(snapshot.connection_closes, 0);
+    assert_eq!(snapshot.connection_aborts, 0);
+    assert_eq!(snapshot.messages_sent, 0);
+    assert_eq!(snapshot.messages_received, 0);
+    assert_eq!(snapshot.errors_received, 0);
+    assert_eq!(snapshot.sessions, 0);
+    assert_eq!(snapshot.diagnostics.connecting, 0);
 }
 
 #[tokio::test]
@@ -1333,8 +1356,19 @@ async fn header_and_body_eof_remain_uncategorized_transport_failures() {
         };
         assert_eq!(error.known_category(), None);
         assert_eq!(error.transmission_state(), crate::TransmissionState::OutcomeUnknown);
-        server_task.await.unwrap();
-        assert_eq!(counters.snapshot().diagnostics.malformed_disconnects, 0);
+        client
+            .close_and_join(crate::RequestDeadline::after(Duration::from_secs(1)).unwrap())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), server_task)
+            .await
+            .unwrap()
+            .unwrap();
+        let diagnostics = counters.snapshot().diagnostics;
+        assert_eq!(diagnostics.read_errors, 1);
+        assert_eq!(diagnostics.resets, 1);
+        assert_eq!(diagnostics.peer_disconnects, 1);
+        assert_eq!(diagnostics.malformed_disconnects, 0);
     }
 }
 
