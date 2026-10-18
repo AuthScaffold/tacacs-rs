@@ -415,20 +415,18 @@ Each accepted IPC connection currently carries a single unary RPC exchange:
 
 ## Protocol source of truth
 
-The maintainable split between this crate and
-[`tacacsrs-ipc`](../tacacsrs_ipc/) is:
+The protocol and IPC crates own separate contracts:
 
-- Define the wire contract in the client crate's
+- Keep transport-independent domain operations in the protocol crate's
+  [`operations`](../tacacsrs_protocol/src/operations.rs) module.
+- Define the IPC wire contract in the IPC crate's
   [`proto/tacacsrs_agent.proto`](../tacacsrs_ipc/proto/tacacsrs_agent.proto).
-- Generate the Rust gRPC/protobuf bindings at build time in the client crate.
-- Keep the operation-centric domain types in the client crate's
-  [`protocol`](../tacacsrs_ipc/src/protocol.rs) module.
-- Keep focused conversion tests between the domain types and protobuf messages.
+- Generate the Rust gRPC/protobuf bindings at build time in the IPC crate.
+- Keep domain-to-protobuf conversions and their focused tests in the IPC crate.
 
-This keeps the on-the-wire IPC schema explicit and type-safe while still
-letting the rest of the crate work with small hand-written domain types. The
-checked-in `.proto` is the compatibility surface for local IPC, and the build
-step keeps the generated Rust transport bindings aligned with it.
+The agent consumes the protocol crate's domain operations without a production
+dependency on IPC. The checked-in `.proto` defines the local IPC wire contract.
+The build step generates Rust transport bindings from that contract.
 
 There is also no compatibility promise for this IPC protocol today. When the
 contract changes, the `.proto`, generated transport bindings, and domain-type

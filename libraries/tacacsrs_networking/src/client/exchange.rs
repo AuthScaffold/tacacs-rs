@@ -156,7 +156,7 @@ where
         || header.major_version != TacacsMajorVersion::TacacsPlusMajor1
         || header.minor_version != minor_version
     {
-        return Err(FixedExchangeError::outcome_unknown(anyhow::anyhow!(
+        return Err(FixedExchangeError::protocol_outcome_unknown(anyhow::anyhow!(
             "unexpected fixed TACACS+ response header: session_id={:#x}, seq_no={}, type={}, version={:?}.{:?}; expected session_id={:#x}, seq_no={}, type={}, version={:?}.{:?}",
             header.session_id,
             header.seq_no,
@@ -174,6 +174,6 @@ where
     session.record_terminal_reply(&response);
     let reply = exchange
         .decode_reply(response.body())
-        .map_err(FixedExchangeError::outcome_unknown)?;
+        .map_err(FixedExchangeError::protocol_outcome_unknown)?;
     Ok(reply)
 }
