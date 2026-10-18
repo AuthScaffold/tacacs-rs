@@ -36,6 +36,7 @@ struct ScriptedConnection {
     fail_authorization: AtomicBool,
     authentication_status: TacacsAuthenticationStatus,
     accounting_status: TacacsAccountingStatus,
+    authorization_args: Vec<String>,
     accounting_barrier: Option<(Arc<Notify>, Arc<Notify>)>,
     accounting_delay: Duration,
     accounting_started: Notify,
@@ -50,6 +51,7 @@ impl ScriptedConnection {
             fail_authorization: AtomicBool::new(false),
             authentication_status: TacacsAuthenticationStatus::TacPlusAuthenStatusPass,
             accounting_status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
+            authorization_args: Vec::new(),
             accounting_barrier: None,
             accounting_delay: Duration::ZERO,
             accounting_started: Notify::new(),
@@ -134,7 +136,7 @@ impl UpstreamConnection for ScriptedConnection {
         Ok(AuthorizationReply {
             status: TacacsAuthorizationStatus::TacPlusPassAdd,
             server_msg: String::new(),
-            args: Vec::new(),
+            args: self.authorization_args.clone(),
             data: String::new(),
         })
     }
@@ -143,6 +145,7 @@ impl UpstreamConnection for ScriptedConnection {
 struct OperationConnector {
     connections: HashMap<(String, OperationKind), Arc<ScriptedConnection>>,
     attempts: Mutex<HashMap<(String, OperationKind), usize>>,
+    connect_delay: Duration,
 }
 
 impl OperationConnector {
@@ -150,7 +153,13 @@ impl OperationConnector {
         Self {
             connections,
             attempts: Mutex::new(HashMap::new()),
+            connect_delay: Duration::ZERO,
         }
+    }
+
+    fn with_connect_delay(mut self, delay: Duration) -> Self {
+        self.connect_delay = delay;
+        self
     }
 
     async fn attempts(&self, address: &str, operation: OperationKind) -> usize {
@@ -186,6 +195,9 @@ impl tacacsrs_networking::routed::EndpointConnector for OperationConnector {
         endpoint: tacacsrs_networking::PreparedEndpoint,
         operation: OperationKind,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
+        if !self.connect_delay.is_zero() {
+            tokio::time::sleep(self.connect_delay).await;
+        }
         let address = endpoint.address().to_owned();
         *self
             .attempts
@@ -234,11 +246,18 @@ fn bridge(
     connector: Arc<OperationConnector>,
     strategy: FailoverStrategy,
 ) -> UpstreamBridge<crate::upstream::manager::ServiceConnector> {
+    bridge_with_policy(connector, policy(strategy))
+}
+
+fn bridge_with_policy(
+    connector: Arc<OperationConnector>,
+    runtime_policy: RuntimePolicy,
+) -> UpstreamBridge<crate::upstream::manager::ServiceConnector> {
     let manager = Arc::new(
         UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
             vec![server("primary"), server("backup")],
             PreparedProxyPolicy::unobfuscated(),
-            policy(strategy),
+            runtime_policy,
             connector,
             RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
             tacacsrs_config::prepare::PrepareOptions::default(),
@@ -563,6 +582,8 @@ async fn expired_upstream_attempt_routes_the_next_request_to_backup() {
         .await
         .unwrap_err();
     assert_eq!(error.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::Never);
+    assert_eq!(error.facts.category(), tacacsrs_protocol::failure::FailureCategory::Deadline);
+    assert_eq!(error.facts.phase(), tacacsrs_protocol::failure::FailurePhase::Upstream);
     assert_eq!(
         connector
             .attempts("backup:49", OperationKind::Accounting)
@@ -574,6 +595,38 @@ async fn expired_upstream_attempt_routes_the_next_request_to_backup() {
         .await
         .unwrap();
     assert_eq!(response.server, "backup:49");
+}
+
+#[tokio::test(start_paused = true)]
+async fn binding_deadline_is_reported_as_deadline() {
+    use crate::config::{OperationPolicies, RequestLimits};
+
+    let primary = Arc::new(ScriptedConnection::successful("primary:49"));
+    let backup = Arc::new(ScriptedConnection::successful("backup:49"));
+    let connector = Arc::new(
+        OperationConnector::new(operation_map(primary, backup, OperationKind::Accounting))
+            .with_connect_delay(Duration::from_secs(2)),
+    );
+    let limits = RequestLimits::new(1024, 1)
+        .unwrap()
+        .with_request_timeout(Duration::from_secs(1))
+        .unwrap();
+    let runtime_policy = RuntimePolicy::new(
+        FailoverStrategy::default(),
+        FailoverStrategy::default(),
+        OperationPolicies::new(limits, limits, limits),
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    let bridge = bridge_with_policy(connector, runtime_policy);
+    let error = bridge
+        .execute_accounting_request(accounting())
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.facts.category(), tacacsrs_protocol::failure::FailureCategory::Deadline);
+    assert_eq!(error.facts.phase(), tacacsrs_protocol::failure::FailurePhase::Routing);
+    assert_eq!(error.facts.delivery(), tacacsrs_protocol::failure::DeliveryState::NotSent);
 }
 
 #[tokio::test]
@@ -715,6 +768,44 @@ async fn ordered_retry_stops_on_unknown_authorization_outcome() {
         .unwrap_err();
     assert_eq!(error.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::Never);
     assert_eq!(error.server.as_deref(), Some("primary:49"));
+    assert_eq!(
+        connector
+            .attempts("backup:49", OperationKind::Authorization)
+            .await,
+        0
+    );
+}
+
+#[tokio::test]
+async fn malformed_authorization_reply_is_reported_as_protocol_failure() {
+    let primary = Arc::new(ScriptedConnection {
+        authorization_args: vec!["=value".to_owned()],
+        ..ScriptedConnection::successful("primary:49")
+    });
+    let backup = Arc::new(ScriptedConnection::successful("backup:49"));
+    let connector = Arc::new(OperationConnector::new(operation_map(
+        primary,
+        backup,
+        OperationKind::Authorization,
+    )));
+    let bridge = bridge(Arc::clone(&connector), FailoverStrategy::OrderedSafeRetry);
+    let request = tacacsrs_protocol::operations::AuthorizationOperation::builder(
+        "admin",
+        15,
+        tacacsrs_protocol::operations::AuthorizationAuthenticationContext::TacacsPap,
+    )
+    .service("shell")
+    .command("show")
+    .build()
+    .unwrap();
+    let error = bridge
+        .execute_authorization_request(request)
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.facts.category(), tacacsrs_protocol::failure::FailureCategory::Protocol);
+    assert_eq!(error.facts.delivery(), tacacsrs_protocol::failure::DeliveryState::OutcomeUnknown);
+    assert_eq!(error.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::Never);
     assert_eq!(
         connector
             .attempts("backup:49", OperationKind::Authorization)

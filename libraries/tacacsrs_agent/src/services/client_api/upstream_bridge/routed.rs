@@ -86,13 +86,14 @@ where
             Ok(bound_server) => bound_server,
             Err(error) => {
                 log::warn!("Failed to bind a client API request to a TACACS+ server: {error:#}");
+                let category = if error.is::<tacacsrs_networking::DeadlineElapsed>() {
+                    FailureCategory::Deadline
+                } else {
+                    FailureCategory::Unavailable
+                };
                 let error = ServiceError::new(
                     error.to_string(),
-                    FailureFacts::new(
-                        FailureCategory::Unavailable,
-                        FailurePhase::Routing,
-                        DeliveryState::NotSent,
-                    ),
+                    FailureFacts::new(category, FailurePhase::Routing, DeliveryState::NotSent),
                 );
                 return Attempt::Aborted(self.with_attempt_context(error, attempt_index));
             }
