@@ -102,7 +102,7 @@ An archive name alone does not prove hydration. Confirm the embedded version:
 
 ```bash
 tar -xzf tacon-linux-gnu-x86_64.tar.gz
-./tacon --version
+./tacon-linux-gnu-x86_64/tacon --version
 ```
 
 The reported version must match the `tacon` entry in the manifest `versions`
@@ -114,7 +114,7 @@ The Linux archives link against the system OpenSSL. The Windows archive bundles
 the OpenSSL runtime DLLs. Confirm the shared library needs:
 
 ```bash
-ldd ./tacon
+ldd ./tacon-linux-gnu-x86_64/tacon
 ```
 
 ### Confirming the debug symbols
