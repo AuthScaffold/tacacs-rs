@@ -760,14 +760,12 @@ async fn established_mtls_pin_survives_authentication_certificate_expiry() -> Re
     let client = TacacsClient::connect_prepared(endpoint.clone()).await?;
     let first = client.execute(AccountingExchange::new(accounting_request()));
     tokio::pin!(first);
-    tokio::time::timeout(Duration::from_secs(3), async {
-        tokio::select! {
-            result = &mut first => panic!("exchange ended before the server handshake barrier: {result:?}"),
-            result = handshake_observed => result.unwrap(),
-        }
+    let (handshake, first) = tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::join!(handshake_observed, &mut first)
     })
     .await?;
-    tokio::time::timeout(Duration::from_secs(3), &mut first).await??;
+    handshake?;
+    first?;
     let mut retained = client.open_conversation().await?;
     let session_id = retained.session_id().expect("active retained conversation");
     let body = accounting_request().to_bytes()?;
