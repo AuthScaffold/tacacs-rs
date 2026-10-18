@@ -370,13 +370,10 @@ mod tests {
     #[test]
     fn client_identity_outside_validity_is_rejected_even_without_peer_verification() {
         let (chain, key) = sample_client_auth_der();
-        let now = i64::try_from(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        )
-        .unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         for (start, end) in [(now - 120, now - 60), (now + 60, now + 120)] {
             let mut certificate = X509::builder().unwrap();
             certificate.set_version(2).unwrap();
@@ -388,10 +385,14 @@ mod tests {
                 .unwrap();
             certificate.set_pubkey(&key).unwrap();
             certificate
-                .set_not_before(&openssl::asn1::Asn1Time::from_unix(start).unwrap())
+                .set_not_before(
+                    &openssl::asn1::Asn1Time::from_unix(start.try_into().unwrap()).unwrap(),
+                )
                 .unwrap();
             certificate
-                .set_not_after(&openssl::asn1::Asn1Time::from_unix(end).unwrap())
+                .set_not_after(
+                    &openssl::asn1::Asn1Time::from_unix(end.try_into().unwrap()).unwrap(),
+                )
                 .unwrap();
             certificate
                 .sign(&key, openssl::hash::MessageDigest::sha256())
