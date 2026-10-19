@@ -922,7 +922,9 @@ Published as [PR #280](https://github.com/AuthScaffold/tacacs-rs/pull/280) again
 The parent is predecessor squash `7d60ee481554ed98234b51a18d99475cf76939f7`.
 The complete retargeted tree equals tested checkpoint `a387c4313aa7f594368cc19dc9e5a4d7e1abeac7`.
 The PR has 41 implementation/product-documentation paths and no tracking documents.
-GitHub Copilot review was requested; required workflow `39216146715` is in progress, not yet claimed green.
+GitHub Copilot review `5568266591` reported no open issues but requested closer security/platform confirmation.
+Workflow `39216146715` failed Windows job `117942656258` in the new repeated-connection guard test.
+The failure is under repair through the established model-review and fresh-CI procedure below; iteration 04 publication remains paused until this predecessor is clear.
 Final reviewed source-diff SHA-256: `3efcef8fbdb4aa5a629e169512bc0123510ab59b86313a81f98ebc5bc4780c01`.
 The fingerprint excludes all three tracking-document paths, which remain absent from the implementation worktree.
 
@@ -993,7 +995,34 @@ All 256 selected Python delivery tests passed.
 Native prepared-source, process, compile-fail, and affected consumer checks remained enabled.
 Existing privileged and external-service early returns are not claimed as execution coverage.
 
-#### Planned Acceptance
+#### Windows CI Repair Receipt
+
+The Windows log showed `Elapsed` at the outer two-second guard-test deadline, without a host-specific diagnostic.
+The fixture originally provided only IPv4 acceptance for `localhost` and waited for acceptance even after a connection error.
+The repair serves `127.0.0.1` and `::1` on the same port for that case and uses error-aware joining with host-specific diagnostics.
+It keeps every host, both repetitions, and the two-second deadline. No case is skipped and no timeout is relaxed.
+
+GPT-6 Astra also identified a source-backed Windows client-socket risk for mapped IPv4 destinations.
+Resolved mapped IPv6 addresses now become native IPv4 before guards and connect.
+Configured host/display values remain unchanged; ordinary IPv6 flow and scope, resolver order, and duplicates remain intact.
+The fully qualified mapped-address regression failed before the fix and passed afterward.
+An earlier unqualified exact-name command selected zero tests and was not counted as evidence.
+
+Both accepted model routes reviewed the full repair sequentially:
+
+- `GPT-6 Astra (copilot)` accepted the runtime correction and added mixed-address/IPv6-metadata, mapped-exclusion, and peer-identity coverage.
+- `Claude Opus 5.5 (copilot)` accepted that final repair without source revisions, including cancellation-safe dual-listener acceptance and guard alias semantics.
+
+The complete repair diff SHA-256 against initial head `1ed047f79f40a93c788f125b7728eb4108f2ce0b` is `2f28efd87e009f9c6de05a8a038d977d02190c2b89a1d1a9880db29cb1413f11`.
+The destination source-file SHA-256 is separately `ab787dba600b70865444a4ee79f9f26364a54d7f0cde3390da350041e9045dc0`.
+These identify different objects and are not interchangeable fingerprints.
+
+Twelve destination tests and three production loop-guard tests passed; Opus also ran thirty passing Linux repetitions of the previously failing test.
+The full coordinator gate sequence then passed again: formatting, strict nightly Clippy, private docs, stable workspace build/all-feature tests, MSRV all-target checks, 256 delivery tests, and whitespace checks.
+It emitted `ALL_ITERATION_03_WINDOWS_REPAIR_GATES_PASSED`, with no Rust failures and ten existing ignored tests.
+The exact Windows timeout cause remains unproven locally. Fresh hosted Windows CI and Copilot re-review on the repaired head remain required before merge.
+
+#### Planned Acceptance Criteria
 
 Use explicit TCP, certificate-TLS, and PSK construction with security selected once.
 Attach stapled OCSP, fetched OCSP, and CRLs before producing an immutable prepared endpoint.
