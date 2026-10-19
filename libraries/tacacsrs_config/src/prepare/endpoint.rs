@@ -1115,14 +1115,15 @@ mod tests {
             let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
             let _ = client
                 .execute(
-                    AccountingOperation {
+                    &AccountingOperation {
                         user: "chain-test".to_owned(),
                         port: "test".to_owned(),
                         remote_address: "127.0.0.1".to_owned(),
                         command: "show".to_owned(),
                         command_arguments: Vec::new(),
                     }
-                    .exchange(),
+                    .exchange()
+                    .unwrap(),
                 )
                 .await;
         };
@@ -1458,7 +1459,8 @@ mod tests {
             }
             .exchange()
         };
-        let first = client.execute(operation());
+        let prepared = operation()?;
+        let first = client.execute(&prepared);
         tokio::pin!(first);
         let (accepted, first) = tokio::time::timeout(Duration::from_secs(5), async {
             tokio::join!(accepted, &mut first)
@@ -1471,7 +1473,7 @@ mod tests {
             .duration_since(std::time::SystemTime::now())
             .unwrap_or_default();
         tokio::time::sleep(remaining + Duration::from_secs(1)).await;
-        tokio::time::timeout(Duration::from_secs(3), client.execute(operation()))
+        tokio::time::timeout(Duration::from_secs(3), client.execute(&prepared))
             .await
             .expect("post-expiry exchange must complete")?;
         client
@@ -1530,14 +1532,15 @@ mod tests {
             let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
             let _ = client
                 .execute(
-                    AccountingOperation {
+                    &AccountingOperation {
                         user: "test".to_owned(),
                         port: "test".to_owned(),
                         remote_address: "127.0.0.1".to_owned(),
                         command: "show".to_owned(),
                         command_arguments: Vec::new(),
                     }
-                    .exchange(),
+                    .exchange()
+                    .unwrap(),
                 )
                 .await;
         };
@@ -1690,14 +1693,15 @@ mod tests {
             let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
             client
                 .execute(
-                    AccountingOperation {
+                    &AccountingOperation {
                         user: "test".to_owned(),
                         port: "test".to_owned(),
                         remote_address: "127.0.0.1".to_owned(),
                         command: "show".to_owned(),
                         command_arguments: Vec::new(),
                     }
-                    .exchange(),
+                    .exchange()
+                    .unwrap(),
                 )
                 .await
         };

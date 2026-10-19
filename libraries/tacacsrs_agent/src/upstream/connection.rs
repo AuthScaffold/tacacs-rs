@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use tacacsrs_protocol::accounting::reply::AccountingReply;
 use tacacsrs_protocol::authentication::reply::AuthenticationReply;
-use tacacsrs_protocol::accounting::request::AccountingRequest;
 use tacacsrs_protocol::authorization::reply::AuthorizationReply;
-use tacacsrs_protocol::authorization::request::AuthorizationRequest;
+use tacacsrs_protocol::exchange::accounting::AccountingExchange;
+use tacacsrs_protocol::exchange::authorization::AuthorizationExchange;
 use tacacsrs_networking::ClientConversation;
 use tacacsrs_protocol::exchange::authentication::PapAuthenticationExchange;
 
@@ -50,14 +50,14 @@ pub(crate) trait UpstreamConnection: Send + Sync {
     /// exchange fails at the TACACS+ protocol level.
     async fn send_accounting(
         &self,
-        request: AccountingRequest,
+        exchange: &AccountingExchange,
         deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AccountingReply, UpstreamRequestError>;
 
     /// Runs one fixed PAP authentication exchange.
     async fn authenticate_pap(
         &self,
-        exchange: PapAuthenticationExchange,
+        exchange: &PapAuthenticationExchange,
         deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthenticationReply, UpstreamRequestError>;
 
@@ -69,7 +69,7 @@ pub(crate) trait UpstreamConnection: Send + Sync {
     /// exchange fails at the TACACS+ protocol level.
     async fn send_authorization(
         &self,
-        request: AuthorizationRequest,
+        exchange: &AuthorizationExchange,
         deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthorizationReply, UpstreamRequestError>;
 }

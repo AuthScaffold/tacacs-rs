@@ -497,9 +497,10 @@ async fn probe_authentication_certificate_ocsp_signer(
         Ok::<_, anyhow::Error>(())
     });
     let client = TacacsClient::connect_prepared(endpoint).await?;
-    let first = client.execute(tacacsrs_protocol::exchange::accounting::AccountingExchange::new(
+    let prepared = tacacsrs_protocol::exchange::accounting::AccountingExchange::new(
         super::accounting_request(),
-    ));
+    )?;
+    let first = client.execute(&prepared);
     tokio::pin!(first);
     let (accepted, first) =
         tokio::time::timeout(Duration::from_secs(5), async { tokio::join!(accepted, &mut first) })
@@ -513,13 +514,7 @@ async fn probe_authentication_certificate_ocsp_signer(
     let remaining = now.diff(signer.not_after())?;
     let remaining = u64::try_from(remaining.days)? * 86_400 + u64::try_from(remaining.secs)?;
     tokio::time::sleep(Duration::from_secs(remaining + 1)).await;
-    tokio::time::timeout(
-        Duration::from_secs(3),
-        client.execute(tacacsrs_protocol::exchange::accounting::AccountingExchange::new(
-            super::accounting_request(),
-        )),
-    )
-    .await??;
+    tokio::time::timeout(Duration::from_secs(3), client.execute(&prepared)).await??;
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(301)).await;
     tokio::time::resume();

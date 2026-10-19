@@ -48,7 +48,7 @@ async fn operational_counters_cover_shared_sessions_and_connection_outcomes() {
     let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
     for _ in 0..2 {
         client
-            .execute(AccountingWatchdogExchange(accounting_watchdog_preflight_request()))
+            .execute(&test_accounting_exchange(accounting_watchdog_preflight_request()))
             .await
             .unwrap();
     }
@@ -151,7 +151,8 @@ use tacacsrs_protocol::enumerations::{
     TacacsAuthenticationStatus, TacacsAuthorizationStatus, TacacsFlags, TacacsMajorVersion,
     TacacsMinorVersion, TacacsType,
 };
-use tacacsrs_protocol::exchange::FixedExchange;
+use tacacsrs_protocol::exchange::{FixedExchange, PreparedBody};
+use tacacsrs_protocol::exchange::accounting::AccountingExchange;
 use tacacsrs_protocol::exchange::authentication::PapAuthenticationExchange;
 use tacacsrs_protocol::failure::FailureCategory;
 use tacacsrs_protocol::header::Header;
@@ -159,32 +160,14 @@ use tacacsrs_protocol::packet::{Packet, PacketTrait};
 use tacacsrs_secrets::SecretBytes;
 
 use super::TacacsClient;
-use super::preflight::{AccountingWatchdogExchange, accounting_watchdog_preflight_request};
+use super::preflight::accounting_watchdog_preflight_request;
 use crate::PreparedEndpoint;
 use crate::codec::{PacketReadResult, PacketReader};
 use crate::establish::{ConnectOptions, ConnectPreflight};
 use crate::single_connect::SingleConnectionState;
 
-struct TestAccountingExchange(AccountingRequest);
-
-impl FixedExchange for TestAccountingExchange {
-    type Reply = AccountingReply;
-
-    fn packet_type(&self) -> TacacsType {
-        TacacsType::TacPlusAccounting
-    }
-
-    fn minor_version(&self) -> TacacsMinorVersion {
-        TacacsMinorVersion::TacacsPlusMinorVerDefault
-    }
-
-    fn encode_request(&self) -> anyhow::Result<Vec<u8>> {
-        self.0.to_bytes()
-    }
-
-    fn decode_reply(self, body: &[u8]) -> anyhow::Result<Self::Reply> {
-        AccountingReply::from_bytes(body)
-    }
+fn test_accounting_exchange(request: AccountingRequest) -> AccountingExchange {
+    AccountingExchange::new(request).unwrap()
 }
 
 struct TestAuthorizationExchange;
@@ -200,11 +183,23 @@ impl FixedExchange for TestAuthorizationExchange {
         TacacsMinorVersion::TacacsPlusMinorVerDefault
     }
 
-    fn encode_request(&self) -> anyhow::Result<Vec<u8>> {
-        Ok(Vec::new())
+    fn request_body(&self) -> &PreparedBody {
+        static BODY: std::sync::LazyLock<PreparedBody> = std::sync::LazyLock::new(|| {
+            let operation = tacacsrs_protocol::operations::AuthorizationOperation::builder(
+                "admin",
+                15,
+                tacacsrs_protocol::operations::AuthorizationAuthenticationContext::TacacsAscii,
+            )
+            .service("shell")
+            .command("")
+            .build()
+            .unwrap();
+            PreparedBody::encode(&operation.to_request().unwrap()).unwrap()
+        });
+        &BODY
     }
 
-    fn decode_reply(self, body: &[u8]) -> anyhow::Result<Self::Reply> {
+    fn decode_reply(&self, body: &[u8]) -> anyhow::Result<Self::Reply> {
         AuthorizationReply::from_bytes(body)
     }
 }
@@ -324,7 +319,7 @@ where
     endpoint.single_connection = false;
     let counters = endpoint.counters();
     let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
-    let result = tokio::time::timeout(Duration::from_secs(1), client.execute_classified(exchange))
+    let result = tokio::time::timeout(Duration::from_secs(1), client.execute_classified(&exchange))
         .await
         .expect("the fixed exchange must finish");
     tokio::time::timeout(Duration::from_secs(1), server_task)
@@ -495,6 +490,109 @@ async fn connect_with_disabled_preflight_does_not_open_transport() {
     assert_eq!(client.single_connection_state(), SingleConnectionState::Initial);
 }
 
+#[tokio::test]
+async fn invalid_fixed_request_never_opens_session() {
+    let mut server = server_template();
+    server.address = crate::ServerAddress::parse("127.0.0.1:1", 49).unwrap();
+    server.options = ConnectOptions::default().with_preflight(ConnectPreflight::Disabled);
+    let counters = server.counters();
+    let client = TacacsClient::connect_prepared(server).await.unwrap();
+    let mut request = accounting_watchdog_preflight_request();
+    request.user = "x".repeat(256);
+
+    let error = AccountingExchange::new(request).unwrap_err();
+
+    let snapshot = counters.snapshot();
+    assert_eq!(snapshot.connection_opens, 0);
+    assert_eq!(snapshot.messages_sent, 0);
+    assert_eq!(snapshot.sessions, 0);
+    assert!(format!("{error:#}").contains("exceeds 255 bytes"));
+    client.close();
+}
+
+#[tokio::test]
+async fn prepared_body_is_encoded_once_across_fresh_network_sessions() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountedCodec<'counter>(&'counter AtomicUsize);
+    impl TacacsBodyTrait for CountedCodec<'_> {
+        fn to_bytes(&self) -> anyhow::Result<Vec<u8>> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            accounting_watchdog_preflight_request().to_bytes()
+        }
+    }
+    struct CountedExchange(PreparedBody);
+    impl FixedExchange for CountedExchange {
+        type Reply = AccountingReply;
+        fn packet_type(&self) -> TacacsType {
+            TacacsType::TacPlusAccounting
+        }
+        fn minor_version(&self) -> TacacsMinorVersion {
+            TacacsMinorVersion::TacacsPlusMinorVerDefault
+        }
+        fn request_body(&self) -> &PreparedBody {
+            &self.0
+        }
+        fn decode_reply(&self, body: &[u8]) -> anyhow::Result<AccountingReply> {
+            AccountingReply::from_bytes(body)
+        }
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut endpoint = server_template();
+    endpoint.address = listener.local_addr().unwrap().try_into().unwrap();
+    endpoint.single_connection = false;
+    let peer = tokio::spawn(async move {
+        let mut packets = Vec::new();
+        for status in [
+            TacacsAccountingStatus::TacPlusAcctStatusError,
+            TacacsAccountingStatus::TacPlusAcctStatusSuccess,
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let PacketReadResult::Success(packet) =
+                PacketReader::new(None).read_packet(&mut stream).await
+            else {
+                panic!("the peer must receive a complete request");
+            };
+            let body = AccountingReply {
+                status,
+                server_msg: String::new(),
+                data: String::new(),
+            }
+            .to_bytes()
+            .unwrap();
+            let mut header = packet.header().clone();
+            header.seq_no = 2;
+            header.length = u32::try_from(body.len()).unwrap();
+            stream
+                .write_all(&Packet::new(header, body).unwrap().to_bytes())
+                .await
+                .unwrap();
+            packets.push(packet);
+        }
+        packets
+    });
+    let count = AtomicUsize::new(0);
+    let exchange = CountedExchange(PreparedBody::encode(&CountedCodec(&count)).unwrap());
+    let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+    for status in [
+        TacacsAccountingStatus::TacPlusAcctStatusError,
+        TacacsAccountingStatus::TacPlusAcctStatusSuccess,
+    ] {
+        let reply = client.execute(&exchange).await.unwrap();
+        assert_eq!(reply.status, status);
+    }
+    let packets = peer.await.unwrap();
+    assert_ne!(packets[0].header().session_id, packets[1].header().session_id);
+    for packet in packets {
+        assert_eq!(packet.body(), exchange.request_body().as_bytes());
+        assert_eq!(packet.header().length, exchange.request_body().wire_length());
+        assert_eq!(packet.header().seq_no, 1);
+    }
+    assert_eq!(count.load(Ordering::Relaxed), 1);
+    client.close();
+}
+
 #[test]
 fn packet_obfuscation_key_uses_shared_secret_for_tls_servers() {
     let endpoint = PreparedEndpoint::new(
@@ -639,7 +737,7 @@ async fn terminal_close_releases_a_parked_dedicated_read_and_rejects_new_work() 
     assert!(read.await.is_err());
     assert!(client.open_conversation().await.is_err());
     let error = client
-        .execute_classified(TestAccountingExchange(accounting_watchdog_preflight_request()))
+        .execute_classified(&test_accounting_exchange(accounting_watchdog_preflight_request()))
         .await
         .unwrap_err();
     assert_eq!(error.transmission_state(), TransmissionState::NotSent);
@@ -955,7 +1053,7 @@ async fn executes_fixed_exchange_over_dedicated_transport() {
     let client = TacacsClient::connect_prepared(server).await.unwrap();
 
     let reply = client
-        .execute(TestAccountingExchange(accounting_watchdog_preflight_request()))
+        .execute(&test_accounting_exchange(accounting_watchdog_preflight_request()))
         .await
         .unwrap();
     assert_eq!(reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
@@ -981,7 +1079,7 @@ async fn dedicated_fixed_exchange_marks_valid_wrong_type_and_minor_as_protocol()
         |header| header.minor_version = TacacsMinorVersion::TacacsPlusMinorVerOne,
     ] {
         let (result, snapshot) = execute_with_response_diagnostics(
-            TestAccountingExchange(accounting_watchdog_preflight_request()),
+            test_accounting_exchange(accounting_watchdog_preflight_request()),
             body.clone(),
             mutate,
         )
@@ -998,7 +1096,7 @@ async fn dedicated_fixed_exchange_marks_valid_wrong_type_and_minor_as_protocol()
 #[tokio::test]
 async fn malformed_fixed_reply_bodies_and_pap_getpass_are_protocol_failures() {
     let malformed_accounting = execute_with_response_diagnostics(
-        TestAccountingExchange(accounting_watchdog_preflight_request()),
+        test_accounting_exchange(accounting_watchdog_preflight_request()),
         vec![0],
         |_| {},
     )
@@ -1012,7 +1110,8 @@ async fn malformed_fixed_reply_bodies_and_pap_getpass_are_protocol_failures() {
             "tty0",
             "192.0.2.1",
             15,
-        ),
+        )
+        .unwrap(),
         vec![0],
         |_| {},
     )
@@ -1032,7 +1131,8 @@ async fn malformed_fixed_reply_bodies_and_pap_getpass_are_protocol_failures() {
             "tty0",
             "192.0.2.1",
             15,
-        ),
+        )
+        .unwrap(),
         getpass,
         |_| {},
     )
@@ -1066,7 +1166,7 @@ async fn early_dedicated_header_rejections_count_one_malformed_disconnect() {
         .to_bytes()
         .unwrap();
         let (result, snapshot) = execute_with_response_diagnostics(
-            TestAccountingExchange(accounting_watchdog_preflight_request()),
+            test_accounting_exchange(accounting_watchdog_preflight_request()),
             body,
             mutate,
         )
@@ -1096,7 +1196,7 @@ async fn dedicated_parser_rejection_counts_one_malformed_disconnect() {
     let counters = endpoint.counters();
     let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
     let error = client
-        .execute_classified(TestAccountingExchange(accounting_watchdog_preflight_request()))
+        .execute_classified(&test_accounting_exchange(accounting_watchdog_preflight_request()))
         .await
         .unwrap_err();
     assert_eq!(error.transmission_state(), crate::TransmissionState::OutcomeUnknown);
@@ -1132,7 +1232,8 @@ async fn invalid_single_connect_first_reply_is_not_promoted() {
     let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
     let error = tokio::time::timeout(
         Duration::from_secs(1),
-        client.execute_classified(TestAccountingExchange(accounting_watchdog_preflight_request())),
+        client
+            .execute_classified(&test_accounting_exchange(accounting_watchdog_preflight_request())),
     )
     .await
     .unwrap()
@@ -1264,15 +1365,14 @@ async fn shared_body_decoder_failure_does_not_abort_another_live_session() {
     let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
     tokio::time::timeout(
         Duration::from_secs(1),
-        client.execute(TestAccountingExchange(accounting_watchdog_preflight_request())),
+        client.execute(&test_accounting_exchange(accounting_watchdog_preflight_request())),
     )
     .await
     .expect("the shared-connection probe must finish")
     .unwrap();
-    let first =
-        client.execute_classified(TestAccountingExchange(accounting_watchdog_preflight_request()));
-    let second =
-        client.execute_classified(TestAccountingExchange(accounting_watchdog_preflight_request()));
+    let prepared = test_accounting_exchange(accounting_watchdog_preflight_request());
+    let first = client.execute_classified(&prepared);
+    let second = client.execute_classified(&prepared);
     let (first, second) =
         tokio::time::timeout(Duration::from_secs(1), async { tokio::join!(first, second) })
             .await
@@ -1324,7 +1424,8 @@ async fn valid_terminal_denial_and_server_error_remain_successful_replies() {
                 "tty0",
                 "192.0.2.1",
                 15,
-            ),
+            )
+            .unwrap(),
             body,
             |_| {},
         )
@@ -1378,7 +1479,7 @@ async fn header_and_body_eof_remain_uncategorized_transport_failures() {
         let counters = endpoint.counters();
         let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
         let result = client
-            .execute_classified(TestAccountingExchange(accounting_watchdog_preflight_request()))
+            .execute_classified(&test_accounting_exchange(accounting_watchdog_preflight_request()))
             .await;
         let Err(error) = result else {
             panic!("the truncated response must fail");
@@ -1410,7 +1511,7 @@ async fn expired_exchange_does_not_open_a_connection() {
     let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
     let error = client
         .execute_classified_until(
-            TestAccountingExchange(accounting_watchdog_preflight_request()),
+            &test_accounting_exchange(accounting_watchdog_preflight_request()),
             crate::RequestDeadline::after(Duration::ZERO).unwrap(),
         )
         .await
@@ -1453,10 +1554,8 @@ async fn deadline_classifies_stalled_tls_and_sent_requests() {
         let counters = endpoint.counters();
         let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
         let deadline = RequestDeadline::after(Duration::from_millis(200)).unwrap();
-        let exchange = client.execute_classified_until(
-            TestAccountingExchange(accounting_watchdog_preflight_request()),
-            deadline,
-        );
+        let prepared = test_accounting_exchange(accounting_watchdog_preflight_request());
+        let exchange = client.execute_classified_until(&prepared, deadline);
         let peer = async {
             let (mut peer, _) = listener.accept().await.unwrap();
             if !tls {
@@ -1532,7 +1631,7 @@ async fn accounting_watchdog_preflight_establishes_shared_connection_when_echoed
 
     let reply = tokio::time::timeout(
         Duration::from_secs(1),
-        client.execute(TestAccountingExchange(accounting_watchdog_preflight_request())),
+        client.execute(&test_accounting_exchange(accounting_watchdog_preflight_request())),
     )
     .await
     .unwrap()
@@ -1608,7 +1707,7 @@ async fn confirmed_single_connection_ignores_later_unset_reply_flags() {
     for _ in 0..3 {
         let reply = tokio::time::timeout(
             Duration::from_secs(1),
-            client.execute(TestAccountingExchange(accounting_watchdog_preflight_request())),
+            client.execute(&test_accounting_exchange(accounting_watchdog_preflight_request())),
         )
         .await
         .unwrap()
@@ -1677,8 +1776,9 @@ async fn timed_out_probe_recovers_and_promotes_on_the_same_client() {
     let mut endpoint = server_template();
     endpoint.address = listener.local_addr().unwrap().try_into().unwrap();
     let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+    let prepared = test_accounting_exchange(accounting_watchdog_preflight_request());
     let request = client.execute_classified_until(
-        TestAccountingExchange(accounting_watchdog_preflight_request()),
+        &prepared,
         RequestDeadline::after(Duration::from_millis(100)).unwrap(),
     );
     let peer = async {
@@ -1703,7 +1803,7 @@ async fn timed_out_probe_recovers_and_promotes_on_the_same_client() {
     for _ in 0..2 {
         tokio::time::timeout(
             Duration::from_secs(1),
-            client.execute(TestAccountingExchange(accounting_watchdog_preflight_request())),
+            client.execute(&test_accounting_exchange(accounting_watchdog_preflight_request())),
         )
         .await
         .unwrap()

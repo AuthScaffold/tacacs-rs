@@ -43,8 +43,10 @@ impl AccountingOperation {
     }
 
     /// Describes this accounting exchange without opening a connection.
-    #[must_use]
-    pub fn exchange(&self) -> AccountingExchange {
+    ///
+    /// # Errors
+    /// Returns an error if a field exceeds the codec limits.
+    pub fn exchange(&self) -> anyhow::Result<AccountingExchange> {
         AccountingExchange::new(self.to_request())
     }
 }
@@ -114,7 +116,7 @@ impl AuthorizationOperation {
     ///
     /// Returns an error if the operation cannot form a valid authorization request.
     pub fn exchange(&self) -> anyhow::Result<AuthorizationExchange> {
-        Ok(AuthorizationExchange::new(self.to_request()?))
+        AuthorizationExchange::from_operation(self)
     }
 }
 
@@ -137,14 +139,13 @@ impl PapAuthenticationOperation {
     ///
     /// Returns an error if the logical request is invalid.
     pub fn exchange(&self) -> anyhow::Result<PapAuthenticationExchange> {
-        self.validate()?;
-        Ok(PapAuthenticationExchange::new(
+        PapAuthenticationExchange::new(
             self.user.clone(),
             self.password.clone(),
             self.port.clone(),
             self.remote_address.clone(),
             self.privilege_level.get(),
-        ))
+        )
     }
 }
 
@@ -250,7 +251,7 @@ mod tests {
                 .build()?;
             let wire = operation.to_request()?;
             let decoded =
-                AuthorizationRequest::from_bytes(&operation.exchange()?.encode_request()?)?;
+                AuthorizationRequest::from_bytes(operation.exchange()?.request_body().as_bytes())?;
             assert_eq!(wire.to_bytes()?, decoded.to_bytes()?);
             assert_eq!(
                 wire.args,

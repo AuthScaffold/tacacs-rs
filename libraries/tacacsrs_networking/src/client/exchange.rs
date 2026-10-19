@@ -5,8 +5,6 @@
 //! numbers, validates the complete reply header, and completes the session on
 //! every success or error path.
 
-use anyhow::Context;
-
 use tacacsrs_protocol::enumerations::{TacacsFlags, TacacsMajorVersion};
 use tacacsrs_protocol::exchange::FixedExchange;
 use tacacsrs_protocol::header::Header;
@@ -26,9 +24,9 @@ impl TacacsClient {
     ///
     /// # Errors
     ///
-    /// Returns an error when session creation, request serialization, packet
-    /// I/O, response validation, or reply parsing fails.
-    pub async fn execute<Exchange>(&self, exchange: Exchange) -> anyhow::Result<Exchange::Reply>
+    /// Returns an error when session creation, packet I/O, response
+    /// validation, or reply parsing fails.
+    pub async fn execute<Exchange>(&self, exchange: &Exchange) -> anyhow::Result<Exchange::Reply>
     where
         Exchange: FixedExchange,
     {
@@ -41,11 +39,11 @@ impl TacacsClient {
     ///
     /// # Errors
     ///
-    /// Returns a classified error for session creation, request encoding,
-    /// packet I/O, response validation, or reply parsing.
+    /// Returns a classified error for session creation, packet I/O, response
+    /// validation, or reply parsing.
     pub async fn execute_classified<Exchange>(
         &self,
-        exchange: Exchange,
+        exchange: &Exchange,
     ) -> Result<Exchange::Reply, FixedExchangeError>
     where
         Exchange: FixedExchange,
@@ -68,7 +66,7 @@ impl TacacsClient {
     /// after the exchange starts. The deadline includes session establishment.
     pub async fn execute_classified_until<Exchange>(
         &self,
-        exchange: Exchange,
+        exchange: &Exchange,
         deadline: crate::RequestDeadline,
     ) -> Result<Exchange::Reply, FixedExchangeError>
     where
@@ -96,7 +94,7 @@ impl TacacsClient {
 
 async fn execute_on_session<Exchange>(
     session: &ClientSession,
-    exchange: Exchange,
+    exchange: &Exchange,
 ) -> Result<Exchange::Reply, FixedExchangeError>
 where
     Exchange: FixedExchange,
@@ -107,12 +105,8 @@ where
     let session_id = session.session_id();
     let packet_type = exchange.packet_type();
     let minor_version = exchange.minor_version();
-    let body = exchange
-        .encode_request()
-        .map_err(FixedExchangeError::not_sent)?;
-    let length = u32::try_from(body.len())
-        .context("fixed TACACS+ request body exceeds the protocol length field")
-        .map_err(FixedExchangeError::not_sent)?;
+    let body = exchange.request_body();
+    let length = body.wire_length();
     let request = Packet::new(
         Header {
             major_version: TacacsMajorVersion::TacacsPlusMajor1,
@@ -123,7 +117,7 @@ where
             session_id,
             length,
         },
-        body,
+        body.as_bytes().to_vec(),
     )
     .map_err(FixedExchangeError::not_sent)?;
 

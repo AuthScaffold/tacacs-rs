@@ -12,9 +12,9 @@ use anyhow::Context;
 use async_trait::async_trait;
 use tacacsrs_protocol::accounting::reply::AccountingReply;
 use tacacsrs_protocol::authentication::reply::AuthenticationReply;
-use tacacsrs_protocol::accounting::request::AccountingRequest;
+use tacacsrs_protocol::exchange::accounting::AccountingExchange;
 use tacacsrs_protocol::authorization::reply::AuthorizationReply;
-use tacacsrs_protocol::authorization::request::AuthorizationRequest;
+use tacacsrs_protocol::exchange::authorization::AuthorizationExchange;
 use tacacsrs_protocol::enumerations::{
     TacacsAccountingStatus, TacacsAuthenticationReplyFlags, TacacsAuthenticationStatus,
     TacacsAuthorizationStatus,
@@ -59,7 +59,7 @@ impl UpstreamConnection for FakeConnection {
 
     async fn send_accounting(
         &self,
-        _request: AccountingRequest,
+        _exchange: &AccountingExchange,
         _deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AccountingReply, UpstreamRequestError> {
         if self.fail_next_request.swap(false, Ordering::Relaxed) {
@@ -79,7 +79,7 @@ impl UpstreamConnection for FakeConnection {
 
     async fn authenticate_pap(
         &self,
-        _exchange: PapAuthenticationExchange,
+        _exchange: &PapAuthenticationExchange,
         _deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthenticationReply, UpstreamRequestError> {
         if self.fail_next_request.swap(false, Ordering::Relaxed) {
@@ -99,7 +99,7 @@ impl UpstreamConnection for FakeConnection {
 
     async fn send_authorization(
         &self,
-        _request: AuthorizationRequest,
+        _exchange: &AuthorizationExchange,
         _deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthorizationReply, UpstreamRequestError> {
         if self.fail_next_request.swap(false, Ordering::Relaxed) {

@@ -2,20 +2,48 @@
 
 use crate::authorization::{reply::AuthorizationReply, request::AuthorizationRequest};
 use crate::enumerations::{TacacsMinorVersion, TacacsType};
+#[cfg(test)]
 use crate::body::TacacsBodyTrait;
-use crate::exchange::FixedExchange;
+use crate::exchange::{FixedExchange, PreparedBody};
 
 /// One TACACS+ authorization request followed by one authorization reply.
 #[derive(Debug)]
 pub struct AuthorizationExchange {
-    request: AuthorizationRequest,
+    body: PreparedBody,
 }
 
 impl AuthorizationExchange {
     /// Creates an authorization exchange from its protocol request body.
-    #[must_use]
-    pub const fn new(request: AuthorizationRequest) -> Self {
-        Self { request }
+    ///
+    /// # Errors
+    /// Returns an error for invalid privilege, arguments, or codec field limits.
+    pub fn new(request: AuthorizationRequest) -> anyhow::Result<Self> {
+        crate::privilege::PrivilegeLevel::try_from(request.priv_lvl)?;
+        let arguments = request
+            .args
+            .iter()
+            .map(|argument| crate::operations::AuthorizationArg::parse(argument))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        crate::operations::AuthorizationOperation::validate_service_and_command(
+            arguments
+                .iter()
+                .find(|argument| argument.name == "service")
+                .map(|argument| argument.value.as_str()),
+            arguments.iter().any(|argument| argument.name == "cmd"),
+        )?;
+        Self::prepare(request)
+    }
+
+    pub(crate) fn from_operation(
+        operation: &crate::operations::AuthorizationOperation,
+    ) -> anyhow::Result<Self> {
+        Self::prepare(operation.to_request()?)
+    }
+
+    fn prepare(request: AuthorizationRequest) -> anyhow::Result<Self> {
+        Ok(Self {
+            body: PreparedBody::encode(&request)?,
+        })
     }
 }
 
@@ -31,11 +59,11 @@ impl FixedExchange for AuthorizationExchange {
         TacacsMinorVersion::TacacsPlusMinorVerDefault
     }
 
-    fn encode_request(&self) -> anyhow::Result<Vec<u8>> {
-        self.request.to_bytes()
+    fn request_body(&self) -> &PreparedBody {
+        &self.body
     }
 
-    fn decode_reply(self, body: &[u8]) -> anyhow::Result<Self::Reply> {
+    fn decode_reply(&self, body: &[u8]) -> anyhow::Result<Self::Reply> {
         AuthorizationReply::from_bytes(body)
     }
 }
@@ -61,8 +89,8 @@ mod tests {
             port: "tty0".to_owned(),
             rem_address: "192.0.2.1".to_owned(),
             args: vec!["service=shell".to_owned(), "cmd=".to_owned()],
-        });
-        let request = AuthorizationRequest::from_bytes(&exchange.encode_request()?)?;
+        })?;
+        let request = AuthorizationRequest::from_bytes(exchange.request_body().as_bytes())?;
         assert_eq!(request.args, vec!["service=shell", "cmd="]);
 
         let body = AuthorizationReply {
@@ -90,7 +118,7 @@ mod tests {
         .command("")
         .build()?
         .exchange()?;
-        let request = AuthorizationRequest::from_bytes(&exchange.encode_request()?)?;
+        let request = AuthorizationRequest::from_bytes(exchange.request_body().as_bytes())?;
 
         assert_eq!(
             request.authen_method,
@@ -116,7 +144,7 @@ mod tests {
         .command_args(["users", "brief"])
         .build()?
         .exchange()?;
-        let request = AuthorizationRequest::from_bytes(&exchange.encode_request()?)?;
+        let request = AuthorizationRequest::from_bytes(exchange.request_body().as_bytes())?;
 
         assert_eq!(
             request.args,

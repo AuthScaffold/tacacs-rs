@@ -322,8 +322,12 @@ mod tests {
                 let decoded =
                     AuthorizationOperation::try_from(proto::AuthorizationRequest::from(&direct))?;
                 assert_eq!(
-                    direct.exchange()?.encode_request()?,
-                    decoded.exchange()?.encode_request()?
+                    proto::AuthorizationRequest::from(direct.clone()),
+                    proto::AuthorizationRequest::from(&direct)
+                );
+                assert_eq!(
+                    direct.exchange()?.request_body().as_bytes(),
+                    decoded.exchange()?.request_body().as_bytes()
                 );
                 assert_eq!(direct, decoded);
             }
@@ -341,7 +345,14 @@ mod tests {
             command_arguments: vec!["users".to_owned(), "brief".to_owned()],
         };
         let decoded = AccountingOperation::try_from(proto::AccountingRequest::from(&direct))?;
-        assert_eq!(direct.exchange().encode_request()?, decoded.exchange().encode_request()?);
+        assert_eq!(
+            proto::AccountingRequest::from(direct.clone()),
+            proto::AccountingRequest::from(&direct)
+        );
+        assert_eq!(
+            direct.exchange()?.request_body().as_bytes(),
+            decoded.exchange()?.request_body().as_bytes()
+        );
         Ok(())
     }
 
@@ -357,7 +368,10 @@ mod tests {
         let decoded = PapAuthenticationOperation::try_from(proto::PapAuthenticationRequest::from(
             direct.clone(),
         ))?;
-        assert_eq!(direct.exchange()?.encode_request()?, decoded.exchange()?.encode_request()?);
+        assert_eq!(
+            direct.exchange()?.request_body().as_bytes(),
+            decoded.exchange()?.request_body().as_bytes()
+        );
         assert!(!format!("{decoded:?}").contains("conformance-secret"));
         Ok(())
     }

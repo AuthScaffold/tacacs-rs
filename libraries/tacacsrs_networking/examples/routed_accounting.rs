@@ -27,6 +27,7 @@ use tacacsrs_protocol::body::TacacsBodyTrait;
 struct AccountingAttempt {
     client: RoutedClient,
     deadline: RequestDeadline,
+    exchange: AccountingExchange,
 }
 
 #[async_trait]
@@ -50,7 +51,7 @@ impl FailoverAttempt for AccountingAttempt {
         };
         match binding
             .connection()
-            .execute_classified_until(AccountingExchange::new(request()), self.deadline)
+            .execute_classified_until(&self.exchange, self.deadline)
             .await
         {
             Ok(reply) if reply.status == TacacsAccountingStatus::TacPlusAcctStatusError => {
@@ -117,6 +118,7 @@ async fn accounting(client: RoutedClient) -> anyhow::Result<()> {
     let mut attempt = AccountingAttempt {
         client,
         deadline: RequestDeadline::after(Duration::from_secs(2))?,
+        exchange: AccountingExchange::new(request())?,
     };
     match run_with_failover(plan, &mut attempt).await {
         FailoverOutcome::Accepted((name, reply)) => {

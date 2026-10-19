@@ -6,7 +6,6 @@ use tacacsrs_protocol::operations::{
 };
 use tacacsrs_protocol::failure::ServiceError;
 use tacacsrs_protocol::exchange::authentication::PapAuthenticationExchange;
-use tacacsrs_protocol::exchange::FixedExchange;
 
 use super::UpstreamBridge;
 use super::routed::RoutedOperation;
@@ -17,6 +16,7 @@ struct PapAuthenticationRoute;
 #[async_trait]
 impl RoutedOperation for PapAuthenticationRoute {
     type Request = PapAuthenticationOperation;
+    type Exchange = PapAuthenticationExchange;
     type Response = PapAuthenticationOperationResponse;
 
     const NAME: &'static str = "PAP authentication";
@@ -24,10 +24,9 @@ impl RoutedOperation for PapAuthenticationRoute {
     const OPERATION: OperationKind = OperationKind::Authentication;
     async fn send<Connection: UpstreamConnection + ?Sized>(
         connection: &Connection,
-        request: &Self::Request,
+        exchange: &Self::Exchange,
         deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<Self::Response, UpstreamRequestError> {
-        let exchange = pap_exchange(request)?;
         let reply = connection.authenticate_pap(exchange, deadline).await?;
         PapAuthenticationOperationResponse::from_reply(connection.server_address(), reply)
             .map_err(UpstreamRequestError::outcome_unknown)
@@ -37,20 +36,11 @@ impl RoutedOperation for PapAuthenticationRoute {
         response.status == AuthenticationResponseStatus::Error
     }
 
-    fn request_body_length(request: &Self::Request) -> Result<usize, UpstreamRequestError> {
-        pap_exchange(request)?
-            .encode_request()
-            .map(|body| body.len())
+    fn prepare(request: &Self::Request) -> Result<Self::Exchange, UpstreamRequestError> {
+        request
+            .exchange()
             .map_err(UpstreamRequestError::invalid_request)
     }
-}
-
-fn pap_exchange(
-    request: &PapAuthenticationOperation,
-) -> Result<PapAuthenticationExchange, UpstreamRequestError> {
-    request
-        .exchange()
-        .map_err(UpstreamRequestError::invalid_request)
 }
 
 impl<Connector: tacacsrs_networking::routed::EndpointConnector> UpstreamBridge<Connector>

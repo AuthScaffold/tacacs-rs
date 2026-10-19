@@ -3,6 +3,7 @@
 use std::num::NonZeroU32;
 
 use async_trait::async_trait;
+use tacacsrs_protocol::exchange::FixedExchange;
 use tacacsrs_networking::routed::EndpointConnector;
 use tacacsrs_protocol::failure::{DeliveryState, FailureCategory, FailureFacts, FailurePhase};
 use tacacsrs_protocol::failure::ServiceError;
@@ -24,7 +25,8 @@ use crate::upstream::{
 #[async_trait]
 pub(super) trait RoutedOperation: Send + Sync + 'static {
     /// Client API request type for the operation.
-    type Request: Clone + Send + Sync;
+    type Request: Send + Sync;
+    type Exchange: FixedExchange;
     /// Client API response type for the operation.
     type Response: Send;
 
@@ -37,15 +39,15 @@ pub(super) trait RoutedOperation: Send + Sync + 'static {
     /// Sends the operation through the selected server connection.
     async fn send<Connection: UpstreamConnection + ?Sized>(
         connection: &Connection,
-        request: &Self::Request,
+        exchange: &Self::Exchange,
         deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<Self::Response, UpstreamRequestError>;
 
     /// Returns whether a valid response reports an operational server error.
     fn is_server_error(response: &Self::Response) -> bool;
 
-    /// Returns the encoded TACACS+ request body length.
-    fn request_body_length(request: &Self::Request) -> Result<usize, UpstreamRequestError>;
+    /// Prepares the immutable body before admission.
+    fn prepare(request: &Self::Request) -> Result<Self::Exchange, UpstreamRequestError>;
 }
 
 /// One client API request that the failover executor can retry.
@@ -55,7 +57,7 @@ where
 {
     router: &'request OperationRouter<Connector>,
     routing: RequestRouting<Connector>,
-    request: &'request Operation::Request,
+    exchange: &'request Operation::Exchange,
 }
 
 impl<Operation: RoutedOperation, Connector: EndpointConnector>
@@ -124,7 +126,7 @@ where
         let response = attempt_deadline
             .run(async {
                 let mut observation = bound_server.observe_failure();
-                let response = Operation::send(&*bound_server.connection, self.request, attempt_deadline).await;
+                let response = Operation::send(&*bound_server.connection, self.exchange, attempt_deadline).await;
                 if response.is_ok() || matches!(&response, Err(error) if error.kind() == AttemptFailureKind::InvalidRequest) {
                     observation.disarm();
                 }
@@ -195,9 +197,26 @@ where
     where
         Operation: RoutedOperation,
     {
-        let body_length = Operation::request_body_length(&request)
-            .map_err(UpstreamRequestError::into_service_error)?;
         let routing = self.router.capture_request(Operation::OPERATION);
+        let check_deadline = || {
+            routing.deadline().check().map_err(|error| {
+                ServiceError::new(
+                    error.to_string(),
+                    FailureFacts::new(
+                        FailureCategory::Deadline,
+                        FailurePhase::Admission,
+                        DeliveryState::NotSent,
+                    ),
+                )
+                .with_runtime_generation(routing.generation())
+            })
+        };
+        check_deadline()?;
+        let prepared = Operation::prepare(&request);
+        drop(request);
+        check_deadline()?;
+        let exchange = prepared.map_err(UpstreamRequestError::into_service_error)?;
+        let body_length = exchange.request_body().as_bytes().len();
         let _admission_permit = routing.admit(body_length).await.map_err(|error| {
             error
                 .into_service_error()
@@ -209,7 +228,7 @@ where
         let mut attempt = RoutedAttempt::<Operation, Connector> {
             router: &self.router,
             routing,
-            request: &request,
+            exchange: &exchange,
         };
 
         match run_with_failover(plan, &mut attempt).await {

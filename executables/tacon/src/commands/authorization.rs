@@ -16,7 +16,7 @@ pub(crate) async fn send_direct(
     connection: &Connection,
     operation: &AuthorizationOperation,
 ) -> anyhow::Result<AuthorizationOperationResponse> {
-    let reply = connection.execute(operation.exchange()?).await?;
+    let reply = connection.execute(&operation.exchange()?).await?;
     AuthorizationOperationResponse::from_reply(connection.server_name(), reply)
 }
 

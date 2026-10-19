@@ -5,14 +5,12 @@
 //! server, that request doubles as capability discovery: a server that echoes the
 //! single-connect flag promotes the preflight transport into the shared cache.
 
-use tacacsrs_protocol::accounting::reply::AccountingReply;
 use tacacsrs_protocol::accounting::request::AccountingRequest;
-use tacacsrs_protocol::body::TacacsBodyTrait;
 use tacacsrs_protocol::enumerations::{
     TacacsAccountingFlags, TacacsAccountingStatus, TacacsAuthenticationMethod,
     TacacsAuthenticationService, TacacsAuthenticationType,
 };
-use tacacsrs_protocol::exchange::FixedExchange;
+use tacacsrs_protocol::exchange::accounting::AccountingExchange;
 
 use crate::establish::ConnectPreflight;
 
@@ -29,7 +27,7 @@ impl TacacsClient {
     async fn send_accounting_watchdog_preflight(&self) -> anyhow::Result<()> {
         let mut observation = self.endpoint.counters().watchdog_preflight();
         let reply = self
-            .execute(AccountingWatchdogExchange(accounting_watchdog_preflight_request()))
+            .execute(&AccountingExchange::new(accounting_watchdog_preflight_request())?)
             .await?;
 
         match reply.status {
@@ -39,28 +37,6 @@ impl TacacsClient {
             }
             status => anyhow::bail!("TACACS+ accounting WATCHDOG preflight failed: {status:?}"),
         }
-    }
-}
-
-pub(super) struct AccountingWatchdogExchange(pub(super) AccountingRequest);
-
-impl FixedExchange for AccountingWatchdogExchange {
-    type Reply = AccountingReply;
-
-    fn packet_type(&self) -> tacacsrs_protocol::enumerations::TacacsType {
-        tacacsrs_protocol::enumerations::TacacsType::TacPlusAccounting
-    }
-
-    fn minor_version(&self) -> tacacsrs_protocol::enumerations::TacacsMinorVersion {
-        tacacsrs_protocol::enumerations::TacacsMinorVersion::TacacsPlusMinorVerDefault
-    }
-
-    fn encode_request(&self) -> anyhow::Result<Vec<u8>> {
-        self.0.to_bytes()
-    }
-
-    fn decode_reply(self, body: &[u8]) -> anyhow::Result<Self::Reply> {
-        AccountingReply::from_bytes(body)
     }
 }
 

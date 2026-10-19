@@ -88,10 +88,15 @@ impl AuthorizationOperation {
         for arg in &self.args {
             arg.validate()?;
         }
-        let service = self
-            .service()
-            .context("authorization request requires service key")?;
-        if service == "shell" && self.command().is_none() {
+        Self::validate_service_and_command(self.service(), self.command().is_some())
+    }
+
+    pub(crate) fn validate_service_and_command(
+        service: Option<&str>,
+        has_command: bool,
+    ) -> anyhow::Result<()> {
+        let service = service.context("authorization request requires service key")?;
+        if service == "shell" && !has_command {
             bail!("authorization request with service='shell' requires cmd key");
         }
         Ok(())

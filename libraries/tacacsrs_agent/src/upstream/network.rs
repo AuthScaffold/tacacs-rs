@@ -6,10 +6,9 @@ use tacacsrs_protocol::exchange::accounting::AccountingExchange;
 use tacacsrs_protocol::exchange::authentication::PapAuthenticationExchange;
 use tacacsrs_protocol::exchange::authorization::AuthorizationExchange;
 use tacacsrs_protocol::accounting::reply::AccountingReply;
-use tacacsrs_protocol::accounting::request::AccountingRequest;
 use tacacsrs_protocol::authentication::reply::AuthenticationReply;
 use tacacsrs_protocol::authorization::reply::AuthorizationReply;
-use tacacsrs_protocol::authorization::request::AuthorizationRequest;
+use tacacsrs_protocol::exchange::FixedExchange;
 use tacacsrs_networking::{PreparedEndpoint, TacacsClient};
 
 use super::connection::UpstreamConnection;
@@ -151,19 +150,19 @@ impl UpstreamConnection for TacacsUpstreamConnection {
 
     async fn send_accounting(
         &self,
-        request: AccountingRequest,
+        exchange: &AccountingExchange,
         deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AccountingReply, UpstreamRequestError> {
         debug_assert_eq!(self.operation, OperationKind::Accounting);
         log_session_start(
             "accounting",
             &self.server_address,
-            &format!("user={}, args={}", request.user, request.args.len()),
+            &format!("body_length={}", exchange.request_body().wire_length()),
         );
 
         let response = self
             .connection
-            .execute_classified_until(AccountingExchange::new(request), deadline)
+            .execute_classified_until(exchange, deadline)
             .await;
 
         match &response {
@@ -190,7 +189,7 @@ impl UpstreamConnection for TacacsUpstreamConnection {
 
     async fn authenticate_pap(
         &self,
-        exchange: PapAuthenticationExchange,
+        exchange: &PapAuthenticationExchange,
         deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthenticationReply, UpstreamRequestError> {
         debug_assert_eq!(self.operation, OperationKind::Authentication);
@@ -207,19 +206,19 @@ impl UpstreamConnection for TacacsUpstreamConnection {
 
     async fn send_authorization(
         &self,
-        request: AuthorizationRequest,
+        exchange: &AuthorizationExchange,
         deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthorizationReply, UpstreamRequestError> {
         debug_assert_eq!(self.operation, OperationKind::Authorization);
         log_session_start(
             "authorization",
             &self.server_address,
-            &format!("user={}, args={}", request.user, request.args.len()),
+            &format!("body_length={}", exchange.request_body().wire_length()),
         );
 
         let response = self
             .connection
-            .execute_classified_until(AuthorizationExchange::new(request), deadline)
+            .execute_classified_until(exchange, deadline)
             .await;
 
         match &response {

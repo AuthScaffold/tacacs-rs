@@ -5,7 +5,7 @@ use tacacsrs_protocol::operations::{
     AuthorizationOperation, AuthorizationOperationResponse, AuthorizationResponseStatus,
 };
 use tacacsrs_protocol::failure::ServiceError;
-use tacacsrs_protocol::body::TacacsBodyTrait;
+use tacacsrs_protocol::exchange::authorization::AuthorizationExchange;
 
 use super::UpstreamBridge;
 use super::routed::RoutedOperation;
@@ -16,6 +16,7 @@ struct AuthorizationRoute;
 #[async_trait]
 impl RoutedOperation for AuthorizationRoute {
     type Request = AuthorizationOperation;
+    type Exchange = AuthorizationExchange;
     type Response = AuthorizationOperationResponse;
 
     const NAME: &'static str = "authorization";
@@ -23,13 +24,10 @@ impl RoutedOperation for AuthorizationRoute {
     const OPERATION: OperationKind = OperationKind::Authorization;
     async fn send<Connection: UpstreamConnection + ?Sized>(
         connection: &Connection,
-        request: &Self::Request,
+        exchange: &Self::Exchange,
         deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<Self::Response, UpstreamRequestError> {
-        let request = request
-            .to_request()
-            .map_err(UpstreamRequestError::invalid_request)?;
-        let reply = connection.send_authorization(request, deadline).await?;
+        let reply = connection.send_authorization(exchange, deadline).await?;
         AuthorizationOperationResponse::from_reply(connection.server_address(), reply)
             .map_err(UpstreamRequestError::protocol_error)
     }
@@ -38,12 +36,9 @@ impl RoutedOperation for AuthorizationRoute {
         response.status == AuthorizationResponseStatus::Error
     }
 
-    fn request_body_length(request: &Self::Request) -> Result<usize, UpstreamRequestError> {
+    fn prepare(request: &Self::Request) -> Result<Self::Exchange, UpstreamRequestError> {
         request
-            .to_request()
-            .map_err(UpstreamRequestError::invalid_request)?
-            .to_bytes()
-            .map(|body| body.len())
+            .exchange()
             .map_err(UpstreamRequestError::invalid_request)
     }
 }

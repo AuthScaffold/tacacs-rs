@@ -5,7 +5,7 @@ use tacacsrs_protocol::operations::{
     AccountingOperation, AccountingOperationResponse, AccountingResponseStatus,
 };
 use tacacsrs_protocol::failure::ServiceError;
-use tacacsrs_protocol::body::TacacsBodyTrait;
+use tacacsrs_protocol::exchange::accounting::AccountingExchange;
 
 use super::UpstreamBridge;
 use super::routed::RoutedOperation;
@@ -16,6 +16,7 @@ struct AccountingRoute;
 #[async_trait]
 impl RoutedOperation for AccountingRoute {
     type Request = AccountingOperation;
+    type Exchange = AccountingExchange;
     type Response = AccountingOperationResponse;
 
     const NAME: &'static str = "accounting";
@@ -23,12 +24,10 @@ impl RoutedOperation for AccountingRoute {
     const OPERATION: OperationKind = OperationKind::Accounting;
     async fn send<Connection: UpstreamConnection + ?Sized>(
         connection: &Connection,
-        request: &Self::Request,
+        exchange: &Self::Exchange,
         deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<Self::Response, UpstreamRequestError> {
-        let reply = connection
-            .send_accounting(request.to_request(), deadline)
-            .await?;
+        let reply = connection.send_accounting(exchange, deadline).await?;
         Ok(AccountingOperationResponse::from_reply(connection.server_address(), reply))
     }
 
@@ -36,11 +35,9 @@ impl RoutedOperation for AccountingRoute {
         response.status == AccountingResponseStatus::Error
     }
 
-    fn request_body_length(request: &Self::Request) -> Result<usize, UpstreamRequestError> {
+    fn prepare(request: &Self::Request) -> Result<Self::Exchange, UpstreamRequestError> {
         request
-            .to_request()
-            .to_bytes()
-            .map(|body| body.len())
+            .exchange()
             .map_err(UpstreamRequestError::invalid_request)
     }
 }

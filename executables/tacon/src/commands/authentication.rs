@@ -39,7 +39,7 @@ pub(crate) async fn send_direct(
     connection: &Connection,
     operation: &PapAuthenticationOperation,
 ) -> anyhow::Result<PapAuthenticationOperationResponse> {
-    let reply = connection.execute(operation.exchange()?).await?;
+    let reply = connection.execute(&operation.exchange()?).await?;
     PapAuthenticationOperationResponse::from_reply(connection.server_name(), reply)
 }
 
