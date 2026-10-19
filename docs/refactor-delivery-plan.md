@@ -1593,7 +1593,9 @@ The guarded squash request specified that exact reviewed head. GitHub returned `
 Fetched `origin/main` equals the complete tested tree `9d04f8c7cb54d2c80aff65bce44000ef3a385688`.
 Iteration 07 integrated the squash through normal merge `d01637e9f78a0c46254820196a51f5d25ea7bdc4`, preserving its complete tested tree.
 All 237 agent tests passed again. Iteration 08 fast-forwarded its parent without changing its complete changed-content fingerprint, including the new file.
-Iteration 06 cleanup follows preservation of this receipt.
+After preserving this receipt, the clean idle iteration 06 worktree was removed without force.
+Its exact owned 22 GiB cache and completed PR/squash-description temporary files were removed.
+Branches, review history, active iterations 07 and 08, and the diagnostics checkout remain intact.
 
 Prepare one immutable validated body and encoded length before admission.
 Reuse that body for eligible attempts without renewing request deadlines.
@@ -1679,7 +1681,9 @@ The predecessor remains subject to its replacement required workflow `3928588953
 No iteration 07 worktree or cache is eligible for cleanup before merge and preservation of its receipts.
 Copilot review `5574977456` on the original published head reported no open issues and recommended approval.
 After predecessor merge, integration head `d01637e9f78a0c46254820196a51f5d25ea7bdc4` retains tested tree `9c03e697aa8a65e10d750145048f4998d6fbfe0c` exactly.
-All 237 agent tests passed again. Final-head publication, retargeting, fresh review, and required checks remain pending.
+All 237 agent tests passed again. The head was published normally and PR #284 now targets `main`, retaining exactly eight implementation files.
+Copilot review `5575347114` on `d01637e9f78a0c46254820196a51f5d25ea7bdc4` reports no open issues and recommends approval; all threads are resolved.
+Retargeting superseded workflow `39295100283`. Replacement current-head workflow `39295100962` is in progress, not merge clearance.
 
 Move lease-only admission operations onto captured requests and outcome recording onto bindings.
 Remove behavior-free router/manager forwarding and unnecessary router retention from attempts.
@@ -1700,7 +1704,9 @@ Checks: typed/raw retry, cancellation, stale-outcome and continuation tests, con
 
 ### 08: File Observation
 
-Status: planned. Scope: R13.
+Status: published as staged PR #285 on predecessor `d01637e9f78a0c46254820196a51f5d25ea7bdc4`; both named reviews accepted the unchanged complete source.
+Coordinator final workspace gates passed.
+Scope: R13.
 
 Read-only preflight confirms two owners in the current predecessor: private `source/file.rs::FileObservation` and public `source/policy.rs::FilePolicyObservation`.
 Their common mechanism owns pending invalidation, debounce state, a retained read task, watcher failures, and platform directory checks.
@@ -1709,7 +1715,57 @@ Configuration can have a finite baseline without a native watcher; that mode mus
 Keep separate invalidation and failure receivers so failure checks cannot consume changes received during an active read.
 Configuration alone owns previous-snapshot delta history. Do not introduce policy snapshot history into the observer.
 Started operating-system reads can finish after drop, but must not publish into a dropped observation. Preserve that limitation without claiming hard I/O cancellation.
-No iteration 08 branch, worktree, cache, or implementation exists yet.
+#### Initial Implementation Receipt
+
+Worktree: `/home/vscode/tacacs-rs-08-file-observation`; branch: `refactor/general-iterations/08-file-observation`.
+The implementation modifies three tracked source files and adds private `source/file_observation.rs`; no files are deleted.
+One private `FileObservationState<T>` owns debounce, retained reads, separate receivers, failure priority, and cleanup.
+Configuration and policy wrappers retain lazy loaders, parsing, warnings, and distinct events. Only configuration retains parsed-candidate delta history.
+Public APIs remain unchanged. No compatibility aliases or dependencies are added.
+
+The first focused existing cancelled-read test selected one case and passed without ignores.
+Configuration migration then passed 15 tests; policy migration passed eight tests.
+Final source checks passed 49 cases, including 13 new characterizations. Full configuration tests passed 282 runtime cases and five doctests.
+Consumer checks passed 65 supervisor, nine daemon-process, and 66 CLI cases.
+MSRV all-target/all-feature checks and Rust 1.99 minimal/all-feature consumer checks passed.
+Strict configuration Clippy, private docs, formatting, architecture validation, 35 architecture tests, and diagnostics passed.
+Focused coverage reran all 49 source cases: shared owner 93.71%, configuration 96.76%, and policy 97.77% line coverage, including tests.
+These are characterization results, not failed-before evidence of a pre-existing defect.
+Windows and ARM execution remain unverified. Started blocking reads can finish after drop without publishing.
+
+The complete changed-content manifest, including the new file, is `17bf56dea10a17f1cf66024aaaa6ddea86c775fd2637fc50c56b3f5ddc2b030b`.
+Tracked-only patch SHA-256 is separately `0235432412174d41522d480b4fef67ac95f35de8cc7a9a5645f1d79603885c3d` and is not a complete review identity.
+Parent integration preserved the complete content manifest and tracked patch byte for byte.
+Both named direct reviews and full final workspace gates remain pending. No local validation process remains active.
+
+#### Named Review Receipt
+
+`GPT-6 Astra (copilot)` reviewed all four paths, including the untracked shared implementation, wrapper tests, and `DirectoryWatch`.
+It found no actionable issue and made no edits. All 49 source tests and Rust 1.88 configuration all-target/all-feature checks passed.
+`Claude Opus 5.5 (copilot)` reviewed the same unchanged source and found no actionable issue.
+It independently passed 49 source tests, strict configuration Clippy, formatting, and the MSRV check.
+Both reviews confirmed separate receivers, retained read/debounce state, failure priority, finite baselines, lazy loaders, and unchanged wrapper contracts.
+Both cover complete content manifest `17bf56dea10a17f1cf66024aaaa6ddea86c775fd2637fc50c56b3f5ddc2b030b`, including the new file.
+The tracked-only patch remains `0235432412174d41522d480b4fef67ac95f35de8cc7a9a5645f1d79603885c3d`.
+The complete patch, formed from the tracked diff followed by the new-file no-index diff, is `4dc3f805a0859d715ab5c6c0957120369aa02d055020287e7ead058b20166768`.
+Neither reviewer executed Windows or ARM. Abstract Windows helper tests are not native watcher execution evidence.
+#### Coordinator Final Gate Receipt
+
+The complete sequence used `/home/vscode/.cache/tacacs-rs-08-file-observation` and emitted `ALL_ITERATION_08_GATES_PASSED`.
+Formatting, strict nightly workspace Clippy, warning-free private docs, stable build, all-feature tests, and Rust 1.88 all-target checks passed.
+All 26 YANG tests and 256 selected delivery tests passed. Whitespace checks passed.
+The run included 127 configuration unit tests, 237 agent tests, 257 passing networking unit tests, and all 55 native prepared-source cases.
+Ten existing ignored Rust tests remain excluded. No new source edits occurred during final verification.
+The existing optional `console-subscriber` manifest advisory did not fail Clippy. No local validation process remains active.
+The complete reviewed identity still includes the new shared-observer file. Current-head hosted Windows and ARMhf checks remain required.
+
+#### Publication Receipt
+
+[PR #285](https://github.com/AuthScaffold/tacacs-rs/pull/285) targets `refactor/general-iterations/07-binding-outcomes`.
+Published head `e2e39c19bf81f9b720ee9bb7e09160287061de1e` has complete tested tree `4c6eac3601670343a020ae21b252b2f404b201ef`.
+All four reviewed files, including the new shared observer, are committed. The remote PR has the `skip-release` label and no tracking documents.
+Copilot review was requested on that head. Required workflow `39299324444` is in progress.
+Pending predecessor checks and an initial empty comment list do not establish merge readiness.
 
 Extract one private owned file-observation mechanism for debounce, retained reads, failure priority, and cleanup.
 Keep separate configuration and policy parsing, events, and accepted-snapshot state.
@@ -1728,6 +1784,12 @@ Checks: both existing watcher suites, native lifecycle cases, Windows watcher CI
 ### 09: Coordinator State
 
 Status: planned. Scope: R8. This iteration does not move preparation across locks.
+
+Local preflight confirms dependency knowledge currently uses `Option<BTreeMap<...>>`: `None` is unknown and `Some(empty)` is known-empty.
+Known-empty does not fall through to an all-server selection. Preserve scheduled-refresh suppression and unknown-source invalidation behavior.
+Applied empty catalogs have an active revision. Withdrawn state clears that active revision and retains a separate withdrawn revision.
+Use existing dependency-index, independent-revision, partial-refresh, and expiry tests as the first discriminating checks.
+Keep existing behavior assertions unchanged; adapt private fixture access only when the state representation requires it.
 
 Group filtered source, proxy policy, and dependency knowledge into explicit state.
 Group applied material and revision separately from withdrawn material.
