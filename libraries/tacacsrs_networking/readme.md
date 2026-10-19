@@ -96,6 +96,10 @@ the shared runtime.
 
 ## Packet Ownership
 
+`PacketReader::new` and `PacketWriter::new` accept `Option<SecretBytes>` instead of raw key vectors.
+Dedicated connections, shared connections, and promotion copies retain protected key owners until those owners drop.
+Each `SecretBytes` owner redacts its `Debug` output and zeroizes its key allocation on drop.
+
 Networking exposes packet bodies as byte slices and formats them as redacted metadata.
 `Packet::drop` zeroizes the owned body. This does not guarantee that every temporary serialization buffer is zeroized.
 The writer serializes the 12-byte header and body into one contiguous buffer and writes the complete frame.

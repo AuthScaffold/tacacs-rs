@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use tacacsrs_protocol::packet::PacketTrait;
 use tacacsrs_networking::PacketWriter;
+use tacacsrs_secrets::SecretBytes;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -93,16 +94,16 @@ where
 
 fn downstream_obfuscation_key(
     downstream_obfuscation: &PreparedProxyPolicy,
-) -> anyhow::Result<Option<Vec<u8>>> {
+) -> anyhow::Result<Option<SecretBytes>> {
     Ok(downstream_obfuscation
         .shared_secret()?
-        .map(|secret| secret.expose_secret().as_bytes().to_vec()))
+        .map(|secret| SecretBytes::new(secret.expose_secret().as_bytes().to_vec())))
 }
 
 async fn proxy_multiplexed_connection<Stream, Provider>(
     stream: Stream,
     timeout: Duration,
-    obfuscation_key: Option<Vec<u8>>,
+    obfuscation_key: Option<SecretBytes>,
     provider: Arc<Provider>,
 ) -> Result<(), ProxyConnectionError>
 where
@@ -113,7 +114,7 @@ where
     let mut downstream = DownstreamReader::new(reader, timeout, obfuscation_key.clone());
     let (reply_sender, reply_receiver) =
         mpsc::channel(crate::config::default_concurrent_request_limit());
-    let writer_task = run_downstream_writer(writer, obfuscation_key.clone(), reply_receiver);
+    let writer_task = run_downstream_writer(writer, obfuscation_key, reply_receiver);
     tokio::pin!(writer_task);
     let mut session_senders = HashMap::<u32, mpsc::Sender<SessionPacket>>::new();
     let mut session_tasks = JoinSet::new();
@@ -214,7 +215,7 @@ where
 
 async fn run_downstream_writer<Writer>(
     mut writer: Writer,
-    obfuscation_key: Option<Vec<u8>>,
+    obfuscation_key: Option<SecretBytes>,
     mut replies: mpsc::Receiver<SessionReply>,
 ) -> Result<(), ProxyConnectionError>
 where
@@ -243,7 +244,7 @@ where
 async fn proxy_connection_with_conversation<Stream, Conversation>(
     stream: Stream,
     timeout: Duration,
-    obfuscation_key: Option<Vec<u8>>,
+    obfuscation_key: Option<SecretBytes>,
     upstream_conversation: &mut Conversation,
 ) -> Result<(), ProxyConnectionError>
 where
@@ -1123,10 +1124,45 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(
-            downstream_obfuscation_key(&policy).unwrap().as_deref(),
-            Some(b"local-proxy-secret".as_slice())
-        );
+        let key = downstream_obfuscation_key(&policy).unwrap().unwrap();
+        assert!(key.expose_secret() == b"local-proxy-secret");
+    }
+
+    #[test]
+    fn downstream_key_capture_and_clone_debug_is_redacted() {
+        let sentinel = "proxy-downstream-key-debug-sentinel";
+        let policy = tacacsrs_config::proxy_policy::prepare_proxy_policy(
+            &tacacsrs_config::tacacsrs::LocalServices {
+                tacacs_proxy_enabled: true,
+                proxy_credential_source: tacacsrs_config::tacacsrs::ProxyCredentialSource::Inline,
+                proxy_shared_secret: Some(tacacsrs_secrets::SecretString::new(sentinel.to_owned())),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        let captured = downstream_obfuscation_key(&policy).unwrap();
+        let cloned = captured.clone();
+        drop(captured);
+        drop(policy);
+        let protected: &SecretBytes = cloned.as_ref().unwrap();
+        assert!(protected.expose_secret() == sentinel.as_bytes());
+        for output in [
+            format!("{cloned:?}"),
+            format!("{cloned:#?}"),
+            format!("{:?}", vec![&cloned]),
+            format!("{:#?}", vec![&cloned]),
+        ] {
+            assert!(!output.contains(sentinel), "Debug exposed a downstream key");
+            assert!(
+                !output.contains(&format!("{:?}", sentinel.as_bytes())),
+                "Debug exposed downstream key bytes"
+            );
+            assert!(
+                !output.contains(&format!("{:#?}", sentinel.as_bytes())),
+                "Debug exposed downstream key bytes"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1551,7 +1587,7 @@ mod tests {
         proxy_connection_with_conversation(
             proxy_stream,
             Duration::from_secs(1),
-            Some(secret.as_bytes().to_vec()),
+            Some(SecretBytes::new(secret.as_bytes().to_vec())),
             &mut fake_session,
         )
         .await
@@ -1586,7 +1622,7 @@ mod tests {
         proxy_connection_with_conversation(
             proxy_stream,
             Duration::from_secs(1),
-            Some(secret.as_bytes().to_vec()),
+            Some(SecretBytes::new(secret.as_bytes().to_vec())),
             &mut fake_session,
         )
         .await

@@ -61,6 +61,23 @@ fn test_connection_without_obfuscation() {
     let _conn = MultiplexedConnection::new(None);
 }
 
+#[test]
+fn shared_runtime_retains_protected_key_until_last_owner_drops() {
+    let key = tacacsrs_secrets::SecretBytes::new(b"shared-key-owner-sentinel".to_vec());
+    let allocation = key.expose_secret().as_ptr();
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(Some(key), None));
+    let runtime = Arc::downgrade(&connection.runtime);
+    let remaining = Arc::clone(&connection);
+    drop(connection);
+    let protected: &tacacsrs_secrets::SecretBytes =
+        remaining.runtime.packet_writer.obfuscation_key().unwrap();
+    assert!(protected.expose_secret().as_ptr() == allocation);
+    assert!(protected.expose_secret() == b"shared-key-owner-sentinel");
+    assert!(runtime.upgrade().is_some());
+    drop(remaining);
+    assert!(runtime.upgrade().is_none());
+}
+
 #[tokio::test]
 async fn final_driver_owner_drop_closes_transport_without_a_join_caller() {
     let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));

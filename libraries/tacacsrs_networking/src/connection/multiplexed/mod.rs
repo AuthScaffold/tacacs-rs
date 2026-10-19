@@ -19,6 +19,7 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::Context;
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
+use tacacsrs_secrets::SecretBytes;
 use crate::connection::task::DriverTask;
 
 use crate::codec::{PacketReadResult, PacketReader, PacketWriter};
@@ -69,7 +70,11 @@ impl MultiplexedConnection {
     #[cfg(test)]
     #[must_use]
     pub(crate) fn new(obfuscation_key: Option<&[u8]>) -> Self {
-        Self::with_manager(Arc::new(SessionManager::new()), obfuscation_key, None)
+        Self::with_manager(
+            Arc::new(SessionManager::new()),
+            obfuscation_key.map(|key| SecretBytes::new(key.to_vec())),
+            None,
+        )
     }
 
     /// Creates a connection whose single-connect support has already been confirmed.
@@ -78,7 +83,7 @@ impl MultiplexedConnection {
     /// received `TAC_PLUS_SINGLE_CONNECT_FLAG` from the server.
     #[must_use]
     pub(crate) fn new_single_connect_confirmed(
-        obfuscation_key: Option<&[u8]>,
+        obfuscation_key: Option<SecretBytes>,
         counters: Option<crate::ServerCounters>,
     ) -> Self {
         Self::with_manager(
@@ -90,15 +95,15 @@ impl MultiplexedConnection {
 
     fn with_manager(
         session_manager: Arc<SessionManager>,
-        obfuscation_key: Option<&[u8]>,
+        obfuscation_key: Option<SecretBytes>,
         counters: Option<crate::ServerCounters>,
     ) -> Self {
-        let key = obfuscation_key.map(<[u8]>::to_vec);
         Self {
             runtime: Arc::new(ConnectionRuntime {
                 session_manager: Arc::clone(&session_manager),
-                packet_reader: PacketReader::new(key.clone()).with_counters(counters.clone()),
-                packet_writer: PacketWriter::new(key).with_counters(counters),
+                packet_reader: PacketReader::new(obfuscation_key.clone())
+                    .with_counters(counters.clone()),
+                packet_writer: PacketWriter::new(obfuscation_key).with_counters(counters),
             }),
             session_manager,
             driver: OnceLock::new(),

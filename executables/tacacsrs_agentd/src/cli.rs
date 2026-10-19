@@ -164,8 +164,9 @@ pub(crate) struct Cli {
     pub(crate) socket_mode: Option<String>,
 
     /// Shared secret for TACACS+ message obfuscation.
-    #[arg(short = 'k', long)]
-    pub(crate) shared_secret: Option<String>,
+    #[arg(short = 'k', long,
+        value_parser = clap::builder::StringValueParser::new().map(tacacsrs_secrets::SecretString::new))]
+    pub(crate) shared_secret: Option<tacacsrs_secrets::SecretString>,
 
     /// Use TLS for upstream TACACS+ server connections.
     #[arg(long)]
@@ -207,8 +208,9 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "IDENTITY", requires_all = ["use_tls", "psk_key"], conflicts_with_all = ["client_certificate", "client_key"])]
     pub(crate) psk_identity: Option<String>,
 
-    #[arg(long, value_name = "KEY", requires_all = ["use_tls", "psk_identity"], conflicts_with_all = ["client_certificate", "client_key"])]
-    pub(crate) psk_key: Option<String>,
+    #[arg(long, value_name = "KEY", requires_all = ["use_tls", "psk_identity"], conflicts_with_all = ["client_certificate", "client_key"],
+        value_parser = clap::builder::StringValueParser::new().map(tacacsrs_secrets::SecretString::new))]
+    pub(crate) psk_key: Option<tacacsrs_secrets::SecretString>,
 
     /// TLS 1.3 PSK key-exchange mode.
     #[arg(long, value_enum, requires_all = ["use_tls", "psk_identity", "psk_key"], conflicts_with_all = ["client_certificate", "client_key"])]
