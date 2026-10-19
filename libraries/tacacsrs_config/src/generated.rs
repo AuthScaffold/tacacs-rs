@@ -1496,6 +1496,39 @@ pub mod tacacsrs {
         }
     }
 
+    fn default_candidate_preparation_timeout_seconds() -> u32 { 30 }
+    fn default_candidate_preparation_max_resolution_requests() -> u32 { 256 }
+    fn default_candidate_preparation_max_retained_material_bytes() -> u32 { 67108864 }
+
+    /// Limits one configuration preparation through publication commit.
+    /// These limits do not bound process memory or native allocator internals.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct CandidatePreparation {
+        /// Absolute preparation budget from admission to commit.
+        #[serde(rename = "timeout-seconds")]
+        #[serde(default = "default_candidate_preparation_timeout_seconds")]
+        pub timeout_seconds: u32,
+        /// Maximum resolver slot attempts without reference deduplication.
+        #[serde(rename = "max-resolution-requests")]
+        #[serde(default = "default_candidate_preparation_max_resolution_requests")]
+        pub max_resolution_requests: u32,
+        /// Maximum decoded candidate payload and additional retained payload copies.
+        #[serde(rename = "max-retained-material-bytes")]
+        #[serde(default = "default_candidate_preparation_max_retained_material_bytes")]
+        pub max_retained_material_bytes: u32,
+    }
+
+    impl Default for CandidatePreparation {
+        fn default() -> Self {
+            Self {
+                timeout_seconds: default_candidate_preparation_timeout_seconds(),
+                max_resolution_requests: default_candidate_preparation_max_resolution_requests(),
+                max_retained_material_bytes: default_candidate_preparation_max_retained_material_bytes(),
+            }
+        }
+    }
+
     fn default_authentication_request_timeout_seconds() -> u32 { 30 }
     fn default_authentication_max_body_length() -> u32 { 4096 }
     fn default_authentication_max_concurrent_requests() -> u32 { 64 }
@@ -1578,6 +1611,12 @@ pub mod tacacsrs {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct RuntimePolicy {
+        /// Limits one configuration preparation through publication commit.
+        /// These limits do not bound process memory or native allocator internals.
+        #[serde(rename = "candidate-preparation")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub candidate_preparation: Option<CandidatePreparation>,
         /// Graceful shutdown budget for runtime and host cleanup.
         /// The host captures one deadline when shutdown starts.
         /// At expiry, pending asynchronous work is cancelled.
@@ -1634,6 +1673,7 @@ pub mod tacacsrs {
     impl Default for RuntimePolicy {
         fn default() -> Self {
             Self {
+                candidate_preparation: None,
                 shutdown_timeout_seconds: default_runtime_policy_shutdown_timeout_seconds(),
                 credential_stale_timeout_seconds: default_runtime_policy_credential_stale_timeout_seconds(),
                 credential_refresh_interval_seconds: default_runtime_policy_credential_refresh_interval_seconds(),

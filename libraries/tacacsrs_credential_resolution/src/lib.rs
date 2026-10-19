@@ -8,6 +8,7 @@ mod request;
 mod resolver;
 mod result_set;
 mod validity;
+mod work;
 
 pub use error::{ProviderErrorKind, ResolutionError, ResolutionErrorKind};
 pub use change::{
@@ -28,3 +29,4 @@ pub use request::{
 pub use resolver::{CredentialResolver, resolve_plan};
 pub use validity::{CredentialValidity, InvalidCredentialValidity};
 pub use result_set::{ResolvedCredentialSet, ResolvedResponse};
+pub use work::{WorkScope, WorkScopeControl};

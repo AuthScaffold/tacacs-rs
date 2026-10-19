@@ -25,6 +25,10 @@ module tacacsrs {
   description
     "Project-owned TACACS+ configuration extensions for tacacs-rs.";
 
+  revision 2026-10-19 {
+    description "Adds admission limits for candidate preparation.";
+  }
+
   revision 2026-10-16 {
     description "Adds bounded read-only server, connection, TLS, and operation diagnostics.";
   }
@@ -292,6 +296,28 @@ module tacacsrs {
     container runtime-policy {
       description
         "Failover and admission controls for local client API and proxy services.";
+      container candidate-preparation {
+        description
+          "Limits one configuration preparation through publication commit.
+           These limits do not bound process memory or native allocator internals.";
+        leaf timeout-seconds {
+          type uint32 { range "1..max"; }
+          units "seconds";
+          default 30;
+          description "Absolute preparation budget from admission to commit.";
+        }
+        leaf max-resolution-requests {
+          type uint32 { range "1..max"; }
+          default 256;
+          description "Maximum resolver slot attempts without reference deduplication.";
+        }
+        leaf max-retained-material-bytes {
+          type uint32 { range "1..max"; }
+          units "bytes";
+          default 67108864;
+          description "Maximum decoded candidate payload and additional retained payload copies.";
+        }
+      }
       leaf shutdown-timeout-seconds {
         type uint32 { range "1..max"; }
         units "seconds";

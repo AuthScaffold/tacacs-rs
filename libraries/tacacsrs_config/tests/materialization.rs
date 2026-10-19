@@ -302,11 +302,12 @@ impl CredentialResolver for ValidityResolver {
     async fn resolve(
         &self,
         request: &CredentialRequest,
+        _scope: &tacacsrs_credential_resolution::WorkScope,
     ) -> Result<ResolvedCredential, ResolutionError> {
         let mut credential = CompleteResolver {
             failing_server: None,
         }
-        .resolve(request)
+        .resolve(request, _scope)
         .await?;
         match &mut credential {
             ResolvedCredential::OcspResponse(material) => material.validity = self.trust,
@@ -408,6 +409,7 @@ impl CredentialResolver for CompleteResolver {
     async fn resolve(
         &self,
         request: &CredentialRequest,
+        _scope: &tacacsrs_credential_resolution::WorkScope,
     ) -> Result<ResolvedCredential, ResolutionError> {
         if self.failing_server == Some(request.context().server_name()) {
             return Err(ResolutionError::provider(
@@ -780,6 +782,7 @@ impl CredentialResolver for DuplicateBagNameResolver {
     async fn resolve(
         &self,
         _request: &CredentialRequest,
+        _scope: &tacacsrs_credential_resolution::WorkScope,
     ) -> Result<ResolvedCredential, ResolutionError> {
         Ok(ResolvedCredential::CaCertificateBag(CertificateBagMaterial {
             validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),

@@ -234,6 +234,761 @@ struct BlockingResolver {
     entered: tokio::sync::Notify,
 }
 
+struct RegisteredBlockingResolver {
+    blocker: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    entered: Arc<tokio::sync::Notify>,
+    calls: AtomicUsize,
+}
+
+struct OwnedCredentialChanges(Mutex<Option<tokio::sync::mpsc::Receiver<CredentialChangeEvent>>>);
+
+#[async_trait]
+impl CredentialChangeSource for OwnedCredentialChanges {
+    async fn subscribe(&self) -> Result<CredentialChangeStream, CredentialChangeError> {
+        let events = self.0.lock().unwrap().take().ok_or(CredentialChangeError)?;
+        Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(events)))
+    }
+}
+
+#[tokio::test]
+async fn candidate_three_loops_keep_three_unexpanded_waiters_behind_registered_work() {
+    let (supervisor, resolver, source_events, service, health) = registered_fixture().await;
+    let (credential_events, notifications) = tokio::sync::mpsc::channel(1);
+    let supervisor = supervisor
+        .with_credential_changes(Arc::new(OwnedCredentialChanges(Mutex::new(Some(notifications)))));
+    let coordinator = supervisor.materialization_coordinator.clone();
+    let policy = tacacsrs_config::policy::parse_runtime_policy(
+        br#"{"tacacsrs:runtime-policy":{"credential-refresh-interval-seconds":1}}"#,
+    )
+    .unwrap();
+    service.apply_policy_candidate(Some(&policy)).await.unwrap();
+    let (release, blocker) = std::sync::mpsc::channel();
+    *resolver.blocker.lock().unwrap() = Some(blocker);
+    let (stop, stopping) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(supervisor.run_until(async {
+        let _ = stopping.await;
+    }));
+    credential_events
+        .send(CredentialChangeEvent::Changed(CredentialChangeScope::Unknown))
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(2), resolver.entered.notified())
+        .await
+        .unwrap();
+    credential_events
+        .send(CredentialChangeEvent::Changed(CredentialChangeScope::Unknown))
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(3), coordinator.wait_for_preparation_waiters(2))
+        .await
+        .unwrap();
+    source_events
+        .send(central_event("latest-pending"))
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(2), coordinator.wait_for_preparation_waiters(3))
+        .await
+        .unwrap();
+    assert_eq!(coordinator.preparation_counts(), (1, 3, 3));
+    for index in 0..1000 {
+        source_events
+            .send(central_event(&format!("pending-{index}")))
+            .await
+            .unwrap();
+        assert!(coordinator.preparation_counts().2 <= 3);
+    }
+    source_events
+        .send(ConfigChangeEvent::CandidateRejected)
+        .await
+        .unwrap();
+    source_events
+        .send(ConfigChangeEvent::RestartRequired { required: true })
+        .await
+        .unwrap();
+    let mut changes = health.subscribe();
+    timeout(
+        Duration::from_secs(2),
+        changes.wait_for(|snapshot| {
+            snapshot
+                .degradation_reasons()
+                .contains(&DegradationReason::RestartRequired)
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let rejected = health.snapshot();
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 2);
+    release.send(()).unwrap();
+    drop(
+        coordinator
+            .acquire_preparation(
+                crate::runtime::candidate_preparation::CandidateAdmission::new(
+                    service.candidate_limits(),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(health.snapshot(), rejected);
+    assert_eq!(coordinator.preparation_counts().2, 3);
+    stop.send(()).unwrap();
+    timeout(Duration::from_secs(2), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
+#[async_trait]
+impl CredentialResolver for RegisteredBlockingResolver {
+    async fn resolve(
+        &self,
+        _request: &CredentialRequest,
+        scope: &tacacsrs_credential_resolution::WorkScope,
+    ) -> Result<ResolvedCredential, ResolutionError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let blocker = self.blocker.lock().unwrap().take();
+        if let Some(blocker) = blocker {
+            let lease = scope.register().unwrap();
+            let entered = Arc::clone(&self.entered);
+            let work = tokio::task::spawn_blocking(move || {
+                entered.notify_one();
+                blocker.recv().unwrap();
+                lease
+            });
+            let _result_lease = work.await.unwrap();
+        }
+        Ok(ResolvedCredential::SymmetricKey(tacacsrs_credential_resolution::SymmetricKeyMaterial {
+            validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
+            key_format: Some(
+                tacacsrs_credential_resolution::SymmetricKeyFormat::OctetStringKeyFormat,
+            ),
+            key: SecretBytes::new(vec![7; 16]),
+        }))
+    }
+}
+
+fn central_event(server_name: &str) -> ConfigChangeEvent {
+    let mut config = central_test_config(1);
+    config.server[0].name = server_name.to_owned();
+    let config = Arc::new(config);
+    ConfigChangeEvent::Changed(tacacsrs_config::source::ConfigChange {
+        delta: tacacsrs_config::source::ConfigDelta::diff(None, &config),
+        config,
+    })
+}
+
+struct AccountingFilter {
+    calls: AtomicUsize,
+    known_copy: u64,
+    opaque_output: bool,
+}
+
+impl TacacsPlusFilter for AccountingFilter {
+    fn known_payload_copies(&self, _source: &TacacsPlus) -> anyhow::Result<u64> {
+        Ok(self.known_copy)
+    }
+
+    fn filter(
+        &self,
+        mut source: TacacsPlus,
+    ) -> futures_util::future::BoxFuture<'_, anyhow::Result<crate::runtime::FilteredTacacsPlus>>
+    {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.opaque_output {
+            source.server[0].shared_secret =
+                Some(tacacsrs_secrets::SecretString::new("x".repeat(128)));
+        }
+        Box::pin(async move {
+            Ok(crate::runtime::FilteredTacacsPlus {
+                tacacs_plus: source,
+                proxy_downstream_obfuscation: crate::PreparedProxyPolicy::unobfuscated(),
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn candidate_closed_while_waiting_skips_filter_and_provider() {
+    for referenced in [false, true] {
+        let datastore = Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [],
+            [],
+        ));
+        let (supervisor, _, service) = supervisor(datastore, Duration::ZERO);
+        let provider = Arc::new(CountingResolver {
+            resolved_servers: Mutex::new(Vec::new()),
+        });
+        let mut supervisor = supervisor.with_credential_resolver(provider.clone());
+        let filter = Arc::new(AccountingFilter {
+            calls: AtomicUsize::new(0),
+            known_copy: 0,
+            opaque_output: false,
+        });
+        supervisor.config_filter = filter.clone();
+        let held = supervisor
+            .materialization_coordinator
+            .acquire_preparation(
+                crate::runtime::candidate_preparation::CandidateAdmission::new(
+                    service.candidate_limits(),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut canonical = central_test_config(1);
+        if !referenced {
+            canonical.server[0].client_identity = None;
+            canonical.server[0].port = 49;
+        }
+        let candidate = supervisor.apply_candidate(canonical);
+        tokio::pin!(candidate);
+        assert!(futures_util::poll!(&mut candidate).is_pending());
+        service
+            .close_and_join(tacacsrs_networking::RequestDeadline::at(
+                tokio::time::Instant::now() + Duration::from_secs(1),
+            ))
+            .await
+            .unwrap();
+        drop(held);
+        assert!(candidate.await.is_err());
+        assert_eq!(filter.calls.load(Ordering::SeqCst), 0);
+        assert!(provider.resolved_servers.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn candidate_closed_while_waiting_skips_credential_and_scheduled_resolution() {
+    for scheduled in [false, true] {
+        let (supervisor, resolver, _events, service, _) = registered_fixture().await;
+        let coordinator = &supervisor.materialization_coordinator;
+        let admission = crate::runtime::candidate_preparation::CandidateAdmission::new(
+            service.candidate_limits(),
+        )
+        .unwrap();
+        let held = coordinator.acquire_preparation(admission).await.unwrap();
+        let attempt = if scheduled {
+            coordinator.refresh_credentials().await
+        } else {
+            coordinator
+                .observe_credentials(&CredentialChangeScope::Unknown, None)
+                .await
+        }
+        .unwrap();
+        let candidate =
+            supervisor.materialize_and_publish(coordinator, attempt.with_admission(admission));
+        tokio::pin!(candidate);
+        assert!(futures_util::poll!(&mut candidate).is_pending());
+        service
+            .close_and_join(tacacsrs_networking::RequestDeadline::at(
+                tokio::time::Instant::now() + Duration::from_secs(1),
+            ))
+            .await
+            .unwrap();
+        drop(held);
+        assert!(candidate.await.is_err());
+        assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(coordinator.preparation_counts().0, 0);
+    }
+}
+
+#[tokio::test]
+async fn candidate_filter_known_copies_are_reserved_before_entry_and_opaque_output_at_handoff() {
+    let datastore = Arc::new(ScriptedDatastore::new(
+        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        [],
+        [],
+    ));
+    let (mut supervisor, _, service) = supervisor(datastore, Duration::ZERO);
+    let filter = Arc::new(AccountingFilter {
+        calls: AtomicUsize::new(0),
+        known_copy: 17,
+        opaque_output: false,
+    });
+    supervisor.config_filter = filter.clone();
+    let canonical = central_test_config(1);
+    let policy = tacacsrs_config::policy::parse_runtime_policy(br#"{"tacacsrs:runtime-policy":{"candidate-preparation":{"max-retained-material-bytes":16}}}"#).unwrap();
+    service.apply_policy_candidate(Some(&policy)).await.unwrap();
+    assert!(supervisor.apply_candidate(canonical.clone()).await.is_err());
+    assert_eq!(filter.calls.load(Ordering::SeqCst), 0);
+    let provider = Arc::new(CountingResolver {
+        resolved_servers: Mutex::new(Vec::new()),
+    });
+    supervisor = supervisor.with_credential_resolver(provider.clone());
+    let filter = Arc::new(AccountingFilter {
+        calls: AtomicUsize::new(0),
+        known_copy: 0,
+        opaque_output: true,
+    });
+    supervisor.config_filter = filter.clone();
+    assert!(supervisor.apply_candidate(canonical).await.is_err());
+    assert_eq!(filter.calls.load(Ordering::SeqCst), 1);
+    assert!(provider.resolved_servers.lock().unwrap().is_empty());
+    assert_eq!(service.server_count(), 0);
+}
+
+async fn registered_fixture() -> (
+    ConfigSupervisor,
+    Arc<RegisteredBlockingResolver>,
+    tokio::sync::mpsc::Sender<ConfigChangeEvent>,
+    Arc<TacacsClientService>,
+    RuntimeHealthPublisher,
+) {
+    let (sender, events) = tokio::sync::mpsc::channel(1);
+    let source = Arc::new(OwnedSource {
+        events: Mutex::new(Some(events)),
+        dropped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        opens: AtomicUsize::new(0),
+    });
+    let (_, health, service) = supervisor(
+        Arc::new(ScriptedDatastore::new(
+            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            [],
+            [],
+        )),
+        Duration::ZERO,
+    );
+    let resolver = Arc::new(RegisteredBlockingResolver {
+        blocker: Mutex::new(None),
+        entered: Arc::new(tokio::sync::Notify::new()),
+        calls: AtomicUsize::new(0),
+    });
+    let mut supervisor = ConfigSupervisor::new(
+        source,
+        service.clone(),
+        health.clone(),
+        Arc::new(NoopTacacsPlusFilter::default()),
+    )
+    .with_credential_resolver(resolver.clone());
+    sender.send(central_event("baseline")).await.unwrap();
+    supervisor
+        .initialize_until(std::future::pending())
+        .await
+        .unwrap();
+    (supervisor, resolver, sender, service, health)
+}
+
+#[tokio::test]
+async fn candidate_registered_worker_burst_preserves_rejection_then_latest_recovery() {
+    let (supervisor, resolver, sender, service, health) = registered_fixture().await;
+    let coordinator = supervisor.materialization_coordinator.clone();
+    let (release, blocker) = std::sync::mpsc::channel();
+    *resolver.blocker.lock().unwrap() = Some(blocker);
+    let (stop, stopping) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(supervisor.run_until(async {
+        let _ = stopping.await;
+    }));
+    sender.send(central_event("blocked-a")).await.unwrap();
+    timeout(Duration::from_secs(2), resolver.entered.notified())
+        .await
+        .unwrap();
+    for index in 0..1000 {
+        sender
+            .send(central_event(&format!("pending-{index}")))
+            .await
+            .unwrap();
+        let (active, pending, peak) = coordinator.preparation_counts();
+        assert_eq!(active, 1);
+        assert!(pending <= 3 && peak <= 3);
+    }
+    sender
+        .send(ConfigChangeEvent::CandidateRejected)
+        .await
+        .unwrap();
+    sender
+        .send(ConfigChangeEvent::RestartRequired { required: true })
+        .await
+        .unwrap();
+    let mut changes = health.subscribe();
+    timeout(
+        Duration::from_secs(2),
+        changes.wait_for(|snapshot| {
+            snapshot
+                .degradation_reasons()
+                .contains(&DegradationReason::RestartRequired)
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let rejected = health.snapshot();
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 2);
+    release.send(()).unwrap();
+    let probe = coordinator
+        .acquire_preparation(
+            crate::runtime::candidate_preparation::CandidateAdmission::new(
+                service.candidate_limits(),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    drop(probe);
+    assert_eq!(health.snapshot(), rejected);
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 2);
+    sender.send(central_event("latest-c")).await.unwrap();
+    timeout(
+        Duration::from_secs(2),
+        changes.wait_for(|snapshot| {
+            snapshot.datastore() == DatastoreState::Current
+                && snapshot.materialization_revision() != rejected.materialization_revision()
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(coordinator.active_servers().await[0].name, "latest-c");
+    stop.send(()).unwrap();
+    timeout(Duration::from_secs(2), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(coordinator.preparation_counts().0, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn candidate_notification_unavailable_cancels_blocked_publication() {
+    notification_loss_cancels_blocked_publication(false).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn candidate_notification_eof_cancels_blocked_publication() {
+    notification_loss_cancels_blocked_publication(true).await;
+}
+
+async fn notification_loss_cancels_blocked_publication(eof: bool) {
+    let (supervisor, resolver, _source_events, service, health) = registered_fixture().await;
+    let (events, notifications) = tokio::sync::mpsc::channel(1);
+    let supervisor = supervisor
+        .with_credential_changes(Arc::new(OwnedCredentialChanges(Mutex::new(Some(notifications)))));
+    let coordinator = supervisor.materialization_coordinator.clone();
+    let baseline = health.snapshot();
+    let held = service.hold_publication().await;
+    let (stop, stopping) = tokio::sync::oneshot::channel();
+    let run = supervisor.run_until(async {
+        let _ = stopping.await;
+    });
+    tokio::pin!(run);
+    events
+        .send(CredentialChangeEvent::Changed(CredentialChangeScope::Unknown))
+        .await
+        .unwrap();
+    assert!(futures_util::poll!(&mut run).is_pending());
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(coordinator.preparation_counts().0, 1);
+    assert!(futures_util::poll!(Box::pin(coordinator.active_servers())).is_pending());
+
+    if eof {
+        drop(events);
+    } else {
+        events
+            .send(CredentialChangeEvent::Unavailable)
+            .await
+            .unwrap();
+    }
+    let mut changes = health.subscribe();
+    tokio::select! {
+        result = &mut run => panic!("supervisor stopped before host stop: {result:?}"),
+        result = timeout(Duration::from_secs(1), changes.wait_for(|snapshot| {
+            snapshot.degradation_reasons().contains(
+                &DegradationReason::CredentialNotificationsUnavailable,
+            )
+        })) => {
+            assert!(result.is_ok(), "notification loss must not wait for publication");
+            assert!(result.unwrap().is_ok());
+        }
+    }
+    assert!(health
+        .snapshot()
+        .degradation_reasons()
+        .contains(&DegradationReason::CredentialsStale));
+    assert_eq!(health.snapshot().runtime_generation(), baseline.runtime_generation());
+    assert_eq!(service.server_count(), 1);
+    assert_eq!(coordinator.preparation_counts().0, 0);
+    assert!(timeout(
+        Duration::from_secs(1),
+        coordinator.observe_credentials(&CredentialChangeScope::Unknown, None),
+    )
+    .await
+    .unwrap()
+    .is_some());
+    stop.send(()).unwrap();
+    assert!(timeout(Duration::from_secs(1), &mut run)
+        .await
+        .unwrap()
+        .is_ok());
+    assert_eq!(coordinator.preparation_counts().0, 0);
+    drop(held);
+}
+
+#[tokio::test(start_paused = true)]
+async fn candidate_acceptance_timeout_rejects_source_and_expires_old_catalog() {
+    acceptance_timeout_is_revision_fenced(false).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn candidate_acceptance_timeout_cannot_reject_newer_source() {
+    acceptance_timeout_is_revision_fenced(true).await;
+}
+
+async fn acceptance_timeout_is_revision_fenced(superseded: bool) {
+    let datastore = Arc::new(ScriptedDatastore::new(
+        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        [],
+        [],
+    ));
+    let (mut supervisor, health, service) = supervisor(datastore, Duration::ZERO);
+    let filter = Arc::new(ReorderedFilter {
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+        reject_old: false,
+    });
+    supervisor.config_filter = filter.clone();
+    supervisor.apply_candidate(test_config(2)).await.unwrap();
+    let policy = tacacsrs_config::policy::parse_runtime_policy(
+        br#"{"tacacsrs:runtime-policy":{"candidate-preparation":{"timeout-seconds":1},"source-stale-timeout-seconds":3}}"#,
+    )
+    .unwrap();
+    service.apply_policy_candidate(Some(&policy)).await.unwrap();
+    let baseline = health.snapshot();
+    assert_eq!(baseline.datastore(), DatastoreState::Current);
+    let coordinator = &supervisor.materialization_coordinator;
+    let candidate = supervisor.apply_candidate(test_config(1));
+    tokio::pin!(candidate);
+    assert!(futures_util::poll!(&mut candidate).is_pending());
+    assert!(futures_util::poll!(Box::pin(filter.entered.notified())).is_ready());
+    let held = coordinator.hold_state().await;
+    filter.release.notify_one();
+    assert!(futures_util::poll!(&mut candidate).is_pending());
+    let newer = coordinator.admit_source(test_config(3));
+    tokio::pin!(newer);
+    if superseded {
+        assert!(futures_util::poll!(&mut newer).is_pending());
+    }
+    tokio::time::advance(Duration::from_secs(2)).await;
+    let completion = futures_util::poll!(&mut candidate);
+    drop(held);
+    if superseded {
+        newer.await;
+    }
+    let result = match completion {
+        std::task::Poll::Ready(result) => result,
+        std::task::Poll::Pending => candidate.await,
+    };
+    assert_eq!(coordinator.preparation_counts().0, 0);
+    if superseded {
+        assert_eq!(result, Ok(PublicationOutcome::Superseded));
+        assert_eq!(health.snapshot(), baseline);
+        assert_eq!(
+            supervisor.apply_candidate(test_config(3)).await,
+            Ok(PublicationOutcome::Published)
+        );
+        assert_eq!(health.snapshot().datastore(), DatastoreState::Current);
+        return;
+    }
+    assert!(result.is_err());
+    assert_eq!(health.snapshot().datastore(), DatastoreState::Stale);
+    assert_eq!(health.snapshot().runtime_generation(), baseline.runtime_generation());
+    assert_eq!(health.snapshot().eligible_server_count(), 2);
+    assert_eq!(service.server_count(), 2);
+    let cancellation = CancellationToken::new();
+    let expiry = supervisor.run_source_expiry(&cancellation);
+    tokio::pin!(expiry);
+    assert!(futures_util::poll!(&mut expiry).is_pending());
+    tokio::time::advance(Duration::from_secs(2)).await;
+    assert!(futures_util::poll!(&mut expiry).is_pending());
+    assert_eq!(health.snapshot().eligible_server_count(), 2);
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert!(futures_util::poll!(&mut expiry).is_pending());
+    assert_eq!(health.snapshot().eligible_server_count(), 0);
+    assert_eq!(service.server_count(), 0);
+    assert!(health
+        .snapshot()
+        .degradation_reasons()
+        .contains(&DegradationReason::SourceExpired));
+    cancellation.cancel();
+    expiry.await.unwrap();
+}
+
+#[tokio::test]
+async fn candidate_registered_worker_stall_does_not_block_expiry_or_host_stop() {
+    let (supervisor, resolver, sender, service, health) = registered_fixture().await;
+    let coordinator = supervisor.materialization_coordinator.clone();
+    let policy = tacacsrs_config::policy::parse_runtime_policy(
+        br#"{"tacacsrs:runtime-policy":{"source-stale-timeout-seconds":1}}"#,
+    )
+    .unwrap();
+    service.apply_policy_candidate(Some(&policy)).await.unwrap();
+    let (release, blocker) = std::sync::mpsc::channel();
+    *resolver.blocker.lock().unwrap() = Some(blocker);
+    let (stop, stopping) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(supervisor.run_until(async {
+        let _ = stopping.await;
+    }));
+    sender.send(central_event("blocked-a")).await.unwrap();
+    timeout(Duration::from_secs(2), resolver.entered.notified())
+        .await
+        .unwrap();
+    sender
+        .send(ConfigChangeEvent::CandidateRejected)
+        .await
+        .unwrap();
+    let mut changes = health.subscribe();
+    timeout(
+        Duration::from_secs(3),
+        changes.wait_for(|snapshot| {
+            snapshot
+                .degradation_reasons()
+                .contains(&DegradationReason::SourceExpired)
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(service.server_count(), 0);
+    assert_eq!(coordinator.preparation_counts().0, 1);
+    stop.send(()).unwrap();
+    timeout(Duration::from_secs(2), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(coordinator.preparation_counts().0, 1);
+    release.send(()).unwrap();
+    drop(
+        coordinator
+            .acquire_preparation(
+                crate::runtime::candidate_preparation::CandidateAdmission::new(
+                    service.candidate_limits(),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(coordinator.preparation_counts().0, 0);
+}
+
+#[tokio::test]
+async fn candidate_registered_worker_release_admits_only_latest_pending_source() {
+    let (supervisor, resolver, sender, service, health) = registered_fixture().await;
+    let coordinator = supervisor.materialization_coordinator.clone();
+    let baseline = health.snapshot().materialization_revision();
+    let (release, blocker) = std::sync::mpsc::channel();
+    *resolver.blocker.lock().unwrap() = Some(blocker);
+    let (stop, stopping) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(supervisor.run_until(async {
+        let _ = stopping.await;
+    }));
+    sender.send(central_event("blocked-a")).await.unwrap();
+    timeout(Duration::from_secs(2), resolver.entered.notified())
+        .await
+        .unwrap();
+    let mut changes = health.subscribe();
+    sender.send(central_event("superseded-b")).await.unwrap();
+    sender
+        .send(ConfigChangeEvent::RestartRequired { required: true })
+        .await
+        .unwrap();
+    timeout(
+        Duration::from_secs(2),
+        changes.wait_for(|snapshot| {
+            snapshot
+                .degradation_reasons()
+                .contains(&DegradationReason::RestartRequired)
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    sender.send(central_event("latest-c")).await.unwrap();
+    sender
+        .send(ConfigChangeEvent::RestartRequired { required: false })
+        .await
+        .unwrap();
+    timeout(
+        Duration::from_secs(2),
+        changes.wait_for(|snapshot| {
+            !snapshot
+                .degradation_reasons()
+                .contains(&DegradationReason::RestartRequired)
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(coordinator.preparation_counts().0, 1);
+    release.send(()).unwrap();
+    timeout(
+        Duration::from_secs(2),
+        changes.wait_for(|snapshot| snapshot.materialization_revision() != baseline),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(coordinator.active_servers().await[0].name, "latest-c");
+    assert_eq!(service.server_count(), 1);
+    stop.send(()).unwrap();
+    timeout(Duration::from_secs(2), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn candidate_credential_invalidation_during_filtering_survives_projection() {
+    let datastore = Arc::new(ScriptedDatastore::new(
+        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        [],
+        [],
+    ));
+    let (supervisor, health, _) = supervisor(datastore, Duration::ZERO);
+    let mut supervisor = supervisor.with_credential_resolver(Arc::new(CountingResolver {
+        resolved_servers: Mutex::new(Vec::new()),
+    }));
+    supervisor
+        .apply_candidate(central_test_config(2))
+        .await
+        .unwrap();
+    let filter = Arc::new(ReorderedFilter {
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+        reject_old: false,
+    });
+    supervisor.config_filter = filter.clone();
+    let source = supervisor.apply_candidate(central_test_config(1));
+    tokio::pin!(source);
+    tokio::select! {
+        result = &mut source => panic!("filter must pause: {result:?}"),
+        () = filter.entered.notified() => {},
+    }
+    assert!(
+        supervisor
+            .apply_credential_change(&CredentialChangeScope::Unknown)
+            .await
+    );
+    filter.release.notify_one();
+    assert_eq!(source.await.unwrap(), PublicationOutcome::Published);
+    assert_eq!(
+        health
+            .snapshot()
+            .materialization_revision()
+            .unwrap()
+            .credentials()
+            .value(),
+        1
+    );
+}
+
 struct PausingRefreshResolver {
     paused: std::sync::atomic::AtomicBool,
     release: tokio::sync::Notify,
@@ -250,6 +1005,7 @@ impl CredentialResolver for StallingResolver {
     async fn resolve(
         &self,
         _request: &CredentialRequest,
+        _scope: &tacacsrs_credential_resolution::WorkScope,
     ) -> Result<ResolvedCredential, ResolutionError> {
         if self.stalled.load(Ordering::Acquire) {
             let _pending = PendingDrop(Arc::clone(&self.cancelled));
@@ -269,6 +1025,7 @@ impl CredentialResolver for PausingRefreshResolver {
     async fn resolve(
         &self,
         _request: &CredentialRequest,
+        _scope: &tacacsrs_credential_resolution::WorkScope,
     ) -> Result<ResolvedCredential, ResolutionError> {
         if self.paused.load(Ordering::Acquire) {
             self.release.notified().await;
@@ -288,6 +1045,7 @@ impl CredentialResolver for ValidityResolver {
     async fn resolve(
         &self,
         _request: &CredentialRequest,
+        _scope: &tacacsrs_credential_resolution::WorkScope,
     ) -> Result<ResolvedCredential, ResolutionError> {
         Ok(ResolvedCredential::SymmetricKey(tacacsrs_credential_resolution::SymmetricKeyMaterial {
             validity: *self.0.lock().unwrap(),
@@ -356,6 +1114,7 @@ impl CredentialResolver for BlockingResolver {
     async fn resolve(
         &self,
         _request: &CredentialRequest,
+        _scope: &tacacsrs_credential_resolution::WorkScope,
     ) -> Result<ResolvedCredential, ResolutionError> {
         self.entered.notify_one();
         std::future::pending().await
@@ -394,6 +1153,7 @@ impl CredentialResolver for InitiallyUnavailableResolver {
     async fn resolve(
         &self,
         request: &CredentialRequest,
+        _scope: &tacacsrs_credential_resolution::WorkScope,
     ) -> Result<ResolvedCredential, ResolutionError> {
         #[allow(deprecated, reason = "AtomicUsize::try_update is newer than the Rust 1.88 MSRV.")]
         let should_fail = self
@@ -419,6 +1179,7 @@ impl CredentialResolver for SelectiveResolver {
     async fn resolve(
         &self,
         request: &CredentialRequest,
+        _scope: &tacacsrs_credential_resolution::WorkScope,
     ) -> Result<ResolvedCredential, ResolutionError> {
         if self
             .rejected_server
@@ -445,6 +1206,7 @@ impl CredentialResolver for CountingResolver {
     async fn resolve(
         &self,
         request: &CredentialRequest,
+        _scope: &tacacsrs_credential_resolution::WorkScope,
     ) -> Result<ResolvedCredential, ResolutionError> {
         self.resolved_servers
             .lock()
@@ -856,10 +1618,11 @@ async fn absolute_validity_expires_without_notifications_and_after_source_withdr
         assert!(health.snapshot().is_liveness_serving());
         *resolver.0.lock().unwrap() =
             CredentialValidity::new(None, Some(SystemTime::UNIX_EPOCH)).unwrap();
-        assert!(
-            !supervisor
+        assert_eq!(
+            supervisor
                 .apply_credential_change(&CredentialChangeScope::Unknown)
-                .await
+                .await,
+            source_first,
         );
         assert_eq!(service.server_count(), 0);
         *resolver.0.lock().unwrap() = CredentialValidity::unbounded();
@@ -927,13 +1690,11 @@ async fn older_filter_completion_cannot_replace_a_newer_source() {
                 result = &mut older => panic!("old filter must pause: {result:?}"),
                 () = filter.entered.notified() => {},
             }
-            assert_eq!(
-                supervisor.apply_candidate(test_config(2)).await.unwrap(),
-                PublicationOutcome::Published
-            );
+            let (newer, older) = tokio::join!(supervisor.apply_candidate(test_config(2)), older);
+            assert_eq!(newer.unwrap(), PublicationOutcome::Published);
+            assert_eq!(older.unwrap(), PublicationOutcome::Superseded);
             let applied = health.snapshot();
             filter.release.notify_one();
-            assert_eq!(older.await.unwrap(), PublicationOutcome::Superseded);
             assert_eq!(service.server_count(), 2);
             assert_eq!(health.snapshot(), applied);
         }
@@ -964,7 +1725,7 @@ async fn late_publication_return_cannot_clear_a_rejected_source_observation() {
         .await;
     let rejected = health.snapshot();
     release.notify_one();
-    assert_eq!(publication.await.unwrap(), PublicationOutcome::Superseded);
+    assert_eq!(publication.await.unwrap(), PublicationOutcome::Published);
     assert_eq!(health.snapshot(), rejected);
     assert_eq!(service.server_count(), 1);
 }
@@ -2210,7 +2971,6 @@ async fn known_credential_event_rematerializes_only_affected_server() {
     });
     let change_source = Arc::new(ScriptedCredentialChangeSource {
         subscriptions: Mutex::new(VecDeque::from([CredentialSubscriptionStep::Events(vec![
-            CredentialChangeEvent::Recovered,
             CredentialChangeEvent::Changed(CredentialChangeScope::Known {
                 kind: CredentialKind::SymmetricKey,
                 reference: CredentialReference::SymmetricKey("object-0".to_owned()),
@@ -2259,7 +3019,7 @@ async fn known_credential_event_rematerializes_only_affected_server() {
             .resolved_servers
             .lock()
             .expect("resolved servers lock"),
-        ["server-0", "server-1", "server-0", "server-1", "server-0"],
+        ["server-0", "server-1", "server-0"],
     );
     assert_eq!(service.server_count(), 2);
 }

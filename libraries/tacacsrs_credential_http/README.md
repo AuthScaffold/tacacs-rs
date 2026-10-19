@@ -33,6 +33,8 @@ In `SONiC` mode, it retains the `SONiC` provider as the fallback and keeps its c
 `with_fallback` delegates other credential kinds and unregistered references to another provider.
 A registered HTTP source never uses the fallback after a failed fetch.
 Fallback providers retain their own execution limits; these HTTP limits do not wrap delegated calls.
+The resolver passes the caller's same `WorkScope` to its fallback. It does not create another scope.
+Cooperative HTTP cancellation releases request capacity. Unobservable system DNS work remains outside the registered-work guarantee.
 
 ## Retrieval Policy
 

@@ -65,7 +65,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }],
             }),
         );
-    let result_set = resolve_plan(plan, &resolver).await?;
+    let result_set =
+        resolve_plan(plan, &resolver, &tacacsrs_credential_resolution::WorkScope::unowned())
+            .await?;
 
     let ResolvedCredential::CertificateWithKey(client_identity) = result_set
         .credential(plan.requests()[0].slot())

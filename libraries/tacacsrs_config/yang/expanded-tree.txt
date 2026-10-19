@@ -293,6 +293,10 @@ module: tacacsrs
     |  +--rw proxy-credential-source?       proxy-credential-source
     |  +--rw proxy-shared-secret?           string
     +--rw runtime-policy
+       +--rw candidate-preparation
+       |  +--rw timeout-seconds?               uint32
+       |  +--rw max-resolution-requests?       uint32
+       |  +--rw max-retained-material-bytes?   uint32
        +--rw shutdown-timeout-seconds?              uint32
        +--rw credential-stale-timeout-seconds?      uint32
        +--rw credential-refresh-interval-seconds?   uint32

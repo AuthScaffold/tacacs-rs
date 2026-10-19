@@ -140,6 +140,48 @@ impl Default for OperationPolicies {
     }
 }
 
+/// Admission limits for one supervised configuration candidate.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct RuntimeCandidateLimits {
+    pub(crate) timeout: Duration,
+    pub(crate) requests: u64,
+    pub(crate) material_bytes: u64,
+}
+
+impl RuntimeCandidateLimits {
+    fn from_yang(policy: &tacacsrs_config::tacacsrs::CandidatePreparation) -> Self {
+        Self {
+            timeout: Duration::from_secs(u64::from(policy.timeout_seconds)),
+            requests: u64::from(policy.max_resolution_requests),
+            material_bytes: u64::from(policy.max_retained_material_bytes),
+        }
+    }
+
+    /// Returns the maximum time from admission to commit.
+    #[must_use]
+    pub const fn timeout(self) -> Duration {
+        self.timeout
+    }
+
+    /// Returns the maximum number of attempted resolver slots.
+    #[must_use]
+    pub const fn max_resolution_requests(self) -> u64 {
+        self.requests
+    }
+
+    /// Returns the maximum decoded configuration payload charge.
+    #[must_use]
+    pub const fn max_retained_material_bytes(self) -> u64 {
+        self.material_bytes
+    }
+}
+
+impl Default for RuntimeCandidateLimits {
+    fn default() -> Self {
+        Self::from_yang(&tacacsrs_config::tacacsrs::CandidatePreparation::default())
+    }
+}
+
 /// Complete live policy for the local TACACS+ services.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct RuntimePolicy {
@@ -151,6 +193,7 @@ pub struct RuntimePolicy {
     source_stale_timeout: Duration,
     credential_stale_timeout: Duration,
     credential_refresh_interval: Duration,
+    candidate_limits: RuntimeCandidateLimits,
 }
 
 impl RuntimePolicy {
@@ -160,6 +203,9 @@ impl RuntimePolicy {
         let accounting = policy.accounting.clone().unwrap_or_default();
         Self {
             client_api_failover_strategy: strategy_from_yang(policy.client_api_failover_strategy),
+            candidate_limits: RuntimeCandidateLimits::from_yang(
+                &policy.candidate_preparation.clone().unwrap_or_default(),
+            ),
             tacacs_proxy_failover_strategy: strategy_from_yang(
                 policy.tacacs_proxy_failover_strategy,
             ),
@@ -218,6 +264,7 @@ impl RuntimePolicy {
         }
         Ok(Self {
             client_api_failover_strategy,
+            candidate_limits: RuntimeCandidateLimits::default(),
             tacacs_proxy_failover_strategy,
             operations,
             failover_recovery_interval,
@@ -294,6 +341,12 @@ impl RuntimePolicy {
     #[must_use]
     pub const fn credential_refresh_interval(&self) -> Duration {
         self.credential_refresh_interval
+    }
+
+    /// Returns admission limits derived from the canonical candidate policy.
+    #[must_use]
+    pub const fn candidate_limits(&self) -> RuntimeCandidateLimits {
+        self.candidate_limits
     }
 }
 

@@ -196,6 +196,7 @@ impl CredentialResolver for SonicCredentialResolver {
     async fn resolve(
         &self,
         request: &CredentialRequest,
+        _scope: &tacacsrs_credential_resolution::WorkScope,
     ) -> Result<ResolvedCredential, ResolutionError> {
         if request.kind() != CredentialKind::SymmetricKey {
             return Err(ResolutionError::provider(
@@ -211,7 +212,7 @@ impl CredentialResolver for SonicCredentialResolver {
         let roots = self.roots.clone();
         let configured_policy = self.policy;
         let reference = reference.to_owned();
-        let bytes = tokio::task::spawn_blocking(move || {
+        let work = spawn_registered_blocking(_scope, move || {
             let (root, policy) = if let Some(root) = root {
                 (root, configured_policy)
             } else {
@@ -227,14 +228,142 @@ impl CredentialResolver for SonicCredentialResolver {
             };
             linux::read_epsk(&root, &reference, policy)
         })
-        .await
-        .map_err(|_| ResolutionError::provider(ProviderErrorKind::Unavailable, request.context()))?
-        .map_err(|kind| ResolutionError::provider(kind, request.context()))?;
+        .ok_or_else(|| {
+            ResolutionError::provider(ProviderErrorKind::Unavailable, request.context())
+        })?;
+        let (bytes, _result_lease) = work.await.map_err(|_| {
+            ResolutionError::provider(ProviderErrorKind::Unavailable, request.context())
+        })?;
+        let bytes = bytes.map_err(|kind| ResolutionError::provider(kind, request.context()))?;
         Ok(ResolvedCredential::SymmetricKey(SymmetricKeyMaterial {
             validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
             key_format: Some(SymmetricKeyFormat::OctetStringKeyFormat),
             key: SecretBytes::from_zeroizing(bytes),
         }))
+    }
+}
+
+fn spawn_registered_blocking<Output: Send + 'static>(
+    scope: &tacacsrs_credential_resolution::WorkScope,
+    work: impl FnOnce() -> Output + Send + 'static,
+) -> Option<tokio::task::JoinHandle<(Output, tacacsrs_credential_resolution::WorkScope)>> {
+    let lease = scope.register()?;
+    Some(tokio::task::spawn_blocking(move || {
+        let output = work();
+        (output, lease)
+    }))
+}
+
+#[cfg(test)]
+mod registered_work_tests {
+    use super::spawn_registered_blocking;
+    use tacacsrs_credential_resolution::WorkScope;
+
+    struct QueuedPayload(tacacsrs_credential_resolution::WorkScopeControl);
+
+    impl Drop for QueuedPayload {
+        fn drop(&mut self) {
+            assert!(!self.0.is_quiet(), "queued payload must be disposed before its work lease");
+        }
+    }
+
+    #[tokio::test]
+    async fn registered_blocking_discards_queued_payload_before_releasing_lease() {
+        let (control, root) = WorkScope::new(());
+        let queued = spawn_registered_blocking(&root, move || QueuedPayload(control)).unwrap();
+        drop(root);
+        drop(queued.await.unwrap());
+    }
+
+    #[test]
+    fn registered_blocking_queued_before_start_keeps_scope_after_handle_drop() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let (entered, started) = std::sync::mpsc::channel();
+        let occupying = runtime.spawn_blocking(move || {
+            entered.send(()).unwrap();
+            blocked.recv().unwrap();
+        });
+        started.recv().unwrap();
+        let (control, root) = WorkScope::new(());
+        let queued = {
+            let _entered = runtime.enter();
+            spawn_registered_blocking(&root, || Err::<(), _>("queued test error")).unwrap()
+        };
+        drop(queued);
+        control.seal();
+        drop(root);
+        assert!(!control.is_quiet());
+        release.send(()).unwrap();
+        runtime.block_on(occupying).unwrap();
+        drop(runtime);
+        assert!(control.is_quiet());
+    }
+
+    #[test]
+    fn registered_blocking_running_keeps_scope_after_handle_drop() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let (entered, started) = std::sync::mpsc::channel();
+        let (control, root) = WorkScope::new(());
+        let running = {
+            let _entered = runtime.enter();
+            spawn_registered_blocking(&root, move || {
+                entered.send(()).unwrap();
+                blocked.recv().unwrap();
+            })
+            .unwrap()
+        };
+        started.recv().unwrap();
+        drop(running);
+        control.seal();
+        drop(root);
+        assert!(!control.is_quiet());
+        release.send(()).unwrap();
+        drop(runtime);
+        assert!(control.is_quiet());
+    }
+
+    #[tokio::test]
+    async fn registered_blocking_closure_and_queued_result_retain_scope() {
+        let (control, root) = WorkScope::new(());
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, waiting) = std::sync::mpsc::channel();
+        let handle = spawn_registered_blocking(&root, move || {
+            entered.send(()).unwrap();
+            waiting.recv().unwrap();
+            Err::<(), _>("private test error")
+        })
+        .unwrap();
+        started.await.unwrap();
+        control.seal();
+        drop(root);
+        assert!(!control.is_quiet());
+        release.send(()).unwrap();
+        tokio::task::yield_now().await;
+        assert!(!control.is_quiet());
+        let queued = handle.await.unwrap();
+        assert!(!control.is_quiet());
+        assert!(queued.0.is_err());
+        drop(queued);
+        assert!(control.is_quiet());
+    }
+
+    #[tokio::test]
+    async fn registered_blocking_unwind_releases_scope() {
+        let (control, root) = WorkScope::new(());
+        let handle = spawn_registered_blocking(&root, || panic!("test unwind")).unwrap();
+        control.seal();
+        drop(root);
+        assert!(handle.await.is_err());
+        assert!(control.is_quiet());
     }
 }
 

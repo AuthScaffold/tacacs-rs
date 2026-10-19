@@ -44,6 +44,7 @@ pub(crate) use self::server_set::ServiceConnector;
 mod server_set;
 mod prepared_server;
 mod publication;
+pub(crate) use publication::PublicationCandidate;
 mod binding;
 
 /// Publishes catalogs and captures request policy for both local services.
@@ -183,6 +184,10 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         )
+    }
+
+    pub(crate) fn candidate_limits(&self) -> crate::config::RuntimeCandidateLimits {
+        self.current_runtime().runtime_policy.candidate_limits()
     }
 
     pub(crate) fn statistics(&self) -> tacacsrs_config::OperationalStatistics {
@@ -524,11 +529,8 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         commit: impl FnOnce() -> Option<crate::runtime::MaterializationCommit> + Send,
     ) -> anyhow::Result<()> {
         self.reload_shared_servers_with_retirement(
-            servers,
-            proxy_downstream_obfuscation,
+            PublicationCandidate::new(servers, proxy_downstream_obfuscation, None, None, commit),
             None,
-            None,
-            commit,
         )
         .await
     }

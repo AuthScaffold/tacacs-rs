@@ -8,7 +8,7 @@ use tacacsrs_config::keystore::SymmetricKeyInlineDefinition;
 use tacacsrs_config::{EpskSupportedHash, TacacsPlusServer, Tls13Epsk, TlsClientClientIdentity};
 use tokio::sync::Notify;
 
-use super::{BoundServer, UpstreamManager};
+use super::{BoundServer, PublicationCandidate, UpstreamManager};
 use crate::config::{FailoverStrategy, OperationPolicies, PreparedProxyPolicy, RuntimePolicy};
 use crate::runtime::{REQUIRED_SERVER_TYPES, RuntimeHealthPublisher};
 use crate::EnabledServices;
@@ -554,11 +554,14 @@ async fn credential_validity_bounds_leases_and_rechecks_waiting_publication() {
     .unwrap();
     state
         .reload_shared_servers_with_retirement(
-            vec![Arc::new(test_server("server-a:49"))],
-            PreparedProxyPolicy::unobfuscated(),
+            PublicationCandidate::new(
+                vec![Arc::new(test_server("server-a:49"))],
+                PreparedProxyPolicy::unobfuscated(),
+                Some(lifetime),
+                None,
+                || None,
+            ),
             None,
-            Some(lifetime),
-            || None,
         )
         .await
         .unwrap();
@@ -568,11 +571,14 @@ async fn credential_validity_bounds_leases_and_rechecks_waiting_publication() {
     let generation = state.current_runtime().generation;
     let guard = state.catalog_reload_lock.lock().await;
     let pending = state.reload_shared_servers_with_retirement(
-        vec![Arc::new(test_server("server-a:49"))],
-        PreparedProxyPolicy::unobfuscated(),
+        PublicationCandidate::new(
+            vec![Arc::new(test_server("server-a:49"))],
+            PreparedProxyPolicy::unobfuscated(),
+            Some(lifetime),
+            None,
+            || None,
+        ),
         None,
-        Some(lifetime),
-        || None,
     );
     tokio::pin!(pending);
     assert!(futures_util::poll!(&mut pending).is_pending());
@@ -583,6 +589,152 @@ async fn credential_validity_bounds_leases_and_rechecks_waiting_publication() {
     drop(guard);
     assert!(pending.await.is_err());
     assert_eq!(state.current_runtime().generation, generation);
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelled_catalog_publication_keeps_capacity_through_payload_drop() {
+    use crate::runtime::candidate_preparation::test_support::{
+        CancellationBoundary, cancel_publication, publication_candidate,
+    };
+
+    let state = UpstreamManager::new(
+        Vec::new(),
+        Arc::new(FakeConnector::new(HashMap::new())),
+        Duration::from_secs(30),
+        test_health(),
+    );
+    let guard = state.catalog_reload_lock.lock().await;
+    for boundary in CancellationBoundary::ALL {
+        let (candidate, observation) = publication_candidate().await;
+        cancel_publication(state.reload_shared_servers_with_retirement(candidate, None), boundary)
+            .await;
+        observation.assert_disposed(1);
+    }
+    drop(guard);
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelled_prepared_publication_keeps_capacity_through_payload_drop() {
+    use crate::runtime::candidate_preparation::test_support::{
+        CancellationBoundary, cancel_publication, publication_candidate,
+    };
+
+    let state = UpstreamManager::new(
+        Vec::new(),
+        Arc::new(FakeConnector::new(HashMap::new())),
+        Duration::from_secs(30),
+        test_health(),
+    );
+    for boundary in [
+        CancellationBoundary::Waiting,
+        CancellationBoundary::AdmissionTimeout,
+        CancellationBoundary::OuterTimeout,
+    ] {
+        let (candidate, observation) = publication_candidate().await;
+        state.publication.pause_prepared_client();
+        cancel_publication(state.reload_shared_servers_with_retirement(candidate, None), boundary)
+            .await;
+        observation.assert_disposed(1);
+        assert_eq!(state.server_count(), 0);
+    }
+}
+
+#[tokio::test]
+async fn cancelled_publication_seals_registered_work_without_releasing_its_capacity() {
+    use crate::runtime::candidate_preparation::test_support::{
+        CancellationBoundary, cancel_publication, publication_candidate,
+    };
+
+    let state = UpstreamManager::new(
+        Vec::new(),
+        Arc::new(FakeConnector::new(HashMap::new())),
+        Duration::from_secs(30),
+        test_health(),
+    );
+    let guard = state.catalog_reload_lock.lock().await;
+    let (candidate, observation) = publication_candidate().await;
+    let worker = candidate
+        .preparation
+        .as_ref()
+        .unwrap()
+        .scope
+        .register()
+        .unwrap();
+    cancel_publication(
+        state.reload_shared_servers_with_retirement(candidate, None),
+        CancellationBoundary::Waiting,
+    )
+    .await;
+    observation.assert_disposed(0);
+    assert!(worker.register().is_none());
+    drop(worker);
+    assert_eq!(observation.slot.available_permits(), 1);
+    drop(guard);
+}
+
+#[tokio::test]
+async fn rejected_publication_keeps_capacity_through_payload_drop() {
+    use crate::runtime::candidate_preparation::test_support::publication_candidate;
+
+    let state = UpstreamManager::new(
+        Vec::new(),
+        Arc::new(FakeConnector::new(HashMap::new())),
+        Duration::from_secs(30),
+        test_health(),
+    );
+    state.closed.store(true, Ordering::Release);
+    let (candidate, observation) = publication_candidate().await;
+    assert!(state
+        .reload_shared_servers_with_retirement(candidate, None)
+        .await
+        .is_err());
+    observation.assert_disposed(1);
+}
+
+#[tokio::test]
+async fn invalid_prepared_publication_keeps_capacity_through_payload_drop() {
+    use crate::runtime::candidate_preparation::test_support::publication_candidate;
+
+    let state = UpstreamManager::new(
+        Vec::new(),
+        Arc::new(FakeConnector::new(HashMap::new())),
+        Duration::from_secs(30),
+        test_health(),
+    );
+    let (mut candidate, observation) = publication_candidate().await;
+    candidate
+        .servers
+        .push(Arc::new(materialized_server(b"short")));
+    assert!(state
+        .reload_shared_servers_with_retirement(candidate, None)
+        .await
+        .is_err());
+    observation.assert_disposed(1);
+    assert_eq!(state.server_count(), 0);
+}
+
+#[tokio::test]
+async fn expired_prepared_publication_keeps_capacity_through_payload_drop() {
+    use crate::runtime::candidate_preparation::test_support::publication_candidate;
+
+    let state = UpstreamManager::new(
+        Vec::new(),
+        Arc::new(FakeConnector::new(HashMap::new())),
+        Duration::from_secs(30),
+        test_health(),
+    );
+    let (mut candidate, observation) = publication_candidate().await;
+    candidate.validity = Some(crate::runtime::CredentialLifetime {
+        deadline: Some(tokio::time::Instant::now()),
+        ..crate::runtime::CredentialLifetime::unbounded()
+    });
+    let error = state
+        .reload_shared_servers_with_retirement(candidate, None)
+        .await
+        .unwrap_err();
+    assert_eq!(error.to_string(), "Credential validity expired before publication");
+    observation.assert_disposed(1);
+    assert_eq!(state.server_count(), 0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -710,11 +862,14 @@ async fn immediate_retirement_blocks_old_bindings_without_replacing_admission() 
     state.bind_request(&retained).await.unwrap();
     state
         .reload_shared_servers_with_retirement(
-            Vec::new(),
-            PreparedProxyPolicy::unobfuscated(),
+            PublicationCandidate::new(
+                Vec::new(),
+                PreparedProxyPolicy::unobfuscated(),
+                None,
+                None,
+                || None,
+            ),
             Some(tacacsrs_networking::RequestDeadline::at(tokio::time::Instant::now())),
-            None,
-            || None,
         )
         .await
         .unwrap();

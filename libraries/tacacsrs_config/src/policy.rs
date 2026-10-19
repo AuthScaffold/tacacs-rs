@@ -48,6 +48,14 @@ pub fn parse_runtime_policy(bytes: &[u8]) -> anyhow::Result<RuntimePolicy> {
 /// Returns an error for zero intervals or concurrency limits, or body limits
 /// outside the supported TACACS+ range.
 pub fn validate_runtime_policy(policy: &RuntimePolicy) -> anyhow::Result<()> {
+    let candidate = policy.candidate_preparation.clone().unwrap_or_default();
+    for (name, value) in [
+        ("timeout-seconds", candidate.timeout_seconds),
+        ("max-resolution-requests", candidate.max_resolution_requests),
+        ("max-retained-material-bytes", candidate.max_retained_material_bytes),
+    ] {
+        ensure!(value > 0, "runtime-policy/candidate-preparation/{name} must be greater than zero");
+    }
     ensure!(
         policy.credential_refresh_interval_seconds > 0,
         "runtime-policy/credential-refresh-interval-seconds must be greater than zero"
@@ -109,6 +117,55 @@ pub fn validate_runtime_policy(policy: &RuntimePolicy) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn candidate_policy_defaults_ranges_and_source_absence() {
+        let absent = super::parse_runtime_policy(br#"{"tacacsrs:runtime-policy":{}}"#).unwrap();
+        assert!(absent.candidate_preparation.is_none());
+        let serialized = serde_json::to_value(&absent).unwrap();
+        assert!(serialized.get("candidate-preparation").is_none());
+        let empty = super::parse_runtime_policy(
+            br#"{"tacacsrs:runtime-policy":{"candidate-preparation":{}}}"#,
+        )
+        .unwrap();
+        let defaults = crate::tacacsrs::CandidatePreparation::default();
+        assert_eq!(empty.candidate_preparation, Some(defaults.clone()));
+        assert_eq!(
+            (
+                defaults.timeout_seconds,
+                defaults.max_resolution_requests,
+                defaults.max_retained_material_bytes
+            ),
+            (30, 256, 67108864)
+        );
+        for field in [
+            "timeout-seconds",
+            "max-resolution-requests",
+            "max-retained-material-bytes",
+        ] {
+            for value in [1_u64, u64::from(u32::MAX)] {
+                let input = serde_json::json!({"tacacsrs:runtime-policy":{"candidate-preparation":{field:value}}});
+                let parsed =
+                    super::parse_runtime_policy(&serde_json::to_vec(&input).unwrap()).unwrap();
+                assert!(super::validate_runtime_policy(&parsed).is_ok());
+            }
+            for value in [0, u64::from(u32::MAX) + 1, u64::MAX] {
+                let input = serde_json::json!({"tacacsrs:runtime-policy":{"candidate-preparation":{field:value}}});
+                assert!(super::parse_runtime_policy(&serde_json::to_vec(&input).unwrap()).is_err());
+            }
+        }
+        for index in 0..3 {
+            let mut candidate = defaults.clone();
+            match index {
+                0 => candidate.timeout_seconds = 0,
+                1 => candidate.max_resolution_requests = 0,
+                _ => candidate.max_retained_material_bytes = 0,
+            }
+            let mut invalid = absent.clone();
+            invalid.candidate_preparation = Some(candidate);
+            assert!(super::validate_runtime_policy(&invalid).is_err());
+        }
+    }
+
     #[test]
     fn zero_credential_refresh_interval_is_rejected() {
         assert!(super::parse_runtime_policy(

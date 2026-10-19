@@ -16,7 +16,7 @@ use crate::{
 enum CredentialState {
     Unavailable,
     Unobfuscated,
-    SharedSecret(SecretString),
+    SharedSecret(std::sync::Arc<SecretString>),
 }
 
 /// Immutable downstream policy with validated, redacted credential material.
@@ -109,7 +109,7 @@ pub fn prepare_proxy_policy(
     .context("The configured downstream credential source has no shared secret")?;
     ensure!(!secret.expose_secret().is_empty(), "Downstream shared secret must not be empty");
     Ok(PreparedProxyPolicy {
-        state: CredentialState::SharedSecret(secret.clone()),
+        state: CredentialState::SharedSecret(std::sync::Arc::new(secret.clone())),
     })
 }
 

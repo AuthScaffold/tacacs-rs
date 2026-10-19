@@ -11,6 +11,7 @@ mod config_supervisor;
 mod health;
 mod listener_service;
 mod materialization_coordinator;
+pub(crate) mod candidate_preparation;
 mod policy_supervisor;
 mod proxy_loop_guard;
 mod request_tracker;

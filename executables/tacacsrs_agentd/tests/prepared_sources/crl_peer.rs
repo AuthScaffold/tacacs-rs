@@ -33,6 +33,7 @@ impl tacacsrs_credential_resolution::CredentialResolver for RefreshingCrlResolve
     async fn resolve(
         &self,
         request: &tacacsrs_credential_resolution::CredentialRequest,
+        _scope: &tacacsrs_credential_resolution::WorkScope,
     ) -> Result<ResolvedCredential, tacacsrs_credential_resolution::ResolutionError> {
         use tacacsrs_credential_resolution::{CredentialKind, ProviderErrorKind, ResolutionError};
         if request.kind() != CredentialKind::CertificateRevocationLists {

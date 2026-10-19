@@ -49,7 +49,7 @@ impl ProxySelfLoopFilter {
         mut tacacs_plus: TacacsPlus,
     ) -> anyhow::Result<FilteredTacacsPlus> {
         let original_server_count = tacacs_plus.server.len();
-        let enumerated_servers = tacacsrs_config::enumerate_servers(&tacacs_plus)?;
+        tacacsrs_config::validate_credential_references(&tacacs_plus)?;
         let local_addresses = if self.proxy_endpoint.ip().to_canonical().is_unspecified() {
             if_addrs::get_if_addrs()
                 .context("read local interfaces for proxy loop validation")?
@@ -60,9 +60,9 @@ impl ProxySelfLoopFilter {
             Vec::new()
         };
         let mut filtered_names = HashSet::new();
-        let mut selected_proxy_server: Option<TacacsPlusServer> = None;
+        let mut selected_proxy_server: Option<&TacacsPlusServer> = None;
 
-        for server in &enumerated_servers {
+        for server in &tacacs_plus.server {
             let resolution = async {
                 tokio::net::lookup_host((server.address.as_str(), server.port))
                     .await
@@ -89,13 +89,13 @@ impl ProxySelfLoopFilter {
                 );
                 filtered_names.insert(server.name.clone());
                 if selected_proxy_server.is_none() {
-                    selected_proxy_server = Some(server.clone());
+                    selected_proxy_server = Some(server);
                 }
             }
         }
 
         let proxy_downstream_obfuscation =
-            prepare_proxy_policy(&self.source, selected_proxy_server.as_ref())?;
+            prepare_proxy_policy(&self.source, selected_proxy_server)?;
 
         tacacs_plus
             .server
@@ -123,6 +123,25 @@ impl ProxySelfLoopFilter {
 }
 
 impl TacacsPlusFilter for ProxySelfLoopFilter {
+    fn known_payload_copies(&self, source: &TacacsPlus) -> anyhow::Result<u64> {
+        let bytes = match self.source.proxy_credential_source {
+            tacacsrs_config::tacacsrs::ProxyCredentialSource::Unobfuscated => 0,
+            tacacsrs_config::tacacsrs::ProxyCredentialSource::Inline => self
+                .source
+                .proxy_shared_secret
+                .as_ref()
+                .map_or(0, |secret| secret.expose_secret().len()),
+            tacacsrs_config::tacacsrs::ProxyCredentialSource::LocalProxyRow => source
+                .server
+                .iter()
+                .filter_map(|server| server.shared_secret.as_ref())
+                .map(|secret| secret.expose_secret().len())
+                .max()
+                .unwrap_or(0),
+        };
+        Ok(u64::try_from(bytes)?)
+    }
+
     fn filter(&self, tacacs_plus: TacacsPlus) -> BoxFuture<'_, anyhow::Result<FilteredTacacsPlus>> {
         async move { self.filter_proxy_self_loop_servers(tacacs_plus).await }.boxed()
     }

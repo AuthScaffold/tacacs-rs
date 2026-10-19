@@ -150,6 +150,13 @@ impl TacacsClientService {
     }
 
     #[cfg(test)]
+    pub(crate) fn pause_native_preparation(
+        &self,
+    ) -> (Arc<tokio::sync::Notify>, std::sync::mpsc::Sender<()>) {
+        self.runtime.manager.pause_native_preparation()
+    }
+
+    #[cfg(test)]
     pub(crate) async fn hold_publication(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.runtime.reload_publication_lock.lock().await
     }
@@ -259,14 +266,11 @@ impl TacacsClientService {
     /// Applies materialized servers and coordinator bookkeeping in one commit.
     pub(crate) async fn publish_materialized_servers(
         &self,
-        servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
-        policy: PreparedProxyPolicy,
-        validity: super::CredentialLifetime,
-        commit: impl FnOnce() -> Option<super::MaterializationCommit> + Send,
+        candidate: crate::upstream::manager::PublicationCandidate<
+            impl FnOnce() -> Option<super::MaterializationCommit> + Send,
+        >,
     ) -> anyhow::Result<()> {
-        self.runtime
-            .publish_materialized_servers(servers, policy, Some(validity), commit)
-            .await
+        self.runtime.publish_materialized_servers(candidate).await
     }
 
     /// Withdraws expired upstreams without closing the recoverable runtime.
@@ -284,11 +288,14 @@ impl TacacsClientService {
         self.runtime
             .manager
             .reload_shared_servers_with_retirement(
-                Vec::new(),
-                proxy,
+                crate::upstream::manager::PublicationCandidate::new(
+                    Vec::new(),
+                    proxy,
+                    None,
+                    None,
+                    commit,
+                ),
                 Some(tacacsrs_networking::RequestDeadline::at(tokio::time::Instant::now())),
-                None,
-                commit,
             )
             .await
     }
@@ -303,6 +310,14 @@ impl TacacsClientService {
 
     pub(crate) fn credential_refresh_interval(&self) -> std::time::Duration {
         self.runtime.manager.credential_refresh_interval()
+    }
+
+    pub(crate) fn candidate_limits(&self) -> crate::config::RuntimeCandidateLimits {
+        self.runtime.manager.candidate_limits()
+    }
+
+    pub(crate) fn ensure_open(&self) -> anyhow::Result<()> {
+        self.runtime.manager.ensure_open()
     }
 
     /// Returns the applied graceful shutdown budget for an embedding host.

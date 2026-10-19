@@ -24,7 +24,7 @@ mod test_support;
 
 pub use config::{
     EnabledServices, FailoverStrategy, OperationPolicies, PolicyService, PreparedProxyPolicy,
-    RequestLimits, RuntimePolicy, ServiceConfig,
+    RequestLimits, RuntimePolicy, RuntimeCandidateLimits, ServiceConfig,
 };
 pub use upstream::OperationKind;
 pub use runtime::{

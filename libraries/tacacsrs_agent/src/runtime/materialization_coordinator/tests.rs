@@ -33,12 +33,13 @@ impl CredentialResolver for BlockingResolver {
     async fn resolve(
         &self,
         request: &CredentialRequest,
+        _scope: &tacacsrs_credential_resolution::WorkScope,
     ) -> Result<ResolvedCredential, ResolutionError> {
         if request.reference().symmetric_key() == Some("object-a") {
             self.started.notify_one();
             self.release.notified().await;
         }
-        self.inner.resolve(request).await
+        self.inner.resolve(request, _scope).await
     }
 }
 
@@ -47,6 +48,7 @@ impl CredentialResolver for MutableResolver {
     async fn resolve(
         &self,
         request: &CredentialRequest,
+        _scope: &tacacsrs_credential_resolution::WorkScope,
     ) -> Result<ResolvedCredential, ResolutionError> {
         let reference = request
             .reference()
@@ -151,6 +153,67 @@ fn known(reference: &str) -> CredentialChangeScope {
     }
 }
 
+struct CountingResolver {
+    calls: Mutex<Vec<String>>,
+    inner: Arc<MutableResolver>,
+}
+
+#[async_trait]
+impl CredentialResolver for CountingResolver {
+    async fn resolve(
+        &self,
+        request: &CredentialRequest,
+        _scope: &tacacsrs_credential_resolution::WorkScope,
+    ) -> Result<ResolvedCredential, ResolutionError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(request.context().server_name().to_owned());
+        self.inner.resolve(request, _scope).await
+    }
+}
+
+#[tokio::test]
+async fn candidate_request_budget_preflights_all_slots_in_canonical_order() {
+    let provider = Arc::new(CountingResolver {
+        calls: Mutex::new(Vec::new()),
+        inner: resolver(&[("object-a", b"valid-material-long-enough")]),
+    });
+    let coordinator =
+        MaterializationCoordinator::new(provider.clone(), ValidationOptions::default());
+    let mut canonical = source("object-a", "192.0.2.20");
+    canonical.server[0].name = "z-first".to_owned();
+    let mut second = source("object-a", "192.0.2.21").server.remove(0);
+    second.name = "a-second".to_owned();
+    canonical.server.push(second);
+    let attempt = coordinator
+        .accept_source(canonical.clone(), canonical.clone(), PreparedProxyPolicy::unobfuscated())
+        .await;
+    let rejected = coordinator
+        .materialize_with_request_limit(attempt.clone(), 1)
+        .await;
+    assert!(rejected.is_err(), "complete request plan must fail admission");
+    assert!(provider.calls.lock().unwrap().is_empty(), "rejected plan called provider");
+    let prepared = coordinator
+        .materialize_with_request_limit(attempt, 2)
+        .await
+        .unwrap();
+    assert_eq!(*provider.calls.lock().unwrap(), ["z-first", "a-second"]);
+    assert_eq!(prepared.candidates.len(), 2);
+    assert!(prepared.candidates.iter().all(|(server, _)| {
+        server
+            .client_identity
+            .as_ref()
+            .unwrap()
+            .tls13_epsk
+            .as_ref()
+            .unwrap()
+            .central_keystore_reference
+            .is_none()
+    }));
+    assert_eq!(coordinator.state.lock().await.desired_source.as_deref(), Some(&canonical));
+}
+
 #[tokio::test(start_paused = true)]
 async fn validity_survives_partial_refresh_and_expiry_blocks_publication() {
     use std::time::SystemTime;
@@ -213,6 +276,460 @@ async fn validity_survives_partial_refresh_and_expiry_blocks_publication() {
     coordinator.publish(prepared, &service).await.unwrap();
     assert_eq!(service.server_count(), 2);
     assert_eq!(coordinator.state.lock().await.desired_source.as_deref(), Some(&canonical));
+}
+
+fn two_servers() -> TacacsPlus {
+    let mut canonical = source("object-a", "192.0.2.20");
+    canonical.server[0].name = "z-first".to_owned();
+    let mut second = source("object-a", "192.0.2.21").server.remove(0);
+    second.name = "a-second".to_owned();
+    canonical.server.push(second);
+    canonical
+}
+
+fn material_limit(mut attempt: MaterializationAttempt, bytes: u64) -> MaterializationAttempt {
+    attempt.admission.limits.material_bytes = bytes;
+    attempt
+}
+
+#[tokio::test]
+async fn candidate_raw_owner_sharing_does_not_relabel_retained_filtered_copy() {
+    let coordinator = MaterializationCoordinator::without_resolver(ValidationOptions::default());
+    let service = service();
+    let canonical = TacacsPlus {
+        client_credentials: Vec::new(),
+        server_credentials: Vec::new(),
+        server: vec![tacacsrs_config::TacacsPlusServerBuilder::new(
+            "inline",
+            tacacsrs_config::TacacsPlusServerType::all(),
+            "192.0.2.1",
+            300,
+        )
+        .with_tls13_epsk_psk_only("identity", vec![7; 16])
+        .build()],
+    };
+    let raw = Arc::new(canonical);
+    let admission =
+        CandidateAdmission::new(crate::config::RuntimeCandidateLimits::default()).unwrap();
+    let revision = coordinator.admit_source_at(raw.clone(), admission).await;
+    assert!(Arc::ptr_eq(
+        coordinator
+            .state
+            .lock()
+            .await
+            .desired_source
+            .as_ref()
+            .unwrap(),
+        &raw
+    ));
+    let attempt = coordinator
+        .accept_filtered_source(revision, (*raw).clone(), PreparedProxyPolicy::unobfuscated())
+        .await
+        .unwrap();
+    let prepared = coordinator
+        .materialize(material_limit(attempt, 32))
+        .await
+        .unwrap();
+    assert_eq!(
+        prepared
+            .preparation
+            .with_ledger(|ledger| Ok(ledger.charges()))
+            .unwrap(),
+        (16, 16, 32)
+    );
+    coordinator.publish(prepared, &service).await.unwrap();
+    let refresh = coordinator
+        .credential_change(&CredentialChangeScope::Unknown)
+        .await
+        .unwrap();
+    assert!(coordinator
+        .materialize(material_limit(refresh.clone(), 31))
+        .await
+        .is_err());
+    let prepared = coordinator
+        .materialize(material_limit(refresh, 32))
+        .await
+        .unwrap();
+    assert_eq!(
+        prepared
+            .preparation
+            .with_ledger(|ledger| Ok(ledger.charges()))
+            .unwrap(),
+        (16, 16, 32)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn candidate_periodic_ticks_during_filtering_coalesce_without_renewal() {
+    let coordinator = MaterializationCoordinator::new(
+        resolver(&[("object-a", &[7; 16])]),
+        ValidationOptions::default(),
+    );
+    let canonical = source("object-a", "192.0.2.1");
+    let revision = coordinator.admit_source(canonical.clone()).await;
+    let original = coordinator.state.lock().await.source_admission.unwrap();
+    for _tick in 0..10 {
+        assert!(coordinator.refresh_credentials().await.is_none());
+        tokio::time::advance(Duration::from_secs(1)).await;
+    }
+    assert_eq!(
+        coordinator
+            .state
+            .lock()
+            .await
+            .revision
+            .credentials()
+            .value(),
+        1
+    );
+    let attempt = coordinator
+        .accept_filtered_source(revision, canonical, PreparedProxyPolicy::unobfuscated())
+        .await
+        .unwrap();
+    assert_eq!(attempt.admission.admitted, original.admitted);
+    assert_eq!(attempt.admission.deadline, original.deadline);
+    assert_eq!(attempt.revision.credentials().value(), 1);
+    assert!(coordinator.materialize(attempt).await.is_ok());
+}
+
+#[tokio::test]
+async fn candidate_payload_handoff_rejects_before_next_provider_call() {
+    let provider = Arc::new(CountingResolver {
+        calls: Mutex::new(Vec::new()),
+        inner: resolver(&[("object-a", &[7; 16])]),
+    });
+    let coordinator =
+        MaterializationCoordinator::new(provider.clone(), ValidationOptions::default());
+    let canonical = two_servers();
+    let attempt = coordinator
+        .accept_source(canonical.clone(), canonical.clone(), PreparedProxyPolicy::unobfuscated())
+        .await;
+    assert!(coordinator
+        .materialize(material_limit(attempt.clone(), 15))
+        .await
+        .is_err());
+    assert_eq!(*provider.calls.lock().unwrap(), ["z-first"]);
+    provider.calls.lock().unwrap().clear();
+    let prepared = coordinator
+        .materialize(material_limit(attempt, 32))
+        .await
+        .unwrap();
+    assert_eq!(*provider.calls.lock().unwrap(), ["z-first", "a-second"]);
+    assert_eq!(
+        prepared
+            .preparation
+            .with_ledger(|ledger| Ok(ledger.charges()))
+            .unwrap(),
+        (32, 0, 32)
+    );
+    assert_eq!(coordinator.state.lock().await.desired_source.as_deref(), Some(&canonical));
+}
+
+#[tokio::test]
+async fn candidate_payload_inline_and_bundle_charge_destinations_and_projection() {
+    for bundled in [false, true] {
+        let coordinator =
+            MaterializationCoordinator::without_resolver(ValidationOptions::default());
+        let mut canonical = two_servers();
+        for server in &mut canonical.server {
+            let epsk = server
+                .client_identity
+                .as_mut()
+                .unwrap()
+                .tls13_epsk
+                .as_mut()
+                .unwrap();
+            epsk.central_keystore_reference = None;
+            epsk.inline_definition =
+                Some(tacacsrs_config::keystore::SymmetricKeyInlineDefinition {
+                    key_format: Some(
+                        tacacsrs_config::crypto_types::SymmetricKeyFormat::OctetStringKeyFormat,
+                    ),
+                    cleartext_symmetric_key: Some(SecretBytes::new(vec![7; 16])),
+                });
+        }
+        if bundled {
+            let epsk = canonical.server[0]
+                .client_identity
+                .as_mut()
+                .unwrap()
+                .tls13_epsk
+                .take();
+            canonical
+                .client_credentials
+                .push(tacacsrs_config::ClientCredentials {
+                    id: "bundle".to_owned(),
+                    certificate: None,
+                    tls13_epsk: epsk,
+                });
+            for server in &mut canonical.server {
+                let identity = server.client_identity.as_mut().unwrap();
+                identity.tls13_epsk = None;
+                identity.credentials_reference = Some("bundle".to_owned());
+            }
+        }
+        let exact = if bundled {
+            48
+        } else {
+            64
+        };
+        let attempt = coordinator
+            .accept_source(
+                canonical.clone(),
+                canonical.clone(),
+                PreparedProxyPolicy::unobfuscated(),
+            )
+            .await;
+        assert!(coordinator
+            .materialize(material_limit(attempt.clone(), exact - 1))
+            .await
+            .is_err());
+        let prepared = coordinator
+            .materialize(material_limit(attempt, exact))
+            .await
+            .unwrap();
+        assert_eq!(
+            prepared
+                .preparation
+                .with_ledger(|ledger| Ok(ledger.charges()))
+                .unwrap(),
+            (32, exact - 32, exact)
+        );
+        assert_eq!(coordinator.state.lock().await.desired_source.as_deref(), Some(&canonical));
+    }
+}
+
+#[tokio::test]
+async fn candidate_partial_refresh_keeps_retained_logical_payload() {
+    let provider = Arc::new(CountingResolver {
+        calls: Mutex::new(Vec::new()),
+        inner: resolver(&[("object-a", &[7; 16]), ("object-b", &[8; 16])]),
+    });
+    let coordinator =
+        MaterializationCoordinator::new(provider.clone(), ValidationOptions::default());
+    let service = service();
+    let mut canonical = two_servers();
+    canonical.server[1]
+        .client_identity
+        .as_mut()
+        .unwrap()
+        .tls13_epsk
+        .as_mut()
+        .unwrap()
+        .central_keystore_reference = Some("object-b".to_owned());
+    let baseline = coordinator
+        .accept_source(canonical.clone(), canonical, PreparedProxyPolicy::unobfuscated())
+        .await;
+    let prepared = coordinator.materialize(baseline).await.unwrap();
+    coordinator.publish(prepared, &service).await.unwrap();
+    let retained = coordinator.active_servers().await[1].clone();
+    provider.calls.lock().unwrap().clear();
+    let refresh = coordinator
+        .credential_change(&known("object-a"))
+        .await
+        .unwrap();
+    assert!(coordinator
+        .materialize(material_limit(refresh.clone(), 31))
+        .await
+        .is_err());
+    assert_eq!(*provider.calls.lock().unwrap(), ["z-first"]);
+    let prepared = coordinator
+        .materialize(material_limit(refresh, 32))
+        .await
+        .unwrap();
+    assert_eq!(
+        prepared
+            .preparation
+            .with_ledger(|ledger| Ok(ledger.charges()))
+            .unwrap(),
+        (32, 0, 32)
+    );
+    coordinator.publish(prepared, &service).await.unwrap();
+    assert!(Arc::ptr_eq(&retained, &coordinator.active_servers().await[1]));
+}
+
+struct SlowSuccessfulResolver(Arc<CountingResolver>);
+
+#[async_trait]
+impl CredentialResolver for SlowSuccessfulResolver {
+    async fn resolve(
+        &self,
+        request: &CredentialRequest,
+        scope: &tacacsrs_credential_resolution::WorkScope,
+    ) -> Result<ResolvedCredential, ResolutionError> {
+        tokio::time::sleep(Duration::from_secs(12)).await;
+        self.0.resolve(request, scope).await
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn candidate_slow_successes_do_not_renew_thirty_second_deadline() {
+    let provider = Arc::new(CountingResolver {
+        calls: Mutex::new(Vec::new()),
+        inner: resolver(&[("object-a", &[7; 16])]),
+    });
+    let coordinator = MaterializationCoordinator::new(
+        Arc::new(SlowSuccessfulResolver(provider.clone())),
+        ValidationOptions::default(),
+    );
+    let mut canonical = two_servers();
+    let mut third = canonical.server[0].clone();
+    third.name = "third".to_owned();
+    third.address = "192.0.2.22".to_owned();
+    canonical.server.push(third);
+    let attempt = coordinator
+        .accept_source(canonical.clone(), canonical, PreparedProxyPolicy::unobfuscated())
+        .await;
+    let admitted = attempt.admission.admitted;
+    assert!(coordinator.materialize(attempt).await.is_err());
+    assert_eq!(admitted.elapsed(), Duration::from_secs(30));
+    assert_eq!(provider.calls.lock().unwrap().len(), 2);
+    assert_eq!(coordinator.preparation_slot.available_permits(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn candidate_final_fence_rejects_tighter_policy_without_publication() {
+    for field in [
+        "timeout-seconds",
+        "max-resolution-requests",
+        "max-retained-material-bytes",
+    ] {
+        let coordinator = MaterializationCoordinator::new(
+            resolver(&[("object-a", &[7; 16])]),
+            ValidationOptions::default(),
+        );
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let service = service_with_health(health.clone());
+        let baseline = two_servers();
+        let attempt = coordinator
+            .accept_source(baseline.clone(), baseline, PreparedProxyPolicy::unobfuscated())
+            .await;
+        let prepared = coordinator.materialize(attempt).await.unwrap();
+        coordinator.publish(prepared, &service).await.unwrap();
+        let active = coordinator.active_servers().await;
+        let mut candidate = two_servers();
+        candidate.server[0].address = "192.0.2.23".to_owned();
+        let attempt = coordinator
+            .accept_source(candidate.clone(), candidate, PreparedProxyPolicy::unobfuscated())
+            .await;
+        let prepared = coordinator.materialize(attempt).await.unwrap();
+        let value = match field {
+            "timeout-seconds" => 20,
+            "max-resolution-requests" => 1,
+            _ => 31,
+        };
+        let policy = tacacsrs_config::policy::parse_runtime_policy(&serde_json::to_vec(&serde_json::json!({"tacacsrs:runtime-policy":{"candidate-preparation":{field:value}}})).unwrap()).unwrap();
+        service.apply_policy_candidate(Some(&policy)).await.unwrap();
+        if field == "timeout-seconds" {
+            tokio::time::advance(Duration::from_secs(25)).await;
+        }
+        let before = health.snapshot();
+        assert!(coordinator.publish(prepared, &service).await.is_err());
+        assert_eq!(health.snapshot(), before);
+        assert!(Arc::ptr_eq(&active[0], &coordinator.active_servers().await[0]));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn candidate_installation_fence_ignores_unrelated_state_lock_holders() {
+    let coordinator = MaterializationCoordinator::new(
+        resolver(&[("object-a", &[7; 16])]),
+        ValidationOptions::default(),
+    );
+    let canonical = source("object-a", "192.0.2.20");
+    let attempt = coordinator
+        .accept_source(canonical.clone(), canonical, PreparedProxyPolicy::unobfuscated())
+        .await;
+    let held = coordinator.state.lock().await;
+    assert!(coordinator.installation_current(&attempt));
+    drop(held);
+    tokio::time::advance(Duration::from_secs(30)).await;
+    assert!(!coordinator.installation_current(&attempt));
+    let canonical = source("object-a", "192.0.2.21");
+    let attempt = coordinator
+        .accept_source(canonical.clone(), canonical, PreparedProxyPolicy::unobfuscated())
+        .await;
+    coordinator
+        .admit_source(source("object-a", "192.0.2.22"))
+        .await;
+    assert!(!coordinator.installation_current(&attempt));
+}
+
+#[tokio::test(start_paused = true)]
+async fn candidate_publication_lock_wait_expires_without_commit() {
+    let coordinator = MaterializationCoordinator::new(
+        resolver(&[("object-a", &[7; 16])]),
+        ValidationOptions::default(),
+    );
+    let service = service();
+    let canonical = source("object-a", "192.0.2.20");
+    let attempt = coordinator
+        .accept_source(canonical.clone(), canonical, PreparedProxyPolicy::unobfuscated())
+        .await;
+    let prepared = coordinator.materialize(attempt).await.unwrap();
+    let held = service.hold_publication().await;
+    assert!(coordinator.publish(prepared, &service).await.is_err());
+    drop(held);
+    assert_eq!(service.server_count(), 0);
+    assert!(coordinator.active_servers().await.is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn candidate_postcommit_pause_past_deadline_still_reports_published() {
+    let coordinator = MaterializationCoordinator::new(
+        resolver(&[("object-a", &[7; 16])]),
+        ValidationOptions::default(),
+    );
+    let service = service();
+    let canonical = source("object-a", "192.0.2.20");
+    let attempt = coordinator
+        .accept_source(canonical.clone(), canonical, PreparedProxyPolicy::unobfuscated())
+        .await;
+    let prepared = coordinator.materialize(attempt).await.unwrap();
+    let release = service.pause_next_publication();
+    let publishing = coordinator.publish(prepared, &service);
+    tokio::pin!(publishing);
+    assert!(futures_util::poll!(&mut publishing).is_pending());
+    assert_eq!(service.server_count(), 1);
+    assert_eq!(coordinator.preparation_slot.available_permits(), 1);
+    tokio::time::advance(Duration::from_secs(31)).await;
+    release.notify_one();
+    assert_eq!(publishing.await.unwrap(), PublicationOutcome::Published);
+    assert_eq!(coordinator.active_servers().await.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn candidate_deadline_expiring_in_synchronous_preparation_rejects_after_return() {
+    let coordinator = Arc::new(MaterializationCoordinator::new(
+        resolver(&[("object-a", &[7; 16])]),
+        ValidationOptions::default(),
+    ));
+    let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+    let service = Arc::new(service_with_health(health.clone()));
+    let canonical = source("object-a", "192.0.2.20");
+    let mut attempt = coordinator
+        .accept_source(canonical.clone(), canonical, PreparedProxyPolicy::unobfuscated())
+        .await;
+    let mut limits = attempt.admission.limits;
+    limits.timeout = Duration::from_secs(1);
+    attempt.admission = CandidateAdmission::new(limits).unwrap();
+    let prepared = coordinator.materialize(attempt).await.unwrap();
+    let (entered, release) = service.pause_native_preparation();
+    let before = health.snapshot();
+    let publishing = {
+        let coordinator = coordinator.clone();
+        let service = service.clone();
+        tokio::spawn(async move { coordinator.publish(prepared, &service).await })
+    };
+    tokio::time::timeout(Duration::from_secs(2), entered.notified())
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    assert_eq!(service.server_count(), 0);
+    release.send(()).unwrap();
+    assert!(publishing.await.unwrap().is_err());
+    assert_eq!(health.snapshot(), before);
+    assert!(coordinator.active_servers().await.is_empty());
 }
 
 #[tokio::test(start_paused = true)]
@@ -688,15 +1205,11 @@ async fn blocked_old_resolution_cannot_replace_new_yang_snapshot() {
         PublicationOutcome::Published
     );
     resolver.release.notify_one();
-    let old_prepared = tokio::time::timeout(Duration::from_secs(5), old_task)
+    let old_result = tokio::time::timeout(Duration::from_secs(5), old_task)
         .await
         .unwrap()
-        .unwrap()
         .unwrap();
-    assert_eq!(
-        coordinator.publish(old_prepared, &service).await.unwrap(),
-        PublicationOutcome::Superseded
-    );
+    assert!(old_result.is_err());
     assert_eq!(coordinator.active_servers().await[0].address, "192.0.2.31");
     let state = coordinator.state.lock().await;
     assert_eq!(state.desired_source.as_deref(), Some(&current_source));
