@@ -1906,7 +1906,9 @@ The guarded squash specified that exact cleared head. GitHub returned `merged: t
 Fetched `origin/main` equals unchanged tested tree `954ffdc1d3c79379d8e8a1076acd919d32934a44`.
 Iteration 10 integrated the squash through normal merge `15052b7ec93cb795ecaabbd611427267077058e5` without changing its complete 30-file fingerprint.
 Its eight focused native ownership cases and four disposal cases passed again with Rust 1.88.
-Iteration 09 cleanup follows preservation of this receipt. No branch protection or required check was bypassed.
+After preserving this receipt, the clean idle iteration 09 worktree was removed without force.
+Its exact owned 13 GiB cache, completed PR/squash drafts, and known reviewer test-diff scratch file were removed.
+Branch history, the active iteration 10 resources, and the diagnostics checkout remain intact. No branch protection or required check was bypassed.
 
 Group filtered source, proxy policy, and dependency knowledge into explicit state.
 Group applied material and revision separately from withdrawn material.
@@ -1925,7 +1927,7 @@ Checks: unchanged coordinator/publication/supervisor regressions, connector proo
 
 ### 10: Prepared Publication
 
-Status: implementation, scoped validation, both named reviews, and material concurrency-repair follow-up are complete on predecessor `49e49162f5fc3cb2f5591202854082059337910c`.
+Status: published as PR #287 against merged `main`; implementation, scoped validation, both named reviews, and material concurrency-repair follow-up are complete.
 Coordinator full-workspace gates passed. R14 remains open pending current-head hosted verification and final merge review.
 Worktree: `/home/vscode/tacacs-rs-10-prepared-publication`; branch: `refactor/general-iterations/10-prepared-publication`.
 Scope: R7 and R14 prepared-runtime completion, built on iterations 05 and 09.
@@ -2017,6 +2019,14 @@ No local validation process remains active. The full content fingerprint stayed 
 Current integration head is `15052b7ec93cb795ecaabbd611427267077058e5`; the complete implementation is still uncommitted.
 Current-head GitHub review, hosted Windows/ARMhf and required CI, and final merge remain pending. R14 is not yet marked closed.
 
+#### Publication Receipt
+
+[PR #287](https://github.com/AuthScaffold/tacacs-rs/pull/287) targets `main` after predecessor squash `b09c15b3242c7c633138ff3c5018ba338ccdc7bc`.
+Published head `b35fc958350e71521ca75179c2a1cab49ae597d1` has complete tested tree `aaea8dc4256493fefa093c5307a5d8c28f7badc1`.
+All 30 reviewed implementation files, including the new payload module, are committed. The PR has `skip-release` and no tracking documents.
+Copilot review was requested on that head. Required workflow `39334465618` is in progress.
+Hosted requirements, completed review, findings disposition, and clean mergeability remain necessary before merging or closing R14.
+
 Carry source metadata, prepared endpoint identity, validity, budgets, and admitted revisions in one derived candidate.
 Move native preparation outside coordinator state and publication locks while keeping preparation concurrency explicitly bounded.
 Use at most one active preparation per coordinator initially, including cancelled-but-running blocking work.
@@ -2053,6 +2063,11 @@ Checks: deterministic interleaving tests, native prepared-source/retirement case
 ### 11: Embedding API
 
 Status: planned. Scope: R9.
+
+Local preflight confirms that daemon startup builds a waiting `TacacsClientService`; private `PreparedService::run` then composes configuration and policy supervisors.
+The public service also exposes populated/waiting constructors and several direct reload variants. The latter bypass supervised materialization bookkeeping by contract.
+Prefer reusing the existing supervisor and prepared-service ownership rather than adding another builder layer.
+The first discriminating checks are supervised embedding construction, independent source/policy updates, and daemon startup/shutdown tests.
 
 Expose one supervised server-update path and one canonical policy-update path.
 Keep lower-level commit callbacks and direct reload details private unless an actual embedding workflow requires them.
