@@ -1181,7 +1181,8 @@ Worktree: `/home/vscode/tacacs-rs-05-candidate-budgets`; branch: `refactor/gener
 Published as [PR #282](https://github.com/AuthScaffold/tacacs-rs/pull/282) against `main` at head `a9dfba8b5e427b11b9d9f87265cb65074dbd8c78`.
 The predecessor is squash `6602e12ff23065abeb3815b29b38be307e008d3c`; the complete retargeted tree equals tested checkpoint `7f5b3dd4a1fdffe2bda229bb97bd87a734ad8b4e`.
 Git records 45 implementation files, including the YANG rename, and no tracking documents.
-GitHub Copilot review was requested; required workflow `39252965825` is in progress and not yet claimed green.
+The initial PR workflow was `39252965825`; later review fixes are published at `e3f60473f6ad8a8b4f03bfaa332acbc68e43debf`.
+Fresh required workflow `39258678652` is in progress. Copilot re-review on that head is pending; the earlier changes-requested assessment is not merge clearance.
 Copilot review `5571680215` raised two actionable lifecycle findings. Iteration 06 implementation is paused while they are repaired and re-reviewed.
 The review inventory includes 46 changed/new/deleted paths: 42 tracked paths plus four initially untracked files.
 The complete content manifest hashes sorted changed/new paths, a NUL, each current file's SHA-256 or `<deleted>`, and a newline.
@@ -1272,6 +1273,12 @@ The run emitted `ALL_ITERATION_05_COPILOT_REPAIR_GATES_PASSED`, with no Rust fai
 The repair changes only observation handling, supervisor regressions, and a scoped test-only lock helper.
 Registered work ownership, YANG artifacts, payload accounting, and iteration 10 exclusions are unchanged.
 Publishing the repair, evidence replies, conversation resolution, fresh Copilot review, and required hosted checks remain necessary before merge.
+The repair was published as `e3f60473f6ad8a8b4f03bfaa332acbc68e43debf`.
+Evidence replies `4314255320` and `4314255584` were posted; both addressed lifecycle threads were explicitly resolved.
+CodeQL alerts `204` and `205` separately flagged coordinator fixture calls in a test-only module.
+Both model routes independently verified identical test-file blobs across alert and repaired commits, fixed keystore-reference JSON, and a test-only parser `expect` sink.
+Replies `4314317907` and `4314318314` record that evidence. Only those alerts were dismissed as `used in tests`; their conversations are resolved.
+The PR-scoped open-alert query returned no findings. No source suppression or unrelated native-error safety claim was made.
 
 #### Canonical Contract
 
