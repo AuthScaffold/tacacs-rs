@@ -98,6 +98,7 @@ Rejected experimental commits never become a predecessor.
 Independent work can use separate commits or delegated file scopes inside an iteration.
 Only one writer owns a file at a time.
 Do not run builds concurrently against one target directory.
+Old-source or fail-before replay checkouts use their own target directories, never the active iteration cache.
 Do not start descendant implementation while predecessor review revisions remain unresolved.
 
 ## Common Iteration Procedure
@@ -1181,6 +1182,7 @@ Published as [PR #282](https://github.com/AuthScaffold/tacacs-rs/pull/282) again
 The predecessor is squash `6602e12ff23065abeb3815b29b38be307e008d3c`; the complete retargeted tree equals tested checkpoint `7f5b3dd4a1fdffe2bda229bb97bd87a734ad8b4e`.
 Git records 45 implementation files, including the YANG rename, and no tracking documents.
 GitHub Copilot review was requested; required workflow `39252965825` is in progress and not yet claimed green.
+Copilot review `5571680215` raised two actionable lifecycle findings. Iteration 06 implementation is paused while they are repaired and re-reviewed.
 The review inventory includes 46 changed/new/deleted paths: 42 tracked paths plus four initially untracked files.
 The complete content manifest hashes sorted changed/new paths, a NUL, each current file's SHA-256 or `<deleted>`, and a newline.
 It excludes only the three tracking-document paths. A tracked diff alone does not cover the new implementation files.
@@ -1240,7 +1242,38 @@ There were no Rust failures and ten existing ignored tests. All 26 generator and
 Hosted Windows/ARMhf checks, publication, and GitHub Copilot review remain required on the published head.
 No dependency versions, Cargo manifests, Cargo.lock, operator systems, or implementation tracking documents changed.
 
-#### Canonical Contract And Acceptance
+#### GitHub Copilot Lifecycle Repair Receipt
+
+HIGH comment `4313925389` identified credential notification loss retaining an unpolled candidate that could own coordinator state while waiting for publication.
+MEDIUM comment `4313925476` identified projection-acceptance deadline failure bypassing revision-fenced source rejection.
+
+`GPT-6 Astra (copilot)` directly fixed both findings and added four deterministic regressions:
+
+- Unavailable and EOF drop the pending candidate before awaiting coordinator notification-loss bookkeeping.
+- Both cases prove health, coordinator updates, and host stop proceed while publication remains locked.
+- Projection acceptance timeout follows the same fenced rejection path as filtering errors, marking the current source stale and permitting eventual withdrawal.
+- A superseded timeout returns `Superseded` without rejecting a newer source or altering its health.
+
+Each two-test command failed before the corresponding fix and passed afterward:
+
+```bash
+cargo +stable test -p tacacsrs-agent --all-features --locked candidate_notification_ -- --nocapture
+cargo +stable test -p tacacsrs-agent --all-features --locked candidate_acceptance_timeout_ -- --nocapture
+```
+
+`Claude Opus 5.5 (copilot)` accepted the exact unchanged repair, independently reproduced all four old-source failures, and confirmed adjacent candidate branches already cancel before conflicting state updates.
+The coordinator independently reran both passing two-test groups.
+Repair-only diff SHA-256 against initial published head `a9dfba8b5e427b11b9d9f87265cb65074dbd8c78`: `dbbaaef2ddda328fde7c344b72235c792900366412e36abe363f0b6f35bc4710`.
+Full PR-diff SHA-256 against squash predecessor `6602e12ff23065abeb3815b29b38be307e008d3c`: `cab87b923ea8febde464c165914d9da36155f083ecf2c68e30e91757cd99e008`.
+
+The reviewer detected stale artifacts after replaying old source through the active cache, removed affected iteration-owned package artifacts, and reran the passing suite.
+The coordinator then reran every final gate on the repaired tree with its assigned cache: formatting, strict nightly workspace Clippy, private docs, stable build/all-feature tests, MSRV all-target checks, 256 delivery tests, and whitespace validation.
+The run emitted `ALL_ITERATION_05_COPILOT_REPAIR_GATES_PASSED`, with no Rust failures and ten existing ignored tests.
+The repair changes only observation handling, supervisor regressions, and a scoped test-only lock helper.
+Registered work ownership, YANG artifacts, payload accounting, and iteration 10 exclusions are unchanged.
+Publishing the repair, evidence replies, conversation resolution, fresh Copilot review, and required hosted checks remain necessary before merge.
+
+#### Canonical Contract
 
 The detailed source reviews accepted a non-presence `runtime-policy/candidate-preparation` container with three positive `uint32` leaves:
 
