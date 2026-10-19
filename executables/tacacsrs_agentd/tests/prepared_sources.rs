@@ -528,7 +528,7 @@ async fn reply_to_expected_accounting(
     header.seq_no = 2;
     header.length = body.len().try_into()?;
     let reply = Packet::new(header, body)?;
-    let writer = PacketWriter::new(key.map(<[u8]>::to_vec));
+    let writer = PacketWriter::new(key.map(|key| SecretBytes::new(key.to_vec())));
     if let PacketWriteResult::WriteError(error) = writer.write_packet(stream, reply).await {
         return Err(error.into());
     }

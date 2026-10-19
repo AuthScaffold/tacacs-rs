@@ -103,7 +103,10 @@ fn cli_datastore_input_from_cli(cli: &Cli) -> CliDatastoreInput {
 fn cli_security_from_cli(cli: &Cli) -> CliSecurity {
     CliSecurity::from_cli_inputs(CliSecurityInputs {
         use_tls: cli.use_tls,
-        shared_secret: cli.shared_secret.clone(),
+        shared_secret: cli
+            .shared_secret
+            .as_ref()
+            .map(|secret| secret.expose_secret().to_owned()),
         client_certificate: cli.client_certificate.clone().map(PathBuf::from),
         client_key: cli.client_key.clone().map(PathBuf::from),
         psk: cli_psk_inputs(cli),
@@ -116,7 +119,7 @@ fn cli_psk_inputs(cli: &Cli) -> Option<CliPskInputs> {
     Some(CliPskInputs {
         identity: identity.clone(),
         // agentd accepts the PSK as raw bytes on the command line.
-        key: PskKeyMaterial::Raw(key.as_bytes().to_vec()),
+        key: PskKeyMaterial::Raw(key.expose_secret().as_bytes().to_vec()),
         exchange: match cli.psk_key_exchange {
             Some(PskKeyExchange::PskOnly) => PskKeyExchangeMode::PskOnly,
             Some(PskKeyExchange::PskDhe) | None => PskKeyExchangeMode::PskDhe,
@@ -450,6 +453,52 @@ mod tests {
                 .map(tacacsrs_secrets::SecretString::expose_secret),
             Some("secret1"),
         );
+    }
+
+    #[test]
+    fn cli_shared_secret_and_psk_debug_is_redacted() {
+        let shared = "agentd-cli-shared-secret-sentinel";
+        let psk = "agentd-cli-psk-sentinel";
+        for args in [
+            vec!["--shared-secret", shared],
+            vec!["-k", shared],
+            vec!["--use-tls", "--psk-identity", "client", "--psk-key", psk],
+        ] {
+            let cli = Cli::parse_from(
+                ["tacacsrs-agentd", "--server-addr", "192.0.2.20:49"]
+                    .into_iter()
+                    .chain(args),
+            );
+            for output in [
+                format!("{cli:?}"),
+                format!("{cli:#?}"),
+                format!("{:?}", Some(&cli)),
+                format!("{:#?}", vec![&cli]),
+            ] {
+                assert!(
+                    !output.contains(shared) && !output.contains(psk),
+                    "Debug exposed an agentd CLI secret"
+                );
+            }
+        }
+        let cli = Cli::parse_from([
+            "tacacsrs-agentd",
+            "--server-addr",
+            "192.0.2.20:49",
+            "--use-tls",
+            "--psk-identity",
+            "client",
+            "--psk-key",
+            psk,
+        ]);
+        let Some(super::CliPskInputs {
+            key: super::PskKeyMaterial::Raw(key),
+            ..
+        }) = super::cli_psk_inputs(&cli)
+        else {
+            panic!("agentd must pass the PSK as raw bytes");
+        };
+        assert!(key == psk.as_bytes());
     }
 
     #[test]

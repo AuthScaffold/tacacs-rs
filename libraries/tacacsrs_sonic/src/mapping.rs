@@ -56,7 +56,7 @@ pub type SonicHash = BTreeMap<String, String>;
 /// Use [`SonicTacacsTables::new`] with global and per-server Redis hashes. Then
 /// use [`map_sonic_tables_to_tacacs_plus`] to create validated YANG
 /// configuration.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct SonicTacacsTables {
     /// Contents of the `TACPLUS|global` hash.
     pub global: SonicHash,
@@ -67,6 +67,18 @@ pub struct SonicTacacsTables {
     pub tls_servers: BTreeMap<String, SonicHash>,
     /// Contents of `TACPLUS_FORWARDER|global`.
     pub forwarder: SonicHash,
+}
+
+impl std::fmt::Debug for SonicTacacsTables {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SonicTacacsTables")
+            .field("global_column_count", &self.global.len())
+            .field("servers_row_count", &self.servers.len())
+            .field("tls_servers_row_count", &self.tls_servers.len())
+            .field("forwarder_column_count", &self.forwarder.len())
+            .finish()
+    }
 }
 
 impl SonicTacacsTables {
@@ -827,6 +839,37 @@ mod tests {
             h(&[("priority", "5"), ("passkey", "per-server-secret")]),
         );
         SonicTacacsTables::new(h(&[("timeout", "7"), ("passkey", "default-secret")]), servers)
+    }
+
+    #[test]
+    fn raw_table_debug_redacts_known_and_unknown_values() {
+        let sentinel = "sonic-raw-value-debug-sentinel";
+        let row = h(&[
+            ("passkey", sentinel),
+            ("unknown_secret_column", sentinel),
+            ("timeout", sentinel),
+        ]);
+        let tables = SonicTacacsTables::with_extended_tables(
+            row.clone(),
+            BTreeMap::from([("192.0.2.1".to_owned(), row.clone())]),
+            BTreeMap::from([("tls.example.test".to_owned(), row.clone())]),
+            row,
+        );
+        assert!(format!("{tables:?}") == "SonicTacacsTables { global_column_count: 3, servers_row_count: 1, tls_servers_row_count: 1, forwarder_column_count: 3 }", "Debug metadata changed");
+        for output in [
+            format!("{tables:?}"),
+            format!("{tables:#?}"),
+            format!("{:?}", Some(&tables)),
+            format!("{:#?}", Some(&tables)),
+            format!("{:?}", vec![&tables]),
+            format!("{:#?}", vec![&tables]),
+        ] {
+            assert!(!output.contains(sentinel), "Debug exposed a raw table value");
+            assert!(output.contains("global"));
+            assert!(output.contains("servers"));
+            assert!(output.contains("tls_servers"));
+            assert!(output.contains("forwarder"));
+        }
     }
 
     #[test]

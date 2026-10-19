@@ -11,6 +11,7 @@ use anyhow::Context;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 use tacacsrs_protocol::packet::Packet;
+use tacacsrs_secrets::SecretBytes;
 
 use crate::codec::{PacketReadResult, PacketReader, PacketWriteResult, PacketWriter};
 use crate::exchange_error::protocol_failure;
@@ -45,7 +46,7 @@ where
     where
         T: Transport<ReadHalf = R, WriteHalf = W>,
     {
-        let key = obfuscation_key.map(<[u8]>::to_vec);
+        let key = obfuscation_key.map(|key| SecretBytes::new(key.to_vec()));
         let counters = transport.counters();
         let (reader_half, writer_half) = transport.split();
         Self {
@@ -134,7 +135,7 @@ where
         W: 'static,
     {
         let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(
-            self.writer.obfuscation_key(),
+            self.writer.obfuscation_key().cloned(),
             self.writer.counters(),
         ));
         if let Some(counters) = self.writer.counters() {

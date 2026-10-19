@@ -2,6 +2,7 @@ use tacacsrs_protocol::enumerations::TacacsFlags;
 use tacacsrs_protocol::packet::Packet;
 use tacacsrs_protocol::packet::PacketTrait;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tacacsrs_secrets::SecretBytes;
 
 /// Result of writing a packet to a connection.
 #[derive(Debug)]
@@ -14,18 +15,19 @@ pub enum PacketWriteResult {
 
 /// Writes TACACS+ packets, including optional body obfuscation.
 pub struct PacketWriter {
-    obfuscation_key: Option<Vec<u8>>,
+    obfuscation_key: Option<SecretBytes>,
     counters: Option<crate::ServerCounters>,
 }
 
 impl PacketWriter {
     /// Creates a `PacketWriter` with an optional obfuscation key.
+    /// The writer retains the protected key owner until it drops.
     ///
     /// # Arguments
     /// * `obfuscation_key` - Optional key used to obfuscate outgoing packets.
     ///   If `None`, packets are sent unencrypted.
     #[must_use]
-    pub const fn new(obfuscation_key: Option<Vec<u8>>) -> Self {
+    pub const fn new(obfuscation_key: Option<SecretBytes>) -> Self {
         Self {
             obfuscation_key,
             counters: None,
@@ -43,8 +45,8 @@ impl PacketWriter {
 
     /// Returns the configured packet obfuscation key, if one is present.
     #[must_use]
-    pub fn obfuscation_key(&self) -> Option<&[u8]> {
-        self.obfuscation_key.as_deref()
+    pub(crate) fn obfuscation_key(&self) -> Option<&SecretBytes> {
+        self.obfuscation_key.as_ref()
     }
 
     /// Applies configured TACACS+ body obfuscation in place.
@@ -58,7 +60,7 @@ impl PacketWriter {
 
         if let Some(key) = &self.obfuscation_key {
             if is_packet_deobfuscated {
-                packet = packet.to_obfuscated(key);
+                packet = packet.to_obfuscated(key.expose_secret());
                 log::trace!(
                     target: "tacacsrs_networking::codec::writer::prepare_packet",
                     "Obfuscated packet for session id {session_id}"
@@ -113,6 +115,24 @@ mod tests {
     struct CountingWriter {
         bytes: Vec<u8>,
         write_count: usize,
+    }
+
+    #[test]
+    fn owned_key_debug_is_redacted() {
+        let sentinel = b"writer-owned-key-sentinel";
+        let key = SecretBytes::new(sentinel.to_vec());
+        let allocation = key.expose_secret().as_ptr();
+        let writer = PacketWriter::new(Some(key));
+        let owned: &SecretBytes = writer.obfuscation_key.as_ref().unwrap();
+        assert!(owned.expose_secret().as_ptr() == allocation);
+        assert!(owned.expose_secret() == sentinel);
+        for output in [
+            format!("{:?}", writer.obfuscation_key),
+            format!("{:#?}", writer.obfuscation_key),
+        ] {
+            assert!(!output.contains(&format!("{sentinel:?}")), "Debug exposed key bytes");
+            assert!(!output.contains(&format!("{sentinel:#?}")), "Debug exposed key bytes");
+        }
     }
 
     impl AsyncWrite for CountingWriter {
@@ -229,7 +249,7 @@ mod tests {
         let packet =
             create_test_packet(12345, body.clone(), TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
         let obfuscation_key = b"test_key".to_vec();
-        let packet_writer = PacketWriter::new(Some(obfuscation_key));
+        let packet_writer = PacketWriter::new(Some(SecretBytes::new(obfuscation_key)));
 
         let prepared = packet_writer.prepare_packet(packet);
 
@@ -247,7 +267,7 @@ mod tests {
         // A packet without the unencrypted flag is already obfuscated.
         let packet = create_test_packet(12345, body.clone(), TacacsFlags::empty());
         let obfuscation_key = b"test_key".to_vec();
-        let packet_writer = PacketWriter::new(Some(obfuscation_key));
+        let packet_writer = PacketWriter::new(Some(SecretBytes::new(obfuscation_key)));
 
         let prepared = packet_writer.prepare_packet(packet);
 

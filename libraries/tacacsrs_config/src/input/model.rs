@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::time::Duration;
+use std::fmt;
 
 use anyhow::Context;
 use base64::Engine as _;
@@ -152,10 +153,20 @@ pub struct TlsServerName {
 /// The security mode is independent of `shared_secret`. A TLS mode can have a
 /// shared secret only during migration and only when [`ValidationOptions`]
 /// permit it.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CliSecurity {
     pub mode: CliSecurityMode,
     pub shared_secret: Option<String>,
+}
+
+impl fmt::Debug for CliSecurity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CliSecurity")
+            .field("mode", &self.mode)
+            .field("shared_secret", &self.shared_secret.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 impl CliSecurity {
@@ -230,13 +241,26 @@ pub enum CliSecurityMode {
 ///
 /// Each executable fills this value from its clap structure.
 /// [`CliSecurity::from_cli_inputs`] provides consistent decision logic.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct CliSecurityInputs {
     pub use_tls: bool,
     pub shared_secret: Option<String>,
     pub client_certificate: Option<PathBuf>,
     pub client_key: Option<PathBuf>,
     pub psk: Option<CliPskInputs>,
+}
+
+impl fmt::Debug for CliSecurityInputs {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CliSecurityInputs")
+            .field("use_tls", &self.use_tls)
+            .field("shared_secret", &self.shared_secret.as_ref().map(|_| "<redacted>"))
+            .field("client_certificate", &self.client_certificate)
+            .field("client_key", &self.client_key)
+            .field("psk", &self.psk)
+            .finish()
+    }
 }
 
 /// TLS 1.3 PSK inputs collected from an executable's parsed CLI.
@@ -276,10 +300,20 @@ pub enum PskKeyExchangeMode {
 }
 
 /// PSK bytes in the format supplied by an executable CLI.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum PskKeyMaterial {
     Raw(Vec<u8>),
     StandardBase64(String),
+}
+
+impl fmt::Debug for PskKeyMaterial {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let kind = match self {
+            Self::Raw(_) => "Raw",
+            Self::StandardBase64(_) => "StandardBase64",
+        };
+        formatter.debug_tuple(kind).field(&"<redacted>").finish()
+    }
 }
 
 impl PskKeyMaterial {
@@ -289,6 +323,87 @@ impl PskKeyMaterial {
             Self::StandardBase64(value) => base64::engine::general_purpose::STANDARD
                 .decode(value)
                 .context("--psk-key must be standard base64-encoded PSK bytes"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_redacted(value: &impl std::fmt::Debug, sentinel: &str) {
+        let forbidden = [
+            sentinel.to_owned(),
+            base64::engine::general_purpose::STANDARD.encode(sentinel),
+            format!("{:?}", sentinel.as_bytes()),
+            format!("{:#?}", sentinel.as_bytes()),
+        ];
+        for output in [
+            format!("{value:?}"),
+            format!("{value:#?}"),
+            format!("{:?}", Some(value)),
+            format!("{:#?}", Some(value)),
+            format!("{:?}", vec![value]),
+            format!("{:#?}", vec![value]),
+        ] {
+            assert!(
+                forbidden.iter().all(|secret| !output.contains(secret)),
+                "Debug exposed a test secret"
+            );
+        }
+    }
+
+    #[test]
+    fn cli_shared_secret_debug_is_redacted() {
+        let sentinel = "cli-shared-secret-debug-sentinel";
+        let inputs = CliSecurityInputs {
+            shared_secret: Some(sentinel.to_owned()),
+            ..Default::default()
+        };
+        assert_redacted(&inputs, sentinel);
+        let security = CliSecurity::from_cli_inputs(inputs);
+        assert_redacted(&security, sentinel);
+        let source = CliConfigSource::Inline {
+            servers: vec![],
+            security,
+        };
+        assert_redacted(&source, sentinel);
+        assert_redacted(&CliDatastoreInput::new(source, "test"), sentinel);
+    }
+
+    #[test]
+    fn cli_psk_debug_is_redacted() {
+        let sentinel = "cli-psk-debug-sentinel";
+        for key in [
+            PskKeyMaterial::Raw(sentinel.as_bytes().to_vec()),
+            PskKeyMaterial::StandardBase64(
+                base64::engine::general_purpose::STANDARD.encode(sentinel),
+            ),
+        ] {
+            assert_redacted(&key, sentinel);
+            assert!(key.clone().into_bytes().unwrap() == sentinel.as_bytes());
+            let psk = CliPskInputs {
+                identity: "test-client".to_owned(),
+                key,
+                exchange: PskKeyExchangeMode::PskOnly,
+                groups: vec![],
+            };
+            assert_redacted(&psk, sentinel);
+            let inputs = CliSecurityInputs {
+                use_tls: true,
+                psk: Some(psk),
+                ..Default::default()
+            };
+            assert_redacted(&inputs, sentinel);
+            let security = CliSecurity::from_cli_inputs(inputs);
+            assert_redacted(&security.mode, sentinel);
+            assert_redacted(&security, sentinel);
+            let source = CliConfigSource::Inline {
+                servers: vec![],
+                security,
+            };
+            assert_redacted(&source, sentinel);
+            assert_redacted(&CliDatastoreInput::new(source, "test"), sentinel);
         }
     }
 }

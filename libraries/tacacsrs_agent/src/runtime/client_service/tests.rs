@@ -236,10 +236,11 @@ async fn public_facade_uses_concrete_native_connector_through_ipc_and_shutdown()
             &service.runtime.manager;
         let peer = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            let PacketReadResult::Success(request) =
-                PacketReader::new(Some(b"test-secret".to_vec()))
-                    .read_packet(&mut stream)
-                    .await
+            let PacketReadResult::Success(request) = PacketReader::new(Some(
+                tacacsrs_secrets::SecretBytes::new(b"test-secret".to_vec()),
+            ))
+            .read_packet(&mut stream)
+            .await
             else {
                 panic!("expected accounting packet");
             };
@@ -254,9 +255,11 @@ async fn public_facade_uses_concrete_native_connector_through_ipc_and_shutdown()
             header.seq_no += 1;
             header.length = u32::try_from(body.len()).unwrap();
             assert!(matches!(
-                PacketWriter::new(Some(b"test-secret".to_vec()))
-                    .write_packet(&mut stream, Packet::new(header, body).unwrap())
-                    .await,
+                PacketWriter::new(Some(tacacsrs_secrets::SecretBytes::new(
+                    b"test-secret".to_vec()
+                )))
+                .write_packet(&mut stream, Packet::new(header, body).unwrap())
+                .await,
                 PacketWriteResult::Success
             ));
         });
@@ -309,10 +312,11 @@ async fn native_protocol_failure_survives_routing_and_ipc_without_backup_replay(
         let backup_address = backup.local_addr().unwrap().to_string();
         let primary_task = tokio::spawn(async move {
             let (mut stream, _) = primary.accept().await.unwrap();
-            let PacketReadResult::Success(request) =
-                PacketReader::new(Some(b"test-secret".to_vec()))
-                    .read_packet(&mut stream)
-                    .await
+            let PacketReadResult::Success(request) = PacketReader::new(Some(
+                tacacsrs_secrets::SecretBytes::new(b"test-secret".to_vec()),
+            ))
+            .read_packet(&mut stream)
+            .await
             else {
                 panic!("the authorization request must decode");
             };

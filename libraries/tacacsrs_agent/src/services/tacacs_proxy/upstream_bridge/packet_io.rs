@@ -11,6 +11,7 @@ use tacacsrs_protocol::enumerations::TacacsFlags;
 use tacacsrs_protocol::header::Header;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
 use tacacsrs_networking::{PacketWriteResult, PacketWriter};
+use tacacsrs_secrets::SecretBytes;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, BufReader};
 use tokio::time::Instant;
 
@@ -35,7 +36,7 @@ pub(super) struct DownstreamPacket {
 /// desynchronise the TACACS+ frame boundary.
 pub(super) struct DownstreamReader<Stream> {
     stream: BufReader<Stream>,
-    obfuscation_key: Option<Vec<u8>>,
+    obfuscation_key: Option<SecretBytes>,
     timeout: Duration,
     deadline: Option<Instant>,
     header_bytes: [u8; TACACS_HEADER_LENGTH],
@@ -49,7 +50,11 @@ impl<Stream> DownstreamReader<Stream>
 where
     Stream: AsyncRead + Unpin + Send,
 {
-    pub(super) fn new(stream: Stream, timeout: Duration, obfuscation_key: Option<Vec<u8>>) -> Self {
+    pub(super) fn new(
+        stream: Stream,
+        timeout: Duration,
+        obfuscation_key: Option<SecretBytes>,
+    ) -> Self {
         Self {
             // Buffering lets one syscall deliver a whole small TACACS+ packet.
             stream: BufReader::new(stream),
@@ -190,7 +195,7 @@ where
                 log::debug!(
                     "Deobfuscating a downstream TACACS+ proxy packet body for session {session_id:#x}"
                 );
-                packet = packet.to_deobfuscated(key);
+                packet = packet.to_deobfuscated(key.expose_secret());
             }
         }
 
