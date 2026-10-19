@@ -127,10 +127,22 @@ impl ServerAddress {
     }
 
     fn resolve(&self) -> anyhow::Result<Vec<SocketAddr>> {
-        match &self.host {
-            Host::Ip(address) => Ok(vec![SocketAddr::new(*address, self.port())]),
-            Host::Dns(name) => Ok((name.as_str(), self.port()).to_socket_addrs()?.collect()),
-        }
+        let addresses = match &self.host {
+            Host::Ip(address) => vec![SocketAddr::new(*address, self.port())],
+            Host::Dns(name) => (name.as_str(), self.port()).to_socket_addrs()?.collect(),
+        };
+        Ok(addresses.into_iter().map(canonical_destination).collect())
+    }
+}
+
+fn canonical_destination(address: SocketAddr) -> SocketAddr {
+    match address {
+        SocketAddr::V6(ipv6) => ipv6
+            .ip()
+            .to_ipv4_mapped()
+            .map(|ipv4| SocketAddr::new(ipv4.into(), ipv6.port()))
+            .unwrap_or(address),
+        SocketAddr::V4(_) => address,
     }
 }
 
@@ -364,6 +376,44 @@ mod tests {
         assert!(ServerAddress::parse("host:65535", 49).is_ok());
     }
 
+    #[test]
+    fn canonical_destinations_preserve_order_ports_and_native_ipv6_metadata() {
+        use std::net::{SocketAddr, SocketAddrV6};
+
+        let ipv4 = "192.0.2.1:49".parse::<SocketAddr>().unwrap();
+        let scoped_ipv6 =
+            SocketAddr::V6(SocketAddrV6::new("fe80::1".parse().unwrap(), 300, 0x12345, 7));
+        let mapped_ipv6 = "[::ffff:192.0.2.1]:4949".parse().unwrap();
+        let compatible_ipv6 = "[::192.0.2.1]:49".parse().unwrap();
+        let addresses = [ipv4, scoped_ipv6, mapped_ipv6, compatible_ipv6, ipv4];
+
+        assert_eq!(
+            addresses.map(super::canonical_destination),
+            [
+                ipv4,
+                scoped_ipv6,
+                "192.0.2.1:4949".parse().unwrap(),
+                compatible_ipv6,
+                ipv4
+            ]
+        );
+    }
+
+    #[test]
+    fn mapped_ipv6_resolves_to_native_ipv4_without_changing_input() {
+        for (host, expected) in [
+            ("::ffff:127.0.0.1", "127.0.0.1:49"),
+            ("::ffff:192.0.2.1", "192.0.2.1:49"),
+        ] {
+            let address = ServerAddress::new(host, 49).unwrap();
+            assert_eq!(address.resolve().unwrap(), vec![expected.parse().unwrap()]);
+            assert_eq!(address.host(), host);
+            assert_eq!(address.to_string(), format!("[{host}]:49"));
+        }
+        let native_ipv6 = ServerAddress::new("2001:db8::1", 49).unwrap();
+        assert_eq!(native_ipv6.resolve().unwrap(), vec!["[2001:db8::1]:49".parse().unwrap()]);
+    }
+
     #[tokio::test]
     async fn repeated_connections_check_literal_dns_ipv6_and_mapped_destinations() {
         use std::sync::Mutex;
@@ -396,16 +446,40 @@ mod tests {
             };
             let listener = tokio::net::TcpListener::bind((bind_host, 0)).await.unwrap();
             let address = ServerAddress::new(host, listener.local_addr().unwrap().port()).unwrap();
+            let ipv6_listener = if host == "localhost" {
+                Some(
+                    tokio::net::TcpListener::bind(("::1", address.port()))
+                        .await
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
             let guard = Observed::default();
             for _ in 0..2 {
                 let (connected, accepted) =
                     tokio::time::timeout(std::time::Duration::from_secs(2), async {
-                        tokio::join!(super::connect_tcp(&address, Some(&guard)), listener.accept())
+                        tokio::try_join!(super::connect_tcp(&address, Some(&guard)), async {
+                            let accepted = match &ipv6_listener {
+                                Some(ipv6_listener) => tokio::select! {
+                                    accepted = listener.accept() => accepted,
+                                    accepted = ipv6_listener.accept() => accepted,
+                                },
+                                None => listener.accept().await,
+                            };
+                            accepted.map_err(anyhow::Error::from)
+                        })
                     })
                     .await
-                    .unwrap();
-                drop(connected.unwrap());
-                drop(accepted.unwrap());
+                    .unwrap_or_else(|_| panic!("guard exchange timed out for {host}"))
+                    .unwrap_or_else(|error| panic!("guard exchange failed for {host}: {error:#}"));
+                assert_eq!(
+                    connected.peer_addr().unwrap(),
+                    accepted.0.local_addr().unwrap(),
+                    "{host}"
+                );
+                drop(connected);
+                drop(accepted);
             }
             assert_eq!(guard.connected.lock().unwrap().len(), 2, "{host}");
             assert!(guard.destinations.lock().unwrap().len() >= 2, "{host}");
@@ -494,6 +568,15 @@ mod tests {
         assert!(connect_after_resolution(changed, Some(&guard))
             .await
             .is_err());
+        let mapped = ServerAddress::new("::ffff:127.0.0.1", guard.0.port()).unwrap();
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            super::connect_tcp(&mapped, Some(&guard)),
+        )
+        .await
+        .expect("the mapped destination must reach the guard")
+        .unwrap_err();
+        assert_eq!(error.to_string(), "excluded destination");
         assert!(tokio::time::timeout(std::time::Duration::from_millis(25), excluded.accept())
             .await
             .is_err());
