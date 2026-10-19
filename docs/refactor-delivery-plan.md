@@ -233,10 +233,11 @@ These invariants apply throughout the stack, especially iterations 03, 06, 07, 0
 
 Status: implemented; both named reviews and the final Astra follow-up on the Opus revision are complete.
 The final reviewed source fingerprint is `ab501f19db2266c3f2d9d34ee0350b327853aa1b3337cc5b5ff5f66754b3ba31`.
-Final local workspace gates passed. The original hosted run passed; the document-exclusion head is under refreshed CI.
-PR #278 now excludes all three tracking documents at head `c65d44ff63a4e123eb910faece355a0ca1b34ae2`.
+Final local workspace gates and refreshed hosted workflow `39198981281` passed.
+PR #278 excluded all three tracking documents at reviewed head `c65d44ff63a4e123eb910faece355a0ca1b34ae2`.
 GitHub Copilot review `5566880340` completed on that head and recommended approval with no open issues or inline comments.
-Refreshed workflow `39198981281` must pass before the authorized squash merge.
+PR #278 was squash-merged on 2026-10-19 as `b7ba4017188e4a02e0f5b7d8ff1645bdf58fb853`.
+The merge used an expected-head guard and a description covering behavior, review revisions, validation, document exclusion, and scope limits.
 Scope: R1, R3, and the stacked CI prerequisite.
 
 Implementation:
@@ -536,7 +537,11 @@ No other worktree edits, branches, commits, pushes, PRs, subagents, or operator 
 ### 02: YANG Choices
 
 Status: implemented; both named reviews and the final Opus follow-up on the Astra revision are complete.
-Final local common gates passed. Publication follows the predecessor's reviewed squash merge. Scope: R2.
+Final local common gates passed. Published as [PR #279](https://github.com/AuthScaffold/tacacs-rs/pull/279) against updated `main`. Scope: R2.
+Published head: `a8ce6952c932becd2e0ad01c061caefa6130c65c`; predecessor squash: `b7ba4017188e4a02e0f5b7d8ff1645bdf58fb853`.
+The complete rebased tree equals tested checkpoint `62490f64e61ca4e68ca7c8424e2ec33187d5882a`.
+Its PR diff contains exactly six configuration/generator files and no architecture or tracking documents.
+GitHub Copilot review was requested on the published head; workflow `39202018504` is in progress, not yet claimed green.
 
 The read-only scheduling preflight identified discarded nested metadata and synthetic parent cases.
 Implementation started from iteration 01's committed, locally verified head.
