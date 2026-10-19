@@ -78,12 +78,12 @@ An existing branch, worktree, or cache requires an ownership check, not automati
 | 02 | `02-yang-choices` | R2 | 01 |
 | 03 | `03-endpoint-addresses` | R4, R11 | 02 |
 | 04 | `04-credential-targets` | R5, provider naming and ownership contracts | 03 |
-| 05 | `05-candidate-budgets` | R14 | 04 |
+| 05 | `05-candidate-budgets` | R14 configuration-material admission, registered provider work, final fence | 04 |
 | 06 | `06-prepared-operations` | R6, R15 consuming IPC and Bash builder | 05 |
 | 07 | `07-binding-outcomes` | R10 | 06 |
 | 08 | `08-file-observation` | R13 | 07 |
 | 09 | `09-coordinator-state` | R8 | 08 |
-| 10 | `10-prepared-publication` | R7 | 09 |
+| 10 | `10-prepared-publication` | R7, R14 prepared-runtime completion | 09 |
 | 11 | `11-embedding-api` | R9 | 10 |
 | 12 | `12-load-scheduler` | R15 result storage | 11 |
 | 13 | `13-emulator-cleanup` | R15 endpoint connector and policy compilation | 12 |
@@ -1054,6 +1054,10 @@ Checks: endpoint/parser/loop-guard tests, native TLS/PSK/revocation cases, indep
 Status: implemented; both named reviews accepted the same source without revisions. Final common workspace gates passed.
 Scope: R5 and small provider-contract clarifications.
 Worktree: `/home/vscode/tacacs-rs-04-credential-targets`; branch: `refactor/general-iterations/04-credential-targets`.
+Published as [PR #281](https://github.com/AuthScaffold/tacacs-rs/pull/281) against `main` at head `35d9924a089beb818c65937eee6e4e319b486e41`.
+Its base is squash `3dc393aa8dfc71d9406bdbf9dca6fb83207d548b`, and its complete tree equals tested checkpoint `df5e02f1ec4721e4ff7d345b98ea9eb5ff0e9b30`.
+The PR contains 18 implementation/product-documentation files and no tracking documents.
+Copilot recommended approval; the separately reviewed test-only CodeQL finding is resolved. Required aggregate CI remains pending.
 The parent fast-forwarded from initial PR #280 head to repair head `02d2bbc82f8fec4a49800856bb842d7642ca6d40` without changing the iteration's diff.
 Reviewed source-diff SHA-256: `603203cb887170eb8b3442dee0088cec84d1af32953331c3dfc92bc29f23a19a`, excluding all three tracking-document paths.
 
@@ -1117,6 +1121,18 @@ Privileged or external-service early returns are not execution claims.
 The predecessor subsequently passed required CI and merged; publication now proceeds from its squash-equivalent base.
 GitHub Copilot review and hosted checks for iteration 04 remain required on the published head.
 
+#### GitHub Security Comment Disposition
+
+Copilot review `5569430728` recommended approval with no open issues on head `35d9924a089beb818c65937eee6e4e319b486e41`.
+CodeQL comment `4312241168` separately raised alert `203` at the test helper `trust_server`.
+Both required model routes independently traced the exact head and agreed that the reported sink is test-only.
+It parses fixed JSON containing opaque references and no secret fields; its callers are only adjacent unit tests.
+The flagged validators check presence or emptiness, and production materialization discards their inner errors.
+The coordinator posted evidence reply `4312302950`, dismissed only alert `203` as `used in tests`, and verified that the corresponding thread is resolved.
+The current alert state is dismissed; its instance endpoint can retain the historical open observation.
+The PR-scoped open-alert query returned no findings. No source suppression or production change was made.
+Required workflow `39229336104` was still in progress at that observation.
+
 #### Planned Acceptance Criteria
 
 Retain typed installation targets from central-reference inspection through resolution-slot association and materialization.
@@ -1138,47 +1154,177 @@ Checks: resolution/materialization/source-immutability tests, provider suites, d
 
 ### 05: Candidate Budgets
 
-Status: planned. Scope: R14. This defines the contract that iteration 10 consumes.
+Status: planned. Scope: R14 admission and configuration-material phase.
+Iteration 10 completes R14 through prepared-runtime accounting and native preparation lock ownership.
+Do not close R14 after this iteration alone.
 
-Add canonical runtime-policy controls for total preparation time, resolution request count, and retained credential/evidence bytes.
-Use reviewed finite defaults and generated defaults rather than unrelated executable knobs.
-Record units, defaults, valid ranges, and checked arithmetic in the policy contract before implementation review.
-Resolve requests sequentially in existing server and slot order. Stop at the first failure.
-Concurrency and context-insensitive deduplication are not required.
+The detailed source reviews accepted a non-presence `runtime-policy/candidate-preparation` container with three positive `uint32` leaves:
 
-Budget semantics:
+| Leaf | Default | Unit |
+| --- | --- | --- |
+| `timeout-seconds` | 30 | Seconds |
+| `max-resolution-requests` | 256 | Resolver-slot attempts |
+| `max-retained-material-bytes` | 67108864 | Decoded payload bytes, extended through prepared-runtime Rust payload in 10 |
 
-- Start one monotonic deadline at candidate admission, before asynchronous filtering, capacity waits, resolution, expansion, or native preparation.
-- Include final publication-lock waits in that deadline. Substeps and successful requests cannot renew it.
-- Capture the applied budget policy at admission. Policy changes cannot extend that deadline.
-- Before commit, enforce any tighter current limits against the original admission time, cumulative requests, and current retained bytes.
-- Count each resolution-slot attempt across all selected servers, including retries and repeated references. Check planned counts before retrieval.
-- A request-count limit bounds resolver calls, not a provider's HTTP fan-out. Keep provider-specific fetch and response limits in force.
-- Charge decoded credential/evidence payload lengths per installation, including inline values, expanded bundles, and retained servers in a partial refresh.
-- Count additional owned staging copies while retained. Borrowing the same installed value does not add a copy charge.
-- Reserve known byte charges before copies. Check returned material before acceptance or installation, with transactional rejection on overflow.
-- Provider-internal allocations remain subject to provider-specific limits. The candidate limit does not bound raw source text, native allocations, or process RSS.
-- The existing active and retiring catalogs remain outside the candidate's incremental ownership charge. Reused values still count toward complete-candidate size.
-- Bound active materialization to one job per coordinator. Coalesce pending observations instead of retaining an unbounded candidate queue.
-- A cancelled job keeps that slot until its blocking work exits. A replacement job cannot overlap it.
-- Cancellation releases cooperative fetches and staged values. Already-started blocking work retains its capacity charge until it exits.
+Generated defaults are authoritative. Preserve absent-container semantics and validate JSON plus programmatically constructed values.
+Do not duplicate these defaults as handwritten Rust constants. Use the existing `uint32 { range "1..max"; }` leaf style.
+Use checked `u64` size accounting, checked request totals, and checked monotonic deadline construction.
+Add no dependency. The neutral resolver crate receives no YANG policy types.
+These finite defaults are admission policy, not measured capacity or process-memory guarantees.
 
-Apply this contract to startup, full reload, partial refresh, and inline-only preparation through the supervised update path.
-Keep budget scheduling outside the provider-neutral crate.
-Do not hold coordinator or publication locks during provider I/O.
-Iteration 10 extends the same ownership bound through native preparation and final publication.
-An asynchronous timeout does not prove hard preemption of blocking providers or native work.
+#### Admission And Pending Work
+
+Capture policy and one admission instant before filtering or capacity waiting.
+No successful substep, internal retry, duplicate notification, or policy relaxation renews that admission.
+A later independent observation or scheduled retry creates a new admission, not an extension of the old attempt.
+Admit at most one preparation work scope per coordinator, including cancelled work that still owns a registered lease.
+
+Use these finite bounds with the existing source, credential-notification, and periodic-refresh loops:
+
+- Retain at most three pending records, one unexpanded record per loop. Retain at most one waiter future per loop.
+- A record contains revision identity, admission time, captured limits, and trigger metadata. It contains no plans, expanded servers, or provider results.
+- Source records share at most one latest raw observation owner. Credential records coalesce to an unknown/all-references marker when necessary.
+- Do not accumulate reference sets, source snapshots, channels, or spawned waiter tasks per notification.
+- A stricter shared pending record is acceptable. An actor rewrite is not required.
+- Drop a superseded record promptly. Repeated refresh ticks for the same pending work neither advance its revision nor renew its deadline.
+- Keep observation handling pollable while preparation waits. Coalesce notifications in owned futures, without spawning a preparation per event.
+
+Advance source identity when accepting or rejecting an observation, before filtering and before the capacity wait.
+Advance credential identity when admitting a relevant invalidation or a new refresh, before waiting.
+Coalesced duplicates of that pending refresh do not create another admission.
+A rejected newer source invalidates older work even if the newer source never publishes.
+Credential invalidation during filtering must survive until the current source projection is ready.
+Then select against the latest credential revision. Use full refresh when dependencies or the applied revision are uncertain.
+
+After capacity acquisition, recheck source and credential revisions, expiry, closure, and the original deadline before filtering or expansion.
+Recheck the relevant identity after filtering and before each resolver call, result installation, and publication.
+A pending record never authorizes its stale captured server selection.
+Discard superseded results and errors without overwriting newer rejection or expiry state.
+Keep policy revision separate. Rejected policy candidates do not become applied limits.
+
+#### Registered Provider Work
+
+Add a public, opaque registered-work scope to the neutral resolver contract and propagate it through every resolver and fallback.
+The HTTP resolver passes the same scope to its fallback resolver. It does not create a second scope.
+The new API uses standard-library ownership and synchronization types only, with no Tokio, YANG, or concrete provider types.
+Agent scheduling remains outside the neutral crate.
+Expose public construction, lease registration, sealing, and quiet observation without exposing counters or scheduler permits.
+Keep sealing authority separate from provider work leases. Add a cross-crate construction test with no Tokio runtime or YANG values.
+Permit a completion callback or an opaque held owner, provided both designs meet these requirements:
+
+- The coordinator holds a root lease throughout preparation. Register provider-owned work before it can start or enter a blocking queue.
+- Cancellation seals admission to new work. It drops the root only after candidate ownership is released or transferred.
+- Quiet means the root and all registered work/result leases are released. Dropping a future, abort handle, or join handle does not prove quiet.
+- Scope release returns capacity exactly once. No public force-complete operation can bypass outstanding leases.
+- Completion callbacks and held-owner destructors must not block, panic, reenter coordinator state, or require a live Tokio context.
+- Avoid an ownership cycle between the completion observer, scope, and permit. The observer must not itself prevent quiet.
+- SONiC carries a lease through queued work, running closure, and queued result. Transfer or discard the result before releasing its lease.
+- Test cancellation before worker start, during execution, and after completion but before result consumption, including errors and unwind.
+
+Permanently stuck registered work retains its slot. This proves non-overlap, not eventual termination or hard cancellation.
+Opaque OS/SDK work, including unregistered filter/reqwest DNS internals, is outside the registered-work guarantee.
+This exclusion does not cover provider-owned blocking jobs or returned configuration payloads.
+Expiry and host-stop futures never acquire or await the preparation slot, and never await provider quiet.
+New admission, pending-record, and ledger locks are never held across filtering, provider waits, or native preparation.
+This phase guarantees their independence from provider waits, not from existing synchronous native preparation.
+
+#### Configuration-Material Accounting
+
+Iterate servers in canonical source order and slots in plan order. A selected-name set provides membership, not execution order.
+Reuse iteration 04's `ServerResolutionPlan` and plan-local typed slots. Do not add global slot IDs.
+Build all selected plans and reject an excessive complete request count before the first resolver call.
+Resolve sequentially. Repeated references count separately, without deduplication.
+A resolver slot is not an HTTP URL request. Provider fan-out and response limits remain independent.
+Count attempted slots monotonically, including failures. Internal retries cannot reset the count.
+
+Use one payload-size definition for decoded keys, shared secrets, public/private key fields, certificates/intermediates, trust bags, CRLs, and OCSP responses.
+Include downstream proxy secret payloads. Exclude field names, opaque references, collection metadata, and allocator slack from this decoded-payload measure.
+
+The byte charge is `L + E`, using checked arithmetic:
+
+- `L` counts the complete candidate's logical configuration payload, once per destination occurrence, even when destinations share storage.
+- Include inline material, expanded bundles, proxy credentials, and retained servers borrowed from the active catalog during partial refresh.
+- Reserve all known logical payload before expansion. Increase the reservation at each individual provider-result handoff for previously unknown payload.
+- `E` counts additional retained configuration-payload allocations beyond the destination owners already covered by `L`.
+- Reserve known copy sizes before cloning. Moves transfer charges, and shared ownership of the same allocation adds no duplicate allocation charge.
+- A moved provider result reserved for its destination counts once. Concurrent staging or installation copies add to `E` until released.
+- Check each provider return before buffering or installation. Reject and drop an oversized return immediately, before another resolver call.
+- Track live charge and its high-water mark. Never reduce the logical full-candidate charge merely because an unchanged server is borrowed.
+- Consume changed materialized servers into publication. Do not retain dead candidates while cloning their payloads into the committed set.
+
+Compute known expansion sizes from borrowed source before `enumerate_server` or any equivalent payload clone.
+The raw-input boundary is the immutable observation snapshot supplied by the datastore before candidate processing.
+Sharing or moving that existing owner creates no extra allocation charge. Its resulting destination payload still contributes to `L`.
+Every new payload allocation made for filtering, expansion, staging, or publication belongs to candidate accounting, regardless of its type name.
+An owned filtered projection contributes to `E` while retained alongside destination owners.
+If the filter reuses the raw owner without copying, prove that ownership transfer or sharing instead of assuming it from equal contents.
+Retained filtered projections keep their accounting classification across admissions. Reusing an `Arc` cannot relabel them as raw input.
+Filter-created payload must be charged at return before coordinator retention, enumeration, or provider calls.
+Known filter copies require reservation before cloning. An opaque filter's unknown result is checked at handoff, like a provider result.
+
+The handoff check cannot prevent an opaque producer's earlier allocation. It prevents retaining that output or making further candidate copies.
+Raw datastore ingestion, opaque provider/SDK internals, active/retiring catalogs, and process RSS are not collectively bounded by this policy.
+Borrowing an active server excludes its existing allocation from `E`, not its logical destination contribution to `L`.
+Prepared-runtime Rust payload copies are deferred to iteration 10, with no claim that they are configuration-input exclusions.
+Iteration 10 extends this same ledger and limit. Native allocator internals remain outside the decoded-payload claim.
+
+#### Deadline And Final Fence
+
+Bound cooperative filtering, provider waits, and publication-lock waits with the captured absolute deadline.
+The deadline ends at commit. Do not wrap the postcommit `retire_replaced` await in it.
+An outer timeout or cancellation after commit still reports `PublicationOutcome::Published`.
+The effective final limits are the componentwise minima of captured limits and currently applied limits.
+Compute the deadline from the original admission instant. Reject at or after that deadline, including after synchronous native preparation returns.
+Under publication serialization, check the complete planned slot count, accumulated attempts, complete-candidate charge, and byte high-water mark.
+Keep policy changes serialized through that check and the commit so a tighter policy cannot pass between them.
+
+Put every fallible check before retirement cutoffs, active snapshot replacement, applied health, and coordinator commit bookkeeping.
+In the current manager, the fence must precede `previous.retire_replaced_until`, not run inside the existing commit callback.
+Keep the commit callback infallible and non-awaiting. Do not turn a failed fence into a successful no-op commit.
+Precommit rejection leaves active routing, generation, applied metadata, and existing retirement cutoffs unchanged.
+Only a current revision can publish the separate candidate-rejection health outcome.
+Postcommit retirement uses its separate cleanup budget. Its timeout or cancellation cannot become candidate rejection or undo publication success.
+
+At source HEAD `35d9924a089beb818c65937eee6e4e319b486e41`, coordinator state stays locked across native preparation and manager publication waits.
+Iteration 05 adds admission, ownership accounting, and the final fence without claiming to remove that coupling.
+Do not extend this phase into the full R7 prepared-catalog rewrite.
+Iteration 10 must remove native preparation from coordinator and publication lock ownership before R14 can close.
+
+Apply this contract to startup, full reload, partial refresh, and inline-only supervised preparation.
+Keep scheduling outside the neutral crate. Do not hold coordinator/publication locks during provider I/O.
+The direct Opus written-plan review of this refined contract is recorded in the receipt below.
+
+#### First Check And Acceptance
+
+First add a counting resolver regression beside the coordinator materialization tests.
+Use two servers in source order `z-first`, then `a-second`, with the same EPSK reference and one slot each.
+With request limit one, require rejection and exactly zero resolver calls.
+With limit two, require exactly two calls in source order, each installed into its own typed target.
+Use one known test key and unbounded validity. No native endpoint preparation or external provider is needed for this first check.
+Introduce only the policy/test seam needed to compile the regression before changing admission enforcement.
+Run that exact test before enforcement changes and immediately after the first fix.
+Compilation failure or zero selected tests is not behavioral failure evidence.
+Record the actual failure and passing evidence, including the selected test count.
 
 Acceptance:
 
 - Exact-limit and limit-plus-one cases cover request counts, inline material, expanded bundles, provider results, and merged partial refreshes.
-- Zero/overflow inputs fail validation, and omitted values use the reviewed generated defaults.
+- Omitted container, empty container, omitted leaves, explicit defaults, JSON round-trips, and programmatic construction all preserve 30/256/67108864 defaults.
+- Each leaf accepts `1` and `4294967295`. Zero, out-of-range JSON integers, overflow, and unrepresentable deadlines fail without panic.
+- Ownership tests distinguish shared raw input from an equal owned filter copy, reused filtered projections, moved provider output, and simultaneous staging copies.
+- Tests prove pre-clone reservation and immediate oversized-result disposal before any later resolver call.
 - Several slow successful requests cannot renew the whole-candidate deadline.
 - Oversized or expired candidates never publish partially.
 - Cancellation releases HTTP capacity and staged material.
-- Expiry monitors and host shutdown progress while providers stall.
-- Burst replacement tests count cancelled-but-running work until it actually exits.
+- Expiry monitors and host shutdown progress while providers stall, without waiting for scope quiet.
+- Burst tests assert one active work scope, at most three unexpanded pending records, and at most three owned waiter futures.
+- A barrier holds cancelled registered work while source, credential, and refresh events arrive. No replacement provider starts before quiet.
+- The burst ends with a rejected newest source. Older success and failure must not publish or alter that rejection.
+- Separate cases cover credential invalidation during filtering, expired pending admission, coalesced periodic ticks, and current-source recovery after quiet.
 - Observed failure order is deterministic, and diagnostics are sanitized.
+- Tighter timeout, slot, and byte limits each fail at the final fence before any retirement cutoff or applied-state change.
+- A deadline that expires during native preparation rejects afterward. This test proves a fence, not native preemption or expiry-lock independence.
+- A retirement timeout after commit does not erase publication success or report a candidate budget failure.
 
 Checks: canonical policy/default tests, actual YANG regeneration, paused-time and native cancellation tests, common gates, and platform/native integration.
 
@@ -1266,15 +1412,22 @@ Checks: unchanged coordinator/publication/supervisor regressions, connector proo
 
 ### 10: Prepared Publication
 
-Status: planned. Scope: R7, built on iterations 05 and 09.
+Status: planned. Scope: R7 and R14 prepared-runtime completion, built on iterations 05 and 09.
 
 Carry source metadata, prepared endpoint identity, validity, budgets, and admitted revisions in one derived candidate.
-Move native preparation outside the final commit lock while keeping preparation concurrency explicitly bounded.
+Move native preparation outside coordinator state and publication locks while keeping preparation concurrency explicitly bounded.
 Use at most one active preparation per coordinator initially, including cancelled-but-running blocking work.
 Cancel superseded cooperative work. Do not release its capacity before owned work actually exits.
 Recheck revisions, closure, validity, budgets, retained identities, and merged-catalog invariants before committing.
 Resolve endpoint reuse against the current committed state, not a stale preparation-time assumption.
 Retain urgent revocation retirement and earlier conservative validity bounds.
+Extend the iteration 05 ledger through prepared-runtime Rust payload copies and owned native preparation boundaries.
+Reserve known Rust-owned payload copies before preparation, or eliminate those copies through shared/moved ownership.
+Include endpoint configuration, TLS/PSK key owners, revocation evidence, and comparison copies wherever they retain Rust-owned payload.
+Audit every prepared owner, including rejected candidates and queued native results. Do not exempt Rust payload because its owner wraps native state.
+Reuse iteration 05's limit, high-water accounting, registered-work ownership, pending bounds, and final fence before retirement cutoffs.
+Keep native allocator internals and total RSS explicitly outside any decoded-payload accounting claim.
+Do not mark R14 complete until this extension and native preparation/expiry-lock independence are verified.
 Document unchecked server builders, validated roots, materialized values, and prepared candidates as distinct stages.
 Keep schema acceptance, runtime capability checks, and native verification explicit rather than deleting them as duplicate validation.
 
@@ -1286,6 +1439,8 @@ Acceptance:
 - Unchanged endpoints retain identities and counter epochs only when final reuse checks still hold.
 - Replacement bursts cannot accumulate background native preparations beyond the bound.
 - Expiry and shutdown remain independent of preparation locks. Document non-preemptible native-work limitations rather than promising hard cancellation.
+- Exact-limit and limit-plus-one tests count configuration and prepared Rust payload together, including partial refresh, reuse, queued results, and cancellation.
+- Native-work barriers prove expiry and shutdown can progress while preparation remains blocked, without releasing its capacity early.
 - Complete-catalog checks survive partial refreshes; unchanged provider validity cannot extend monotonic cutoffs.
 - Late success or failure cannot overwrite newer rejection or expiry state, even when newer work never publishes.
 - Changed revocation evidence installs urgent retirement for affected historical endpoints, not only the current catalog.
@@ -1458,8 +1613,10 @@ Retain separate client/routed lifecycles, dedicated/shared runtimes, and raw/typ
 | R11 | 03 |
 | R12 | 14 |
 | R13 | 08 |
-| R14 | 05 |
+| R14 | 05, 10 |
 | R15 | 06, 12, 13 |
+
+R14 remains open after 05. Closure requires 10's prepared-runtime Rust payload accounting and native preparation/expiry-lock independence.
 
 Every substantive ledger opportunity belongs to one of these iterations or an explicit OSS adopt/reject decision.
 New findings stay local when they are necessary for correctness. Record a scope revision when they change the dependency order or architectural target.
@@ -1527,3 +1684,82 @@ Editor diagnostics reported no errors. No Rust, native integration, or hosted te
 
 No review blocker remains. This follow-up preserves Opus's conclusions and closes the written-plan review gate.
 The final output hash follows the post-edit validation and remains outside this file.
+
+### Iteration 05 Detailed Contract Follow-Up
+
+Date: 2026-10-19. Status: direct written follow-up complete; Opus review pending.
+Caller-specified reviewer route: `GPT-6 Astra (copilot)`. No substitute reviewer or subagent was invoked.
+The caller supplies the accepted route. This session provides no independent routing metadata to verify it.
+Input document blob: `e187072cb07abae2b0110625135b7375446f35c6` from `git hash-object docs/refactor-delivery-plan.md`, without `-w`.
+Source input: clean `/home/vscode/tacacs-rs-04-credential-targets` at `35d9924a089beb818c65937eee6e4e319b486e41`.
+Inputs include current 05/10, the caller's prior source conclusions, coordinator admission/publication, manager publication, supervisor loop composition, and SONiC result ownership.
+
+Findings and dispositions:
+
+- Accepted 30 seconds, 256 slots, and 67108864 bytes. Added explicit generated-default and overflow cases without changing their policy meaning.
+- Pending work lacked a numeric bound. Defined three unexpanded records and three owned waiters, with coalescing and revision admission before waits.
+- Raw-input ownership could hide filtered copies. Defined `L + E`, the datastore boundary, retained projection charges, and mandatory ownership tests.
+- Registered-work quiet could be confused with future completion. Required root/work/result lease release and public construction without runtime dependencies.
+- Kept callback versus opaque held-owner construction open. Both must meet exactly-once, nonblocking release and no-premature-quiet requirements.
+- Final-fence placement required a concrete boundary. Required validation before `retire_replaced_until`, with serialized current policy and no fallible commit callback.
+- Existing native lock coupling remains real. Kept its removal and all prepared-runtime Rust payload accounting in 10 before R14 closure.
+- Specified the first counting-resolver regression and barrier cases. These are required future tests, not executed implementation evidence.
+
+Actual document validation:
+
+- Immediately after the first edit, the read-only Python structural validator exited successfully.
+- All 18 iteration headings occur once in order. R1-R15 coverage matches the stack table, including R14 mapped to 05 and 10.
+- All eight local relative links resolve. No trailing whitespace or conflict markers exist.
+- Assertions preserve the native lock-coupling disclosure and iteration 10's prepared-runtime accounting and lock-independence requirements.
+- Assertions also check finite pending work, the first zero-call regression, payload accounting, defaults, and the pre-retirement fence.
+- `get_errors` reported no errors for this document.
+- No Rust tests, generated-default tests, YANG regeneration, native tests, or hosted checks ran during this document-only review.
+
+Only this plan's 05/10 sections, related tables/coverage text, and this appended receipt changed in this follow-up.
+No production edits, other file edits, Git writes, branch changes, pushes, or subagents form part of this review.
+The output document blob will be reported outside this file after validation.
+Material contract revisions require the direct `Claude Opus 5.5 (copilot)` written-plan review, which remains pending.
+The earlier completed sequence-review receipts do not satisfy that new review gate.
+
+### Iteration 05/10 Opus Written-Contract Review
+
+Date: 2026-10-19. Status: direct written review complete.
+Caller-specified reviewer route: `Claude Opus 5.5 (copilot)`. No substitute reviewer or subagent was invoked.
+This session provides no independent routing metadata to verify that route.
+Input document blob: `4f71c9118037e94fd699003d52a27e5f7a0fc311` from `git hash-object`, without `-w`.
+Source input: `/home/vscode/tacacs-rs-04-credential-targets` at `35d9924a089beb818c65937eee6e4e319b486e41`.
+Source read: `publication.rs`, `materialization_coordinator.rs`, the HTTP resolver fallback, SONiC provider blocking work, and the runtime-policy YANG module.
+
+Confirmed without change:
+
+- Pending work is finite: three unexpanded records, three owned waiters, and no expanded plans or provider results in records.
+- One admission instant and absolute deadline are captured before filtering and capacity waits. Successful substeps do not renew them.
+- `L + E` charges logical destinations, filter-owned copies, partial retained servers, inline material, and provider results.
+- Reservations precede known clones. Each provider return is checked before buffering or another resolver call.
+- Phase limits are admission policy. Raw ingestion, opaque SDK internals, native allocators, and RSS stay outside the claim.
+- Registered work uses standard-library types only. SONiC leases cover queued work, running closure, and queued result.
+- A stuck registered job keeps its slot. Opaque OS/SDK work exclusions do not cover provider-owned blocking jobs.
+- The fence precedes `retire_replaced_until`. Source confirms that call precedes the infallible `publish_runtime` callback.
+- The current manager prepares native endpoints under `catalog_reload_lock`. Iteration 05 discloses this coupling and defers removal to 10.
+- Iteration 10 extends the same ledger to prepared Rust payload and native locks. R14 stays open after 05.
+
+Clarifying edits, with no policy change:
+
+- Defaults come from generated YANG only, with the existing `1..max` leaf style. Added `1` and `4294967295` acceptance cases.
+- Stated no new dependency and no YANG policy types in the neutral resolver crate.
+- The HTTP resolver passes the same work scope to its fallback. Source shows a direct `fallback.resolve` delegation.
+- Expiry and host stop never acquire or await the slot or provider quiet. New locks are never held across long waits.
+- Reuse iteration 04's `ServerResolutionPlan` and plan-local typed slots, without global slot IDs.
+- The candidate deadline ends at commit. An outer timeout around postcommit `retire_replaced` cannot change `Published`.
+
+No material change was made. No Astra follow-up is necessary for these clarifications.
+No outstanding written-plan blocker remains for 05 or 10. No user decision is required.
+
+Validation: a read-only Python check ran immediately after the edits and passed.
+All 18 iteration headings occur once in order. R1-R15 coverage is complete, with R14 mapped to 05 and 10.
+All eight local links resolve. No trailing whitespace or conflict markers exist.
+Assertions confirmed the R14 non-closure text in 05 and 10 and each new clarification.
+No code, tests, YANG regeneration, native checks, or hosted checks ran. This review claims no implementation.
+Only this plan changed. No Git writes, branch changes, pushes, or other file edits occurred.
+The output document blob is reported outside this file.
+No outstanding plan blocker remains from this follow-up. Implementation and its required evidence remain pending.
