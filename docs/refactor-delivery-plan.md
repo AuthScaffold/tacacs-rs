@@ -1717,7 +1717,7 @@ Checks: typed/raw retry, cancellation, stale-outcome and continuation tests, con
 
 ### 08: File Observation
 
-Status: published as PR #285; integration head `e0d1ccb183b2e0bf43f3fb80841fc7d5ecd1a263` preserves the source accepted by both named reviews.
+Status: squash-merged as `47d74aa00aba3bc0d2ced4473767ac8c22a4fbe9`; both named reviews and final local and hosted gates passed.
 Coordinator final workspace gates passed.
 Scope: R13.
 
@@ -1785,6 +1785,18 @@ All 49 source tests passed again. The normal integration head was published and 
 Fresh Copilot review `5575934709` on `e0d1ccb183b2e0bf43f3fb80841fc7d5ecd1a263` reports no open issues and recommends approval; all threads are resolved.
 Current-head required workflow `39302494582` is in progress. Hosted Windows and ARMhf remain merge gates, not assumed results.
 
+#### Merge Receipt
+
+Current-head required workflow `39302494582` subsequently succeeded on `e0d1ccb183b2e0bf43f3fb80841fc7d5ecd1a263`.
+ARMhf job `118231498136` and Windows testing job `118234023765` passed.
+The Windows log directly confirms shared-state, configuration, and policy watcher tests, including cancellation, failure priority, replacement, directory loss/rename, and stalled-read interruption.
+Copilot review `5575934709` had no open issues. All threads were resolved, the PR-scoped open-alert query was empty, and mergeability was clean.
+The guarded squash specified that exact reviewed head. GitHub returned `merged: true` and squash `47d74aa00aba3bc0d2ced4473767ac8c22a4fbe9`.
+Fetched `origin/main` equals tested tree `4c6eac3601670343a020ae21b252b2f404b201ef`.
+Iteration 09 integrated the squash through normal merge `49055f56925e0215a9120d36044cd1900a730b0c`, preserving its tested tree exactly.
+All 32 coordinator tests passed again with the pinned normal rustup home. The new iteration 10 worktree fast-forwarded cleanly before implementation.
+Cleanup of iteration 08 follows preservation of this receipt.
+
 Extract one private owned file-observation mechanism for debounce, retained reads, failure priority, and cleanup.
 Keep separate configuration and policy parsing, events, and accepted-snapshot state.
 Preserve platform-specific parent-directory behavior and subscribe-before-baseline ordering.
@@ -1801,7 +1813,7 @@ Checks: both existing watcher suites, native lifecycle cases, Windows watcher CI
 
 ### 09: Coordinator State
 
-Status: published as staged PR #286 on predecessor `e0d1ccb183b2e0bf43f3fb80841fc7d5ecd1a263`; both named reviews accepted the unchanged source.
+Status: published as PR #286; integration head `49055f56925e0215a9120d36044cd1900a730b0c` preserves the source accepted by both named reviews.
 Coordinator final workspace gates passed.
 Scope: R8. This iteration does not move preparation across locks.
 
@@ -1869,6 +1881,8 @@ The remote PR reports exactly two implementation files, the `skip-release` label
 Copilot review was requested on that head. Required workflow `39307226464` is in progress.
 The predecessor's current-head ARMhf job `118231498136` and Windows testing job `118234023765` passed; its full workflow still needs final success.
 Neither those partial results nor an initial empty comment list establish merge readiness for this PR.
+After predecessor merge, normal integration head `49055f56925e0215a9120d36044cd1900a730b0c` retains complete tested tree `954ffdc1d3c79379d8e8a1076acd919d32934a44` exactly.
+All 32 coordinator tests passed again. Final-head publication, retargeting, fresh review, and required CI remain pending.
 
 Group filtered source, proxy policy, and dependency knowledge into explicit state.
 Group applied material and revision separately from withdrawn material.
