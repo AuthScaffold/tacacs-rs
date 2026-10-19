@@ -79,7 +79,10 @@ let server = enumerate_server(&config, "primary")?;
 
 Pass each enumerated server to `prepare::resolution_plan`.
 The planner maps central references to deterministic provider requests without changing their values.
-A `CredentialResolver` returns typed material, and `resolve_plan` validates the complete slot/variant-matched result set.
+It returns a `prepare::ServerResolutionPlan` with private installation targets for each request slot.
+Call `plan.neutral_plan()` to borrow the provider-neutral `ResolutionPlan` for resolution or dependency inspection.
+A `CredentialResolver` returns typed material, and `resolve_plan(plan.neutral_plan(), resolver)` validates the complete slot/variant-matched result set.
+Materialization matches each stored `CentralCredentialUsage` with its resolved material. Diagnostic field paths do not select installation targets.
 
 For complete materialization, call `prepare::enumerate_materialized_servers` with a source snapshot, resolver, and validation options.
 This function enumerates local bundles, resolves central requests, installs provider results, and validates the complete candidate set.

@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use tokio::io::AsyncReadExt;
 
-use tacacsrs_credential_http::{CrlFetchLimits, HttpCrlResolver, HttpCrlSource, HttpOcspSource};
+use tacacsrs_credential_http::{
+    EvidenceFetchLimits, HttpEvidenceResolver, HttpCrlSource, HttpOcspSource,
+};
 use tacacsrs_credential_resolution::{CredentialChangeSource, CredentialResolver};
 use tacacsrs_sonic::{
     SonicCredentialChangeSource, SonicCredentialPolicy, SonicCredentialResolver,
@@ -122,8 +124,8 @@ pub(crate) async fn build(cli: &Cli) -> anyhow::Result<CredentialProvider> {
         (None, None)
     };
     if !sources.is_empty() || !ocsp.is_empty() {
-        let mut http =
-            HttpCrlResolver::new(sources, CrlFetchLimits::default())?.with_ocsp_sources(ocsp)?;
+        let mut http = HttpEvidenceResolver::new(sources, EvidenceFetchLimits::default())?
+            .with_ocsp_sources(ocsp)?;
         if let Some(fallback) = resolver.take() {
             http = http.with_fallback(fallback);
         }

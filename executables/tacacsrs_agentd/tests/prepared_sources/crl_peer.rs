@@ -13,7 +13,7 @@ use tokio_openssl::SslStream;
 
 use tacacsrs_config::{TacacsPlus, TacacsPlusServerBuilder, TacacsPlusServerType, ValidationOptions};
 use tacacsrs_config::prepare::{enumerate_materialized_servers, prepare_endpoint, PrepareOptions};
-use tacacsrs_credential_http::{CrlFetchLimits, HttpCrlResolver, HttpCrlSource};
+use tacacsrs_credential_http::{EvidenceFetchLimits, HttpEvidenceResolver, HttpCrlSource};
 use tacacsrs_credential_resolution::{
     CertificateRevocationListsMaterial, CredentialResolver, CredentialValidity,
     FakeCredentialResolver, PublicBytes, RequestSlot, ResolvedCredential,
@@ -437,9 +437,9 @@ async fn downloaded_crls_remain_untrusted_until_native_verification() -> Result<
             stream.write_all(&body).await?;
             Ok::<(), anyhow::Error>(())
         });
-        let resolver = HttpCrlResolver::new(
+        let resolver = HttpEvidenceResolver::new(
             [HttpCrlSource::new("opaque-crls", [url])?],
-            CrlFetchLimits::default(),
+            EvidenceFetchLimits::default(),
         )?;
         assert_eq!(
             probe_with_resolver(&[], true, true, accepted, None, &resolver).await?,

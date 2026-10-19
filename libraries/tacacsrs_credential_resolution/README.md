@@ -67,3 +67,13 @@ cargo run -p tacacsrs-config --example central_resolution
 
 A production resolver implements `CredentialResolver`, reads references through explicit accessors, and returns the material variant requested by each slot.
 The coordinator owns provider notifications and publication. Configuration owns YANG materialization.
+
+## Notification Ownership
+
+Each `CredentialChangeStream` owns its subscription and backend notification workers.
+Dropping the stream stops event delivery and cancels those workers. Worker cleanup can finish asynchronously.
+The generic stream type cannot cancel arbitrary I/O. Providers must document work that can outlive cancellation and prevent further event publication.
+
+Subscription failure returns `CredentialChangeError`. Observation failure emits `Unavailable` or ends the stream.
+A provider can emit `Recovered` on the same stream or require a new subscription after the stream ends.
+Recovery means that notifications are available. It does not validate credentials or authorize publication without resolution.

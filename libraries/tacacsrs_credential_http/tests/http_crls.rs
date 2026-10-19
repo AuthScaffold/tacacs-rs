@@ -4,7 +4,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use tacacsrs_credential_http::{CrlFetchLimits, HttpCrlResolver, HttpCrlSource};
+use tacacsrs_credential_http::{EvidenceFetchLimits, HttpEvidenceResolver, HttpCrlSource};
 use tacacsrs_credential_resolution::{
     CredentialKind, CredentialReference, CredentialResolver, FakeCredentialResolver,
     RequestContext, RequestSlot, ResolutionError, ResolutionErrorKind, ResolutionPlan,
@@ -12,7 +12,7 @@ use tacacsrs_credential_resolution::{
 };
 
 async fn resolve(
-    provider: &HttpCrlResolver,
+    provider: &HttpEvidenceResolver,
     reference: &str,
 ) -> Result<ResolvedCredential, ResolutionError> {
     let plan = ResolutionPlan::new([(
@@ -93,7 +93,7 @@ async fn certificate_discovery_requires_host_authorization_before_fetch() {
     trailing.push(0);
     assert!(HttpCrlSource::from_certificates("set", &[&trailing], [&url]).is_err());
     let source = HttpCrlSource::from_certificates("set", &[&der, &der], [&url]).unwrap();
-    let provider = HttpCrlResolver::new([source], CrlFetchLimits::default()).unwrap();
+    let provider = HttpEvidenceResolver::new([source], EvidenceFetchLimits::default()).unwrap();
     let ResolvedCredential::CertificateRevocationLists(material) =
         resolve(&provider, "set").await.unwrap()
     else {
@@ -110,9 +110,9 @@ async fn retrieves_all_locations_in_order_without_exposing_source_values() {
         reply(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\none").await;
     let (second, second_task) =
         reply(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\ntwo").await;
-    let provider = HttpCrlResolver::new(
+    let provider = HttpEvidenceResolver::new(
         [HttpCrlSource::new("private-reference", [&first, &second]).unwrap()],
-        CrlFetchLimits::default(),
+        EvidenceFetchLimits::default(),
     )
     .unwrap();
     let debug = format!("{provider:?}");
@@ -140,9 +140,9 @@ async fn rejects_redirects_errors_empty_compressed_and_oversized_bodies() {
     let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let redirect = format!("HTTP/1.1 302 Found\r\nLocation: http://{}/forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", target.local_addr().unwrap());
     let (redirect_source, redirect_task) = reply(redirect.as_bytes()).await;
-    let provider = HttpCrlResolver::new(
+    let provider = HttpEvidenceResolver::new(
         [HttpCrlSource::new("private-reference", [&redirect_source]).unwrap()],
-        CrlFetchLimits::default(),
+        EvidenceFetchLimits::default(),
     )
     .unwrap();
     assert_eq!(
@@ -168,7 +168,7 @@ async fn rejects_redirects_errors_empty_compressed_and_oversized_bodies() {
         (b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nContent-Encoding: gzip\r\nConnection: close\r\n\r\nabc".as_slice(), ResolutionErrorKind::InvalidMaterial),
     ] {
         let (url, task) = reply(response).await;
-        let provider = HttpCrlResolver::new([HttpCrlSource::new("private-reference", [&url]).unwrap()], CrlFetchLimits::new(Duration::from_secs(2), 8, 1).unwrap()).unwrap();
+        let provider = HttpEvidenceResolver::new([HttpCrlSource::new("private-reference", [&url]).unwrap()], EvidenceFetchLimits::new(Duration::from_secs(2), 8, 1).unwrap()).unwrap();
         let error = resolve(&provider, "private-reference").await.unwrap_err();
         assert_eq!(error.kind(), expected);
         assert!(!format!("{error:?} {error}").contains("private-reference"));
@@ -186,9 +186,9 @@ async fn complete_set_limit_is_aggregate_and_partial_results_are_not_returned() 
         let (first, first_task) =
             reply(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\none").await;
         let (second, second_task) = reply(second).await;
-        let provider = HttpCrlResolver::new(
+        let provider = HttpEvidenceResolver::new(
             [HttpCrlSource::new("set", [&first, &second]).unwrap()],
-            CrlFetchLimits::new(Duration::from_secs(2), 5, 1).unwrap(),
+            EvidenceFetchLimits::new(Duration::from_secs(2), 5, 1).unwrap(),
         )
         .unwrap();
         assert!(resolve(&provider, "set").await.is_err());
@@ -216,12 +216,12 @@ async fn cancelling_a_stalled_fetch_closes_io_and_releases_capacity() {
     });
     let (good, good_task) =
         reply(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nnew").await;
-    let provider = HttpCrlResolver::new(
+    let provider = HttpEvidenceResolver::new(
         [
             HttpCrlSource::new("stalled", [&url]).unwrap(),
             HttpCrlSource::new("good", [&good]).unwrap(),
         ],
-        CrlFetchLimits::new(Duration::from_secs(10), 64, 1).unwrap(),
+        EvidenceFetchLimits::new(Duration::from_secs(10), 64, 1).unwrap(),
     )
     .unwrap();
     let mut pending = Box::pin(resolve(&provider, "stalled"));
@@ -250,7 +250,7 @@ async fn unknown_references_are_not_urls_and_other_kinds_can_use_fallback() {
             key: SecretBytes::new(b"fallback-key".to_vec()),
         }),
     );
-    let provider = HttpCrlResolver::new([], CrlFetchLimits::default()).unwrap();
+    let provider = HttpEvidenceResolver::new([], EvidenceFetchLimits::default()).unwrap();
     assert_eq!(
         resolve(&provider, "http://127.0.0.1:1/private")
             .await
@@ -284,10 +284,12 @@ async fn registered_source_failure_never_uses_fallback() {
     let (url, task) =
         reply(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
     let source = HttpCrlSource::new("registered", [&url]).unwrap();
-    assert!(
-        HttpCrlResolver::new([source.clone(), source.clone()], CrlFetchLimits::default()).is_err()
-    );
-    let provider = HttpCrlResolver::new([source], CrlFetchLimits::default())
+    assert!(HttpEvidenceResolver::new(
+        [source.clone(), source.clone()],
+        EvidenceFetchLimits::default()
+    )
+    .is_err());
+    let provider = HttpEvidenceResolver::new([source], EvidenceFetchLimits::default())
         .unwrap()
         .with_fallback(fallback);
     assert!(resolve(&provider, "unregistered").await.is_ok());
@@ -329,9 +331,9 @@ async fn all_locations_share_one_timeout_and_late_body_is_cancelled() {
         let _ = second_ready.send(());
         assert_eq!(stream.read(&mut [0]).await.unwrap(), 0);
     });
-    let provider = HttpCrlResolver::new(
+    let provider = HttpEvidenceResolver::new(
         [HttpCrlSource::new("set", urls).unwrap()],
-        CrlFetchLimits::new(Duration::from_secs(3), 16, 1).unwrap(),
+        EvidenceFetchLimits::new(Duration::from_secs(3), 16, 1).unwrap(),
     )
     .unwrap();
     let beginning = tokio::time::Instant::now();
