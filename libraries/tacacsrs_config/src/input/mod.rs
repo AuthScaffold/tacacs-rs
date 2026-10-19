@@ -16,12 +16,10 @@
 //! [`crate::source::CliFileDatastore`], not here.
 #![allow(clippy::doc_markdown)]
 
-mod address;
 mod builder;
 mod files;
 mod model;
 
-pub use address::parse_host_port;
 pub use builder::{tacacs_plus_from_cli_input, tacacs_plus_from_file, tacacs_plus_from_str};
 pub use files::{
     load_client_certificate, load_client_private_key, normalize_cli_certificate_data,

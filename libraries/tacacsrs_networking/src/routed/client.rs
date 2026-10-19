@@ -618,7 +618,13 @@ mod tests {
         RoutedClient::with_connector(
             vec![Endpoint::new(
                 "primary",
-                PreparedEndpoint::tcp("127.0.0.1:49", false, None, ConnectOptions::default()),
+                PreparedEndpoint::new(
+                    crate::ServerAddress::parse("127.0.0.1:49", 49).unwrap(),
+                    crate::PreparedTransport::Tcp,
+                    false,
+                    None,
+                    ConnectOptions::default(),
+                ),
                 OperationKind::ALL,
             )],
             connector,
@@ -631,7 +637,13 @@ mod tests {
         let endpoint = |name, operation| {
             Endpoint::new(
                 name,
-                PreparedEndpoint::tcp("127.0.0.1:49", false, None, ConnectOptions::default()),
+                PreparedEndpoint::new(
+                    crate::ServerAddress::parse("127.0.0.1:49", 49).unwrap(),
+                    crate::PreparedTransport::Tcp,
+                    false,
+                    None,
+                    ConnectOptions::default(),
+                ),
                 [operation],
             )
         };
@@ -703,7 +715,13 @@ mod tests {
         let endpoint = || {
             Endpoint::new(
                 "primary",
-                PreparedEndpoint::tcp("127.0.0.1:49", false, None, ConnectOptions::default()),
+                PreparedEndpoint::new(
+                    crate::ServerAddress::parse("127.0.0.1:49", 49).unwrap(),
+                    crate::PreparedTransport::Tcp,
+                    false,
+                    None,
+                    ConnectOptions::default(),
+                ),
                 OperationKind::ALL,
             )
         };
@@ -806,8 +824,9 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = Endpoint::new(
             "server",
-            PreparedEndpoint::tcp(
-                listener.local_addr().unwrap().to_string(),
+            PreparedEndpoint::new(
+                listener.local_addr().unwrap().try_into().unwrap(),
+                crate::PreparedTransport::Tcp,
                 false,
                 None,
                 ConnectOptions::default(),
@@ -877,8 +896,9 @@ mod tests {
         let endpoint = || {
             Endpoint::new(
                 "server",
-                PreparedEndpoint::tcp(
-                    listener.local_addr().unwrap().to_string(),
+                PreparedEndpoint::new(
+                    listener.local_addr().unwrap().try_into().unwrap(),
+                    crate::PreparedTransport::Tcp,
                     false,
                     None,
                     ConnectOptions::default(),
@@ -1069,12 +1089,24 @@ mod tests {
     async fn catalog_retains_order_and_operation_eligibility() {
         let first = Endpoint::new(
             "accounting",
-            PreparedEndpoint::tcp("127.0.0.1:49", false, None, ConnectOptions::default()),
+            PreparedEndpoint::new(
+                crate::ServerAddress::parse("127.0.0.1:49", 49).unwrap(),
+                crate::PreparedTransport::Tcp,
+                false,
+                None,
+                ConnectOptions::default(),
+            ),
             [OperationKind::Accounting],
         );
         let second = Endpoint::new(
             "all",
-            PreparedEndpoint::tcp("127.0.0.2:49", false, None, ConnectOptions::default()),
+            PreparedEndpoint::new(
+                crate::ServerAddress::parse("127.0.0.2:49", 49).unwrap(),
+                crate::PreparedTransport::Tcp,
+                false,
+                None,
+                ConnectOptions::default(),
+            ),
             OperationKind::ALL,
         );
         let client = RoutedClient::new(vec![first, second]);

@@ -84,8 +84,9 @@ fn required_ocsp_policy_survives_bundle_expansion_and_rejects_insecure_preparati
         .is_ok());
         assert!(tacacsrs_config::prepare::prepare_endpoint(
             &server,
-            tacacsrs_config::prepare::PrepareOptions::default()
-                .with_certificate_verification_disabled(true)
+            tacacsrs_config::prepare::PrepareOptions::default().with_certificate_verification(
+                tacacsrs_networking::CertificateVerification::DisabledForDevelopment
+            )
         )
         .is_err());
         assert_eq!(source, original);

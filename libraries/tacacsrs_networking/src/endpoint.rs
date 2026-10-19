@@ -11,8 +11,6 @@ use std::time::Duration;
 use tacacsrs_secrets::SecretBytes;
 
 use crate::establish::{ConnectOptions, PreparedTransport};
-use crate::transport::tls::{CertificateIdentity, CertificateTrust, TlsClientConfig};
-use crate::transport::tls_psk::{PskClientConfig, PskHash, PskDheGroup};
 
 /// Host-owned checks for resolved and connected TCP destinations.
 ///
@@ -36,11 +34,11 @@ pub trait ConnectionGuard: Send + Sync {
 
 /// An immutable endpoint with validated native transport material.
 ///
-/// Callers supply explicit runtime values and borrowed transport credentials.
+/// Callers supply a structured address, prepared transport, and protected packet key.
 /// Clones share native contexts but not connection or session state.
 #[derive(Clone)]
 pub struct PreparedEndpoint {
-    pub(crate) address: String,
+    pub(crate) address: crate::ServerAddress,
     pub(crate) single_connection: bool,
     pub(crate) obfuscation_key: Option<SecretBytes>,
     pub(crate) transport: PreparedTransport,
@@ -50,98 +48,63 @@ pub struct PreparedEndpoint {
 }
 
 impl PreparedEndpoint {
-    /// Selects TLS 1.3 PSK with explicit hash and ordered key-exchange groups.
-    ///
-    /// An empty group list selects PSK-only key exchange. The prepared context
-    /// owns protected key bytes and does not retain the borrowed inputs.
-    /// Connections must authenticate with the PSK and negotiate the selected
-    /// mode before the client sends TACACS+ data. Certificate fallback is rejected.
-    /// This PSK path requires OpenSSL 3.0 or newer for negotiated-group inspection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the identity, key, groups, or native context is invalid.
-    pub fn with_psk(
-        mut self,
-        identity: &str,
-        key: &[u8],
-        hash: PskHash,
-        groups: &[PskDheGroup],
-        server_name: Option<&str>,
-    ) -> anyhow::Result<Self> {
-        self.transport = PreparedTransport::Psk(
-            PskClientConfig::prepare(identity, key, hash, groups)?,
-            server_name.map(str::to_owned),
-        );
-        Ok(self)
-    }
-
-    /// Selects certificate TLS and validates borrowed DER credentials.
-    ///
-    /// Trust roles and platform trust are explicit. The endpoint options control
-    /// certificate verification. Empty explicit trust is rejected before I/O.
-    /// `peer_identity` is the expected DNS/IP SAN. `sni_name` independently selects
-    /// an optional DNS name for the `ClientHello`. IP addresses are not sent as SNI.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the DER material or native context is invalid.
-    pub fn with_certificate_tls(
-        mut self,
-        peer_identity: &str,
-        sni_name: Option<&str>,
-        trust: CertificateTrust<'_>,
-        identity: Option<CertificateIdentity<'_>>,
-    ) -> anyhow::Result<Self> {
-        self.transport = PreparedTransport::Tls(TlsClientConfig::prepare(
-            peer_identity,
-            sni_name,
-            trust,
-            identity,
-            self.options.certificate_verification_disabled(),
-        )?);
-        Ok(self)
-    }
-
-    /// Applies stapled OCSP requirements to this certificate TLS endpoint.
-    ///
-    /// # Errors
-    /// Returns an error if required evidence is combined with another transport or disabled verification.
-    pub fn with_certificate_revocation(
-        mut self,
-        policy: crate::CertificateRevocationPolicy,
-    ) -> anyhow::Result<Self> {
-        self.transport = match self.transport {
-            PreparedTransport::Tls(config) => {
-                PreparedTransport::Tls(config.with_revocation_policy(policy)?)
-            }
-            transport => {
-                anyhow::ensure!(
-                    policy.maximum_response_age().is_none(),
-                    "Required OCSP evidence needs certificate TLS"
-                );
-                transport
-            }
-        };
-        Ok(self)
-    }
-
-    /// Creates a plain TCP endpoint from explicit runtime values.
+    /// Finalizes an endpoint from one fully prepared transport.
     ///
     /// The packet layer applies `obfuscation_key` when present. This constructor
-    /// does not resolve the address or open a connection.
+    /// does not resolve the address or open a connection. Security cannot be replaced.
+    ///
+    /// ```compile_fail
+    /// use tacacsrs_networking::{ConnectOptions, PreparedEndpoint};
+    /// let endpoint = PreparedEndpoint::tcp("localhost:49", false, None, ConnectOptions::default());
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use tacacsrs_networking::PreparedEndpoint;
+    /// fn reselect(endpoint: PreparedEndpoint) {
+    ///     endpoint.with_certificate_tls("localhost", None, tacacsrs_networking::CertificateTrust::Platform, None);
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use tacacsrs_networking::{PreparedEndpoint, PskHash};
+    /// fn reselect(endpoint: PreparedEndpoint) {
+    ///     endpoint.with_psk("client", b"valid-test-psk-material", PskHash::Sha256, &[], None);
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use tacacsrs_networking::{PreparedEndpoint, CertificateRevocationPolicy};
+    /// fn attach(endpoint: PreparedEndpoint) {
+    ///     endpoint.with_certificate_revocation(CertificateRevocationPolicy::disabled());
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use tacacsrs_networking::PreparedEndpoint;
+    /// fn attach(endpoint: PreparedEndpoint) {
+    ///     endpoint.with_certificate_crls(&[], std::time::Duration::from_secs(300));
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use tacacsrs_networking::PreparedEndpoint;
+    /// fn attach(endpoint: PreparedEndpoint) {
+    ///     endpoint.with_certificate_ocsp_response(&[], std::time::Duration::from_secs(300));
+    /// }
+    /// ```
     #[must_use]
-    pub fn tcp(
-        address: impl Into<String>,
+    pub fn new(
+        address: crate::ServerAddress,
+        transport: PreparedTransport,
         single_connection: bool,
         obfuscation_key: Option<SecretBytes>,
         options: ConnectOptions,
     ) -> Self {
         Self {
-            address: address.into(),
+            address,
             single_connection,
             obfuscation_key,
-            transport: PreparedTransport::Tcp,
+            transport,
             options,
             connection_guard: None,
             counters: crate::ServerCounters::default(),
@@ -157,7 +120,7 @@ impl PreparedEndpoint {
 
     /// Returns the prepared host and port without resolving DNS.
     #[must_use]
-    pub fn address(&self) -> &str {
+    pub fn address(&self) -> &crate::ServerAddress {
         &self.address
     }
 
@@ -193,45 +156,8 @@ impl PreparedEndpoint {
     pub(crate) fn validate_client_certificate_dates(&self) -> anyhow::Result<()> {
         match &self.transport {
             PreparedTransport::Tls(config) => config.validate_client_certificate_dates(),
-            PreparedTransport::Tcp | PreparedTransport::Psk(_, _) => Ok(()),
+            PreparedTransport::Tcp | PreparedTransport::Psk(_) => Ok(()),
         }
-    }
-
-    /// Requires fresh full CRLs and explicitly paired deltas for the CA-authenticated server path.
-    ///
-    /// # Errors
-    /// Returns an error for invalid evidence, non-certificate transports, pins, or incompatible verification modes.
-    pub fn with_certificate_crls(
-        mut self,
-        lists: &[&[u8]],
-        maximum_age: Duration,
-    ) -> anyhow::Result<Self> {
-        self.transport = match self.transport {
-            PreparedTransport::Tls(config) => {
-                PreparedTransport::Tls(config.with_crls(lists, maximum_age)?)
-            }
-            _ => anyhow::bail!("CRL mode requires certificate TLS"),
-        };
-        Ok(self)
-    }
-
-    /// Requires independently fetched OCSP evidence for the actual TLS peer.
-    ///
-    /// This does not replace a separately configured mandatory staple.
-    /// # Errors
-    /// Rejects invalid, stale, unsuccessful evidence or incompatible transports.
-    pub fn with_certificate_ocsp_response(
-        mut self,
-        response: &[u8],
-        maximum_age: Duration,
-    ) -> anyhow::Result<Self> {
-        self.transport = match self.transport {
-            PreparedTransport::Tls(config) => {
-                PreparedTransport::Tls(config.with_ocsp_response(response, maximum_age)?)
-            }
-            _ => anyhow::bail!("Fetched OCSP requires certificate TLS"),
-        };
-        Ok(self)
     }
 
     pub(crate) fn revocation_evidence_lifetime(
@@ -239,13 +165,13 @@ impl PreparedEndpoint {
     ) -> Option<crate::transport::tls::RevocationEvidenceLifetime> {
         match &self.transport {
             PreparedTransport::Tls(config) => config.evidence_lifetime,
-            PreparedTransport::Tcp | PreparedTransport::Psk(_, _) => None,
+            PreparedTransport::Tcp | PreparedTransport::Psk(_) => None,
         }
     }
 
     pub(crate) const fn security_label(&self) -> &'static str {
         match self.transport {
-            PreparedTransport::Tls(_) | PreparedTransport::Psk(_, _) => "tls",
+            PreparedTransport::Tls(_) | PreparedTransport::Psk(_) => "tls",
             PreparedTransport::Tcp if self.obfuscation_key.is_some() => "obfuscation",
             PreparedTransport::Tcp => "plain-tcp",
         }
@@ -266,6 +192,36 @@ impl fmt::Debug for PreparedEndpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{CertificateTrust, TlsClientConfig, PskClientConfig, PskHash};
+
+    #[test]
+    fn finalized_tls_retains_mandatory_staple_policy() {
+        let policy =
+            crate::CertificateRevocationPolicy::require_stapled_ocsp(Duration::from_secs(300))
+                .unwrap();
+        let endpoint = PreparedEndpoint::new(
+            crate::ServerAddress::parse("localhost:300", 49).unwrap(),
+            PreparedTransport::Tls(
+                TlsClientConfig::prepare(
+                    "localhost",
+                    None,
+                    CertificateTrust::Platform,
+                    None,
+                    crate::CertificateVerification::Required,
+                )
+                .unwrap()
+                .with_revocation_policy(policy)
+                .unwrap(),
+            ),
+            false,
+            None,
+            ConnectOptions::default(),
+        );
+        let PreparedTransport::Tls(config) = endpoint.transport else {
+            panic!("certificate TLS must remain selected");
+        };
+        assert_eq!(config.revocation, policy);
+    }
 
     struct DenyConnection;
 
@@ -282,8 +238,9 @@ mod tests {
     #[tokio::test]
     async fn rejected_destination_never_connects() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let endpoint = PreparedEndpoint::tcp(
-            listener.local_addr().unwrap().to_string(),
+        let endpoint = PreparedEndpoint::new(
+            listener.local_addr().unwrap().try_into().unwrap(),
+            crate::PreparedTransport::Tcp,
             false,
             None,
             ConnectOptions::default(),
@@ -313,22 +270,37 @@ mod tests {
 
         for security in ["plain", "tls", "psk"] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let endpoint = PreparedEndpoint::tcp(
-                listener.local_addr().unwrap().to_string(),
+            let transport = match security {
+                "tls" => PreparedTransport::Tls(
+                    TlsClientConfig::prepare(
+                        "localhost",
+                        None,
+                        CertificateTrust::Platform,
+                        None,
+                        crate::CertificateVerification::Required,
+                    )
+                    .unwrap(),
+                ),
+                "psk" => PreparedTransport::Psk(
+                    PskClientConfig::prepare(
+                        "client",
+                        b"valid-test-psk-material",
+                        PskHash::Sha256,
+                        &[],
+                        None,
+                    )
+                    .unwrap(),
+                ),
+                _ => PreparedTransport::Tcp,
+            };
+            let endpoint = PreparedEndpoint::new(
+                listener.local_addr().unwrap().try_into().unwrap(),
+                transport,
                 false,
                 None,
                 ConnectOptions::default(),
             )
             .with_connection_guard(RejectConnected);
-            let endpoint = match security {
-                "tls" => endpoint
-                    .with_certificate_tls("localhost", None, CertificateTrust::Platform, None)
-                    .unwrap(),
-                "psk" => endpoint
-                    .with_psk("client", b"valid-test-psk-material", PskHash::Sha256, &[], None)
-                    .unwrap(),
-                _ => endpoint,
-            };
             tokio::time::timeout(Duration::from_secs(2), async {
                 let (accepted, opened) =
                     tokio::join!(listener.accept(), crate::establish::establish_stream(&endpoint));
@@ -348,13 +320,14 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_endpoint_needs_no_source_model_or_network_io() {
-        let endpoint = PreparedEndpoint::tcp(
-            "127.0.0.1:1",
+        let endpoint = PreparedEndpoint::new(
+            crate::ServerAddress::parse("127.0.0.1:1", 49).unwrap(),
+            crate::PreparedTransport::Tcp,
             false,
             Some(SecretBytes::new(b"private-key".to_vec())),
             ConnectOptions::default(),
         );
-        assert_eq!(endpoint.address(), "127.0.0.1:1");
+        assert_eq!(endpoint.address().to_string(), "127.0.0.1:1");
         assert!(!endpoint.single_connection());
         assert_eq!(endpoint.connection_timeout(), None);
         assert!(!format!("{endpoint:?}").contains("private-key"));

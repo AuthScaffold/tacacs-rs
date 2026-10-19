@@ -535,7 +535,7 @@ fn supervisor(
                     Duration::from_secs(1),
                 )
                 .expect("test runtime policy"),
-                disable_certificate_verification: false,
+                certificate_verification: tacacsrs_networking::CertificateVerification::Required,
             },
             health.clone(),
         )

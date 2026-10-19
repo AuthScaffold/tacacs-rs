@@ -159,7 +159,7 @@ where
             connector,
             health.clone(),
             tacacsrs_config::prepare::PrepareOptions::default()
-                .with_certificate_verification_disabled(config.disable_certificate_verification),
+                .with_certificate_verification(config.certificate_verification),
         )?);
         let request_tracker = Arc::new(RequestTracker::default());
         manager.publish_initial_health(configuration_applied);

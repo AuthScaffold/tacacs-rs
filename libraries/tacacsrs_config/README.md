@@ -104,20 +104,36 @@ Networking validates borrowed DER and PSK material and constructs private reusab
 The resulting `PreparedEndpoint` contains no generated model or source reference.
 
 Preparation derives the TCP connection timeout from the canonical server's `timeout` leaf, in seconds.
-`PrepareOptions` has no timeout override. It selects preflight and an explicit development-only certificate-verification override.
+`PrepareOptions` has no timeout override. It selects preflight and a typed certificate verification policy.
+`CertificateVerification::Required` is the default. Use `PrepareOptions::with_certificate_verification` to select a policy.
+CAUTION: `CertificateVerification::DisabledForDevelopment` permits server impersonation. Do not use it in production.
 These controls are not serialized configuration and do not change the source snapshot.
 The timeout bounds TCP connection establishment, not TLS handshakes or complete requests.
 `PreparedEndpoint::connection_timeout` exposes the prepared value for inspection.
 
 Callers must replace networking `ConnectOptions` with `prepare::PrepareOptions` at this API boundary.
 Set a different timeout in the canonical YANG source or with `TacacsPlusServerBuilder::with_timeout` before preparation.
-Schema-free native callers can still use networking `ConnectOptions` with `PreparedEndpoint::tcp`.
+Schema-free callers use `PreparedEndpoint::new` with one `PreparedTransport` and a validated `ServerAddress`.
+`ConnectOptions` controls only the TCP timeout and optional preflight.
+`TlsClientConfig::prepare` takes `CertificateVerification`, peer identity, trust, and optional SNI. It does not accept a verification boolean.
+Disabled verification emits a warning and rejects required revocation evidence. Credential validation and authentication certificate dates still apply.
+Attach stapled OCSP, fetched OCSP, and CRLs to that configuration before endpoint construction.
+The endpoint has no security-selection or evidence-attachment methods.
+`PskClientConfig::prepare` validates and retains optional SNI with the PSK context.
+`PreparedTransport::Psk` accepts only that prepared configuration, with no separate SNI override.
+
+`ServerAddress::new` accepts separate host and port fields without network I/O.
+String entry points use `ServerAddress::parse` with a caller-selected default port.
+Bare IPv6 is always a whole host. Brackets are required for an explicit IPv6 port.
+DNS names can have a trailing dot. Port zero, zone IDs, malformed brackets, and invalid ports are rejected.
+Noncanonical numeric addresses, such as `127.1` and `0x7f000001`, are rejected instead of interpreted as DNS names.
+Each connection attempt resolves DNS again and checks the resolved and connected destinations through the host guard.
 
 Certificate TLS verifies the configured `domain-name`, or `address` when no domain is configured, against the peer's DNS or IP subject alternative name.
 Verification remains active when SNI is disabled. CN fallback and partial-label wildcard matches are disabled.
 The `sni-enabled` field controls only the optional DNS name sent in the TLS `ClientHello`.
 An omitted or false value sends no SNI. A true value requires `domain-name`.
-Native callers pass the expected peer identity and optional SNI name separately to `PreparedEndpoint::with_certificate_tls`.
+Native callers pass the expected peer identity and optional SNI name separately to `TlsClientConfig::prepare`.
 This replaces the earlier chain-only check and can reject previously accepted certificates that lack a matching SAN.
 The explicit development verification override still disables certificate verification. It does not change SNI selection.
 
@@ -129,7 +145,7 @@ Certificate trust roles remain distinct during preparation:
 - Explicit bags must contain materialized certificates. Empty bags fail even when the development verification override is selected.
 - If neither bag is selected, the existing server-authentication-only API uses platform trust. Selecting either bag excludes platform roots.
 
-Native callers now pass `CertificateTrust::Platform` or `CertificateTrust::Certificates` to `PreparedEndpoint::with_certificate_tls` instead of an undifferentiated root iterator.
+Native callers pass `CertificateTrust::Platform` or `CertificateTrust::Certificates` to `TlsClientConfig::prepare`.
 The explicit variant separates authority DER from exact peer DER. Its collections cannot both be empty.
 OpenSSL still enforces peer identity, validity, purpose, and path checks. The trust-role callback never changes failed native verification into success.
 Direct trust accepts a CA-signed leaf without requiring its issuer. A renewed certificate with the same key needs a new exact entry or CA trust.
@@ -305,7 +321,8 @@ let server = TacacsPlusServerBuilder::new(
 .with_shared_secret("super-secret")
 .build();
 
-assert_eq!(server.socket_address(), "192.0.2.10:49");
+assert_eq!(server.address, "192.0.2.10");
+assert_eq!(server.port, 49);
 assert!(server.is_obfuscation());
 # anyhow::Ok::<(), anyhow::Error>(())
 ```

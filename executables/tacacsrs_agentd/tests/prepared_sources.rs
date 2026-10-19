@@ -692,13 +692,7 @@ async fn established_mtls_pin_survives_authentication_certificate_expiry() -> Re
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let fixture = certificate_source(listener.local_addr()?, Duration::from_secs(4))?;
     let certificate = fixture.certificate.as_slice();
-    let endpoint = PreparedEndpoint::tcp(
-        listener.local_addr()?.to_string(),
-        true,
-        None,
-        tacacsrs_networking::ConnectOptions::default(),
-    )
-    .with_certificate_tls(
+    let config = tacacsrs_networking::TlsClientConfig::prepare(
         "localhost",
         None,
         tacacsrs_networking::CertificateTrust::Certificates {
@@ -712,7 +706,15 @@ async fn established_mtls_pin_survives_authentication_certificate_expiry() -> Re
             private_key: &fixture.private_key,
             private_key_encoding: tacacsrs_networking::PrivateKeyEncoding::Pkcs8,
         }),
+        tacacsrs_networking::CertificateVerification::Required,
     )?;
+    let endpoint = PreparedEndpoint::new(
+        listener.local_addr()?.try_into()?,
+        tacacsrs_networking::PreparedTransport::Tls(config),
+        true,
+        None,
+        tacacsrs_networking::ConnectOptions::default(),
+    );
     let counters = endpoint.counters();
     let (handshake_complete, handshake_observed) = tokio::sync::oneshot::channel();
     let (delayed_received, request_observed) = tokio::sync::oneshot::channel();
@@ -838,7 +840,8 @@ async fn inline_client_certificate_expiry_preserves_supervised_catalog() -> Resu
             tacacs_plus: TacacsPlus::empty(),
             validation_options: ValidationOptions::default(),
             runtime_policy: tacacsrs_agent::RuntimePolicy::default(),
-            disable_certificate_verification: true,
+            certificate_verification:
+                tacacsrs_networking::CertificateVerification::DisabledForDevelopment,
         },
         health.clone(),
     )?);
@@ -931,7 +934,8 @@ async fn unchanged_provider_refresh_after_certificate_expiry_reuses_catalog_and_
             tacacs_plus: TacacsPlus::empty(),
             validation_options: ValidationOptions::default(),
             runtime_policy: tacacsrs_agent::RuntimePolicy::default(),
-            disable_certificate_verification: true,
+            certificate_verification:
+                tacacsrs_networking::CertificateVerification::DisabledForDevelopment,
         },
         health.clone(),
     )?);
@@ -1018,7 +1022,9 @@ async fn caller_deadline_controls_stalled_tls_after_client_certificate_expiry() 
     let fixture = certificate_source(listener.local_addr()?, Duration::from_secs(2))?;
     let endpoint = prepare_endpoint(
         &fixture.source.server[0],
-        PrepareOptions::default().with_certificate_verification_disabled(true),
+        PrepareOptions::default().with_certificate_verification(
+            tacacsrs_networking::CertificateVerification::DisabledForDevelopment,
+        ),
     )?;
     let client = TacacsClient::connect_prepared(endpoint).await?;
     let (connected, accepted) = tokio::sync::oneshot::channel();
@@ -1056,13 +1062,7 @@ async fn client_certificate_expiry_between_tcp_and_handshake_sends_no_tls_bytes(
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let fixture = certificate_source(listener.local_addr()?, Duration::from_secs(2))?;
     let certificate = fixture.certificate.as_slice();
-    let endpoint = PreparedEndpoint::tcp(
-        listener.local_addr()?.to_string(),
-        false,
-        None,
-        tacacsrs_networking::ConnectOptions::default(),
-    )
-    .with_certificate_tls(
+    let config = tacacsrs_networking::TlsClientConfig::prepare(
         "localhost",
         None,
         tacacsrs_networking::CertificateTrust::Certificates {
@@ -1076,7 +1076,15 @@ async fn client_certificate_expiry_between_tcp_and_handshake_sends_no_tls_bytes(
             private_key: &fixture.private_key,
             private_key_encoding: tacacsrs_networking::PrivateKeyEncoding::Pkcs8,
         }),
-    )?
+        tacacsrs_networking::CertificateVerification::Required,
+    )?;
+    let endpoint = PreparedEndpoint::new(
+        listener.local_addr()?.try_into()?,
+        tacacsrs_networking::PreparedTransport::Tls(config),
+        false,
+        None,
+        tacacsrs_networking::ConnectOptions::default(),
+    )
     .with_connection_guard(DelayConnected(Duration::from_secs(3)));
     let peer = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await?;
@@ -1103,13 +1111,7 @@ async fn client_certificate_expiry_in_destination_guard_prevents_tcp_attempt() -
     let fixture = certificate_source(listener.local_addr()?, Duration::from_secs(3))?;
     let certificate = fixture.certificate.as_slice();
     let guard_invoked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let endpoint = PreparedEndpoint::tcp(
-        listener.local_addr()?.to_string(),
-        false,
-        None,
-        tacacsrs_networking::ConnectOptions::default(),
-    )
-    .with_certificate_tls(
+    let config = tacacsrs_networking::TlsClientConfig::prepare(
         "localhost",
         None,
         tacacsrs_networking::CertificateTrust::Certificates {
@@ -1123,7 +1125,15 @@ async fn client_certificate_expiry_in_destination_guard_prevents_tcp_attempt() -
             private_key: &fixture.private_key,
             private_key_encoding: tacacsrs_networking::PrivateKeyEncoding::Pkcs8,
         }),
-    )?
+        tacacsrs_networking::CertificateVerification::Required,
+    )?;
+    let endpoint = PreparedEndpoint::new(
+        listener.local_addr()?.try_into()?,
+        tacacsrs_networking::PreparedTransport::Tls(config),
+        false,
+        None,
+        tacacsrs_networking::ConnectOptions::default(),
+    )
     .with_connection_guard(DelayDestinationUntilCertificateExpires {
         expires_at: fixture.expires_at,
         invoked: guard_invoked.clone(),

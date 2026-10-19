@@ -230,7 +230,7 @@ TacacsPlusServer (YANG config)
 tacacsrs_config::prepare::prepare_endpoint()
   │  projects identity, key, hash, groups, and optional server name
         ▼
-PreparedEndpoint::with_psk(identity, key, hash, groups, server_name)
+PskClientConfig::prepare(identity, key, hash, groups, server_name)
   │  validates native inputs without reading YANG fields
         │
         ▼
@@ -238,7 +238,10 @@ PreparedEndpoint::with_psk(identity, key, hash, groups, server_name)
         │  SslContext: TLS 1.3 only, VERIFY_NONE, PSK use-session callback,
         │  hash-matched ciphersuite, optional psk-dhe-ke groups
         ▼
-PskClientConfig::connect(address, server_name, tcp_stream)
+      PreparedEndpoint::new(address, PreparedTransport::Psk(config), ...)
+        │  finalizes one transport without changing the prepared security policy
+        ▼
+PskClientConfig::connect(address, tcp_stream)
         │  OpenSSL performs TLS 1.3 PSK handshake
         ▼
 SslStream<TcpStream> implements Transport

@@ -114,8 +114,13 @@ async fn build_backend(cli: &Cli, command: &Command) -> anyhow::Result<Backend> 
     }
 
     let server = config::resolve_server_for_command(cli, command)?;
-    let options = PrepareOptions::default()
-        .with_certificate_verification_disabled(cli.insecure_disable_certificate_verification);
+    let options = PrepareOptions::default().with_certificate_verification(
+        if cli.insecure_disable_certificate_verification {
+            tacacsrs_networking::CertificateVerification::DisabledForDevelopment
+        } else {
+            tacacsrs_networking::CertificateVerification::Required
+        },
+    );
 
     let connection = if cli.dedicated {
         // Dedicated mode uses a minimal TCP or TLS connection with no background
@@ -153,8 +158,13 @@ async fn run_batch_mode(cli: &Cli, batch_path: &Path) -> anyhow::Result<()> {
         .required_server_type()
         .unwrap_or(TacacsPlusServerType::ACCOUNTING);
     let server_config = config::resolve_server_for_type(cli, required_type)?;
-    let options = PrepareOptions::default()
-        .with_certificate_verification_disabled(cli.insecure_disable_certificate_verification);
+    let options = PrepareOptions::default().with_certificate_verification(
+        if cli.insecure_disable_certificate_verification {
+            tacacsrs_networking::CertificateVerification::DisabledForDevelopment
+        } else {
+            tacacsrs_networking::CertificateVerification::Required
+        },
+    );
     let results = batch::execute_batch(&server_config, cli.dedicated, &batch_file, options).await?;
 
     finish_batch(&results)

@@ -429,8 +429,9 @@ mod tests {
 
     #[tokio::test]
     async fn stale_shared_rejection_preserves_replacement_and_capability() {
-        let client = TacacsClient::from_prepared(crate::PreparedEndpoint::tcp(
-            "127.0.0.1:49",
+        let client = TacacsClient::from_prepared(crate::PreparedEndpoint::new(
+            crate::ServerAddress::parse("127.0.0.1:49", 49).unwrap(),
+            crate::PreparedTransport::Tcp,
             true,
             None,
             crate::ConnectOptions::default(),

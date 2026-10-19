@@ -542,13 +542,7 @@ mod tests {
         let listener = bounded_native_io(tokio::net::TcpListener::bind("127.0.0.1:0"))
             .await
             .unwrap();
-        let endpoint = crate::PreparedEndpoint::tcp(
-            listener.local_addr().unwrap().to_string(),
-            false,
-            None,
-            crate::ConnectOptions::default(),
-        )
-        .with_certificate_tls(
+        let config = crate::TlsClientConfig::prepare(
             "localhost",
             None,
             crate::CertificateTrust::Certificates {
@@ -556,8 +550,16 @@ mod tests {
                 end_entities: &[],
             },
             None,
+            crate::CertificateVerification::Required,
         )
         .unwrap();
+        let endpoint = crate::PreparedEndpoint::new(
+            listener.local_addr().unwrap().try_into().unwrap(),
+            crate::PreparedTransport::Tls(config),
+            false,
+            None,
+            crate::ConnectOptions::default(),
+        );
         let owner = endpoint.counters();
         let server_handshake_barrier = Arc::new(tokio::sync::Barrier::new(2));
         let client_handshake_barrier = Arc::new(tokio::sync::Barrier::new(2));

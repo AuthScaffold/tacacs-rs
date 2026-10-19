@@ -6,7 +6,7 @@ async fn diagnostics_handle_does_not_retain_the_agent_runtime() {
             tacacs_plus: tacacsrs_config::TacacsPlus::empty(),
             validation_options: tacacsrs_config::ValidationOptions::default(),
             runtime_policy: crate::RuntimePolicy::default(),
-            disable_certificate_verification: false,
+            certificate_verification: tacacsrs_networking::CertificateVerification::Required,
         },
         crate::RuntimeHealthPublisher::new(crate::EnabledServices::CLIENT_API),
     )
@@ -89,7 +89,7 @@ fn service_config(
             Duration::from_millis(50),
         )
         .expect("test runtime policy"),
-        disable_certificate_verification: false,
+        certificate_verification: tacacsrs_networking::CertificateVerification::Required,
     }
 }
 

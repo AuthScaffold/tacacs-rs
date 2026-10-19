@@ -1,12 +1,14 @@
 use std::path::Path;
 
 use anyhow::Context;
+
+use tacacsrs_networking::ServerAddress;
+
 use crate::{
     TacacsPlus, TacacsPlusBuilder, TacacsPlusServer, TacacsPlusServerBuilder, ValidationOptions,
 };
 use crate::builders::{DEFAULT_TACACS_TCP_PORT, DEFAULT_TACACS_TLS_PORT};
 
-use super::address::parse_host_port;
 use super::files::{load_client_certificate, load_client_private_key};
 use super::model::{
     CertKeyIdentity, CliConfigSource, CliDatastoreInput, CliSecurity, CliSecurityMode,
@@ -81,10 +83,15 @@ fn server_from_cli_input(
         CliSecurityMode::PlainTcp => DEFAULT_TACACS_TCP_PORT,
         _ => DEFAULT_TACACS_TLS_PORT,
     };
-    let (host, port) = parse_host_port(&input.address, default_port)?;
-    let builder = TacacsPlusServerBuilder::new(&input.name, input.server_type, host, port)
-        .with_timeout(input.timeout_seconds)
-        .with_single_connection(input.single_connection);
+    let address = ServerAddress::parse(&input.address, default_port)?;
+    let builder = TacacsPlusServerBuilder::new(
+        &input.name,
+        input.server_type,
+        address.host().into_owned(),
+        address.port(),
+    )
+    .with_timeout(input.timeout_seconds)
+    .with_single_connection(input.single_connection);
 
     let shared_secret = security.shared_secret.as_ref();
     let mut server = match &security.mode {
@@ -192,6 +199,10 @@ mod tests {
             "[::1]ignored",
             "[::1",
             "server.example.test:bad",
+            "localhost:0",
+            "[::1]:0",
+            "host%zone",
+            "fe80::1%eth0",
         ] {
             assert!(
                 server_from_cli_input(
@@ -237,9 +248,12 @@ mod tests {
             };
             for (address, port) in [
                 ("server.example.test", expected_port),
+                ("server.example.test.", expected_port),
                 ("192.0.2.20", expected_port),
                 ("[2001:db8::1]", expected_port),
                 ("2001:db8::1", expected_port),
+                ("::1:49", expected_port),
+                ("::ffff:127.0.0.1", expected_port),
                 ("server.example.test:449", 449),
                 ("192.0.2.20:9449", 9449),
                 ("[2001:db8::1]:9449", 9449),
@@ -251,6 +265,10 @@ mod tests {
                 )
                 .unwrap();
                 assert_eq!(server.port, port, "{address}, {:?}", security.mode);
+                assert_eq!(
+                    server.address,
+                    ServerAddress::parse(address, expected_port).unwrap().host(),
+                );
             }
         }
     }

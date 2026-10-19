@@ -60,7 +60,7 @@ impl tacacsrs_networking::routed::EndpointConnector for NetworkUpstreamConnector
         endpoint: PreparedEndpoint,
         operation: OperationKind,
     ) -> anyhow::Result<Arc<Self::Connection>> {
-        let address = endpoint.address().to_owned();
+        let address = endpoint.address().to_string();
         let connection = TacacsClient::connect_prepared(
             endpoint.with_connection_guard(self.proxy_loop_guard.clone()),
         )

@@ -198,7 +198,7 @@ impl tacacsrs_networking::routed::EndpointConnector for OperationConnector {
         if !self.connect_delay.is_zero() {
             tokio::time::sleep(self.connect_delay).await;
         }
-        let address = endpoint.address().to_owned();
+        let address = endpoint.address().to_string();
         *self
             .attempts
             .lock()
