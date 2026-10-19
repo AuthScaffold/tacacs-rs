@@ -1131,7 +1131,9 @@ The flagged validators check presence or emptiness, and production materializati
 The coordinator posted evidence reply `4312302950`, dismissed only alert `203` as `used in tests`, and verified that the corresponding thread is resolved.
 The current alert state is dismissed; its instance endpoint can retain the historical open observation.
 The PR-scoped open-alert query returned no findings. No source suppression or production change was made.
-Required workflow `39229336104` was still in progress at that observation.
+Required workflow `39229336104` subsequently passed on head `35d9924a089beb818c65937eee6e4e319b486e41`.
+After verifying resolved conversations, no open PR-scoped alerts, and clean mergeability, PR #281 was squash-merged as `6602e12ff23065abeb3815b29b38be307e008d3c`.
+The merge used an exact reviewed-head guard and a description covering typed installation, provider contracts, validation, and the test-only alert disposition.
 
 #### Planned Acceptance Criteria
 
@@ -1154,9 +1156,75 @@ Checks: resolution/materialization/source-immutability tests, provider suites, d
 
 ### 05: Candidate Budgets
 
-Status: planned. Scope: R14 admission and configuration-material phase.
+Status: implemented; both named reviews cover the final complete content manifest. Final common local gates passed.
+Scope: R14 admission and configuration-material phase.
 Iteration 10 completes R14 through prepared-runtime accounting and native preparation lock ownership.
 Do not close R14 after this iteration alone.
+
+#### Implementation And Review Receipt
+
+Worktree: `/home/vscode/tacacs-rs-05-candidate-budgets`; branch: `refactor/general-iterations/05-candidate-budgets`.
+Starting head: `35d9924a089beb818c65937eee6e4e319b486e41`; publication will use the predecessor's squash-equivalent main base.
+The review inventory includes 46 changed/new/deleted paths: 42 tracked paths plus four initially untracked files.
+The complete content manifest hashes sorted changed/new paths, a NUL, each current file's SHA-256 or `<deleted>`, and a newline.
+It excludes only the three tracking-document paths. A tracked diff alone does not cover the new implementation files.
+
+Implementation provides canonical generated candidate limits, checked configuration payload accounting, absolute admissions, bounded preparation ownership, registered provider work, and a final precommit fence.
+`WorkScope` is scheduler-independent and opaque. Only `register()` creates another lease while open; cancellation sealing prevents new registration.
+SONiC retains leases through actual queued/running blocking work and queued results, with payload disposal before capacity release.
+HTTP fallback receives the same scope. Unobservable SDK/filter/OS DNS work remains outside the registered-work guarantee.
+Candidates use canonical server order, preflight every selected slot before provider entry, and reject oversized handoffs before accumulating further results.
+The final tighter-policy fence precedes retirement cutoffs, snapshot, health, and bookkeeping changes. Postcommit retirement cannot erase `Published`.
+
+Required accepted model reviews ran sequentially:
+
+1. `GPT-6 Astra (copilot)` reviewed complete manifest `d4eff9bc04bff36b96645d0748a6f840e6bab2e15cdad5f31fa796cfbbd802df`.
+	It fixed candidates starting filters or provider work after closure while waiting for capacity.
+	Its output was `b743da63c5f20c8a70eac6072a6a3bcb46b4e6c5c2209a42dbde7693be6c5711`.
+2. `Claude Opus 5.5 (copilot)` fixed installation rejection caused by unrelated state-lock contention, using the revision watch for the private installation fence.
+	It also removed unrestricted scope cloning, making registration/sealing enforceable through the public API.
+	Its output was `46625b0dc49070763ee3c3f5a6b1194b4bf30a0e65faeb606f1d815308e0418b`.
+3. Astra reviewed those material revisions and accepted the same unchanged final complete manifest.
+
+The final tracked-patch hash is separately `ece90178669d6fc5d886e482557c96f9545c4cc966fb066d5380e8fbf9f1d5e0`.
+The coordinator independently reran closure-after-wait, unrelated-lock installation, and sealed-scope doctest checks and verified all changed/new contents.
+
+Failed-before evidence includes complete request preflight/canonical ordering, SONiC queued-payload disposal, closed-service admissions, and false rejection under an unrelated state lock.
+Tests cover exact/plus-one limits, inline/bundle/retained payload, provider handoff, deadline nonrenewal, tighter policy, lock waits, postcommit success, cancellation barriers, and 1,000-event bursts.
+The three-loop stress test reported exactly three bounded waiters; no unbounded expanded candidate queue is introduced.
+
+Real pinned clean regeneration ran twice with matching artifacts:
+
+- Generated Rust: `0ccbca284f2cca1a08ee96e738730a44773a03137afe1e909f2bd1210823bed9`.
+- Expanded tree: `40c655f4be4b2dc964a99e33d075b4aef9827ae3233780c773cc1f51b6393361`.
+- Generation manifest: `5a8b1c4cd75b73d060a617af11bf5e3049ada2d3445fcaca3b08f0d29ddb5a1c`.
+- Unchanged secret annotations: `223ac5374a618666581a11bf8bc2c15acec7ef41b0b64b5ee97b80adb11b9fb0`.
+
+The project YANG revision advances to 2026-10-19. Generated Rust was not edited manually.
+Scoped evidence also includes two neutral-work Miri tests, 48 native prepared-source cases, and nine independent TACACS+ peer scenarios.
+Root-dependent and Redis early returns are not execution claims.
+
+#### Coordinator Final Gate Receipt
+
+The complete final sequence used `/home/vscode/.cache/tacacs-rs-05-candidate-budgets` and emitted `ALL_ITERATION_05_GATES_PASSED`:
+
+```bash
+cargo +nightly fmt --all -- --check
+cargo +nightly clippy --workspace --all-targets --all-features --locked -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo +stable doc --workspace --no-deps --all-features --document-private-items --locked --quiet
+cargo +stable build --workspace --locked --quiet
+cargo +stable test --workspace --all-features --locked --quiet
+cargo +1.88.0 check --workspace --all-targets --all-features --locked --quiet
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s libraries/tacacsrs_config/yang -p 'test_*.py' -q
+PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider -q .github/steps/cargo-metadata .github/steps/check-architecture .github/steps/compute-versions .github/steps/inject-versions .github/steps/release-manifest
+git diff --check
+```
+
+There were no Rust failures and ten existing ignored tests. All 26 generator and 256 selected delivery tests passed.
+Hosted Windows/ARMhf checks, publication, and GitHub Copilot review remain required on the published head.
+No dependency versions, Cargo manifests, Cargo.lock, operator systems, or implementation tracking documents changed.
+
+#### Canonical Contract And Acceptance
 
 The detailed source reviews accepted a non-presence `runtime-policy/candidate-preparation` container with three positive `uint32` leaves:
 
