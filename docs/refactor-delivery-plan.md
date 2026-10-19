@@ -1694,7 +1694,9 @@ The guarded squash specified that exact reviewed head. GitHub returned `merged: 
 Fetched `origin/main` equals tested tree `9c03e697aa8a65e10d750145048f4998d6fbfe0c`.
 Iteration 08 integrated the squash through normal merge `e0d1ccb183b2e0bf43f3fb80841fc7d5ecd1a263`, preserving its tested tree exactly.
 All 49 observer source tests passed again. Iteration 09 fast-forwarded its parent without changing its patch.
-Cleanup of iteration 07 follows preservation of this receipt.
+After preserving this receipt, the clean idle iteration 07 worktree was removed without force.
+Its exact owned 12 GiB cache and completed PR/squash-description temporary files were removed.
+Branches, review history, active iterations 08 and 09, and the diagnostics checkout remain intact.
 
 Move lease-only admission operations onto captured requests and outcome recording onto bindings.
 Remove behavior-free router/manager forwarding and unnecessary router retention from attempts.
@@ -1779,7 +1781,9 @@ Copilot review was requested on that head. Required workflow `39299324444` is in
 Pending predecessor checks and an initial empty comment list do not establish merge readiness.
 Initial Copilot review `5575691546` on `e2e39c19bf81f9b720ee9bb7e09160287061de1e` reported no open issues, with platform validation still required.
 After predecessor merge, normal integration head `e0d1ccb183b2e0bf43f3fb80841fc7d5ecd1a263` retains complete tested tree `4c6eac3601670343a020ae21b252b2f404b201ef` exactly.
-All 49 source tests passed again. Final-head publication, retargeting, fresh review, and required CI remain pending.
+All 49 source tests passed again. The normal integration head was published and PR #285 now targets `main`, with exactly four implementation files.
+Fresh Copilot review `5575934709` on `e0d1ccb183b2e0bf43f3fb80841fc7d5ecd1a263` reports no open issues and recommends approval; all threads are resolved.
+Current-head required workflow `39302494582` is in progress. Hosted Windows and ARMhf remain merge gates, not assumed results.
 
 Extract one private owned file-observation mechanism for debounce, retained reads, failure priority, and cleanup.
 Keep separate configuration and policy parsing, events, and accepted-snapshot state.
@@ -1797,13 +1801,74 @@ Checks: both existing watcher suites, native lifecycle cases, Windows watcher CI
 
 ### 09: Coordinator State
 
-Status: planned. Scope: R8. This iteration does not move preparation across locks.
+Status: published as staged PR #286 on predecessor `e0d1ccb183b2e0bf43f3fb80841fc7d5ecd1a263`; both named reviews accepted the unchanged source.
+Coordinator final workspace gates passed.
+Scope: R8. This iteration does not move preparation across locks.
 
 Local preflight confirms dependency knowledge currently uses `Option<BTreeMap<...>>`: `None` is unknown and `Some(empty)` is known-empty.
 Known-empty does not fall through to an all-server selection. Preserve scheduled-refresh suppression and unknown-source invalidation behavior.
 Applied empty catalogs have an active revision. Withdrawn state clears that active revision and retains a separate withdrawn revision.
 Use existing dependency-index, independent-revision, partial-refresh, and expiry tests as the first discriminating checks.
 Keep existing behavior assertions unchanged; adapt private fixture access only when the state representation requires it.
+
+#### Initial Implementation Receipt
+
+Worktree: `/home/vscode/tacacs-rs-09-coordinator-state`; branch: `refactor/general-iterations/09-coordinator-state`.
+Only the coordinator implementation and its existing test module are modified. No files are added or deleted.
+`DesiredRuntime::{Unfiltered, Filtered}` groups runtime projection, proxy policy, and dependency knowledge.
+`DependencyKnowledge::{Unknown, Known}` preserves known-empty maps without nested optional maps.
+`PublishedMaterial` distinguishes never-published, applied, and withdrawn state. Applied empty catalogs retain their revision.
+Applied material groups servers, lifetimes, revision, and reference knowledge; withdrawn material retains its revision, expiry flags, and reference knowledge.
+Raw source, admission, freshness, and pending-refresh state keep their existing independent meanings.
+The types exclude split source/policy presence and simultaneous applied/withdrawn state. Server/lifetime key coherence remains a transition invariant.
+Rejection still retains raw source; unavailability retains the projection. Expiry still reads validity from health.
+Publication bookkeeping remains in the existing non-awaiting atomic callback. Preparation awaits, locks, revision fences, selection, notifications, budgets, and ordered payload ownership are unchanged.
+
+The first edit immediately passed the exact dependency-index test: one selected case.
+Subsequent coordinator checks passed 27, 27, and then 32 cases as the type-only migration progressed.
+Five characterization tests were added. Two existing assertions received mechanical projection-access changes; expected values, timing assertions, and skips are unchanged.
+The final agent suite passed 242 cases without ignores. A focused coverage rerun also passed all 242 cases.
+Connector tests passed four cases. The generic compiler fixture passed; its monomorphic counterpart failed with the expected Send generality diagnostic.
+Strict agent Clippy, private docs, MSRV checks, formatting, 35 architecture tests, diagnostics, and whitespace validation passed.
+Coordinator line coverage was 765/790, or 96.84%. This is focused coverage, not a complete state-proof claim.
+No Miri, fuzz, or YANG generation check was needed for this safe type-only change. Windows and ARM execution are not claimed.
+
+The complete changed-content manifest is `63b323c37b132f14509172e76a0f34e0c738759b1ee47bd4efb2bc41d1a91c40`.
+The separate tracked binary patch SHA-256 is `fcae0f2bac55b006f9e2f70a2842e8a5a47bd2f93b6778393e79d021185cc0e2`.
+Parent fast-forward preserved that patch byte for byte. Both named reviews and full final workspace gates remain pending.
+
+#### Named Review Receipt
+
+`GPT-6 Astra (copilot)` reviewed both files and the old-to-new transition mapping without finding an actionable issue or making edits.
+It independently passed all 32 coordinator tests and 242 agent tests, with no failures or ignores.
+`Claude Opus 5.5 (copilot)` reviewed the same unchanged source and also found no actionable issue.
+It passed the same 32 coordinator and 242 agent tests, strict agent Clippy, formatting, and whitespace checks.
+Both reviews cover complete content manifest `63b323c37b132f14509172e76a0f34e0c738759b1ee47bd4efb2bc41d1a91c40`.
+The separate binary patch remains `fcae0f2bac55b006f9e2f70a2842e8a5a47bd2f93b6778393e79d021185cc0e2`.
+Both confirmed unchanged default, rejection, unavailability, dependency selection, refresh coalescing, publication, and expiry behavior.
+Preparation still holds the existing locks. Callback and ordered payload/lease disposal behavior remain unchanged.
+The types remove split source/policy presence, simultaneous applied/withdrawn state, and active servers or lifetimes after withdrawal.
+Server/lifetime key coherence, withdrawn expiry validity, and reference-flag consistency remain transition invariants, not complete type-level guarantees.
+No new raw-source logging or secret-bearing Debug derivation was added.
+#### Coordinator Final Gate Receipt
+
+The complete sequence used `/home/vscode/.cache/tacacs-rs-09-coordinator-state` and emitted `ALL_ITERATION_09_GATES_PASSED`.
+Formatting, strict nightly workspace Clippy, warning-free private docs, stable build, all-feature tests, and Rust 1.88 all-target checks passed.
+All 26 YANG tests and 256 selected delivery tests passed. Whitespace checks passed and the reviewed patch hash is unchanged.
+The run included 242 agent tests, 127 configuration unit tests, 257 passing networking unit tests, and all 55 native prepared-source cases.
+Ten existing ignored Rust tests remain excluded. No validation process remains active.
+The inherited private rustup home automatically installed stable 1.99.1 and Rust 1.88.0 during the run; both required checks completed successfully.
+The normal rustup home was restored afterward. Future normal gate commands pin it explicitly; private Clippy selection stays command-scoped.
+No product MSRV or dependency changed. Current-head hosted Windows and ARMhf checks remain required.
+
+#### Publication Receipt
+
+[PR #286](https://github.com/AuthScaffold/tacacs-rs/pull/286) targets `refactor/general-iterations/08-file-observation`.
+Published head `902f42c5394997f27ed629d3c04a4ec21deca0cb` has tested tree `954ffdc1d3c79379d8e8a1076acd919d32934a44`.
+The remote PR reports exactly two implementation files, the `skip-release` label, and no tracking documents.
+Copilot review was requested on that head. Required workflow `39307226464` is in progress.
+The predecessor's current-head ARMhf job `118231498136` and Windows testing job `118234023765` passed; its full workflow still needs final success.
+Neither those partial results nor an initial empty comment list establish merge readiness for this PR.
 
 Group filtered source, proxy policy, and dependency knowledge into explicit state.
 Group applied material and revision separately from withdrawn material.
@@ -1823,6 +1888,13 @@ Checks: unchanged coordinator/publication/supervisor regressions, connector proo
 ### 10: Prepared Publication
 
 Status: planned. Scope: R7 and R14 prepared-runtime completion, built on iterations 05 and 09.
+
+Local preflight anchor: `PreparedServer::new` calls `prepare_endpoint` synchronously inside catalog reload while service and coordinator publication locks are also held.
+Use the existing native-preparation pause barrier for the first failed-before check: expiry or shutdown must progress while preparation remains paused.
+Cancellation must retain the preparation slot through actual worker completion and queued payload disposal.
+`Preparation` currently owns its ledger directly and seals work registration on final owner drop. Preserve prompt sealing when native work retains capacity.
+Do not solve worker lifetime by accidentally retaining an unsealed admission owner or detaching unaccounted payloads.
+No iteration 10 implementation or worktree exists yet. The shared observer and typed coordinator remain separate preceding changes.
 
 Carry source metadata, prepared endpoint identity, validity, budgets, and admitted revisions in one derived candidate.
 Move native preparation outside coordinator state and publication locks while keeping preparation concurrency explicitly bounded.
