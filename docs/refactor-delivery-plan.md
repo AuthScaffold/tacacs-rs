@@ -918,7 +918,11 @@ Hosted checks for iteration 02 are not yet claimed. Privileged or external-servi
 
 Status: implemented; both named reviews cover the final source. Final common workspace gates passed. Scope: R4 and R11.
 Worktree: `/home/vscode/tacacs-rs-03-endpoint-addresses`; branch: `refactor/general-iterations/03-endpoint-addresses`.
-Starting head: `a8ce6952c932becd2e0ad01c061caefa6130c65c`. The unpublished iteration will move onto its predecessor squash before publication.
+Published as [PR #280](https://github.com/AuthScaffold/tacacs-rs/pull/280) against `main` at head `1ed047f79f40a93c788f125b7728eb4108f2ce0b`.
+The parent is predecessor squash `7d60ee481554ed98234b51a18d99475cf76939f7`.
+The complete retargeted tree equals tested checkpoint `a387c4313aa7f594368cc19dc9e5a4d7e1abeac7`.
+The PR has 41 implementation/product-documentation paths and no tracking documents.
+GitHub Copilot review was requested; required workflow `39216146715` is in progress, not yet claimed green.
 Final reviewed source-diff SHA-256: `3efcef8fbdb4aa5a629e169512bc0123510ab59b86313a81f98ebc5bc4780c01`.
 The fingerprint excludes all three tracking-document paths, which remain absent from the implementation worktree.
 
