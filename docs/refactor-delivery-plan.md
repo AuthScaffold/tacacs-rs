@@ -1815,7 +1815,7 @@ Checks: both existing watcher suites, native lifecycle cases, Windows watcher CI
 
 ### 09: Coordinator State
 
-Status: published as PR #286; integration head `49055f56925e0215a9120d36044cd1900a730b0c` preserves the source accepted by both named reviews.
+Status: squash-merged as `b09c15b3242c7c633138ff3c5018ba338ccdc7bc`; both named reviews and final local and hosted gates passed.
 Coordinator final workspace gates passed.
 Scope: R8. This iteration does not move preparation across locks.
 
@@ -1893,6 +1893,20 @@ Attempt 2 subsequently completed successfully, including ARMhf job `118276795438
 The required check uses GitHub Actions app `15368`, as branch protection requires. The rollup is successful, all threads are resolved, and the PR-scoped alert query is empty.
 Strict base comparison reports zero commits behind, and no additional branch rules were returned.
 GitHub still reports a blocked merge state at the latest observation. The PR remains unmerged; no requirement was disabled or bypassed.
+A single content-preserving CI refresh commit, `49e49162f5fc3cb2f5591202854082059337910c`, now triggers fresh checks and review without changing tested tree `954ffdc1d3c79379d8e8a1076acd919d32934a44`.
+Its current Copilot review `5577982340` reports no open issues. Required workflow `39327284920` is in progress; earlier-head success does not clear this head.
+Iteration 10 fast-forwarded that metadata-only parent change, and its complete source fingerprint stayed unchanged.
+
+#### Merge Receipt
+
+Fresh current-head workflow `39327284920` succeeded on `49e49162f5fc3cb2f5591202854082059337910c` and GitHub reported a clean merge state.
+ARMhf job `118316352728`, Windows testing job `118319083698`, and both CI-success gates passed.
+Copilot review `5577982340` had no open issues. All threads were resolved and the PR-scoped open-alert query was empty.
+The guarded squash specified that exact cleared head. GitHub returned `merged: true` and squash `b09c15b3242c7c633138ff3c5018ba338ccdc7bc`.
+Fetched `origin/main` equals unchanged tested tree `954ffdc1d3c79379d8e8a1076acd919d32934a44`.
+Iteration 10 integrated the squash through normal merge `15052b7ec93cb795ecaabbd611427267077058e5` without changing its complete 30-file fingerprint.
+Its eight focused native ownership cases and four disposal cases passed again with Rust 1.88.
+Iteration 09 cleanup follows preservation of this receipt. No branch protection or required check was bypassed.
 
 Group filtered source, proxy policy, and dependency knowledge into explicit state.
 Group applied material and revision separately from withdrawn material.
@@ -1911,7 +1925,8 @@ Checks: unchanged coordinator/publication/supervisor regressions, connector proo
 
 ### 10: Prepared Publication
 
-Status: implementation and scoped validation complete on reviewed predecessor `49055f56925e0215a9120d36044cd1900a730b0c`; named reviews and coordinator final gates are pending.
+Status: implementation, scoped validation, both named reviews, and material concurrency-repair follow-up are complete on predecessor `49e49162f5fc3cb2f5591202854082059337910c`.
+Coordinator full-workspace gates passed. R14 remains open pending current-head hosted verification and final merge review.
 Worktree: `/home/vscode/tacacs-rs-10-prepared-publication`; branch: `refactor/general-iterations/10-prepared-publication`.
 Scope: R7 and R14 prepared-runtime completion, built on iterations 05 and 09.
 
@@ -1961,6 +1976,46 @@ Complete changed-content manifest: `73bce56e175ae07c3e7587802151f0eb87ee3bdaa526
 Separate tracked binary patch SHA-256: `2255d05b268f2f45354be5972d913475ca7047f8b9107c385dbd95db7c3b27af`.
 The new file is included in the complete manifest, not the tracked-only patch.
 Both named reviews, final full-workspace checks, and current-head hosted gates remain pending. R14 remains open until those results and ownership claims are verified.
+
+#### Named Reviews And Concurrent Disposal Repair
+
+`GPT-6 Astra (copilot)` reviewed all 30 paths, including the new payload module, and accepted the initial implementation without edits.
+It independently passed 37 coordinator tests, 813 scoped tests, connector proofs, strict Clippy, formatting, and whitespace checks.
+`Claude Opus 5.5 (copilot)` identified a new concurrent-disposal race: reference-count checks could miss cleanup when final catalog or slot owners dropped together.
+The current agent path avoided that interleaving, but the public cloned-client contract did not. A deterministic test-only synchronization hook was permitted.
+
+Astra added two regressions that force both old cleanup checks before either owner releases its fields.
+Both cases failed before the repair and passed afterward with `the final slot owner must unregister its unused lifecycle` as the original failure.
+Cleanup now runs from the actual final `EndpointSlot::drop` through a weak runtime reference, not an observed strong count.
+Shared active catalogs and cached connections remain registered. Runtime-before-slot disposal is safe and creates no ownership cycle.
+Registry removal cannot destroy the lifecycle under the registry lock because the slot still owns it. Endpoint payload and names still precede their accounting guards in disposal order.
+Only routed catalog, client, and lifecycle files changed during this repair; the other 27 reviewed paths remain byte-identical.
+
+Postrepair scoped suites passed 817 cases with two existing manual benchmarks ignored. All 55 native cases and nine independent peer scenarios passed again.
+Four pure disposal Miri tests passed with isolation disabled for existing counter clock access; no native FFI interpretation is claimed.
+Strict Clippy, MSRV checks, private docs, formatting, and focused coverage passed.
+Covered routed lines, including tests, were catalog 91/92, client 1045/1064, and lifecycle 569/609.
+Opus directly reviewed the material repair without further edits and passed 24 routed tests plus ten repetitions of the four disposal cases.
+It confirmed final-slot cleanup, pointer identity, lock order, accounting retention, and unchanged active/setup/cleanup/retirement behavior.
+
+An existing public-client limitation remains: callers that drop active catalogs without retirement can retain unfinished lifecycle registrations until explicit close/join.
+This behavior predates the change and does not occur for unpublished supervised candidates. It is not silently treated as a new automatic-retirement guarantee.
+The ledger's replacing charges still precede all incremental native reservations; no new concurrent setter contract is claimed.
+Concurrent unmanaged reloads can now reject stale catalog preparation rather than serialize all preparation. That visible, safe behavior is within the accepted breaking-change scope.
+
+Both reviews remain valid for final complete content manifest `2a2d6a6154c15ece3442b8410f59d6f9612fde5033992518f57f37fc59e7b650`.
+The final tracked binary patch SHA-256 is `0b38e9bc7cd0b0387d677001dc0d848bd0831fd0650603b7b539a48fd1a40fb9`.
+The new payload file remains part of the complete manifest. It must be included in the eventual implementation commit.
+#### Coordinator Final Gate Receipt
+
+The complete sequence used `/home/vscode/.cache/tacacs-rs-10-prepared-publication` with pinned `RUSTUP_HOME=/usr/local/rustup` and emitted `ALL_ITERATION_10_GATES_PASSED`.
+Formatting, strict nightly workspace Clippy, warning-free private docs, stable build, all-feature tests, and Rust 1.88 all-target checks passed.
+All 26 YANG tests and 256 selected delivery tests passed. Whitespace checks passed.
+The run included 250 agent tests, 128 configuration unit tests, 264 passing networking unit tests, and all 55 native prepared-source cases.
+Ten existing ignored Rust tests remain excluded. The existing optional `console-subscriber` manifest advisory did not fail Clippy.
+No local validation process remains active. The full content fingerprint stayed unchanged through final gates and predecessor integration.
+Current integration head is `15052b7ec93cb795ecaabbd611427267077058e5`; the complete implementation is still uncommitted.
+Current-head GitHub review, hosted Windows/ARMhf and required CI, and final merge remain pending. R14 is not yet marked closed.
 
 Carry source metadata, prepared endpoint identity, validity, budgets, and admitted revisions in one derived candidate.
 Move native preparation outside coordinator state and publication locks while keeping preparation concurrency explicitly bounded.
