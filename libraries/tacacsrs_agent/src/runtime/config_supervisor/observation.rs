@@ -161,7 +161,7 @@ impl ConfigSupervisor {
         admission: CandidateAdmission,
     ) -> Result<PublicationOutcome, ()> {
         let coordinator = &self.materialization_coordinator;
-        let filtered = async {
+        let accepted = async {
             let preparation = coordinator.acquire_preparation(admission).await?;
             self.service.ensure_open()?;
             anyhow::ensure!(
@@ -185,12 +185,19 @@ impl ConfigSupervisor {
                 .checked_add(proxy_bytes)
                 .ok_or_else(|| anyhow::anyhow!("candidate payload size overflow"))?;
             preparation.with_ledger(|ledger| ledger.retain_extra(bytes))?;
-            Ok::<_, anyhow::Error>((filtered, preparation))
+            let attempt = admission
+                .run(coordinator.accept_filtered_source(
+                    revision,
+                    filtered.tacacs_plus,
+                    filtered.proxy_downstream_obfuscation,
+                ))
+                .await?;
+            Ok::<_, anyhow::Error>((attempt, preparation))
         }
         .await;
-        let Ok((filtered, preparation)) = filtered else {
+        let Ok((attempt, preparation)) = accepted else {
             log::warn!(
-                "Datastore '{}' configuration candidate was rejected by runtime filtering",
+                "Datastore '{}' configuration candidate was rejected during filtering or projection acceptance",
                 self.datastore.label(),
             );
             return if coordinator.reject_source(revision, &self.health).await {
@@ -199,15 +206,7 @@ impl ConfigSupervisor {
                 Ok(PublicationOutcome::Superseded)
             };
         };
-        let Some(attempt) = admission
-            .run(coordinator.accept_filtered_source(
-                revision,
-                filtered.tacacs_plus,
-                filtered.proxy_downstream_obfuscation,
-            ))
-            .await
-            .map_err(|_| ())?
-        else {
+        let Some(attempt) = attempt else {
             return Ok(PublicationOutcome::Superseded);
         };
         let apply = self
@@ -303,6 +302,7 @@ impl ConfigSupervisor {
                         }
                     }
                     Some(CredentialChangeEvent::Unavailable) | None => {
+                        drop(candidate.take());
                         self.materialization_coordinator
                             .credentials_unavailable(&self.health)
                             .await;

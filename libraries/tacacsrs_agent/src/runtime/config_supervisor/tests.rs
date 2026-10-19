@@ -652,6 +652,170 @@ async fn candidate_registered_worker_burst_preserves_rejection_then_latest_recov
     assert_eq!(coordinator.preparation_counts().0, 0);
 }
 
+#[tokio::test(start_paused = true)]
+async fn candidate_notification_unavailable_cancels_blocked_publication() {
+    notification_loss_cancels_blocked_publication(false).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn candidate_notification_eof_cancels_blocked_publication() {
+    notification_loss_cancels_blocked_publication(true).await;
+}
+
+async fn notification_loss_cancels_blocked_publication(eof: bool) {
+    let (supervisor, resolver, _source_events, service, health) = registered_fixture().await;
+    let (events, notifications) = tokio::sync::mpsc::channel(1);
+    let supervisor = supervisor
+        .with_credential_changes(Arc::new(OwnedCredentialChanges(Mutex::new(Some(notifications)))));
+    let coordinator = supervisor.materialization_coordinator.clone();
+    let baseline = health.snapshot();
+    let held = service.hold_publication().await;
+    let (stop, stopping) = tokio::sync::oneshot::channel();
+    let run = supervisor.run_until(async {
+        let _ = stopping.await;
+    });
+    tokio::pin!(run);
+    events
+        .send(CredentialChangeEvent::Changed(CredentialChangeScope::Unknown))
+        .await
+        .unwrap();
+    assert!(futures_util::poll!(&mut run).is_pending());
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(coordinator.preparation_counts().0, 1);
+    assert!(futures_util::poll!(Box::pin(coordinator.active_servers())).is_pending());
+
+    if eof {
+        drop(events);
+    } else {
+        events
+            .send(CredentialChangeEvent::Unavailable)
+            .await
+            .unwrap();
+    }
+    let mut changes = health.subscribe();
+    tokio::select! {
+        result = &mut run => panic!("supervisor stopped before host stop: {result:?}"),
+        result = timeout(Duration::from_secs(1), changes.wait_for(|snapshot| {
+            snapshot.degradation_reasons().contains(
+                &DegradationReason::CredentialNotificationsUnavailable,
+            )
+        })) => {
+            assert!(result.is_ok(), "notification loss must not wait for publication");
+            assert!(result.unwrap().is_ok());
+        }
+    }
+    assert!(health
+        .snapshot()
+        .degradation_reasons()
+        .contains(&DegradationReason::CredentialsStale));
+    assert_eq!(health.snapshot().runtime_generation(), baseline.runtime_generation());
+    assert_eq!(service.server_count(), 1);
+    assert_eq!(coordinator.preparation_counts().0, 0);
+    assert!(timeout(
+        Duration::from_secs(1),
+        coordinator.observe_credentials(&CredentialChangeScope::Unknown, None),
+    )
+    .await
+    .unwrap()
+    .is_some());
+    stop.send(()).unwrap();
+    assert!(timeout(Duration::from_secs(1), &mut run)
+        .await
+        .unwrap()
+        .is_ok());
+    assert_eq!(coordinator.preparation_counts().0, 0);
+    drop(held);
+}
+
+#[tokio::test(start_paused = true)]
+async fn candidate_acceptance_timeout_rejects_source_and_expires_old_catalog() {
+    acceptance_timeout_is_revision_fenced(false).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn candidate_acceptance_timeout_cannot_reject_newer_source() {
+    acceptance_timeout_is_revision_fenced(true).await;
+}
+
+async fn acceptance_timeout_is_revision_fenced(superseded: bool) {
+    let datastore = Arc::new(ScriptedDatastore::new(
+        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        [],
+        [],
+    ));
+    let (mut supervisor, health, service) = supervisor(datastore, Duration::ZERO);
+    let filter = Arc::new(ReorderedFilter {
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+        reject_old: false,
+    });
+    supervisor.config_filter = filter.clone();
+    supervisor.apply_candidate(test_config(2)).await.unwrap();
+    let policy = tacacsrs_config::policy::parse_runtime_policy(
+        br#"{"tacacsrs:runtime-policy":{"candidate-preparation":{"timeout-seconds":1},"source-stale-timeout-seconds":3}}"#,
+    )
+    .unwrap();
+    service.apply_policy_candidate(Some(&policy)).await.unwrap();
+    let baseline = health.snapshot();
+    assert_eq!(baseline.datastore(), DatastoreState::Current);
+    let coordinator = &supervisor.materialization_coordinator;
+    let candidate = supervisor.apply_candidate(test_config(1));
+    tokio::pin!(candidate);
+    assert!(futures_util::poll!(&mut candidate).is_pending());
+    assert!(futures_util::poll!(Box::pin(filter.entered.notified())).is_ready());
+    let held = coordinator.hold_state().await;
+    filter.release.notify_one();
+    assert!(futures_util::poll!(&mut candidate).is_pending());
+    let newer = coordinator.admit_source(test_config(3));
+    tokio::pin!(newer);
+    if superseded {
+        assert!(futures_util::poll!(&mut newer).is_pending());
+    }
+    tokio::time::advance(Duration::from_secs(2)).await;
+    let completion = futures_util::poll!(&mut candidate);
+    drop(held);
+    if superseded {
+        newer.await;
+    }
+    let result = match completion {
+        std::task::Poll::Ready(result) => result,
+        std::task::Poll::Pending => candidate.await,
+    };
+    assert_eq!(coordinator.preparation_counts().0, 0);
+    if superseded {
+        assert_eq!(result, Ok(PublicationOutcome::Superseded));
+        assert_eq!(health.snapshot(), baseline);
+        assert_eq!(
+            supervisor.apply_candidate(test_config(3)).await,
+            Ok(PublicationOutcome::Published)
+        );
+        assert_eq!(health.snapshot().datastore(), DatastoreState::Current);
+        return;
+    }
+    assert!(result.is_err());
+    assert_eq!(health.snapshot().datastore(), DatastoreState::Stale);
+    assert_eq!(health.snapshot().runtime_generation(), baseline.runtime_generation());
+    assert_eq!(health.snapshot().eligible_server_count(), 2);
+    assert_eq!(service.server_count(), 2);
+    let cancellation = CancellationToken::new();
+    let expiry = supervisor.run_source_expiry(&cancellation);
+    tokio::pin!(expiry);
+    assert!(futures_util::poll!(&mut expiry).is_pending());
+    tokio::time::advance(Duration::from_secs(2)).await;
+    assert!(futures_util::poll!(&mut expiry).is_pending());
+    assert_eq!(health.snapshot().eligible_server_count(), 2);
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert!(futures_util::poll!(&mut expiry).is_pending());
+    assert_eq!(health.snapshot().eligible_server_count(), 0);
+    assert_eq!(service.server_count(), 0);
+    assert!(health
+        .snapshot()
+        .degradation_reasons()
+        .contains(&DegradationReason::SourceExpired));
+    cancellation.cancel();
+    expiry.await.unwrap();
+}
+
 #[tokio::test]
 async fn candidate_registered_worker_stall_does_not_block_expiry_or_host_stop() {
     let (supervisor, resolver, sender, service, health) = registered_fixture().await;

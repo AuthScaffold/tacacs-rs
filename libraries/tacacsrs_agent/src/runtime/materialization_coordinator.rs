@@ -836,6 +836,11 @@ impl MaterializationCoordinator {
     pub(crate) async fn active_servers(&self) -> Vec<Arc<TacacsPlusServer>> {
         self.state.lock().await.active_servers.clone()
     }
+
+    #[cfg(test)]
+    pub(crate) async fn hold_state(&self) -> impl Drop + '_ {
+        self.state.lock().await
+    }
 }
 
 fn all_server_names(source: &TacacsPlus) -> BTreeSet<String> {
