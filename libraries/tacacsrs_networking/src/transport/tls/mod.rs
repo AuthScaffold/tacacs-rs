@@ -13,8 +13,8 @@ mod revocation;
 mod tls;
 
 pub(crate) use config_builder::TlsConfigurationBuilder;
-pub(crate) use config::TlsClientConfig;
-pub use config::{CertificateIdentity, CertificateTrust, PrivateKeyEncoding};
+pub use config::TlsClientConfig;
+pub use config::{CertificateIdentity, CertificateTrust, CertificateVerification, PrivateKeyEncoding};
 pub use validity::RevocationEvidenceValidity;
 pub use revocation::CertificateRevocationPolicy;
 pub(crate) use validity::RevocationEvidenceLifetime;

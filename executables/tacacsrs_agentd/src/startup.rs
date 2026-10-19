@@ -250,7 +250,11 @@ pub(crate) async fn prepare_service(cli: Cli) -> anyhow::Result<PreparedService>
                 tacacs_plus: empty_tacacs_plus,
                 validation_options: datastore.validation_options(),
                 runtime_policy,
-                disable_certificate_verification: cli.insecure_disable_certificate_verification,
+                certificate_verification: if cli.insecure_disable_certificate_verification {
+                    tacacsrs_networking::CertificateVerification::DisabledForDevelopment
+                } else {
+                    tacacsrs_networking::CertificateVerification::Required
+                },
             },
             health.clone(),
         )
@@ -382,7 +386,7 @@ mod tests {
             assert_eq!(
                 endpoints
                     .iter()
-                    .map(tacacsrs_networking::PreparedEndpoint::address)
+                    .map(|endpoint| endpoint.address().to_string())
                     .collect::<Vec<_>>(),
                 ["192.0.2.21:49", "192.0.2.20:49"]
             );

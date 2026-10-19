@@ -15,6 +15,25 @@
 //! Certificate TLS validates local and peer authentication dates during each
 //! handshake. Established connections continue after those dates expire.
 //! Independent OCSP and CRL freshness can still close a transport.
+//!
+//! Prepare security once, then finalize an endpoint without resolving DNS:
+//!
+//! ```
+//! use tacacsrs_networking::{
+//!     CertificateTrust, CertificateVerification, ConnectOptions, PreparedEndpoint, PreparedTransport,
+//!     ServerAddress, TlsClientConfig,
+//! };
+//!
+//! let tls = TlsClientConfig::prepare(
+//!     "server.example", None, CertificateTrust::Platform, None, CertificateVerification::Required,
+//! )?;
+//! let endpoint = PreparedEndpoint::new(
+//!     ServerAddress::new("server.example", 300)?, PreparedTransport::Tls(tls),
+//!     true, None, ConnectOptions::default(),
+//! );
+//! assert_eq!(endpoint.address().port(), 300);
+//! # anyhow::Ok(())
+//! ```
 
 mod client;
 pub mod admission;
@@ -40,11 +59,12 @@ pub use statistics::{
 pub use deadline::{DeadlineElapsed, RequestDeadline};
 pub use codec::{PacketReadResult, PacketReader, PacketWriteResult, PacketWriter};
 pub use endpoint::{ConnectionGuard, PreparedEndpoint};
+pub use destination::ServerAddress;
 pub use transport::tls::{
-    CertificateIdentity, CertificateTrust, CertificateRevocationPolicy, PrivateKeyEncoding,
-    RevocationEvidenceValidity,
+    CertificateIdentity, CertificateTrust, CertificateVerification, CertificateRevocationPolicy,
+    PrivateKeyEncoding, RevocationEvidenceValidity, TlsClientConfig,
 };
-pub use transport::tls_psk::{PskHash, PskDheGroup};
-pub use establish::{ConnectOptions, ConnectPreflight};
+pub use transport::tls_psk::{PskClientConfig, PskHash, PskDheGroup};
+pub use establish::{ConnectOptions, ConnectPreflight, PreparedTransport};
 pub use exchange_error::{FixedExchangeError, TransmissionState};
 pub use session::ClientConversation;

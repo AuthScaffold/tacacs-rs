@@ -445,7 +445,8 @@ let server = TacacsPlusServerBuilder::new(
 .with_shared_secret("example-shared-secret")
 .build();
 
-assert_eq!(server.socket_address(), "192.0.2.10:49");
+assert_eq!(server.address, "192.0.2.10");
+assert_eq!(server.port, 49);
 assert!(server.is_obfuscation());
 # anyhow::Ok::<(), anyhow::Error>(())
 ```

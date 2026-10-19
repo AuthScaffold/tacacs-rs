@@ -78,7 +78,7 @@ async fn provider_crl_validity_refreshes_before_expiry_without_notifications() -
             tacacs_plus: TacacsPlus::empty(),
             validation_options: ValidationOptions::default(),
             runtime_policy: tacacsrs_agent::RuntimePolicy::default(),
-            disable_certificate_verification: false,
+            certificate_verification: tacacsrs_networking::CertificateVerification::Required,
         },
         health.clone(),
     )?);
@@ -1240,7 +1240,7 @@ async fn crl_expiry_withdraws_supervised_catalog_without_source_failure() -> Res
             tacacs_plus: TacacsPlus::empty(),
             validation_options: ValidationOptions::default(),
             runtime_policy: tacacsrs_agent::RuntimePolicy::default(),
-            disable_certificate_verification: false,
+            certificate_verification: tacacsrs_networking::CertificateVerification::Required,
         },
         health.clone(),
     )?);
@@ -1326,7 +1326,7 @@ async fn committed_crl_refresh_interrupts_active_peer_without_waiting_for_reques
         tacacs_plus: source.clone(),
         validation_options: ValidationOptions::default(),
         runtime_policy: tacacsrs_agent::RuntimePolicy::default(),
-        disable_certificate_verification: false,
+        certificate_verification: tacacsrs_networking::CertificateVerification::Required,
     };
     let health = RuntimeHealthPublisher::new(config.enabled_services());
     let service = Arc::new(TacacsClientService::new(config, health.clone())?);

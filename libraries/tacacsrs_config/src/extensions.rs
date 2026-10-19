@@ -21,9 +21,6 @@ impl FromStr for PskDheKeSupportedGroup {
 /// These methods derive values from the generated YANG model without changing
 /// its round-trip behavior.
 pub trait TacacsPlusServerExt {
-    /// Returns the server socket address in `host:port` form with brackets for IPv6.
-    fn socket_address(&self) -> String;
-
     /// Returns the configured timeout as a `Duration`.
     fn timeout_duration(&self) -> Duration;
 
@@ -44,14 +41,6 @@ pub trait TacacsPlusServerExt {
 }
 
 impl TacacsPlusServerExt for TacacsPlusServer {
-    fn socket_address(&self) -> String {
-        if self.address.contains(':') {
-            format!("[{}]:{}", self.address, self.port)
-        } else {
-            format!("{}:{}", self.address, self.port)
-        }
-    }
-
     fn timeout_duration(&self) -> Duration {
         Duration::from_secs(u64::from(self.timeout))
     }
@@ -101,19 +90,6 @@ mod tests {
             single_connection: false,
             timeout: 5,
         }
-    }
-
-    #[test]
-    fn socket_address_formats_ipv4() {
-        let server = base_server();
-        assert_eq!(server.socket_address(), "192.0.2.10:49");
-    }
-
-    #[test]
-    fn socket_address_formats_ipv6() {
-        let mut server = base_server();
-        server.address = "2001:db8::1".to_owned();
-        assert_eq!(server.socket_address(), "[2001:db8::1]:49");
     }
 
     #[test]

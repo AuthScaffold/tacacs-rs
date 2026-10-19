@@ -500,8 +500,13 @@ mod tests {
     async fn unclaimed_successful_setup_is_cleaned_without_another_bind() {
         let connector = Arc::new(CleanupConnector::default());
         let lifecycle = Arc::new(EndpointLifecycle::new(connector.clone(), "test"));
-        let endpoint =
-            PreparedEndpoint::tcp("127.0.0.1:49", false, None, ConnectOptions::default());
+        let endpoint = PreparedEndpoint::new(
+            crate::ServerAddress::parse("127.0.0.1:49", 49).unwrap(),
+            crate::PreparedTransport::Tcp,
+            false,
+            None,
+            ConnectOptions::default(),
+        );
         let mut pending = Box::pin(lifecycle.connect(endpoint, OperationKind::Accounting));
         std::future::poll_fn(|context| {
             assert!(pending.as_mut().poll(context).is_pending());
@@ -534,7 +539,13 @@ mod tests {
         let lifecycle = Arc::new(EndpointLifecycle::new(connector.clone(), "test"));
         let pending = runtime
             .block_on(lifecycle.connect(
-                PreparedEndpoint::tcp("127.0.0.1:49", false, None, ConnectOptions::default()),
+                PreparedEndpoint::new(
+                    crate::ServerAddress::parse("127.0.0.1:49", 49).unwrap(),
+                    crate::PreparedTransport::Tcp,
+                    false,
+                    None,
+                    ConnectOptions::default(),
+                ),
                 OperationKind::Accounting,
             ))
             .unwrap();
@@ -564,8 +575,9 @@ mod tests {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let lifecycle =
                 Arc::new(EndpointLifecycle::new(Arc::new(super::super::NativeConnector), "test"));
-            let endpoint = PreparedEndpoint::tcp(
-                listener.local_addr().unwrap().to_string(),
+            let endpoint = PreparedEndpoint::new(
+                listener.local_addr().unwrap().try_into().unwrap(),
+                crate::PreparedTransport::Tcp,
                 true,
                 None,
                 ConnectOptions::default().with_preflight(ConnectPreflight::AccountingWatchdog),

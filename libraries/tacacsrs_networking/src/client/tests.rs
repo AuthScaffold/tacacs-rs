@@ -5,8 +5,9 @@ async fn operational_counters_cover_shared_sessions_and_connection_outcomes() {
     use tokio::net::TcpListener;
     use crate::{PacketReader, PacketReadResult, PacketWriter, PacketWriteResult};
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = PreparedEndpoint::tcp(
-        listener.local_addr().unwrap().to_string(),
+    let endpoint = PreparedEndpoint::new(
+        listener.local_addr().unwrap().try_into().unwrap(),
+        crate::PreparedTransport::Tcp,
         true,
         None,
         ConnectOptions::default(),
@@ -77,8 +78,9 @@ async fn operational_counters_cover_shared_sessions_and_connection_outcomes() {
     reserved_socket
         .bind("127.0.0.1:0".parse().unwrap())
         .unwrap();
-    let endpoint = PreparedEndpoint::tcp(
-        reserved_socket.local_addr().unwrap().to_string(),
+    let endpoint = PreparedEndpoint::new(
+        reserved_socket.local_addr().unwrap().try_into().unwrap(),
+        crate::PreparedTransport::Tcp,
         false,
         None,
         ConnectOptions::default().with_timeout(Duration::from_millis(100)),
@@ -126,8 +128,7 @@ async fn operational_counters_cover_shared_sessions_and_connection_outcomes() {
 #[tokio::test]
 async fn invalid_psk_fails_before_client_construction() {
     let result =
-        crate::PreparedEndpoint::tcp("127.0.0.1:1", false, None, crate::ConnectOptions::default())
-            .with_psk("client", b"too-short", crate::PskHash::Sha256, &[], None);
+        crate::PskClientConfig::prepare("client", b"too-short", crate::PskHash::Sha256, &[], None);
     let Err(error) = result else {
         panic!("invalid material must fail before the lazy client is returned");
     };
@@ -209,7 +210,13 @@ impl FixedExchange for TestAuthorizationExchange {
 }
 
 fn server_template() -> PreparedEndpoint {
-    PreparedEndpoint::tcp("10.0.0.1:49", true, None, ConnectOptions::default())
+    PreparedEndpoint::new(
+        crate::ServerAddress::parse("10.0.0.1:49", 49).unwrap(),
+        crate::PreparedTransport::Tcp,
+        true,
+        None,
+        ConnectOptions::default(),
+    )
 }
 
 fn test_packet(session_id: u32, seq_no: u8, flags: TacacsFlags) -> Packet {
@@ -313,7 +320,7 @@ where
     });
 
     let mut endpoint = server_template();
-    endpoint.address = address.to_string();
+    endpoint.address = address.try_into().unwrap();
     endpoint.single_connection = false;
     let counters = endpoint.counters();
     let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
@@ -454,7 +461,7 @@ async fn run_two_round_authentication_conversation(
         });
 
         let mut endpoint = server_template();
-        endpoint.address = address.to_string();
+        endpoint.address = address.try_into().unwrap();
         let counters = endpoint.counters();
         let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
         let mut conversation = client.open_conversation().await.unwrap();
@@ -481,7 +488,7 @@ async fn run_two_round_authentication_conversation(
 #[tokio::test]
 async fn connect_with_disabled_preflight_does_not_open_transport() {
     let mut server = server_template();
-    server.address = "127.0.0.1:1".to_owned();
+    server.address = crate::ServerAddress::parse("127.0.0.1:1", 49).unwrap();
 
     let client = TacacsClient::connect_prepared(server).await.unwrap();
 
@@ -490,14 +497,22 @@ async fn connect_with_disabled_preflight_does_not_open_transport() {
 
 #[test]
 fn packet_obfuscation_key_uses_shared_secret_for_tls_servers() {
-    let endpoint = PreparedEndpoint::tcp(
-        "10.0.0.1:49",
+    let endpoint = PreparedEndpoint::new(
+        crate::ServerAddress::parse("10.0.0.1:49", 49).unwrap(),
+        crate::PreparedTransport::Tls(
+            crate::TlsClientConfig::prepare(
+                "10.0.0.1",
+                None,
+                crate::CertificateTrust::Platform,
+                None,
+                crate::CertificateVerification::Required,
+            )
+            .unwrap(),
+        ),
         false,
         Some(tacacsrs_secrets::SecretBytes::new(b"legacy-secret".to_vec())),
         ConnectOptions::default(),
-    )
-    .with_certificate_tls("10.0.0.1", None, crate::CertificateTrust::Platform, None)
-    .unwrap();
+    );
     assert_eq!(endpoint.obfuscation_key.unwrap().expose_secret(), b"legacy-secret");
 }
 
@@ -508,8 +523,9 @@ async fn terminal_close_drains_dedicated_and_shared_conversations() {
 
     for shared in [false, true] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let client = TacacsClient::connect_prepared(PreparedEndpoint::tcp(
-            listener.local_addr().unwrap().to_string(),
+        let client = TacacsClient::connect_prepared(PreparedEndpoint::new(
+            listener.local_addr().unwrap().try_into().unwrap(),
+            crate::PreparedTransport::Tcp,
             shared,
             None,
             ConnectOptions::default(),
@@ -563,8 +579,9 @@ async fn shorter_terminal_join_closes_transport_for_all_waiters() {
     use crate::RequestDeadline;
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let client = TacacsClient::connect_prepared(PreparedEndpoint::tcp(
-        listener.local_addr().unwrap().to_string(),
+    let client = TacacsClient::connect_prepared(PreparedEndpoint::new(
+        listener.local_addr().unwrap().try_into().unwrap(),
+        crate::PreparedTransport::Tcp,
         false,
         None,
         ConnectOptions::default(),
@@ -590,8 +607,9 @@ async fn terminal_close_releases_a_parked_dedicated_read_and_rejects_new_work() 
     use crate::{RequestDeadline, TransmissionState};
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = PreparedEndpoint::tcp(
-        listener.local_addr().unwrap().to_string(),
+    let endpoint = PreparedEndpoint::new(
+        listener.local_addr().unwrap().try_into().unwrap(),
+        crate::PreparedTransport::Tcp,
         false,
         None,
         ConnectOptions::default(),
@@ -637,14 +655,22 @@ async fn terminal_close_cancels_stalled_tls_setup_without_polling_its_caller() {
     use crate::{CertificateTrust, RequestDeadline};
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = PreparedEndpoint::tcp(
-        listener.local_addr().unwrap().to_string(),
+    let endpoint = PreparedEndpoint::new(
+        listener.local_addr().unwrap().try_into().unwrap(),
+        crate::PreparedTransport::Tls(
+            crate::TlsClientConfig::prepare(
+                "localhost",
+                None,
+                CertificateTrust::Platform,
+                None,
+                crate::CertificateVerification::Required,
+            )
+            .unwrap(),
+        ),
         false,
         None,
         ConnectOptions::default(),
-    )
-    .with_certificate_tls("localhost", None, CertificateTrust::Platform, None)
-    .unwrap();
+    );
     let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
     let opening = client.open_conversation();
     tokio::pin!(opening);
@@ -688,8 +714,9 @@ async fn client_drop_prevents_an_old_negotiation_from_starting_a_driver() {
         1,
         TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
     );
-    let client = TacacsClient::connect_prepared(PreparedEndpoint::tcp(
-        address.to_string(),
+    let client = TacacsClient::connect_prepared(PreparedEndpoint::new(
+        address.try_into().unwrap(),
+        crate::PreparedTransport::Tcp,
         true,
         None,
         ConnectOptions::default(),
@@ -710,8 +737,9 @@ async fn dropping_client_closes_retained_idle_dedicated_conversation() {
     use tokio::io::AsyncReadExt;
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let client = TacacsClient::connect_prepared(PreparedEndpoint::tcp(
-        listener.local_addr().unwrap().to_string(),
+    let client = TacacsClient::connect_prepared(PreparedEndpoint::new(
+        listener.local_addr().unwrap().try_into().unwrap(),
+        crate::PreparedTransport::Tcp,
         false,
         None,
         ConnectOptions::default(),
@@ -741,8 +769,9 @@ async fn cancelled_terminal_join_remains_closed_and_can_be_retried() {
     use crate::RequestDeadline;
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let client = TacacsClient::connect_prepared(PreparedEndpoint::tcp(
-        listener.local_addr().unwrap().to_string(),
+    let client = TacacsClient::connect_prepared(PreparedEndpoint::new(
+        listener.local_addr().unwrap().try_into().unwrap(),
+        crate::PreparedTransport::Tcp,
         false,
         None,
         ConnectOptions::default(),
@@ -837,7 +866,7 @@ async fn shared_retirement_prevents_late_promotion() {
         TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
     );
     let mut endpoint = server_template();
-    endpoint.address = address.to_string();
+    endpoint.address = address.try_into().unwrap();
     let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
     let session = client.create_session().await.unwrap();
     run_session_exchange(&session).await;
@@ -921,7 +950,7 @@ async fn executes_fixed_exchange_over_dedicated_transport() {
         spawn_accounting_server(listener, 1, TacacsFlags::empty());
 
     let mut server = server_template();
-    server.address = listener_address.to_string();
+    server.address = listener_address.try_into().unwrap();
     server.single_connection = false;
     let client = TacacsClient::connect_prepared(server).await.unwrap();
 
@@ -1062,7 +1091,7 @@ async fn dedicated_parser_rejection_counts_one_malformed_disconnect() {
         stream.write_all(&[0; 12]).await.unwrap();
     });
     let mut endpoint = server_template();
-    endpoint.address = address.to_string();
+    endpoint.address = address.try_into().unwrap();
     endpoint.single_connection = false;
     let counters = endpoint.counters();
     let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
@@ -1098,7 +1127,7 @@ async fn invalid_single_connect_first_reply_is_not_promoted() {
         stream.write_all(&reply.to_bytes()).await.unwrap();
     });
     let mut endpoint = server_template();
-    endpoint.address = address.to_string();
+    endpoint.address = address.try_into().unwrap();
     let counters = endpoint.counters();
     let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
     let error = tokio::time::timeout(
@@ -1161,7 +1190,7 @@ async fn local_conversation_request_rejection_sends_no_packet_and_is_not_malform
         );
     });
     let mut endpoint = server_template();
-    endpoint.address = address.to_string();
+    endpoint.address = address.try_into().unwrap();
     endpoint.single_connection = false;
     let counters = endpoint.counters();
     let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
@@ -1230,7 +1259,7 @@ async fn shared_body_decoder_failure_does_not_abort_another_live_session() {
         let _ = stream.read_to_end(&mut remaining).await;
     });
     let mut endpoint = server_template();
-    endpoint.address = address.to_string();
+    endpoint.address = address.try_into().unwrap();
     let counters = endpoint.counters();
     let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
     tokio::time::timeout(
@@ -1344,7 +1373,7 @@ async fn header_and_body_eof_remain_uncategorized_transport_failures() {
             stream.shutdown().await.unwrap();
         });
         let mut endpoint = server_template();
-        endpoint.address = address.to_string();
+        endpoint.address = address.try_into().unwrap();
         endpoint.single_connection = false;
         let counters = endpoint.counters();
         let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
@@ -1376,7 +1405,7 @@ async fn header_and_body_eof_remain_uncategorized_transport_failures() {
 async fn expired_exchange_does_not_open_a_connection() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut endpoint = server_template();
-    endpoint.address = listener.local_addr().unwrap().to_string();
+    endpoint.address = listener.local_addr().unwrap().try_into().unwrap();
     endpoint.single_connection = false;
     let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
     let error = client
@@ -1400,14 +1429,27 @@ async fn deadline_classifies_stalled_tls_and_sent_requests() {
 
     for tls in [true, false] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut endpoint = server_template();
-        endpoint.address = listener.local_addr().unwrap().to_string();
-        endpoint.single_connection = false;
-        if tls {
-            endpoint = endpoint
-                .with_certificate_tls("localhost", None, CertificateTrust::Platform, None)
-                .unwrap();
-        }
+        let transport = if tls {
+            crate::PreparedTransport::Tls(
+                crate::TlsClientConfig::prepare(
+                    "localhost",
+                    None,
+                    CertificateTrust::Platform,
+                    None,
+                    crate::CertificateVerification::Required,
+                )
+                .unwrap(),
+            )
+        } else {
+            crate::PreparedTransport::Tcp
+        };
+        let endpoint = PreparedEndpoint::new(
+            listener.local_addr().unwrap().try_into().unwrap(),
+            transport,
+            false,
+            None,
+            ConnectOptions::default(),
+        );
         let counters = endpoint.counters();
         let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
         let deadline = RequestDeadline::after(Duration::from_millis(200)).unwrap();
@@ -1468,7 +1510,7 @@ async fn accounting_watchdog_preflight_establishes_shared_connection_when_echoed
     );
 
     let mut server = server_template();
-    server.address = listener_address.to_string();
+    server.address = listener_address.try_into().unwrap();
     server.options = ConnectOptions::default().with_preflight(ConnectPreflight::AccountingWatchdog);
     let client = TacacsClient::connect_prepared(server).await.unwrap();
 
@@ -1513,7 +1555,7 @@ async fn accounting_watchdog_preflight_records_not_supported_when_not_echoed() {
         spawn_accounting_server(listener, 2, TacacsFlags::empty());
 
     let mut server = server_template();
-    server.address = listener_address.to_string();
+    server.address = listener_address.try_into().unwrap();
     server.options = ConnectOptions::default().with_preflight(ConnectPreflight::AccountingWatchdog);
     let client = TacacsClient::connect_prepared(server).await.unwrap();
 
@@ -1560,7 +1602,7 @@ async fn confirmed_single_connection_ignores_later_unset_reply_flags() {
         );
 
     let mut server = server_template();
-    server.address = listener_address.to_string();
+    server.address = listener_address.try_into().unwrap();
     let client = TacacsClient::from_prepared(server);
 
     for _ in 0..3 {
@@ -1599,7 +1641,7 @@ async fn unsupported_single_connect_probe_makes_later_sessions_dedicated_only() 
         spawn_accounting_server(listener, 2, TacacsFlags::empty());
 
     let mut server = server_template();
-    server.address = listener_address.to_string();
+    server.address = listener_address.try_into().unwrap();
     let client = TacacsClient::from_prepared(server);
 
     let first_session = client.create_session().await.unwrap();
@@ -1633,7 +1675,7 @@ async fn timed_out_probe_recovers_and_promotes_on_the_same_client() {
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut endpoint = server_template();
-    endpoint.address = listener.local_addr().unwrap().to_string();
+    endpoint.address = listener.local_addr().unwrap().try_into().unwrap();
     let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
     let request = client.execute_classified_until(
         TestAccountingExchange(accounting_watchdog_preflight_request()),
@@ -1689,7 +1731,7 @@ async fn stale_negotiation_attempt_uses_dedicated_stream_after_not_supported() {
         spawn_accounting_server(listener, 1, TacacsFlags::empty());
 
     let mut server = server_template();
-    server.address = listener_address.to_string();
+    server.address = listener_address.try_into().unwrap();
     let client = TacacsClient::from_prepared(server);
 
     client.update_single_connection_state(SingleConnectionState::NotSupported);
@@ -1717,7 +1759,7 @@ async fn concurrent_session_during_negotiation_does_not_start_second_probe() {
         spawn_accounting_server(listener, 2, TacacsFlags::empty());
 
     let mut server = server_template();
-    server.address = listener_address.to_string();
+    server.address = listener_address.try_into().unwrap();
     let client = TacacsClient::from_prepared(server);
 
     let first_session = client.create_session().await.unwrap();

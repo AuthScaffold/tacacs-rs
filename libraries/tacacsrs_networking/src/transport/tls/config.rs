@@ -51,8 +51,24 @@ pub enum CertificateTrust<'a> {
     },
 }
 
+/// Controls server certificate verification without changing SNI or credential validation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CertificateVerification {
+    /// Requires certificate trust and peer identity verification.
+    #[default]
+    Required,
+    /// Disables trust and peer identity verification for controlled development use.
+    ///
+    /// CAUTION: This policy permits server impersonation. Do not use it in production.
+    /// Authentication certificate dates still apply. Required revocation evidence is rejected.
+    DisabledForDevelopment,
+}
+
+/// Reusable certificate TLS configuration with private native context ownership.
+///
+/// Attach required OCSP and CRL evidence before finalizing an endpoint.
 #[derive(Clone)]
-pub(crate) struct TlsClientConfig {
+pub struct TlsClientConfig {
     context: SslContext,
     peer_identity: String,
     sni_name: Option<String>,
@@ -62,32 +78,59 @@ pub(crate) struct TlsClientConfig {
     peer_pins: bool,
     pub(crate) revocation: super::CertificateRevocationPolicy,
     revocation_issuers: Vec<X509>,
-    verification_disabled: bool,
+    verification: CertificateVerification,
     provided_ocsp: Option<super::revocation::ProvidedResponse>,
 }
 
+impl std::fmt::Debug for TlsClientConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TlsClientConfig")
+            .field("peer_identity", &self.peer_identity)
+            .field("sni_name", &self.sni_name)
+            .field("verification", &self.verification)
+            .field("revocation", &self.revocation)
+            .field("crls", &self.crls.is_some())
+            .field("fetched_ocsp", &self.provided_ocsp.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 impl TlsClientConfig {
-    pub(crate) fn prepare(
+    /// Prepares trust, client credentials, peer identity, and optional SNI without I/O.
+    ///
+    /// CAUTION: `CertificateVerification::DisabledForDevelopment` permits server impersonation. Do not use it in production.
+    /// Authentication certificate dates still apply to each new connection.
+    /// Names retain their spelling and optional trailing dot. SNI rejects IP addresses.
+    ///
+    /// # Errors
+    /// Returns an error for invalid credentials, trust, identity, or native configuration.
+    ///
+    /// A positional boolean cannot select the verification policy.
+    ///
+    /// ```compile_fail,E0308
+    /// use tacacsrs_networking::{CertificateTrust, TlsClientConfig};
+    ///
+    /// TlsClientConfig::prepare("localhost", None, CertificateTrust::Platform, None, true);
+    /// ```
+    pub fn prepare(
         peer_identity: &str,
         sni_name: Option<&str>,
         trust: CertificateTrust<'_>,
         identity: Option<CertificateIdentity<'_>>,
-        disable_verification: bool,
+        verification: CertificateVerification,
     ) -> Result<Self> {
-        anyhow::ensure!(
-            !peer_identity.is_empty() && !peer_identity.contains(['\0', '*']),
-            "TLS peer identity must be a nonempty DNS name or IP address without wildcards"
-        );
+        crate::ServerAddress::new(peer_identity, 1).context("invalid TLS peer identity")?;
         if let Some(name) = sni_name {
             anyhow::ensure!(
-                !name.is_empty()
-                    && !name.contains(['\0', '*'])
-                    && name.parse::<std::net::IpAddr>().is_err(),
-                "TLS SNI must be a nonempty DNS name, not an IP address"
+                name.parse::<std::net::IpAddr>().is_err(),
+                "TLS SNI must be a DNS name, not an IP address"
             );
+            crate::ServerAddress::new(name, 1).context("invalid TLS SNI name")?;
         }
-        let mut builder = TlsConfigurationBuilder::new()
-            .with_certificate_verification_disabled(disable_verification);
+        let mut builder = TlsConfigurationBuilder::new().with_certificate_verification_disabled(
+            verification == CertificateVerification::DisabledForDevelopment,
+        );
         let peer_pins = matches!(&trust, CertificateTrust::Certificates { end_entities, .. } if !end_entities.is_empty());
         let mut revocation_issuers = Vec::new();
         if let CertificateTrust::Certificates {
@@ -145,6 +188,9 @@ impl TlsClientConfig {
         let context = builder
             .build()
             .context("Failed to build TLS configuration")?;
+        if verification == CertificateVerification::DisabledForDevelopment {
+            log::warn!("TLS certificate verification is disabled for development; server impersonation is possible");
+        }
         Ok(Self {
             context,
             has_client_intermediates,
@@ -152,7 +198,7 @@ impl TlsClientConfig {
             peer_pins,
             revocation: super::CertificateRevocationPolicy::disabled(),
             revocation_issuers,
-            verification_disabled: disable_verification,
+            verification,
             provided_ocsp: None,
             evidence_lifetime: None,
             peer_identity: peer_identity.to_owned(),
@@ -160,25 +206,30 @@ impl TlsClientConfig {
         })
     }
 
-    pub(crate) fn with_revocation_policy(
+    /// Requires stapled OCSP independently of fetched evidence.
+    ///
+    /// # Errors
+    /// Rejects required evidence when certificate verification is disabled.
+    pub fn with_revocation_policy(
         mut self,
         policy: super::CertificateRevocationPolicy,
     ) -> Result<Self> {
         anyhow::ensure!(
-            !self.verification_disabled || policy.maximum_response_age().is_none(),
+            self.verification == CertificateVerification::Required
+                || policy.maximum_response_age().is_none(),
             "Required OCSP evidence cannot be combined with disabled certificate verification"
         );
         self.revocation = policy;
         Ok(self)
     }
 
-    pub(crate) fn with_crls(
-        mut self,
-        lists: &[&[u8]],
-        maximum_age: std::time::Duration,
-    ) -> Result<Self> {
+    /// Attaches fresh full CRLs and explicitly paired deltas for CA authentication.
+    ///
+    /// # Errors
+    /// Rejects invalid evidence, exact peer pins, or disabled verification.
+    pub fn with_crls(mut self, lists: &[&[u8]], maximum_age: std::time::Duration) -> Result<Self> {
         anyhow::ensure!(
-            !self.verification_disabled && !self.peer_pins,
+            self.verification == CertificateVerification::Required && !self.peer_pins,
             "CRL mode requires CA authentication with certificate verification enabled"
         );
         let evidence = super::revocation::crls::CrlEvidence::prepare(lists, maximum_age)?;
@@ -239,7 +290,7 @@ impl TlsClientConfig {
             .ssl()
             .peer_certificate()
             .context("TLS peer certificate is missing")?;
-        if self.verification_disabled {
+        if self.verification == CertificateVerification::DisabledForDevelopment {
             let now = std::time::SystemTime::now();
             let valid_from = super::validity::system_time(peer.not_before())?;
             let valid_until = super::validity::system_time(peer.not_after())?;
@@ -266,13 +317,17 @@ impl TlsClientConfig {
         })
     }
 
-    pub(crate) fn with_ocsp_response(
+    /// Attaches fetched OCSP evidence without replacing a mandatory staple policy.
+    ///
+    /// # Errors
+    /// Rejects invalid or stale evidence and disabled certificate verification.
+    pub fn with_ocsp_response(
         mut self,
         encoded: &[u8],
         maximum_age: std::time::Duration,
     ) -> Result<Self> {
         anyhow::ensure!(
-            !self.verification_disabled,
+            self.verification == CertificateVerification::Required,
             "Fetched OCSP requires certificate verification"
         );
         let response = super::revocation::ProvidedResponse::prepare(encoded, maximum_age)?;
@@ -339,20 +394,199 @@ mod tests {
     use super::*;
 
     #[test]
+    fn debug_omits_client_key_and_native_context() {
+        let certificate = X509::from_pem(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../lde/containers/config/certificates/client.crt",
+        )))
+        .unwrap()
+        .to_der()
+        .unwrap();
+        let key = PKey::private_key_from_pem(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../lde/containers/config/certificates/client.key",
+        )))
+        .unwrap()
+        .private_key_to_pkcs8()
+        .unwrap();
+        let config = TlsClientConfig::prepare(
+            "localhost",
+            Some("server.example"),
+            CertificateTrust::Platform,
+            Some(CertificateIdentity {
+                certificate: &certificate,
+                intermediates: &[],
+                public_key_info: None,
+                private_key: &key,
+                private_key_encoding: PrivateKeyEncoding::Pkcs8,
+            }),
+            CertificateVerification::Required,
+        )
+        .unwrap();
+        for rendered in [
+            format!("{config:?}"),
+            format!("{config:#?}"),
+            format!("{:?}", crate::PreparedTransport::Tls(config)),
+        ] {
+            assert!(rendered.contains("server.example"));
+            assert!(rendered.contains("Required"));
+            assert!(!rendered.contains(&format!("{key:?}")));
+            assert!(!rendered.contains("private_key"));
+            assert!(!rendered.contains("context"));
+        }
+    }
+
+    #[test]
+    fn certificate_names_use_the_validated_host_contract() {
+        for verification in [
+            CertificateVerification::Required,
+            CertificateVerification::DisabledForDevelopment,
+        ] {
+            for name in [
+                "bad host",
+                "bad\0name",
+                "",
+                "*.example",
+                "host:49",
+                "[::1]",
+                "host..example",
+                "127.1",
+                "0x7f000001",
+                "127.0.0.1.",
+            ] {
+                assert!(
+                    TlsClientConfig::prepare(
+                        name,
+                        None,
+                        CertificateTrust::Platform,
+                        None,
+                        verification
+                    )
+                    .is_err(),
+                    "peer identity {name:?}"
+                );
+                assert!(
+                    TlsClientConfig::prepare(
+                        "localhost",
+                        Some(name),
+                        CertificateTrust::Platform,
+                        None,
+                        verification
+                    )
+                    .is_err(),
+                    "SNI {name:?}"
+                );
+            }
+            for name in [
+                "server.example",
+                "Server.Example.",
+                "tacacs_server.example",
+                "_tacacs._tcp.example.",
+            ] {
+                let config = TlsClientConfig::prepare(
+                    name,
+                    Some(name),
+                    CertificateTrust::Platform,
+                    None,
+                    verification,
+                )
+                .unwrap();
+                assert_eq!(config.peer_identity, name);
+                assert_eq!(config.sni_name.as_deref(), Some(name));
+            }
+            for address in ["127.0.0.1", "::1", "::ffff:127.0.0.1"] {
+                assert!(TlsClientConfig::prepare(
+                    address,
+                    None,
+                    CertificateTrust::Platform,
+                    None,
+                    verification
+                )
+                .is_ok());
+                assert!(TlsClientConfig::prepare(
+                    "localhost",
+                    Some(address),
+                    CertificateTrust::Platform,
+                    None,
+                    verification
+                )
+                .is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn verification_policy_defaults_to_required_and_controls_native_mode() {
+        assert_eq!(CertificateVerification::default(), CertificateVerification::Required);
+        for (verification, mode) in [
+            (CertificateVerification::Required, openssl::ssl::SslVerifyMode::PEER),
+            (CertificateVerification::DisabledForDevelopment, openssl::ssl::SslVerifyMode::NONE),
+        ] {
+            let config = TlsClientConfig::prepare(
+                "localhost",
+                Some("server.example"),
+                CertificateTrust::Platform,
+                None,
+                verification,
+            )
+            .unwrap();
+            assert_eq!(config.context.verify_mode(), mode);
+            assert_eq!(config.peer_identity, "localhost");
+            assert_eq!(config.sni_name.as_deref(), Some("server.example"));
+        }
+    }
+
+    #[test]
+    fn development_verification_rejects_all_required_revocation_evidence() {
+        let config = TlsClientConfig::prepare(
+            "localhost",
+            None,
+            CertificateTrust::Platform,
+            None,
+            CertificateVerification::DisabledForDevelopment,
+        )
+        .unwrap();
+        let maximum_age = std::time::Duration::from_secs(300);
+        assert!(config
+            .clone()
+            .with_revocation_policy(
+                super::super::CertificateRevocationPolicy::require_stapled_ocsp(maximum_age)
+                    .unwrap(),
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("disabled certificate verification"));
+        assert!(config
+            .clone()
+            .with_crls(&[], maximum_age)
+            .unwrap_err()
+            .to_string()
+            .contains("verification enabled"));
+        assert!(config
+            .with_ocsp_response(&[], maximum_age)
+            .unwrap_err()
+            .to_string()
+            .contains("requires certificate verification"));
+    }
+
+    #[test]
     fn explicit_empty_trust_is_rejected_even_with_verification_disabled() {
-        for disabled in [false, true] {
+        for verification in [
+            CertificateVerification::Required,
+            CertificateVerification::DisabledForDevelopment,
+        ] {
             let trust = CertificateTrust::Certificates {
                 authorities: &[],
                 end_entities: &[],
             };
-            assert!(TlsClientConfig::prepare("localhost", None, trust, None, disabled).is_err());
+            assert!(TlsClientConfig::prepare("localhost", None, trust, None, verification).is_err());
         }
         assert!(TlsClientConfig::prepare(
             "localhost",
             None,
             CertificateTrust::Platform,
             None,
-            false
+            CertificateVerification::Required
         )
         .is_ok());
     }
@@ -402,9 +636,14 @@ mod tests {
             // Avoid unnecessary post-handshake ticket writes to the closed stream.
             context.set_num_tickets(0).unwrap();
             let context = context.build();
-            let config =
-                TlsClientConfig::prepare("localhost", None, CertificateTrust::Platform, None, true)
-                    .unwrap();
+            let config = TlsClientConfig::prepare(
+                "localhost",
+                None,
+                CertificateTrust::Platform,
+                None,
+                CertificateVerification::DisabledForDevelopment,
+            )
+            .unwrap();
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let peer = async {
                 let (tcp, _) = listener.accept().await.unwrap();
@@ -458,7 +697,7 @@ mod tests {
                 private_key: &key,
                 private_key_encoding: PrivateKeyEncoding::Pkcs8,
             }),
-            false
+            CertificateVerification::Required
         )
         .is_ok());
         for suffix in [der.as_slice(), b"trailing-data".as_slice()] {
@@ -469,7 +708,10 @@ mod tests {
                 "trailing certificate data must not be ignored"
             );
             let certificates = [combined.as_slice()];
-            for disabled in [false, true] {
+            for verification in [
+                CertificateVerification::Required,
+                CertificateVerification::DisabledForDevelopment,
+            ] {
                 for trust in [
                     CertificateTrust::Certificates {
                         authorities: &certificates,
@@ -480,9 +722,8 @@ mod tests {
                         end_entities: &certificates,
                     },
                 ] {
-                    assert!(
-                        TlsClientConfig::prepare("localhost", None, trust, None, disabled).is_err()
-                    );
+                    assert!(TlsClientConfig::prepare("localhost", None, trust, None, verification)
+                        .is_err());
                 }
                 let identity = CertificateIdentity {
                     intermediates: &[],
@@ -496,7 +737,7 @@ mod tests {
                     None,
                     CertificateTrust::Platform,
                     Some(identity),
-                    disabled
+                    verification
                 )
                 .is_err());
             }

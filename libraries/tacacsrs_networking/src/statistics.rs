@@ -396,14 +396,22 @@ mod tests {
     async fn cancelled_tls_setup_records_one_failure_and_abort() {
         use tokio::io::AsyncReadExt;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let endpoint = crate::PreparedEndpoint::tcp(
-            listener.local_addr().unwrap().to_string(),
+        let endpoint = crate::PreparedEndpoint::new(
+            listener.local_addr().unwrap().try_into().unwrap(),
+            crate::PreparedTransport::Tls(
+                crate::TlsClientConfig::prepare(
+                    "localhost",
+                    None,
+                    crate::CertificateTrust::Platform,
+                    None,
+                    crate::CertificateVerification::Required,
+                )
+                .unwrap(),
+            ),
             false,
             None,
             crate::ConnectOptions::default(),
-        )
-        .with_certificate_tls("localhost", None, crate::CertificateTrust::Platform, None)
-        .unwrap();
+        );
         let counters = endpoint.counters();
         let mut connecting = Box::pin(crate::establish::establish_stream(&endpoint));
         let (mut peer, _) = tokio::select! {
@@ -454,13 +462,7 @@ mod tests {
             .unwrap()
             .to_der()
             .unwrap();
-        let endpoint = crate::PreparedEndpoint::tcp(
-            listener.local_addr().unwrap().to_string(),
-            false,
-            None,
-            crate::ConnectOptions::default(),
-        )
-        .with_certificate_tls(
+        let config = crate::TlsClientConfig::prepare(
             "wrong.example.test",
             None,
             crate::CertificateTrust::Certificates {
@@ -468,8 +470,16 @@ mod tests {
                 end_entities: &[],
             },
             None,
+            crate::CertificateVerification::Required,
         )
         .unwrap();
+        let endpoint = crate::PreparedEndpoint::new(
+            listener.local_addr().unwrap().try_into().unwrap(),
+            crate::PreparedTransport::Tls(config),
+            false,
+            None,
+            crate::ConnectOptions::default(),
+        );
         let counters = endpoint.counters();
         let peer = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();

@@ -145,8 +145,9 @@ async fn main() -> anyhow::Result<()> {
             .map(|(name, listener)| {
                 Ok(Endpoint::new(
                     name,
-                    PreparedEndpoint::tcp(
-                        listener.local_addr()?.to_string(),
+                    PreparedEndpoint::new(
+                        listener.local_addr()?.try_into()?,
+                        tacacsrs_networking::PreparedTransport::Tcp,
                         false,
                         None,
                         ConnectOptions::default(),

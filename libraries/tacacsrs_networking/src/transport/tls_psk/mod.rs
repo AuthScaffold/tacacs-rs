@@ -7,6 +7,6 @@ mod config;
 mod context;
 mod ffi;
 
-pub(crate) use config::PskClientConfig;
+pub use config::PskClientConfig;
 pub(crate) use context::PskDheKeGroups;
 pub use context::{PskHash, PskDheGroup};

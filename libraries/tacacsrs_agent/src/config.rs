@@ -107,12 +107,10 @@ pub struct ServiceConfig {
     /// Live failover and request-admission policy.
     pub runtime_policy: RuntimePolicy,
 
-    /// Disables TLS certificate verification for server connections.
+    /// Selects TLS certificate verification for server connections.
     ///
-    /// This option is dangerous. Use it only for development and tests. Always
-    /// enable certificate verification in production.
-    #[doc(hidden)]
-    pub disable_certificate_verification: bool,
+    /// CAUTION: `DisabledForDevelopment` permits server impersonation. Use `Required` in production.
+    pub certificate_verification: tacacsrs_networking::CertificateVerification,
 }
 
 impl ServiceConfig {

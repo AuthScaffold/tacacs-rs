@@ -111,7 +111,8 @@ mod tests {
                     tacacs_plus: TacacsPlus::empty(),
                     validation_options: tacacsrs_config::ValidationOptions::default(),
                     runtime_policy: RuntimePolicy::default(),
-                    disable_certificate_verification: false,
+                    certificate_verification:
+                        tacacsrs_networking::CertificateVerification::Required,
                 },
                 health,
             )

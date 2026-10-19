@@ -130,7 +130,13 @@ impl<Connector: EndpointConnector> RunService for Service<Connector> {
 async fn exercise<Connector: EndpointConnector>(connector: Connector) {
     let endpoint = Endpoint::new(
         "boundary",
-        PreparedEndpoint::tcp("127.0.0.1:49", false, None, ConnectOptions::default()),
+        PreparedEndpoint::new(
+            tacacsrs_networking::ServerAddress::new("127.0.0.1", 49).unwrap(),
+            tacacsrs_networking::PreparedTransport::Tcp,
+            false,
+            None,
+            ConnectOptions::default(),
+        ),
         OperationKind::ALL,
     );
     let client = RoutedClient::with_connector(vec![endpoint], connector);

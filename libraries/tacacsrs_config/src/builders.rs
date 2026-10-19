@@ -333,7 +333,8 @@ mod tests {
                 .build();
 
         assert_eq!(server.name, "cli");
-        assert_eq!(server.socket_address(), "192.0.2.10:49");
+        assert_eq!(server.address, "192.0.2.10");
+        assert_eq!(server.port, 49);
         assert_eq!(server.timeout, 5);
         assert!(!server.single_connection);
         assert!(server.shared_secret.is_none());

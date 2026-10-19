@@ -514,7 +514,7 @@ mod tests {
                 let endpoint =
                     crate::prepare::prepare_endpoint(&loaded.server[0], PrepareOptions::default())
                         .unwrap();
-                assert_eq!(endpoint.address(), "192.0.2.10:49");
+                assert_eq!(endpoint.address().to_string(), "192.0.2.10:49");
                 assert!(!endpoint.single_connection());
                 assert_eq!(endpoint.connection_timeout(), Some(Duration::from_secs(9)));
                 TacacsClient::connect_prepared(endpoint).await.unwrap();

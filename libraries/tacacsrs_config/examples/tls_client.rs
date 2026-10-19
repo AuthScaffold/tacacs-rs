@@ -61,7 +61,9 @@ async fn main() -> anyhow::Result<()> {
 
     let endpoint = tacacsrs_config::prepare::prepare_endpoint(
         &server,
-        PrepareOptions::default().with_certificate_verification_disabled(true),
+        PrepareOptions::default().with_certificate_verification(
+            tacacsrs_networking::CertificateVerification::DisabledForDevelopment,
+        ),
     )?;
     let connection = TacacsClient::connect_prepared(endpoint).await?;
     let response = connection

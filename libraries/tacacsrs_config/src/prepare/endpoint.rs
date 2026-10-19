@@ -4,7 +4,8 @@ use anyhow::{Context, Result, ensure};
 
 use tacacsrs_networking::{
     ConnectOptions, ConnectPreflight, PreparedEndpoint, CertificateIdentity, CertificateTrust,
-    PrivateKeyEncoding, PskHash, PskDheGroup,
+    PrivateKeyEncoding, PskHash, PskDheGroup, PreparedTransport, TlsClientConfig, PskClientConfig,
+    ServerAddress, CertificateVerification,
 };
 use tacacsrs_secrets::SecretBytes;
 
@@ -15,6 +16,7 @@ use crate::crypto_types::{PrivateKeyFormat, PublicKeyFormat};
 ///
 /// The server supplies its connection timeout. Preparation does not accept a
 /// timeout override. Preflight runs only when a client opens the prepared endpoint.
+/// Certificate verification defaults to `CertificateVerification::Required`.
 ///
 /// ```compile_fail
 /// use std::time::Duration;
@@ -24,17 +26,30 @@ use crate::crypto_types::{PrivateKeyFormat, PublicKeyFormat};
 /// ```
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PrepareOptions {
-    disable_certificate_verification: bool,
+    certificate_verification: CertificateVerification,
     preflight: ConnectPreflight,
 }
 
 impl PrepareOptions {
-    /// Controls the development-only certificate-verification override.
+    /// Selects the certificate verification policy.
     ///
-    /// CAUTION: A true value permits server impersonation. Do not use it in production.
+    /// CAUTION: `DisabledForDevelopment` permits server impersonation. Do not use it in production.
+    ///
+    /// ```compile_fail,E0308
+    /// use tacacsrs_config::prepare::PrepareOptions;
+    /// PrepareOptions::default().with_certificate_verification(true);
+    /// ```
+    ///
+    /// ```compile_fail,E0599
+    /// use tacacsrs_config::prepare::PrepareOptions;
+    /// PrepareOptions::default().with_certificate_verification_disabled(true);
+    /// ```
     #[must_use]
-    pub const fn with_certificate_verification_disabled(mut self, disabled: bool) -> Self {
-        self.disable_certificate_verification = disabled;
+    pub const fn with_certificate_verification(
+        mut self,
+        verification: CertificateVerification,
+    ) -> Self {
+        self.certificate_verification = verification;
         self
     }
 
@@ -79,15 +94,18 @@ pub fn prepare_endpoint(
             "A TLS client identity cannot select both certificate and PSK authentication"
         );
     }
-    let endpoint = PreparedEndpoint::tcp(
-        server.socket_address(),
-        server.single_connection,
-        server.obfuscation_key().map(SecretBytes::new),
-        ConnectOptions::default()
-            .with_timeout(server.timeout_duration())
-            .with_certificate_verification_disabled(options.disable_certificate_verification)
-            .with_preflight(options.preflight),
-    );
+    let address = ServerAddress::new(&server.address, server.port)?;
+    let finalize = |transport| {
+        PreparedEndpoint::new(
+            address,
+            transport,
+            server.single_connection,
+            server.obfuscation_key().map(SecretBytes::new),
+            ConnectOptions::default()
+                .with_timeout(server.timeout_duration())
+                .with_preflight(options.preflight),
+        )
+    };
     if let Some(epsk) = server
         .client_identity
         .as_ref()
@@ -108,16 +126,16 @@ pub fn prepare_endpoint(
             .copied()
             .map(psk_group)
             .collect::<Vec<_>>();
-        return endpoint.with_psk(
+        return Ok(finalize(PreparedTransport::Psk(PskClientConfig::prepare(
             &epsk.external_identity,
             key.expose_secret(),
             hash,
             &groups,
             tls_sni_name(server)?,
-        );
+        )?)));
     }
     if !server.is_tls() {
-        return Ok(endpoint);
+        return Ok(finalize(PreparedTransport::Tcp));
     }
     for bag in server
         .server_authentication
@@ -157,27 +175,27 @@ pub fn prepare_endpoint(
         .flat_map(|inline| inline.intermediate_certificate.iter().map(Vec::as_slice))
         .collect::<Vec<_>>();
     let identity = certificate_identity(server, &intermediates)?;
-    let endpoint = endpoint
-        .with_certificate_tls(
-            certificate_peer_identity(server),
-            tls_sni_name(server)?,
-            trust,
-            identity,
-        )?
-        .with_certificate_revocation(certificate_revocation(server)?)?;
-    apply_crl_evidence(endpoint, server)
+    let config = TlsClientConfig::prepare(
+        certificate_peer_identity(server),
+        tls_sni_name(server)?,
+        trust,
+        identity,
+        options.certificate_verification,
+    )?
+    .with_revocation_policy(certificate_revocation(server)?)?;
+    Ok(finalize(PreparedTransport::Tls(apply_crl_evidence(config, server)?)))
 }
 
 fn apply_crl_evidence(
-    mut endpoint: PreparedEndpoint,
+    mut config: TlsClientConfig,
     server: &TacacsPlusServer,
-) -> Result<PreparedEndpoint> {
+) -> Result<TlsClientConfig> {
     if let Some(policy) = server
         .server_authentication
         .as_ref()
         .and_then(|auth| auth.require_ocsp.as_ref())
     {
-        endpoint = endpoint.with_certificate_ocsp_response(
+        config = config.with_ocsp_response(
             policy
                 .response
                 .as_deref()
@@ -194,12 +212,12 @@ fn apply_crl_evidence(
             .crl
             .as_ref()
             .context("Resolve CRL evidence before endpoint preparation")?;
-        return endpoint.with_certificate_crls(
+        return config.with_crls(
             &lists.iter().map(Vec::as_slice).collect::<Vec<_>>(),
             std::time::Duration::from_secs(u64::from(policy.max_age_seconds)),
         );
     }
-    Ok(endpoint)
+    Ok(config)
 }
 
 fn certificate_revocation(
@@ -316,6 +334,47 @@ mod tests {
     }
 
     #[test]
+    fn preparation_defaults_to_required_certificate_verification() {
+        assert_eq!(
+            PrepareOptions::default().certificate_verification,
+            CertificateVerification::Required
+        );
+    }
+
+    #[test]
+    fn canonical_address_fields_are_not_combined_or_reparsed() {
+        for host in [
+            "server.example.",
+            "Server_Name.Example.",
+            "127.0.0.1",
+            "::1:49",
+            "::ffff:127.0.0.1",
+        ] {
+            let mut server = builder().build();
+            server.address = host.to_owned();
+            server.port = 300;
+            let original = server.clone();
+            let endpoint = prepare_endpoint(&server, PrepareOptions::default()).unwrap();
+            assert_eq!(endpoint.address().host(), host);
+            assert_eq!(endpoint.address().port(), 300);
+            assert_eq!(server, original);
+        }
+        for (host, port) in [
+            ("host:49", 300),
+            ("[::1]", 300),
+            ("fe80::1%eth0", 49),
+            ("localhost", 0),
+        ] {
+            let mut server = builder().build();
+            server.address = host.to_owned();
+            server.port = port;
+            let original = server.clone();
+            assert!(prepare_endpoint(&server, PrepareOptions::default()).is_err());
+            assert_eq!(server, original);
+        }
+    }
+
+    #[test]
     fn preparation_uses_canonical_timeout_without_changing_source() {
         for timeout in [1, 17, u16::MAX] {
             let server = builder().with_timeout(timeout).build();
@@ -323,7 +382,8 @@ mod tests {
             for options in [
                 PrepareOptions::default(),
                 PrepareOptions::default().with_preflight(ConnectPreflight::AccountingWatchdog),
-                PrepareOptions::default().with_certificate_verification_disabled(true),
+                PrepareOptions::default()
+                    .with_certificate_verification(CertificateVerification::DisabledForDevelopment),
             ] {
                 let endpoint = prepare_endpoint(&server, options).unwrap();
                 assert_eq!(endpoint.connection_timeout(), Some(server.timeout_duration()));
@@ -385,6 +445,20 @@ mod tests {
             epsk.psk_dhe_ke_groups = PskDheKeSupportedGroup::ALL.to_vec();
             let original = server.clone();
             prepare_endpoint(&server, PrepareOptions::default()).unwrap();
+            assert_eq!(server, original);
+        }
+    }
+
+    #[test]
+    fn invalid_psk_sni_fails_before_io_without_source_mutation() {
+        for name in ["bad\0name", "", "127.0.0.1", "::1", "*.example", "bad host"] {
+            let mut server = builder()
+                .with_tls13_epsk_psk_only("client", b"valid-psk-credential".to_vec())
+                .build();
+            server.domain_name = Some(name.to_owned());
+            server.sni_enabled = Some(true);
+            let original = server.clone();
+            assert!(prepare_endpoint(&server, PrepareOptions::default()).is_err());
             assert_eq!(server, original);
         }
     }
@@ -504,15 +578,18 @@ mod tests {
                 inline.public_key_format = format;
                 inline.public_key = bytes;
                 let original = source.clone();
-                for disabled in [false, true] {
+                for verification in [
+                    CertificateVerification::Required,
+                    CertificateVerification::DisabledForDevelopment,
+                ] {
                     let result = prepare_endpoint(
                         &source,
-                        PrepareOptions::default().with_certificate_verification_disabled(disabled),
+                        PrepareOptions::default().with_certificate_verification(verification),
                     );
                     assert_eq!(
                         result.is_ok(),
                         expected,
-                        "format {format:?}, verification disabled {disabled}"
+                        "format {format:?}, verification {verification:?}"
                     );
                     if let Err(error) = result {
                         assert!(!format!("{error:#}").contains("sensitive-trailing-data"));
@@ -547,7 +624,7 @@ mod tests {
         let original = server.clone();
         let endpoint = prepare_endpoint(&server, PrepareOptions::default()).unwrap();
         assert_eq!(server, original);
-        assert_eq!(endpoint.address(), "127.0.0.1:1");
+        assert_eq!(endpoint.address().to_string(), "127.0.0.1:1");
         assert_eq!(endpoint.single_connection(), server.single_connection);
         assert!(!format!("{endpoint:?}").contains("private-obfuscation-key"));
     }
@@ -1486,6 +1563,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn certificate_names_preserve_schema_dns_spelling_on_native_connections() {
+        for name in ["server_name.example.test", "server_name.example.test."] {
+            for sni in [false, true] {
+                probe_certificate_identity(Some(name), "127.0.0.1", Some(name), sni, false, true)
+                    .await;
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn certificate_identity_and_sni_are_independent() {
         for (san, address, domain, sni, insecure, allowed) in [
             (
@@ -1578,7 +1665,11 @@ mod tests {
         let original = server.clone();
         let endpoint = prepare_endpoint(
             &server,
-            PrepareOptions::default().with_certificate_verification_disabled(insecure),
+            PrepareOptions::default().with_certificate_verification(if insecure {
+                CertificateVerification::DisabledForDevelopment
+            } else {
+                CertificateVerification::Required
+            }),
         )
         .unwrap();
         let peer = async {

@@ -12,11 +12,22 @@ use crate::endpoint::{ConnectionGuard, PreparedEndpoint};
 use crate::transport::BoxedTransport;
 use crate::transport::{tls, tls_psk};
 
-#[derive(Clone)]
-pub(crate) enum PreparedTransport {
+/// One fully prepared transport, selected before endpoint construction.
+#[derive(Clone, Debug)]
+pub enum PreparedTransport {
+    /// Plain TCP, with optional packet obfuscation supplied by the endpoint.
     Tcp,
+    /// Certificate TLS with all required evidence attached.
     Tls(tls::TlsClientConfig),
-    Psk(tls_psk::PskClientConfig, Option<String>),
+    /// TLS 1.3 PSK with validated optional SNI in the prepared configuration.
+    ///
+    /// ```compile_fail
+    /// use tacacsrs_networking::{PreparedTransport, PskClientConfig};
+    /// fn replace_sni(config: PskClientConfig) {
+    ///     let transport = PreparedTransport::Psk(config, Some("other.example".to_owned()));
+    /// }
+    /// ```
+    Psk(tls_psk::PskClientConfig),
 }
 
 /// Optional readiness check before a prepared client is returned.
@@ -33,10 +44,16 @@ pub enum ConnectPreflight {
     AccountingWatchdog,
 }
 
+/// TCP connection timeout and optional TACACS+ preflight.
+///
+/// Certificate verification belongs to TLS preparation, not execution controls.
+///
+/// ```compile_fail
+/// use tacacsrs_networking::ConnectOptions;
+/// let options = ConnectOptions::default().with_certificate_verification_disabled(true);
+/// ```
 #[derive(Debug, Clone, Default)]
 pub struct ConnectOptions {
-    /// Disables TLS certificate verification.
-    disable_certificate_verification: bool,
     /// Connection timeout. When `None`, no timeout is applied to the TCP
     /// connection phase. Callers must apply other timeouts.
     timeout: Option<Duration>,
@@ -47,20 +64,6 @@ pub struct ConnectOptions {
 impl ConnectOptions {
     pub(crate) const fn timeout(&self) -> Option<Duration> {
         self.timeout
-    }
-
-    pub(crate) const fn certificate_verification_disabled(&self) -> bool {
-        self.disable_certificate_verification
-    }
-
-    /// Returns options with TLS certificate verification disabled when
-    /// `disabled` is true.
-    ///
-    /// Client and presented peer certificate dates still apply to each new connection.
-    #[must_use]
-    pub const fn with_certificate_verification_disabled(mut self, disabled: bool) -> Self {
-        self.disable_certificate_verification = disabled;
-        self
     }
 
     /// Returns options with the TCP connect timeout set to `timeout`.
@@ -197,11 +200,9 @@ async fn establish_transport_inner(
             attempt.handshake();
             config.connect(tcp_stream).await
         }
-        PreparedTransport::Psk(config, server_name) => {
+        PreparedTransport::Psk(config) => {
             attempt.handshake();
-            let stream = config
-                .connect(address, server_name.as_deref(), tcp_stream)
-                .await?;
+            let stream = config.connect(address, tcp_stream).await?;
             let details = crate::TlsDetails::from_ssl(stream.ssl());
             Ok(BoxedTransport::new(stream).with_tls_details(details))
         }
@@ -219,14 +220,22 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn evidence_deadline_bounds_stalled_handshake_before_transport_registration() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut endpoint = PreparedEndpoint::tcp(
-            listener.local_addr().unwrap().to_string(),
+        let mut endpoint = PreparedEndpoint::new(
+            listener.local_addr().unwrap().try_into().unwrap(),
+            PreparedTransport::Tls(
+                crate::TlsClientConfig::prepare(
+                    "localhost",
+                    None,
+                    crate::CertificateTrust::Platform,
+                    None,
+                    crate::CertificateVerification::DisabledForDevelopment,
+                )
+                .unwrap(),
+            ),
             false,
             None,
-            ConnectOptions::default().with_certificate_verification_disabled(true),
-        )
-        .with_certificate_tls("localhost", None, crate::CertificateTrust::Platform, None)
-        .unwrap();
+            ConnectOptions::default(),
+        );
         let now = SystemTime::now();
         let validity = crate::transport::tls::RevocationEvidenceValidity::from_bounds(
             now - Duration::from_secs(1),

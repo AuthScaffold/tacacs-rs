@@ -181,7 +181,7 @@ impl tacacsrs_networking::routed::EndpointConnector for FakeConnector {
         endpoint: tacacsrs_networking::PreparedEndpoint,
         _operation: OperationKind,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
-        let address = endpoint.address().to_owned();
+        let address = endpoint.address().to_string();
         {
             let mut attempts = self.connect_attempts.lock().await;
             *attempts.entry(address.clone()).or_default() += 1;
