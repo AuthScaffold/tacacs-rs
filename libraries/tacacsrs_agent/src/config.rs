@@ -17,6 +17,7 @@ pub use tacacsrs_config::proxy_policy::PreparedProxyPolicy;
 
 pub use self::policy::{
     FailoverStrategy, OperationPolicies, PolicyService, RequestLimits, RuntimePolicy,
+    RuntimeCandidateLimits,
 };
 pub(crate) use self::policy::default_concurrent_request_limit;
 

@@ -202,6 +202,7 @@ impl CredentialResolver for HttpEvidenceResolver {
     async fn resolve(
         &self,
         request: &CredentialRequest,
+        _scope: &tacacsrs_credential_resolution::WorkScope,
     ) -> Result<ResolvedCredential, ResolutionError> {
         if request.kind() == CredentialKind::OcspResponse {
             if let Some(source) = request
@@ -232,7 +233,7 @@ impl CredentialResolver for HttpEvidenceResolver {
             .and_then(|reference| self.sources.get(reference));
         let Some(locations) = source else {
             return match &self.fallback {
-                Some(fallback) => fallback.resolve(request).await,
+                Some(fallback) => fallback.resolve(request, _scope).await,
                 None => {
                     Err(ResolutionError::provider(ProviderErrorKind::NotFound, request.context()))
                 }

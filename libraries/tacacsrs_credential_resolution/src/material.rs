@@ -151,6 +151,47 @@ pub enum ResolvedCredential {
 }
 
 impl ResolvedCredential {
+    /// Returns the checked decoded payload length, excluding names and metadata.
+    #[must_use]
+    pub fn payload_bytes(&self) -> Option<u64> {
+        let lengths: Vec<usize> = match self {
+            Self::OcspResponse(material) => vec![material.response.as_bytes().len()],
+            Self::SymmetricKey(material) => vec![material.key.expose_secret().len()],
+            Self::CertificateWithKey(material) => {
+                let mut lengths = vec![
+                    material.certificate.as_bytes().len(),
+                    material.private_key.expose_secret().len(),
+                ];
+                lengths.extend(
+                    material
+                        .public_key
+                        .iter()
+                        .map(|bytes| bytes.as_bytes().len()),
+                );
+                lengths.extend(
+                    material
+                        .intermediates
+                        .iter()
+                        .map(|bytes| bytes.as_bytes().len()),
+                );
+                lengths
+            }
+            Self::CaCertificateBag(material) | Self::EeCertificateBag(material) => material
+                .certificates
+                .iter()
+                .map(|certificate| certificate.certificate.as_bytes().len())
+                .collect(),
+            Self::CertificateRevocationLists(material) => material
+                .lists
+                .iter()
+                .map(|bytes| bytes.as_bytes().len())
+                .collect(),
+        };
+        lengths
+            .into_iter()
+            .try_fold(0_u64, |total, bytes| total.checked_add(u64::try_from(bytes).ok()?))
+    }
+
     /// Returns the absolute validity supplied with this credential.
     #[must_use]
     pub const fn validity(&self) -> crate::CredentialValidity {

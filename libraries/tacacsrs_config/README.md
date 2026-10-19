@@ -81,13 +81,19 @@ Pass each enumerated server to `prepare::resolution_plan`.
 The planner maps central references to deterministic provider requests without changing their values.
 It returns a `prepare::ServerResolutionPlan` with private installation targets for each request slot.
 Call `plan.neutral_plan()` to borrow the provider-neutral `ResolutionPlan` for resolution or dependency inspection.
-A `CredentialResolver` returns typed material, and `resolve_plan(plan.neutral_plan(), resolver)` validates the complete slot/variant-matched result set.
+A `CredentialResolver` returns typed material, and `resolve_plan(plan.neutral_plan(), resolver, scope)` validates the complete slot/variant-matched result set.
 Materialization matches each stored `CentralCredentialUsage` with its resolved material. Diagnostic field paths do not select installation targets.
 
 For complete materialization, call `prepare::enumerate_materialized_servers` with a source snapshot, resolver, and validation options.
 This function enumerates local bundles, resolves central requests, installs provider results, and validates the complete candidate set.
 It leaves the source snapshot and its references unchanged.
 `prepare::materialize_server` and `prepare::materialize_servers` accept servers whose local bundles are already expanded.
+These direct helpers use caller-unowned work scopes and do not enforce a global preparation budget.
+Supervised callers use `materialize_planned_servers` with preflighted typed plans and their registered work scope.
+They supply a nonblocking admission check before each typed installation.
+`ConfigurationMaterialBudget` supplies checked request counts, logical payload, retained-copy charges, and high-water checks without Tokio.
+Borrowed payload sizing covers decoded secrets, keys, certificates, intermediates, trust bags, CRLs, and OCSP responses.
+Names, opaque references, metadata, and allocator slack are excluded.
 
 Central references are opaque in both generic crates. They can contain spaces, slashes, traversal-like text, or provider-defined syntax.
 
@@ -218,6 +224,19 @@ Consumers use their generated defaults when preparing runtime behavior without c
 The YANG defaults are 30 recovery seconds, deferred failover, and 64 concurrent requests per operation.
 Authentication defaults to a 4096-byte body limit. Authorization and accounting default to 16384 bytes.
 The runtime derives these defaults from generated types rather than independent constants.
+
+The non-presence `candidate-preparation` container has three positive `uint32` leaves:
+
+| Leaf | Generated Default |
+| --- | --- |
+| `timeout-seconds` | 30 |
+| `max-resolution-requests` | 256 |
+| `max-retained-material-bytes` | 67108864 |
+
+An absent container remains `None`. An empty container uses its generated defaults.
+JSON parsing and programmatic validation reject zero. Each leaf accepts values from 1 through 4294967295.
+The agent derives one admission deadline and a checked configuration-material ledger from this canonical policy.
+This policy is not a process-memory or native-allocation limit.
 
 ## Local Service Resource
 

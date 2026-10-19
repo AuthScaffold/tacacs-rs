@@ -21,7 +21,48 @@ async fn resolve(
         CredentialReference::CertificateRevocationLists(reference.to_owned()),
     )])
     .unwrap();
-    provider.resolve(&plan.requests()[0]).await
+    provider
+        .resolve(&plan.requests()[0], &tacacsrs_credential_resolution::WorkScope::unowned())
+        .await
+}
+
+struct ScopeRetainingFallback(std::sync::Mutex<Option<tacacsrs_credential_resolution::WorkScope>>);
+
+#[async_trait::async_trait]
+impl CredentialResolver for ScopeRetainingFallback {
+    async fn resolve(
+        &self,
+        _request: &tacacsrs_credential_resolution::CredentialRequest,
+        scope: &tacacsrs_credential_resolution::WorkScope,
+    ) -> Result<ResolvedCredential, ResolutionError> {
+        *self.0.lock().unwrap() = scope.register();
+        Ok(ResolvedCredential::SymmetricKey(SymmetricKeyMaterial {
+            validity: CredentialValidity::unbounded(),
+            key_format: None,
+            key: SecretBytes::new(vec![7; 16]),
+        }))
+    }
+}
+
+#[tokio::test]
+async fn fallback_retains_the_callers_registered_work_scope() {
+    let fallback = Arc::new(ScopeRetainingFallback(std::sync::Mutex::new(None)));
+    let provider = HttpEvidenceResolver::new([], EvidenceFetchLimits::default())
+        .unwrap()
+        .with_fallback(fallback.clone());
+    let plan = ResolutionPlan::new([(
+        RequestContext::new("server", "epsk"),
+        CredentialKind::SymmetricKey,
+        CredentialReference::SymmetricKey("opaque".to_owned()),
+    )])
+    .unwrap();
+    let (control, root) = tacacsrs_credential_resolution::WorkScope::new(());
+    provider.resolve(&plan.requests()[0], &root).await.unwrap();
+    control.seal();
+    drop(root);
+    assert!(!control.is_quiet());
+    fallback.0.lock().unwrap().take();
+    assert!(control.is_quiet());
 }
 
 async fn reply(body: impl AsRef<[u8]>) -> (String, tokio::task::JoinHandle<()>) {
@@ -266,7 +307,11 @@ async fn unknown_references_are_not_urls_and_other_kinds_can_use_fallback() {
     )])
     .unwrap();
     assert_eq!(
-        provider.resolve(&plan.requests()[0]).await.unwrap().kind(),
+        provider
+            .resolve(&plan.requests()[0], &tacacsrs_credential_resolution::WorkScope::unowned())
+            .await
+            .unwrap()
+            .kind(),
         CredentialKind::SymmetricKey
     );
 }

@@ -36,8 +36,9 @@ impl ConfigSupervisor {
                 biased;
                 () = cancellation.cancelled() => return Ok(()),
                 () = tokio::time::sleep_until(scheduled) => {
+                    let admission = crate::runtime::candidate_preparation::CandidateAdmission::new(self.service.candidate_limits())?;
                     if let Some(attempt) = self.materialization_coordinator.refresh_credentials().await {
-                        if self.materialize_and_publish(&self.materialization_coordinator, attempt).await.is_err() {
+                        if self.materialize_and_publish(&self.materialization_coordinator, attempt.with_admission(admission)).await.is_err() {
                             log::warn!("Scheduled credential refresh failed; existing validity limits remain in force");
                         }
                     }

@@ -68,6 +68,26 @@ cargo run -p tacacsrs-config --example central_resolution
 A production resolver implements `CredentialResolver`, reads references through explicit accessors, and returns the material variant requested by each slot.
 The coordinator owns provider notifications and publication. Configuration owns YANG materialization.
 
+## Registered Work
+
+`CredentialResolver::resolve` and `resolve_plan` require a `WorkScope` from the caller.
+`WorkScope::new(owner)` returns a root lease and separate `WorkScopeControl` sealing authority.
+The last lease releases the opaque owner exactly once. The control does not keep that owner alive.
+Owner destructors must not block, panic, reenter coordinator state, or require a live async runtime.
+The API contains no Tokio, YANG, or concrete scheduler types.
+
+A provider must call `register` before it queues owned work that can outlive the resolver future.
+The actual worker and its queued result must retain that lease until transfer or disposal.
+A lease does not implement `Clone`. Move a lease to transfer it. After sealing, `register` returns `None`, so no new lease is possible.
+Sealing prevents new registrations. It cannot force quiet while a root, worker, or result lease remains.
+Dropping a resolver future or join handle does not prove quiet.
+
+Direct tests and unmanaged callers can use `WorkScope::unowned()` explicitly.
+That scope has no scheduler owner and proves no global admission bound.
+Generic unregistered background work and unobservable OS or SDK internals are outside the ownership guarantee.
+Provider-owned blocking jobs are not excluded. Providers must register them.
+`ResolvedCredential::payload_bytes` returns the checked decoded length without exposing credential content.
+
 ## Notification Ownership
 
 Each `CredentialChangeStream` owns its subscription and backend notification workers.

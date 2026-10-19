@@ -115,9 +115,13 @@ async fn fake_resolver_completes_all_request_variants() {
         .with_response(certificate_plan.requests()[0].slot(), certificate_material())
         .with_response(certificate_plan.requests()[1].slot(), ca_material())
         .with_response(certificate_plan.requests()[2].slot(), ee_material());
-    let certificate_set = resolve_plan(certificate_plan, &certificate_resolver)
-        .await
-        .expect("certificate plan must resolve");
+    let certificate_set = resolve_plan(
+        certificate_plan,
+        &certificate_resolver,
+        &tacacsrs_credential_resolution::WorkScope::unowned(),
+    )
+    .await
+    .expect("certificate plan must resolve");
     assert_eq!(certificate_set.len(), 3);
     assert_eq!(
         certificate_set
@@ -138,9 +142,13 @@ async fn fake_resolver_completes_all_request_variants() {
             key: SecretBytes::new(b"epsk".to_vec()),
         }),
     );
-    let epsk_set = resolve_plan(epsk_plan, &epsk_resolver)
-        .await
-        .expect("EPSK plan must resolve");
+    let epsk_set = resolve_plan(
+        epsk_plan,
+        &epsk_resolver,
+        &tacacsrs_credential_resolution::WorkScope::unowned(),
+    )
+    .await
+    .expect("EPSK plan must resolve");
     assert_eq!(
         epsk_set
             .credential(epsk_plan.requests()[0].slot())
@@ -386,9 +394,10 @@ async fn provider_failures_are_typed_and_sanitized() {
     let resolver = FakeCredentialResolver::new()
         .with_error(plan.requests()[0].slot(), ProviderErrorKind::AccessDenied);
 
-    let error = resolve_plan(plan, &resolver)
-        .await
-        .expect_err("provider error must propagate");
+    let error =
+        resolve_plan(plan, &resolver, &tacacsrs_credential_resolution::WorkScope::unowned())
+            .await
+            .expect_err("provider error must propagate");
     assert_eq!(error.kind(), ResolutionErrorKind::AccessDenied);
     assert!(error.to_string().contains("client-identity/tls13-epsk"));
     assert!(!error.to_string().contains("secret-reference-epsk"));

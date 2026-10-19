@@ -261,8 +261,10 @@ where
         servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
         proxy_downstream_obfuscation: PreparedProxyPolicy,
     ) -> anyhow::Result<()> {
-        self.publish_materialized_servers(servers, proxy_downstream_obfuscation, None, || None)
-            .await
+        self.publish_materialized_servers(servers, proxy_downstream_obfuscation, None, None, || {
+            None
+        })
+        .await
     }
 
     pub(super) async fn publish_materialized_servers(
@@ -270,6 +272,7 @@ where
         servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
         proxy_downstream_obfuscation: PreparedProxyPolicy,
         validity: Option<crate::runtime::CredentialLifetime>,
+        preparation: Option<Arc<crate::runtime::candidate_preparation::Preparation>>,
         commit: impl FnOnce() -> Option<crate::runtime::MaterializationCommit> + Send,
     ) -> anyhow::Result<()> {
         proxy_downstream_obfuscation.shared_secret()?;
@@ -277,13 +280,21 @@ where
             servers.iter().map(AsRef::as_ref),
             &self.config.validation_options,
         )?;
-        let _reload_guard = self.reload_publication_lock.lock().await;
+        let _reload_guard = if let Some(preparation) = preparation.as_ref() {
+            preparation
+                .admission
+                .run(self.reload_publication_lock.lock())
+                .await?
+        } else {
+            self.reload_publication_lock.lock().await
+        };
         self.manager
             .reload_shared_servers_with_retirement(
                 servers,
                 proxy_downstream_obfuscation,
                 None,
                 validity,
+                preparation,
                 commit,
             )
             .await?;

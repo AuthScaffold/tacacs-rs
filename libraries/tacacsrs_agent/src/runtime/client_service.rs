@@ -150,6 +150,13 @@ impl TacacsClientService {
     }
 
     #[cfg(test)]
+    pub(crate) fn pause_native_preparation(
+        &self,
+    ) -> (Arc<tokio::sync::Notify>, std::sync::mpsc::Sender<()>) {
+        self.runtime.manager.pause_native_preparation()
+    }
+
+    #[cfg(test)]
     pub(crate) async fn hold_publication(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.runtime.reload_publication_lock.lock().await
     }
@@ -262,10 +269,17 @@ impl TacacsClientService {
         servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
         policy: PreparedProxyPolicy,
         validity: super::CredentialLifetime,
+        preparation: Arc<super::candidate_preparation::Preparation>,
         commit: impl FnOnce() -> Option<super::MaterializationCommit> + Send,
     ) -> anyhow::Result<()> {
         self.runtime
-            .publish_materialized_servers(servers, policy, Some(validity), commit)
+            .publish_materialized_servers(
+                servers,
+                policy,
+                Some(validity),
+                Some(preparation),
+                commit,
+            )
             .await
     }
 
@@ -288,6 +302,7 @@ impl TacacsClientService {
                 proxy,
                 Some(tacacsrs_networking::RequestDeadline::at(tokio::time::Instant::now())),
                 None,
+                None,
                 commit,
             )
             .await
@@ -303,6 +318,14 @@ impl TacacsClientService {
 
     pub(crate) fn credential_refresh_interval(&self) -> std::time::Duration {
         self.runtime.manager.credential_refresh_interval()
+    }
+
+    pub(crate) fn candidate_limits(&self) -> crate::config::RuntimeCandidateLimits {
+        self.runtime.manager.candidate_limits()
+    }
+
+    pub(crate) fn ensure_open(&self) -> anyhow::Result<()> {
+        self.runtime.manager.ensure_open()
     }
 
     /// Returns the applied graceful shutdown budget for an embedding host.

@@ -169,6 +169,44 @@ Rejected or cancelled candidates preserve the applied policy revision and genera
 Server updates preserve the policy revision. Policy updates preserve materialization revisions, applied source status, and upstream availability.
 `PolicySupervisor::new(observation, service)` no longer accepts a separate health publisher or writes health after publication.
 
+## Candidate Preparation
+
+Canonical `runtime-policy/candidate-preparation` controls supervised startup, source reloads, and credential refreshes.
+Generated defaults supply 30 seconds, 256 resolver slots, and 67108864 decoded payload bytes.
+`config::RuntimeCandidateLimits` is a derived value, not another configuration resource.
+An absent container stays absent in the canonical source.
+
+The supervisor captures policy and one admission instant before filtering or waiting for preparation capacity.
+One absolute deadline covers cooperative filtering, provider calls, and publication-lock waits through commit.
+Success, retries within the attempt, and looser policy do not renew it.
+The final fence uses the tighter captured and applied limits before retirement cutoffs or publication change.
+Retirement after commit has a separate cleanup budget. Its completion cannot turn a committed update into candidate rejection.
+
+Each coordinator admits one preparation scope, including cancelled registered provider work.
+Its three existing loops retain at most three unexpanded records and three waiter futures in total.
+Source observations replace their pending record. Credential events coalesce to full refresh when necessary.
+No notification spawns a preparation task. Revision checks follow capacity acquisition and each provider handoff.
+
+The decoded payload charge is `L + E`.
+`L` includes every logical destination, repeated bundle installations, retained servers during partial refresh, and the downstream proxy secret.
+`E` includes additional owned configuration payload, including retained filtered projections.
+Known copies are reserved before cloning. Moves transfer charges, and shared allocation owners add no duplicate allocation charge.
+All selected plans pass request admission before the first provider call, in canonical server and plan order.
+Repeated references count separately. Each provider return passes byte admission before result buffering or the next call.
+Resolver slots are not HTTP URL requests. Provider response and fan-out limits remain independent.
+
+The raw datastore snapshot, opaque producer internals, existing active and retiring catalogs, allocator overhead, and RSS are outside this measure.
+An opaque result can already own a large allocation at handoff. Rejection prevents retention and further candidate copies, not that earlier allocation.
+Prepared-runtime Rust payload copies are not yet charged. Iteration 10 extends the same ledger and limit to those owners.
+Synchronous native preparation is not preemptible. The fence checks the deadline after it returns.
+The existing coordinator and native publication lock coupling remains. Iteration 10 must remove it before R14 is complete.
+
+Providers receive one `WorkScope`. They must register owned work before queueing it and retain the lease through unconsumed results.
+Cancellation seals the scope and drops cooperative work. Registered blocking work keeps capacity until its last lease drops.
+Permanently stuck registered work keeps the slot. Expiry and host stop do not wait for that slot or for provider quiet.
+Unobservable OS, SDK, and filter DNS internals are not a hard-cancellation guarantee.
+Unmanaged direct reload and configuration helpers do not acquire this supervisor-owned budget.
+
 `ServiceConfig::validation_options` carries the schema policy selected by the configuration source.
 Construction and both reload APIs apply the shared configuration checks with that policy.
 The daemon obtains the policy from `ConfigDatastore::validation_options`, including explicit migration relaxations.

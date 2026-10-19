@@ -558,6 +558,7 @@ async fn credential_validity_bounds_leases_and_rechecks_waiting_publication() {
             PreparedProxyPolicy::unobfuscated(),
             None,
             Some(lifetime),
+            None,
             || None,
         )
         .await
@@ -572,6 +573,7 @@ async fn credential_validity_bounds_leases_and_rechecks_waiting_publication() {
         PreparedProxyPolicy::unobfuscated(),
         None,
         Some(lifetime),
+        None,
         || None,
     );
     tokio::pin!(pending);
@@ -713,6 +715,7 @@ async fn immediate_retirement_blocks_old_bindings_without_replacing_admission() 
             Vec::new(),
             PreparedProxyPolicy::unobfuscated(),
             Some(tacacsrs_networking::RequestDeadline::at(tokio::time::Instant::now())),
+            None,
             None,
             || None,
         )

@@ -88,6 +88,8 @@ pub(super) struct PublicationController {
     /// path awaits it.
     #[cfg(test)]
     publication_pause: Mutex<Option<std::sync::Arc<tokio::sync::Notify>>>,
+    #[cfg(test)]
+    native_preparation_pause: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl PublicationController {
@@ -143,6 +145,8 @@ impl PublicationController {
             state: Mutex::new(ObservationState::default()),
             #[cfg(test)]
             publication_pause: Mutex::new(None),
+            #[cfg(test)]
+            native_preparation_pause: Mutex::new(None),
         }
     }
 
@@ -162,6 +166,26 @@ impl PublicationController {
         let pause = self.publication_pause.lock().unwrap().take();
         if let Some(pause) = pause {
             pause.notified().await;
+        }
+    }
+
+    #[cfg(test)]
+    fn pause_native_preparation(&self) -> (Arc<tokio::sync::Notify>, std::sync::mpsc::Sender<()>) {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let signal = entered.clone();
+        let (release, barrier) = std::sync::mpsc::channel();
+        *self.native_preparation_pause.lock().unwrap() = Some(Box::new(move || {
+            signal.notify_one();
+            barrier.recv().unwrap();
+        }));
+        (entered, release)
+    }
+
+    #[cfg(test)]
+    fn wait_for_native_preparation_pause(&self) {
+        let pause = self.native_preparation_pause.lock().unwrap().take();
+        if let Some(pause) = pause {
+            pause();
         }
     }
 
@@ -255,6 +279,13 @@ impl PublicationController {
 /// file. Each takes the `active_snapshot` write lock and commits through the
 /// controller in one health mutation.
 impl<Connector: EndpointConnector> UpstreamManager<Connector> {
+    #[cfg(test)]
+    pub(crate) fn pause_native_preparation(
+        &self,
+    ) -> (Arc<tokio::sync::Notify>, std::sync::mpsc::Sender<()>) {
+        self.publication.pause_native_preparation()
+    }
+
     pub(crate) fn publish_policy(
         &self,
         revision: crate::PolicyRevision,
@@ -300,9 +331,17 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         proxy_downstream_obfuscation: PreparedProxyPolicy,
         retirement: Option<tacacsrs_networking::RequestDeadline>,
         validity: Option<crate::runtime::CredentialLifetime>,
+        preparation: Option<Arc<crate::runtime::candidate_preparation::Preparation>>,
         commit: impl FnOnce() -> Option<crate::runtime::MaterializationCommit> + Send,
     ) -> anyhow::Result<()> {
-        let _reload = self.catalog_reload_lock.lock().await;
+        let _reload = if let Some(preparation) = preparation.as_ref() {
+            preparation
+                .admission
+                .run(self.catalog_reload_lock.lock())
+                .await?
+        } else {
+            self.catalog_reload_lock.lock().await
+        };
         anyhow::ensure!(
             !self.closed.load(std::sync::atomic::Ordering::Acquire),
             "The TACACS+ service is closed"
@@ -316,6 +355,8 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                 .zip(&servers)
                 .any(|(old, new)| old.server.as_ref() != new.as_ref());
         let mut new_server_slots = Vec::with_capacity(servers.len());
+        #[cfg(test)]
+        self.publication.wait_for_native_preparation_pause();
         for server in servers {
             let reusable = previous
                 .servers
@@ -334,15 +375,17 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             |lifetime, server| lifetime.intersect(server.evidence_lifetime),
         )?;
 
-        let client = previous
-            .client
-            .with_endpoints(
-                new_server_slots
-                    .iter()
-                    .map(|server| server.endpoint.clone())
-                    .collect(),
-            )
-            .await;
+        let preparing_client = previous.client.with_endpoints(
+            new_server_slots
+                .iter()
+                .map(|server| server.endpoint.clone())
+                .collect(),
+        );
+        let client = if let Some(preparation) = preparation.as_ref() {
+            preparation.admission.run(preparing_client).await?
+        } else {
+            preparing_client.await
+        };
         let new_set = Arc::new(ServerSet {
             servers: new_server_slots,
             client,
@@ -359,6 +402,9 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                 "The TACACS+ service closed during preparation"
             );
             anyhow::ensure!(validity.is_valid(), "Credential validity expired before publication");
+            if let Some(preparation) = preparation.as_ref() {
+                preparation.final_check(current.runtime_policy.candidate_limits())?;
+            }
             let generation = current.generation.wrapping_add(1);
             previous.retire_replaced_until(&new_set, retirement_deadline, &urgent);
             self.publication.publish_runtime(
@@ -387,6 +433,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             );
         }
 
+        drop(preparation);
         if new_set.server_count() == 0 {
             log::warn!("Reloaded an empty TACACS+ server set; waiting for configuration");
         } else {

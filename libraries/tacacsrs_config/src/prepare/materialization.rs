@@ -32,6 +32,8 @@ pub enum MaterializationErrorKind {
     Validation,
     /// Provider validity windows conflict or exclude the current time.
     Validity,
+    /// The caller's admission fence rejected typed installation.
+    Admission,
 }
 
 /// Sanitized materialization error without reference or credential values.
@@ -190,9 +192,43 @@ pub async fn materialize_servers(
     resolver: &dyn CredentialResolver,
     validation_options: &ValidationOptions,
 ) -> Result<Vec<MaterializedServer>, MaterializationError> {
-    let mut candidates = Vec::with_capacity(servers.len());
-    for server in servers {
-        candidates.push(materialize_server_unvalidated(server, resolver).await?);
+    let plans = servers
+        .into_iter()
+        .map(|server| {
+            let plan = super::resolution_plan(&server).map_err(MaterializationError::resolution)?;
+            Ok((server, plan))
+        })
+        .collect::<Result<Vec<_>, MaterializationError>>()?;
+    materialize_planned_servers(
+        plans,
+        resolver,
+        &tacacsrs_credential_resolution::WorkScope::unowned(),
+        validation_options,
+        &|| true,
+    )
+    .await
+}
+
+/// Consumes preflighted typed plans under one caller-owned work scope.
+///
+/// The caller must reserve configuration payload before cloning enumerated
+/// servers. A resolver adapter can charge each return before result buffering.
+/// `check_installation` must read admission state without blocking. A false
+/// result rejects the candidate before the next typed target changes.
+/// # Errors
+/// Returns the first sanitized resolution, installation, or validation error.
+pub async fn materialize_planned_servers(
+    plans: Vec<(TacacsPlusServer, super::ServerResolutionPlan)>,
+    resolver: &dyn CredentialResolver,
+    scope: &tacacsrs_credential_resolution::WorkScope,
+    validation_options: &ValidationOptions,
+    check_installation: &(dyn Fn() -> bool + Send + Sync),
+) -> Result<Vec<MaterializedServer>, MaterializationError> {
+    let mut candidates = Vec::with_capacity(plans.len());
+    for (server, plan) in plans {
+        candidates.push(
+            materialize_server_with_plan(server, plan, resolver, scope, check_installation).await?,
+        );
     }
     validate_candidates(candidates, validation_options)
 }
@@ -215,11 +251,28 @@ pub async fn enumerate_materialized_servers(
 }
 
 async fn materialize_server_unvalidated(
-    mut server: TacacsPlusServer,
+    server: TacacsPlusServer,
     resolver: &dyn CredentialResolver,
 ) -> Result<MaterializedServer, MaterializationError> {
     let plan = super::resolution_plan(&server).map_err(MaterializationError::resolution)?;
-    let result_set = resolve_plan(plan.neutral_plan(), resolver)
+    materialize_server_with_plan(
+        server,
+        plan,
+        resolver,
+        &tacacsrs_credential_resolution::WorkScope::unowned(),
+        &|| true,
+    )
+    .await
+}
+
+async fn materialize_server_with_plan(
+    mut server: TacacsPlusServer,
+    plan: super::ServerResolutionPlan,
+    resolver: &dyn CredentialResolver,
+    scope: &tacacsrs_credential_resolution::WorkScope,
+    check_installation: &(dyn Fn() -> bool + Send + Sync),
+) -> Result<MaterializedServer, MaterializationError> {
+    let result_set = resolve_plan(plan.neutral_plan(), resolver, scope)
         .await
         .map_err(MaterializationError::resolution)?;
     let mut credentials = result_set
@@ -229,6 +282,13 @@ async fn materialize_server_unvalidated(
 
     let mut validity = CredentialValidity::unbounded();
     for request in plan.neutral_plan().requests() {
+        if !check_installation() {
+            return Err(MaterializationError::new(
+                MaterializationErrorKind::Admission,
+                Some(server.name.clone()),
+                Some(request.context().field_path()),
+            ));
+        }
         let usage = plan.usage(request.slot()).ok_or_else(|| {
             MaterializationError::new(
                 MaterializationErrorKind::InvalidMaterial,
@@ -475,6 +535,32 @@ mod tests {
                 certificate: PublicBytes::new(vec![1, 2, 3]),
             }],
         }
+    }
+
+    #[tokio::test]
+    async fn caller_fence_runs_before_each_typed_installation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tacacsrs_credential_resolution::{RequestSlot, FakeCredentialResolver, WorkScope};
+        let source = trust_server();
+        let original = source.clone();
+        let plan = crate::prepare::resolution_plan(&source).unwrap();
+        let resolver = FakeCredentialResolver::new()
+            .with_response(RequestSlot::from_index(0), ResolvedCredential::CaCertificateBag(bag()))
+            .with_response(RequestSlot::from_index(1), ResolvedCredential::EeCertificateBag(bag()));
+        let checks = AtomicUsize::new(0);
+        let fence = || checks.fetch_add(1, Ordering::SeqCst) == 0;
+        let error = materialize_planned_servers(
+            vec![(source, plan)],
+            &resolver,
+            &WorkScope::unowned(),
+            &ValidationOptions::default(),
+            &fence,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), MaterializationErrorKind::Admission);
+        assert_eq!(checks.load(Ordering::SeqCst), 2);
+        assert_eq!(trust_server(), original);
     }
 
     #[test]

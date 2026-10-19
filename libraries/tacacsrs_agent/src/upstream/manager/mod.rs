@@ -185,6 +185,10 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         )
     }
 
+    pub(crate) fn candidate_limits(&self) -> crate::config::RuntimeCandidateLimits {
+        self.current_runtime().runtime_policy.candidate_limits()
+    }
+
     pub(crate) fn statistics(&self) -> tacacsrs_config::OperationalStatistics {
         let runtime = self.current_runtime();
         Self::statistics_from_runtime(&runtime, None)
@@ -526,6 +530,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         self.reload_shared_servers_with_retirement(
             servers,
             proxy_downstream_obfuscation,
+            None,
             None,
             None,
             commit,

@@ -564,7 +564,11 @@ struct RefreshingIdentityResolver {
 
 #[async_trait::async_trait]
 impl CredentialResolver for RefreshingIdentityResolver {
-    async fn resolve(&self, _: &CredentialRequest) -> Result<ResolvedCredential, ResolutionError> {
+    async fn resolve(
+        &self,
+        _: &CredentialRequest,
+        _scope: &tacacsrs_credential_resolution::WorkScope,
+    ) -> Result<ResolvedCredential, ResolutionError> {
         let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         Ok(ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
             validity: if call == 0 {

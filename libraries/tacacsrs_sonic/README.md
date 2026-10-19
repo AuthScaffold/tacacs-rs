@@ -106,6 +106,13 @@ zeroizing `SecretBytes`, it requires a regular file with one link, exact
 through 4096 bytes. Metadata identity, size, and timestamps must remain stable
 across the read. Errors expose only typed request context.
 
+Each resolution receives the caller's registered `WorkScope`.
+The provider registers a lease before `spawn_blocking` and moves it inside the actual closure.
+The returned private tuple retains that lease while its result waits for consumption or disposal.
+Cancellation before start, during execution, or after completion cannot release coordinator capacity while registered work or results remain.
+Errors and unwind also release their leases. Dropping a join handle alone is not completion.
+The provider cannot hard-cancel a started OS read. Permanently stuck registered work deliberately retains its preparation slot.
+
 Version 1 rejects certificate-with-key and trust-bag requests as unsupported.
 The reserved ACMS root defaults to `/etc/sonic/credentials`, but no ACMS path,
 symlink, or certificate parsing behavior is implemented until the deferred
