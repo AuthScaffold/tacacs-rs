@@ -1619,7 +1619,7 @@ Checks: protocol/agent/networking/IPC/CLI/Bash tests, native interop, connector 
 
 ### 07: Binding Outcomes
 
-Status: published as PR #284; normal merge `d01637e9f78a0c46254820196a51f5d25ea7bdc4` preserves the source accepted by both named reviews.
+Status: squash-merged as `f1e65c15e76b1d58fe56682e3ea814e33818fb41`; both named reviews and final local and hosted gates passed.
 Coordinator final workspace gates passed. Scope: R10.
 
 #### Implementation And Review Receipt
@@ -1685,6 +1685,17 @@ All 237 agent tests passed again. The head was published normally and PR #284 no
 Copilot review `5575347114` on `d01637e9f78a0c46254820196a51f5d25ea7bdc4` reports no open issues and recommends approval; all threads are resolved.
 Retargeting superseded workflow `39295100283`. Replacement current-head workflow `39295100962` is in progress, not merge clearance.
 
+#### Merge Receipt
+
+Current-head required workflow `39295100962` subsequently succeeded on `d01637e9f78a0c46254820196a51f5d25ea7bdc4`.
+ARMhf job `118205572861`, Windows testing job `118208781178`, and both CI-success gates passed.
+Copilot review `5575347114` had no open issues. All threads were resolved, the PR-scoped open-alert query was empty, and mergeability was clean.
+The guarded squash specified that exact reviewed head. GitHub returned `merged: true` and squash `f1e65c15e76b1d58fe56682e3ea814e33818fb41`.
+Fetched `origin/main` equals tested tree `9c03e697aa8a65e10d750145048f4998d6fbfe0c`.
+Iteration 08 integrated the squash through normal merge `e0d1ccb183b2e0bf43f3fb80841fc7d5ecd1a263`, preserving its tested tree exactly.
+All 49 observer source tests passed again. Iteration 09 fast-forwarded its parent without changing its patch.
+Cleanup of iteration 07 follows preservation of this receipt.
+
 Move lease-only admission operations onto captured requests and outcome recording onto bindings.
 Remove behavior-free router/manager forwarding and unnecessary router retention from attempts.
 Share narrow typed/raw outcome bookkeeping only where delivery semantics agree.
@@ -1704,7 +1715,7 @@ Checks: typed/raw retry, cancellation, stale-outcome and continuation tests, con
 
 ### 08: File Observation
 
-Status: published as staged PR #285 on predecessor `d01637e9f78a0c46254820196a51f5d25ea7bdc4`; both named reviews accepted the unchanged complete source.
+Status: published as PR #285; integration head `e0d1ccb183b2e0bf43f3fb80841fc7d5ecd1a263` preserves the source accepted by both named reviews.
 Coordinator final workspace gates passed.
 Scope: R13.
 
@@ -1766,6 +1777,9 @@ Published head `e2e39c19bf81f9b720ee9bb7e09160287061de1e` has complete tested tr
 All four reviewed files, including the new shared observer, are committed. The remote PR has the `skip-release` label and no tracking documents.
 Copilot review was requested on that head. Required workflow `39299324444` is in progress.
 Pending predecessor checks and an initial empty comment list do not establish merge readiness.
+Initial Copilot review `5575691546` on `e2e39c19bf81f9b720ee9bb7e09160287061de1e` reported no open issues, with platform validation still required.
+After predecessor merge, normal integration head `e0d1ccb183b2e0bf43f3fb80841fc7d5ecd1a263` retains complete tested tree `4c6eac3601670343a020ae21b252b2f404b201ef` exactly.
+All 49 source tests passed again. Final-head publication, retargeting, fresh review, and required CI remain pending.
 
 Extract one private owned file-observation mechanism for debounce, retained reads, failure priority, and cleanup.
 Keep separate configuration and policy parsing, events, and accepted-snapshot state.
