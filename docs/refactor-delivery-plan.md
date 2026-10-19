@@ -541,7 +541,9 @@ Final local common gates passed. Published as [PR #279](https://github.com/AuthS
 Published head: `a8ce6952c932becd2e0ad01c061caefa6130c65c`; predecessor squash: `b7ba4017188e4a02e0f5b7d8ff1645bdf58fb853`.
 The complete rebased tree equals tested checkpoint `62490f64e61ca4e68ca7c8424e2ec33187d5882a`.
 Its PR diff contains exactly six configuration/generator files and no architecture or tracking documents.
-GitHub Copilot review was requested on the published head; workflow `39202018504` is in progress, not yet claimed green.
+GitHub Copilot review `5567124473` recommended approval with no open issues or inline comments on the published head.
+Required workflow `39202018504` passed. PR #279 was squash-merged as `7d60ee481554ed98234b51a18d99475cf76939f7`.
+The merge used the exact reviewed-head guard and a description covering the schema changes, review revisions, checks, and scope limits.
 
 The read-only scheduling preflight identified discarded nested metadata and synthetic parent cases.
 Implementation started from iteration 01's committed, locally verified head.
@@ -914,7 +916,80 @@ Hosted checks for iteration 02 are not yet claimed. Privileged or external-servi
 
 ### 03: Endpoint Addresses
 
-Status: planned. Scope: R4 and R11.
+Status: implemented; both named reviews cover the final source. Final common workspace gates passed. Scope: R4 and R11.
+Worktree: `/home/vscode/tacacs-rs-03-endpoint-addresses`; branch: `refactor/general-iterations/03-endpoint-addresses`.
+Starting head: `a8ce6952c932becd2e0ad01c061caefa6130c65c`. The unpublished iteration will move onto its predecessor squash before publication.
+Final reviewed source-diff SHA-256: `3efcef8fbdb4aa5a629e169512bc0123510ab59b86313a81f98ebc5bc4780c01`.
+The fingerprint excludes all three tracking-document paths, which remain absent from the implementation worktree.
+
+#### Implementation And Review Receipt
+
+The implementation consumes one prepared transport when constructing an immutable endpoint.
+It removes the old TCP constructor and all five endpoint security/evidence setters.
+`ServerAddress` preserves DNS/IP and a nonzero outbound port without parse-time I/O.
+Connections retain fresh resolution, destination checks, and connected-peer checks.
+Bare IPv6 remains a whole host. Explicit IPv6 ports require brackets; scoped addresses and outbound port zero are rejected.
+DNS spelling, YANG-permitted underscores, and optional trailing dots remain supported.
+Canonical source, credential roles, SNI/peer-identity separation, and certificate/evidence lifetime distinctions remain intact.
+
+The required reviews ran sequentially through the accepted model routes:
+
+1. `GPT-6 Astra (copilot)` reviewed input `6cef536b7fe7e1a4b1420158abe6ff12eb722ad6b52f6f2304a03e1966a9d3a5`.
+	It fixed noncanonical numeric hosts being accepted as DNS names and moved validated SNI into prepared PSK ownership.
+	Its output was `c73db3e51c16615fc5131e201699176d2550590769c59f87d69c506405dd2b33`.
+2. `Claude Opus 5.5 (copilot)` reviewed that output.
+	It fixed rejection of schema-valid underscore names and added redacted `Debug` for newly public prepared types.
+	Its output was `350236200e651b154ee95f2c8bc0ab872e0c88259f3150506d319b969554beb0`.
+3. Astra reviewed those revisions and the coordinator's public-API concern about a positional verification-disable Boolean.
+	It introduced `CertificateVerification::{Required, DisabledForDevelopment}` without a compatibility Boolean overload.
+	It also rejected malformed certificate peer/SNI names during preparation.
+	Its output was `3efcef8fbdb4aa5a629e169512bc0123510ab59b86313a81f98ebc5bc4780c01`.
+4. Opus accepted that final source with no further edits, including policy defaults, native verify-mode mapping, evidence compatibility, and redacted diagnostics.
+
+Failed-before regressions covered TLS re-selection dropping staple policy, outbound port zero, legacy numeric hosts, invalid PSK SNI, underscore names, Boolean API compilation, and malformed certificate names.
+The coordinator independently reran the numeric-host, SNI, underscore, redacted-PSK, and compile-contract checks after the corresponding revisions.
+
+All Cargo invocations used `/home/vscode/.cache/tacacs-rs-03-endpoint-addresses`, with isolated consumer-profile subdirectories.
+The implementation and reviewers reported these passing scoped gates on their recorded output trees:
+
+- Rust 1.88 all-target/all-feature affected-consumer checks.
+- Networking/configuration all-feature tests and compile-fail doctests.
+- Agent 198 tests, daemon 72 unit tests, 48 native prepared-source cases, nine process tests, and `tacon` 66 tests.
+- Nine executed independent TACACS+ peer scenarios, including certificate, PSK, and DHE modes.
+- Three CI consumer selections and Linux/Windows architecture metadata checks.
+- Nightly formatting, strict newer-toolchain Clippy, warning-free private docs, and whitespace checks.
+
+One unchanged timed-probe test failed in an earlier parallel networking run, then passed alone and in the final serial reviewer suite.
+It remains enabled and was not modified to hide the result.
+Rust 1.88 Clippy reports the pre-existing newer `unused_async_trait_impl` lint as unknown; required MSRV compilation and newer strict Clippy are separate gates.
+Stable's Clippy component was absent; installed nightly and Rust 1.99.0 Clippy supplied the scoped strict-lint evidence.
+Final full-workspace gates passed in the coordinator run below. Hosted Windows/ARMhf checks for this iteration are not yet claimed as passed.
+No dependencies, lockfiles, operator systems, release policies, or tracking documents changed in the implementation worktree.
+
+#### Coordinator Final Gate Receipt
+
+The final reviewed fingerprint remained `3efcef8fbdb4aa5a629e169512bc0123510ab59b86313a81f98ebc5bc4780c01` throughout verification.
+Every Cargo command used `/home/vscode/.cache/tacacs-rs-03-endpoint-addresses`.
+The following complete sequence passed and emitted `ALL_ITERATION_03_GATES_PASSED`:
+
+```bash
+cargo +nightly fmt --all -- --check
+cargo +nightly clippy --workspace --all-targets --all-features --locked -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo +stable doc --workspace --no-deps --all-features --document-private-items --locked --quiet
+cargo +stable build --workspace --locked --quiet
+cargo +stable test --workspace --all-features --locked --quiet
+cargo +1.88.0 check --workspace --all-targets --all-features --locked --quiet
+PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider -q .github/steps/cargo-metadata .github/steps/check-architecture .github/steps/compute-versions .github/steps/inject-versions .github/steps/release-manifest
+git diff --check
+```
+
+There were no Rust test failures. Ten existing tests remained ignored.
+The final parallel workspace run also passed the unchanged timed-probe test noted above.
+All 256 selected Python delivery tests passed.
+Native prepared-source, process, compile-fail, and affected consumer checks remained enabled.
+Existing privileged and external-service early returns are not claimed as execution coverage.
+
+#### Planned Acceptance
 
 Use explicit TCP, certificate-TLS, and PSK construction with security selected once.
 Attach stapled OCSP, fetched OCSP, and CRLs before producing an immutable prepared endpoint.
