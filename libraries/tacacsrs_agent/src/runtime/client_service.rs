@@ -266,21 +266,11 @@ impl TacacsClientService {
     /// Applies materialized servers and coordinator bookkeeping in one commit.
     pub(crate) async fn publish_materialized_servers(
         &self,
-        servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
-        policy: PreparedProxyPolicy,
-        validity: super::CredentialLifetime,
-        preparation: Arc<super::candidate_preparation::Preparation>,
-        commit: impl FnOnce() -> Option<super::MaterializationCommit> + Send,
+        candidate: crate::upstream::manager::PublicationCandidate<
+            impl FnOnce() -> Option<super::MaterializationCommit> + Send,
+        >,
     ) -> anyhow::Result<()> {
-        self.runtime
-            .publish_materialized_servers(
-                servers,
-                policy,
-                Some(validity),
-                Some(preparation),
-                commit,
-            )
-            .await
+        self.runtime.publish_materialized_servers(candidate).await
     }
 
     /// Withdraws expired upstreams without closing the recoverable runtime.
@@ -298,12 +288,14 @@ impl TacacsClientService {
         self.runtime
             .manager
             .reload_shared_servers_with_retirement(
-                Vec::new(),
-                proxy,
+                crate::upstream::manager::PublicationCandidate::new(
+                    Vec::new(),
+                    proxy,
+                    None,
+                    None,
+                    commit,
+                ),
                 Some(tacacsrs_networking::RequestDeadline::at(tokio::time::Instant::now())),
-                None,
-                None,
-                commit,
             )
             .await
     }

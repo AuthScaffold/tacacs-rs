@@ -743,11 +743,11 @@ impl MaterializationCoordinator {
         drop(prepared.runtime_source);
 
         service
-            .publish_materialized_servers(
+            .publish_materialized_servers(crate::upstream::manager::PublicationCandidate::new(
                 next_active.clone(),
                 prepared.proxy_policy,
-                validity,
-                prepared.preparation,
+                Some(validity),
+                Some(prepared.preparation),
                 move || {
                     state.active_servers = next_active;
                     state.active_lifetimes = next_lifetimes;
@@ -766,7 +766,7 @@ impl MaterializationCoordinator {
                         validity,
                     })
                 },
-            )
+            ))
             .await?;
         Ok(PublicationOutcome::Published)
     }

@@ -62,6 +62,8 @@ impl CandidateAdmission {
             )),
             scope,
             control,
+            #[cfg(test)]
+            release_probe: None,
         }))
     }
 }
@@ -72,6 +74,27 @@ pub(crate) struct Preparation {
     pub(crate) ledger: Mutex<ConfigurationMaterialBudget>,
     pub(crate) scope: WorkScope,
     control: WorkScopeControl,
+    #[cfg(test)]
+    pub(crate) release_probe: Option<ReleaseProbe>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct ReleaseProbe {
+    pub(crate) server: std::sync::Weak<tacacsrs_config::TacacsPlusServer>,
+    pub(crate) slot: Arc<Semaphore>,
+    pub(crate) live_at_release: Arc<std::sync::atomic::AtomicUsize>,
+    pub(crate) available_at_release: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[cfg(test)]
+impl Drop for ReleaseProbe {
+    fn drop(&mut self) {
+        self.available_at_release
+            .store(self.slot.available_permits(), std::sync::atomic::Ordering::SeqCst);
+        self.live_at_release
+            .store(self.server.strong_count(), std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl Preparation {
@@ -101,6 +124,160 @@ impl Preparation {
 impl Drop for Preparation {
     fn drop(&mut self) {
         self.control.seal();
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use crate::upstream::manager::PublicationCandidate;
+    use super::*;
+
+    pub(crate) struct DisposalObservation {
+        pub(crate) slot: Arc<Semaphore>,
+        pub(crate) server: std::sync::Weak<tacacsrs_config::TacacsPlusServer>,
+        pub(crate) live_at_release: Arc<AtomicUsize>,
+        pub(crate) available_at_release: Arc<AtomicUsize>,
+        permits_during_drop: Arc<AtomicUsize>,
+        coordinator: Arc<tokio::sync::Mutex<()>>,
+    }
+
+    impl DisposalObservation {
+        pub(crate) fn assert_disposed(&self, available: usize) {
+            assert_eq!(self.permits_during_drop.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                self.live_at_release.load(Ordering::SeqCst),
+                0,
+                "payload survived capacity release"
+            );
+            assert_eq!(self.available_at_release.load(Ordering::SeqCst), available);
+            assert!(self.server.upgrade().is_none());
+            assert_eq!(self.slot.available_permits(), available);
+            assert!(self.coordinator.try_lock().is_ok());
+        }
+    }
+
+    struct CapturedPublication {
+        server: Arc<tacacsrs_config::TacacsPlusServer>,
+        proxy: tacacsrs_config::proxy_policy::PreparedProxyPolicy,
+        _coordinator: tokio::sync::OwnedMutexGuard<()>,
+        slot: Arc<Semaphore>,
+        permits_during_drop: Arc<AtomicUsize>,
+    }
+
+    impl Drop for CapturedPublication {
+        fn drop(&mut self) {
+            assert_eq!(self.server.name, "candidate-drop-test");
+            assert!(self.proxy.shared_secret().unwrap().is_some());
+            let available = std::thread::scope(|threads| {
+                threads
+                    .spawn(|| self.slot.available_permits())
+                    .join()
+                    .unwrap()
+            });
+            self.permits_during_drop.store(available, Ordering::SeqCst);
+        }
+    }
+
+    pub(crate) async fn publication_candidate() -> (
+        PublicationCandidate<impl FnOnce() -> Option<crate::runtime::MaterializationCommit> + Send>,
+        DisposalObservation,
+    ) {
+        let slot = Arc::new(Semaphore::new(1));
+        let mut preparation = CandidateAdmission::new(RuntimeCandidateLimits::default())
+            .unwrap()
+            .acquire(&slot)
+            .await
+            .unwrap();
+        let server = Arc::new(
+            tacacsrs_config::TacacsPlusServerBuilder::new(
+                "candidate-drop-test",
+                tacacsrs_config::TacacsPlusServerType::all(),
+                "127.0.0.1",
+                49,
+            )
+            .with_shared_secret("dummy-candidate-secret")
+            .build(),
+        );
+        let proxy = tacacsrs_config::proxy_policy::prepare_proxy_policy(
+            &tacacsrs_config::tacacsrs::LocalServices {
+                tacacs_proxy_enabled: true,
+                proxy_credential_source: tacacsrs_config::tacacsrs::ProxyCredentialSource::Inline,
+                proxy_shared_secret: Some(tacacsrs_secrets::SecretString::new(
+                    "dummy-proxy-secret".to_owned(),
+                )),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        let observation = DisposalObservation {
+            slot: slot.clone(),
+            server: Arc::downgrade(&server),
+            live_at_release: Arc::new(AtomicUsize::new(usize::MAX)),
+            available_at_release: Arc::new(AtomicUsize::new(usize::MAX)),
+            permits_during_drop: Arc::new(AtomicUsize::new(usize::MAX)),
+            coordinator: Arc::new(tokio::sync::Mutex::new(())),
+        };
+        Arc::get_mut(&mut preparation).unwrap().release_probe = Some(ReleaseProbe {
+            server: observation.server.clone(),
+            slot: slot.clone(),
+            live_at_release: observation.live_at_release.clone(),
+            available_at_release: observation.available_at_release.clone(),
+        });
+        let captured = CapturedPublication {
+            server: server.clone(),
+            proxy: proxy.clone(),
+            _coordinator: observation.coordinator.clone().lock_owned().await,
+            slot,
+            permits_during_drop: observation.permits_during_drop.clone(),
+        };
+        (
+            PublicationCandidate::new(vec![server], proxy, None, Some(preparation), move || {
+                drop(captured);
+                None
+            }),
+            observation,
+        )
+    }
+
+    #[derive(Clone, Copy)]
+    pub(crate) enum CancellationBoundary {
+        Unpolled,
+        Waiting,
+        AdmissionTimeout,
+        OuterTimeout,
+    }
+
+    impl CancellationBoundary {
+        pub(crate) const ALL: [Self; 4] = [
+            Self::Unpolled,
+            Self::Waiting,
+            Self::AdmissionTimeout,
+            Self::OuterTimeout,
+        ];
+    }
+
+    pub(crate) async fn cancel_publication(
+        future: impl Future<Output = anyhow::Result<()>>,
+        boundary: CancellationBoundary,
+    ) {
+        let mut pending = Box::pin(future);
+        if !matches!(boundary, CancellationBoundary::Unpolled) {
+            assert!(futures_util::poll!(&mut pending).is_pending());
+        }
+        match boundary {
+            CancellationBoundary::Unpolled | CancellationBoundary::Waiting => drop(pending),
+            CancellationBoundary::AdmissionTimeout => {
+                tokio::time::advance(std::time::Duration::from_secs(30)).await;
+                assert!(pending.await.is_err());
+            }
+            CancellationBoundary::OuterTimeout => {
+                assert!(tokio::time::timeout(std::time::Duration::from_secs(1), pending)
+                    .await
+                    .is_err())
+            }
+        }
     }
 }
 

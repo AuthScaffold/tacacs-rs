@@ -187,6 +187,10 @@ Its three existing loops retain at most three unexpanded records and three waite
 Source observations replace their pending record. Credential events coalesce to full refresh when necessary.
 No notification spawns a preparation task. Revision checks follow capacity acquisition and each provider handoff.
 
+One publication owner carries model payload, prepared server references, and commit captures through service and catalog waits.
+Cancellation disposes all those owners before it releases the preparation lease.
+Successful atomic publication releases the lease before asynchronous retirement. Payload shared with the committed active catalog needs no additional ownership charge.
+
 The decoded payload charge is `L + E`.
 `L` includes every logical destination, repeated bundle installations, retained servers during partial refresh, and the downstream proxy secret.
 `E` includes additional owned configuration payload, including retained filtered projections.

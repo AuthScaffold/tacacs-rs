@@ -98,6 +98,39 @@ fn test_service(config: ServiceConfig) -> anyhow::Result<TacacsClientService> {
     TacacsClientService::new(config, health)
 }
 
+#[tokio::test(start_paused = true)]
+async fn cancelled_service_publication_keeps_capacity_through_payload_drop() {
+    use crate::runtime::candidate_preparation::test_support::{
+        CancellationBoundary, cancel_publication, publication_candidate,
+    };
+
+    let service = super::TacacsClientService::waiting_for_configuration(
+        ServiceConfig {
+            local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
+            tacacs_plus: tacacsrs_config::TacacsPlus::empty(),
+            validation_options: tacacsrs_config::ValidationOptions::default(),
+            runtime_policy: RuntimePolicy::default(),
+            certificate_verification: tacacsrs_networking::CertificateVerification::Required,
+        },
+        RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
+    )
+    .unwrap();
+    let guard = service.hold_publication().await;
+    for boundary in CancellationBoundary::ALL {
+        let (candidate, observation) = publication_candidate().await;
+        cancel_publication(service.publish_materialized_servers(candidate), boundary).await;
+        observation.assert_disposed(1);
+    }
+    let (mut candidate, observation) = publication_candidate().await;
+    candidate.proxy_downstream_obfuscation = PreparedProxyPolicy::unavailable();
+    assert!(service
+        .publish_materialized_servers(candidate)
+        .await
+        .is_err());
+    observation.assert_disposed(1);
+    drop(guard);
+}
+
 #[test]
 fn conflicting_listener_endpoints_fail_before_binding() {
     let endpoint = test_endpoint("conflicting-listeners");
