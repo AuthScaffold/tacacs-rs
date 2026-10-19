@@ -1795,7 +1795,9 @@ The guarded squash specified that exact reviewed head. GitHub returned `merged: 
 Fetched `origin/main` equals tested tree `4c6eac3601670343a020ae21b252b2f404b201ef`.
 Iteration 09 integrated the squash through normal merge `49055f56925e0215a9120d36044cd1900a730b0c`, preserving its tested tree exactly.
 All 32 coordinator tests passed again with the pinned normal rustup home. The new iteration 10 worktree fast-forwarded cleanly before implementation.
-Cleanup of iteration 08 follows preservation of this receipt.
+After preserving this receipt, the clean idle iteration 08 worktree was removed without force.
+Its exact owned 15 GiB cache and completed PR/squash-description temporary files were removed.
+Branches, platform logs, active iterations 09 and 10, and the diagnostics checkout remain intact.
 
 Extract one private owned file-observation mechanism for debounce, retained reads, failure priority, and cleanup.
 Keep separate configuration and policy parsing, events, and accepted-snapshot state.
@@ -1882,7 +1884,15 @@ Copilot review was requested on that head. Required workflow `39307226464` is in
 The predecessor's current-head ARMhf job `118231498136` and Windows testing job `118234023765` passed; its full workflow still needs final success.
 Neither those partial results nor an initial empty comment list establish merge readiness for this PR.
 After predecessor merge, normal integration head `49055f56925e0215a9120d36044cd1900a730b0c` retains complete tested tree `954ffdc1d3c79379d8e8a1076acd919d32934a44` exactly.
-All 32 coordinator tests passed again. Final-head publication, retargeting, fresh review, and required CI remain pending.
+All 32 coordinator tests passed again. The integration head was published normally and PR #286 now targets `main`, with exactly two implementation files.
+Fresh Copilot review `5576388900` on `49055f56925e0215a9120d36044cd1900a730b0c` reports no open issues; all threads are resolved.
+Required workflow `39308010437` failed ARMhf job `118250811176` because the runner shut down while downloading Docker base layers.
+The log shows a shutdown signal, cancelled build context, and exit 143 before build or test execution. This is not source-regression evidence.
+A failed-jobs rerun was accepted on the same unchanged head and is queued. Required success remains pending; no merge bypass or source change was made.
+Attempt 2 subsequently completed successfully, including ARMhf job `118276795438`, Windows testing job `118276801812`, and required `CI Success` job `118281781562`.
+The required check uses GitHub Actions app `15368`, as branch protection requires. The rollup is successful, all threads are resolved, and the PR-scoped alert query is empty.
+Strict base comparison reports zero commits behind, and no additional branch rules were returned.
+GitHub still reports a blocked merge state at the latest observation. The PR remains unmerged; no requirement was disabled or bypassed.
 
 Group filtered source, proxy policy, and dependency knowledge into explicit state.
 Group applied material and revision separately from withdrawn material.
@@ -1901,14 +1911,56 @@ Checks: unchanged coordinator/publication/supervisor regressions, connector proo
 
 ### 10: Prepared Publication
 
-Status: planned. Scope: R7 and R14 prepared-runtime completion, built on iterations 05 and 09.
+Status: implementation and scoped validation complete on reviewed predecessor `49055f56925e0215a9120d36044cd1900a730b0c`; named reviews and coordinator final gates are pending.
+Worktree: `/home/vscode/tacacs-rs-10-prepared-publication`; branch: `refactor/general-iterations/10-prepared-publication`.
+Scope: R7 and R14 prepared-runtime completion, built on iterations 05 and 09.
 
 Local preflight anchor: `PreparedServer::new` calls `prepare_endpoint` synchronously inside catalog reload while service and coordinator publication locks are also held.
 Use the existing native-preparation pause barrier for the first failed-before check: expiry or shutdown must progress while preparation remains paused.
 Cancellation must retain the preparation slot through actual worker completion and queued payload disposal.
 `Preparation` currently owns its ledger directly and seals work registration on final owner drop. Preserve prompt sealing when native work retains capacity.
 Do not solve worker lifetime by accidentally retaining an unsealed admission owner or detaching unaccounted payloads.
-No iteration 10 implementation or worktree exists yet. The shared observer and typed coordinator remain separate preceding changes.
+An initial implementation pass modified 25 tracked files and added networking `preparation_payload.rs`.
+Focused native fence, cancellation, queued-result, and combined-budget checks passed during that pass, as did networking and configuration tests.
+The full 55-case native prepared-source suite subsequently passed, including unchanged-certificate reuse and HTTP/OCSP refresh.
+The initial handoff remained incomplete: strict gates, two newly unused manager methods, owner inventory, final hashes, and both named reviews still need completion.
+No iteration 10 commit or PR exists. R14 is not marked complete, and the implementation is not publication-ready.
+
+#### Complete Implementation Handoff
+
+The finishing pass has 29 modified tracked files and one new networking module, `preparation_payload.rs`; no files are deleted.
+Native endpoint and speculative catalog preparation now precede coordinator, service publication, catalog reload, and snapshot-write locks.
+Registered native work shares the ledger without retaining the full preparation owner, so cancellation seals registration promptly while capacity survives work and result disposal.
+Final fences precede retirement cutoffs and visible publication. They recheck revisions, source expiry, closure, validity, tighter limits, and current-catalog reuse.
+Historical endpoint metadata remains shared only while its networking lifecycle is unfinished; identity tokens do not retain endpoint payload.
+Speculative idle lifecycle registrations are disposed with their final unused catalog owner, before candidate capacity returns.
+Two newly unused manager helpers became test-only; no warning suppression was added.
+
+Prepared Rust accounting covers endpoint names and address text, packet-key copies, PSK callback bytes and settings, TLS identity/SNI, trust callback DER, fetched OCSP bytes, and live certificate/CRL comparison buffers.
+The complete candidate includes retained and reused endpoints. Shared owners avoid repeated payload copies; known-size copies reserve before allocation.
+Queued inputs, partial outputs, success/error results, callback captures, and lifecycle names retain accounting until disposal.
+High-water accounting does not decrease when temporary buffers drop. Conservative enclosing-DER forecasts can reject before retained bytes reach the limit.
+The measure excludes fixed-layout metadata, collection headers, reference counts, allocator slack, native allocator internals, connection execution, raw ingestion, opaque SDK/filter DNS, and RSS.
+Direct helpers without a supplied ledger remain explicitly unmanaged. No process-wide memory or eventual native-work termination guarantee is introduced.
+
+The first delegate's original execution chronology is unavailable. A later isolated predecessor replay selected one source-expiry test and failed with `source expiry blocked behind native preparation`.
+That replay used its own extracted source and target. The active-source case passes; no active-cache replay contamination occurred.
+Historical revocation and speculative lifecycle tests also failed before their corresponding repairs and passed afterward; preliminary fixture errors are not counted as defect evidence.
+Barrier tests cover newer or rejected sources and credentials, both expiry orders, policy tightening, host stop, catalog ABA, and revocation replacement.
+Thirty-two replacement admissions cannot exceed one native job. Cancelled and queued results retain payload, ledger charges, and capacity through disposal.
+Combined exact-limit/one-byte-over tests cover new, reused, full, and partial candidates in eight combinations.
+
+Scoped validation passed 813 tests with two existing manual benchmarks ignored: 250 agent tests, configuration tests, 260 passing networking unit tests, connector tests, and doctests.
+All 55 native prepared-source cases and nine independent peer scenarios passed, including expired-certificate reuse.
+Strict Clippy, private docs, formatting, MSRV checks, architecture validation, and three isolated consumer profiles passed.
+Two pure-ledger Miri cases passed. Focused coverage includes publication/worker 685/689 lines, payload owner 156/162, and lifecycle 493/527, including test code.
+The standalone generic connector fixture compiled; the monomorphic fixture failed with the expected Send generality diagnostic.
+No local test, build, compiler, or owned peer listener remains active.
+
+Complete changed-content manifest: `73bce56e175ae07c3e7587802151f0eb87ee3bdaa526adad2bffd4cc76e18ee2`.
+Separate tracked binary patch SHA-256: `2255d05b268f2f45354be5972d913475ca7047f8b9107c385dbd95db7c3b27af`.
+The new file is included in the complete manifest, not the tracked-only patch.
+Both named reviews, final full-workspace checks, and current-head hosted gates remain pending. R14 remains open until those results and ownership claims are verified.
 
 Carry source metadata, prepared endpoint identity, validity, budgets, and admitted revisions in one derived candidate.
 Move native preparation outside coordinator state and publication locks while keeping preparation concurrency explicitly bounded.
