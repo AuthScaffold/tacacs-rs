@@ -55,14 +55,20 @@ let operation = AuthorizationOperation::builder(
 .command_args(["interfaces", "brief"])
 .build()?;
 
-let encoded_body = operation.exchange()?.encode_request()?;
-assert!(!encoded_body.is_empty());
+let exchange = operation.exchange()?;
+assert!(!exchange.request_body().as_bytes().is_empty());
 # Ok::<(), anyhow::Error>(())
 ```
 
 The same operation can be sent through the direct client or the local IPC client.
 `PrivilegeLevel` rejects values outside the protocol range before an operation reaches either transport.
 Authorization arguments retain order, duplicate names, and mandatory/optional separators.
+
+All three exchange constructors are fallible. They prepare one immutable body before network execution or admission.
+Each exchange retains protected unobfuscated bytes and their checked wire length, not mutable input fields.
+The executor borrows this body for each eligible attempt. Packet ownership copies do not serialize the input again.
+`PreparedBody::encode` checks codec output and length. Concrete exchanges also validate their operation-specific inputs.
+Prepared bodies redact `Debug` output. This does not guarantee that every temporary codec allocation is zeroized.
 
 ## Host authorization
 

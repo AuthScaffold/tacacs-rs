@@ -2,20 +2,26 @@
 
 use crate::accounting::{reply::AccountingReply, request::AccountingRequest};
 use crate::enumerations::{TacacsMinorVersion, TacacsType};
+#[cfg(test)]
 use crate::body::TacacsBodyTrait;
-use crate::exchange::FixedExchange;
+use crate::exchange::{FixedExchange, PreparedBody};
 
 /// One TACACS+ accounting request followed by one accounting reply.
 #[derive(Debug)]
 pub struct AccountingExchange {
-    request: AccountingRequest,
+    body: PreparedBody,
 }
 
 impl AccountingExchange {
     /// Creates an accounting exchange from its protocol request body.
-    #[must_use]
-    pub const fn new(request: AccountingRequest) -> Self {
-        Self { request }
+    ///
+    /// # Errors
+    /// Returns an error for invalid privilege or fields that exceed codec limits.
+    pub fn new(request: AccountingRequest) -> anyhow::Result<Self> {
+        crate::privilege::PrivilegeLevel::try_from(request.priv_lvl)?;
+        Ok(Self {
+            body: PreparedBody::encode(&request)?,
+        })
     }
 }
 
@@ -31,11 +37,11 @@ impl FixedExchange for AccountingExchange {
         TacacsMinorVersion::TacacsPlusMinorVerDefault
     }
 
-    fn encode_request(&self) -> anyhow::Result<Vec<u8>> {
-        self.request.to_bytes()
+    fn request_body(&self) -> &PreparedBody {
+        &self.body
     }
 
-    fn decode_reply(self, body: &[u8]) -> anyhow::Result<Self::Reply> {
+    fn decode_reply(&self, body: &[u8]) -> anyhow::Result<Self::Reply> {
         AccountingReply::from_bytes(body)
     }
 }
@@ -61,8 +67,8 @@ mod tests {
             port: "tty0".to_owned(),
             rem_address: "192.0.2.1".to_owned(),
             args: vec!["service=shell".to_owned(), "cmd=show".to_owned()],
-        });
-        let request = AccountingRequest::from_bytes(&exchange.encode_request()?)?;
+        })?;
+        let request = AccountingRequest::from_bytes(exchange.request_body().as_bytes())?;
         assert_eq!(request.user, "admin");
 
         let body = AccountingReply {

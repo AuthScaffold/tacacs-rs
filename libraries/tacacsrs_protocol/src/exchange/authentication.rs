@@ -5,37 +5,45 @@ use crate::enumerations::{
     TacacsAuthenticationAction, TacacsAuthenticationService, TacacsAuthenticationStatus,
     TacacsAuthenticationType, TacacsMinorVersion, TacacsType,
 };
+#[cfg(test)]
 use crate::body::TacacsBodyTrait;
-use crate::exchange::FixedExchange;
+use crate::exchange::{FixedExchange, PreparedBody};
 use tacacsrs_secrets::SecretBytes;
 
 /// One RFC 8907 PAP login START followed by one terminal REPLY.
 #[derive(Debug)]
 pub struct PapAuthenticationExchange {
-    user: String,
-    password: SecretBytes,
-    port: String,
-    remote_address: String,
-    privilege_level: u8,
+    body: PreparedBody,
 }
 
 impl PapAuthenticationExchange {
     /// Creates a PAP login exchange.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns an error for an empty user, invalid privilege, or codec field limits.
     pub fn new(
         user: impl Into<String>,
         password: SecretBytes,
         port: impl Into<String>,
         remote_address: impl Into<String>,
         privilege_level: u8,
-    ) -> Self {
-        Self {
-            user: user.into(),
-            password,
+    ) -> anyhow::Result<Self> {
+        let user = user.into();
+        anyhow::ensure!(!user.is_empty(), "PAP authentication requires a user name");
+        crate::privilege::PrivilegeLevel::try_from(privilege_level)?;
+        let start = AuthenticationStart {
+            action: TacacsAuthenticationAction::TacPlusAuthenLogin,
+            priv_lvl: privilege_level,
+            authen_type: TacacsAuthenticationType::TacPlusAuthenTypePap,
+            authen_service: TacacsAuthenticationService::TacPlusAuthenSvcLogin,
+            user,
             port: port.into(),
-            remote_address: remote_address.into(),
-            privilege_level,
-        }
+            rem_address: remote_address.into(),
+            data: password.expose_secret().to_vec(),
+        };
+        Ok(Self {
+            body: PreparedBody::encode(&start)?,
+        })
     }
 }
 
@@ -50,21 +58,11 @@ impl FixedExchange for PapAuthenticationExchange {
         TacacsMinorVersion::TacacsPlusMinorVerOne
     }
 
-    fn encode_request(&self) -> anyhow::Result<Vec<u8>> {
-        AuthenticationStart {
-            action: TacacsAuthenticationAction::TacPlusAuthenLogin,
-            priv_lvl: self.privilege_level,
-            authen_type: TacacsAuthenticationType::TacPlusAuthenTypePap,
-            authen_service: TacacsAuthenticationService::TacPlusAuthenSvcLogin,
-            user: self.user.clone(),
-            port: self.port.clone(),
-            rem_address: self.remote_address.clone(),
-            data: self.password.expose_secret().to_vec(),
-        }
-        .to_bytes()
+    fn request_body(&self) -> &PreparedBody {
+        &self.body
     }
 
-    fn decode_reply(self, body: &[u8]) -> anyhow::Result<Self::Reply> {
+    fn decode_reply(&self, body: &[u8]) -> anyhow::Result<Self::Reply> {
         let reply = AuthenticationReply::from_bytes(body)?;
         match reply.status {
             TacacsAuthenticationStatus::TacPlusAuthenStatusPass
@@ -89,11 +87,11 @@ mod tests {
             "tty0",
             "192.0.2.1",
             15,
-        );
+        )?;
 
         assert_eq!(exchange.packet_type(), TacacsType::TacPlusAuthentication);
         assert_eq!(exchange.minor_version(), TacacsMinorVersion::TacacsPlusMinorVerOne);
-        let start = AuthenticationStart::from_bytes(&exchange.encode_request()?)?;
+        let start = AuthenticationStart::from_bytes(exchange.request_body().as_bytes())?;
         assert_eq!(start.action, TacacsAuthenticationAction::TacPlusAuthenLogin);
         assert_eq!(start.authen_type, TacacsAuthenticationType::TacPlusAuthenTypePap);
         assert_eq!(start.authen_service, TacacsAuthenticationService::TacPlusAuthenSvcLogin);
@@ -138,5 +136,6 @@ mod tests {
             "192.0.2.1",
             15,
         )
+        .unwrap()
     }
 }

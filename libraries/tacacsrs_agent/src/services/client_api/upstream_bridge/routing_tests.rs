@@ -10,11 +10,12 @@ use tacacsrs_protocol::operations::{
 };
 use tacacsrs_config::TacacsPlusServer;
 use tacacsrs_protocol::exchange::authentication::PapAuthenticationExchange;
+use tacacsrs_protocol::exchange::FixedExchange;
 use tacacsrs_protocol::accounting::reply::AccountingReply;
-use tacacsrs_protocol::accounting::request::AccountingRequest;
+use tacacsrs_protocol::exchange::accounting::AccountingExchange;
 use tacacsrs_protocol::authentication::reply::AuthenticationReply;
 use tacacsrs_protocol::authorization::reply::AuthorizationReply;
-use tacacsrs_protocol::authorization::request::AuthorizationRequest;
+use tacacsrs_protocol::exchange::authorization::AuthorizationExchange;
 use tacacsrs_protocol::enumerations::{
     TacacsAccountingStatus, TacacsAuthenticationReplyFlags, TacacsAuthenticationStatus,
     TacacsAuthorizationStatus,
@@ -40,6 +41,7 @@ struct ScriptedConnection {
     accounting_barrier: Option<(Arc<Notify>, Arc<Notify>)>,
     accounting_delay: Duration,
     accounting_started: Notify,
+    bodies: Mutex<Vec<Vec<u8>>>,
 }
 
 impl ScriptedConnection {
@@ -55,6 +57,7 @@ impl ScriptedConnection {
             accounting_barrier: None,
             accounting_delay: Duration::ZERO,
             accounting_started: Notify::new(),
+            bodies: Mutex::new(Vec::new()),
         }
     }
 }
@@ -82,9 +85,13 @@ impl UpstreamConnection for ScriptedConnection {
 
     async fn send_accounting(
         &self,
-        _request: AccountingRequest,
+        exchange: &AccountingExchange,
         _deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AccountingReply, UpstreamRequestError> {
+        self.bodies
+            .lock()
+            .await
+            .push(exchange.request_body().as_bytes().to_vec());
         self.accounting_started.notify_one();
         if !self.accounting_delay.is_zero() {
             tokio::time::sleep(self.accounting_delay).await;
@@ -107,9 +114,13 @@ impl UpstreamConnection for ScriptedConnection {
 
     async fn authenticate_pap(
         &self,
-        _exchange: PapAuthenticationExchange,
+        exchange: &PapAuthenticationExchange,
         _deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthenticationReply, UpstreamRequestError> {
+        self.bodies
+            .lock()
+            .await
+            .push(exchange.request_body().as_bytes().to_vec());
         if self.fail_authentication.swap(false, Ordering::AcqRel) {
             return Err(UpstreamRequestError::outcome_unknown(anyhow::anyhow!(
                 "injected authentication transport failure"
@@ -125,9 +136,13 @@ impl UpstreamConnection for ScriptedConnection {
 
     async fn send_authorization(
         &self,
-        _request: AuthorizationRequest,
+        exchange: &AuthorizationExchange,
         _deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthorizationReply, UpstreamRequestError> {
+        self.bodies
+            .lock()
+            .await
+            .push(exchange.request_body().as_bytes().to_vec());
         if self.fail_authorization.swap(false, Ordering::AcqRel) {
             return Err(UpstreamRequestError::outcome_unknown(anyhow::anyhow!(
                 "injected authorization transport failure"
@@ -285,6 +300,176 @@ fn accounting() -> AccountingOperation {
         command: "show".to_owned(),
         command_arguments: vec!["users".to_owned()],
     }
+}
+
+#[tokio::test]
+async fn prepared_admission_matches_all_transmitted_bodies_at_the_exact_limit() {
+    use crate::config::RequestLimits;
+    let authorization = crate::test_support::build_authorization_request();
+    for operation in [
+        OperationKind::Accounting,
+        OperationKind::Authorization,
+        OperationKind::Authentication,
+    ] {
+        let expected = match operation {
+            OperationKind::Accounting => accounting()
+                .exchange()
+                .unwrap()
+                .request_body()
+                .as_bytes()
+                .to_vec(),
+            OperationKind::Authorization => authorization
+                .exchange()
+                .unwrap()
+                .request_body()
+                .as_bytes()
+                .to_vec(),
+            OperationKind::Authentication => authentication()
+                .exchange()
+                .unwrap()
+                .request_body()
+                .as_bytes()
+                .to_vec(),
+        };
+        for excess in [0, 1] {
+            let primary = Arc::new(ScriptedConnection::successful("primary:49"));
+            let connector = Arc::new(OperationConnector::new(HashMap::from([(
+                ("primary:49".into(), operation),
+                primary.clone(),
+            )])));
+            let limits = RequestLimits::new(expected.len() - excess, 1).unwrap();
+            let runtime_policy = RuntimePolicy::new(
+                FailoverStrategy::OrderedSafeRetry,
+                FailoverStrategy::default(),
+                OperationPolicies::new(limits, limits, limits),
+                Duration::from_secs(30),
+            )
+            .unwrap();
+            let bridge = bridge_with_policy(connector.clone(), runtime_policy);
+            let result = match operation {
+                OperationKind::Accounting => bridge
+                    .execute_accounting_request(accounting())
+                    .await
+                    .map(|_| ()),
+                OperationKind::Authorization => bridge
+                    .execute_authorization_request(authorization.clone())
+                    .await
+                    .map(|_| ()),
+                OperationKind::Authentication => bridge
+                    .execute_pap_authentication_request(authentication())
+                    .await
+                    .map(|_| ()),
+            };
+            assert_eq!(result.is_ok(), excess == 0, "{operation:?}: {result:?}");
+            assert_eq!(connector.attempts("primary:49", operation).await, usize::from(excess == 0));
+            assert_eq!(connector.attempts("backup:49", operation).await, 0);
+            let bodies = primary.bodies.lock().await;
+            if excess == 0 {
+                assert_eq!(*bodies, vec![expected.clone()]);
+            } else {
+                assert!(bodies.is_empty());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn malformed_inputs_do_not_wait_for_admission_or_open_connections() {
+    let connector = Arc::new(OperationConnector::new(HashMap::new()));
+    let limits = crate::config::RequestLimits::new(65536, 1).unwrap();
+    let runtime_policy = RuntimePolicy::new(
+        FailoverStrategy::OrderedSafeRetry,
+        FailoverStrategy::default(),
+        OperationPolicies::new(limits, limits, limits),
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    let bridge = bridge_with_policy(connector.clone(), runtime_policy);
+    let captured = bridge.router.capture_request(OperationKind::Accounting);
+    let _permit = captured.admit(1).await.unwrap();
+    let mut accounting = accounting();
+    accounting.user = "x".repeat(256);
+    let mut authorization = crate::test_support::build_authorization_request();
+    authorization.user = "x".repeat(256);
+    let mut pap = authentication();
+    pap.password = SecretBytes::new(vec![0xff; 256]);
+    let results = tokio::time::timeout(Duration::from_secs(1), async {
+        [
+            bridge
+                .execute_accounting_request(accounting)
+                .await
+                .map(|_| ()),
+            bridge
+                .execute_authorization_request(authorization)
+                .await
+                .map(|_| ()),
+            bridge
+                .execute_pap_authentication_request(pap)
+                .await
+                .map(|_| ()),
+        ]
+    })
+    .await
+    .unwrap();
+    for result in results {
+        assert_eq!(
+            result.unwrap_err().facts.category(),
+            tacacsrs_protocol::failure::FailureCategory::InvalidRequest
+        );
+    }
+    assert!(connector.attempts.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn preparation_cannot_renew_the_captured_deadline() {
+    struct SlowPreparation;
+    #[async_trait]
+    impl super::routed::RoutedOperation for SlowPreparation {
+        type Request = Arc<std::sync::atomic::AtomicUsize>;
+        type Exchange = AccountingExchange;
+        type Response = AccountingReply;
+        const NAME: &'static str = "slow preparation";
+        const DISPLAY_NAME: &'static str = "Slow preparation";
+        const OPERATION: OperationKind = OperationKind::Accounting;
+        async fn send<Connection: UpstreamConnection + ?Sized>(
+            connection: &Connection,
+            exchange: &AccountingExchange,
+            deadline: tacacsrs_networking::RequestDeadline,
+        ) -> Result<AccountingReply, UpstreamRequestError> {
+            connection.send_accounting(exchange, deadline).await
+        }
+        fn is_server_error(_: &AccountingReply) -> bool {
+            false
+        }
+        fn prepare(count: &Self::Request) -> Result<AccountingExchange, UpstreamRequestError> {
+            count.fetch_add(1, Ordering::Relaxed);
+            std::thread::sleep(Duration::from_millis(25));
+            accounting()
+                .exchange()
+                .map_err(UpstreamRequestError::invalid_request)
+        }
+    }
+    let connector = Arc::new(OperationConnector::new(HashMap::new()));
+    let limits = crate::config::RequestLimits::new(1024, 1)
+        .unwrap()
+        .with_request_timeout(Duration::from_millis(1))
+        .unwrap();
+    let runtime_policy = RuntimePolicy::new(
+        FailoverStrategy::OrderedSafeRetry,
+        FailoverStrategy::default(),
+        OperationPolicies::new(limits, limits, limits),
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    let bridge = bridge_with_policy(connector.clone(), runtime_policy);
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let error = bridge
+        .execute_operation::<SlowPreparation>(count.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(error.facts.category(), tacacsrs_protocol::failure::FailureCategory::Deadline);
+    assert_eq!(count.load(Ordering::Relaxed), 1);
+    assert!(connector.attempts.lock().await.is_empty());
 }
 
 fn operation_map(

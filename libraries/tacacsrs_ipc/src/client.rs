@@ -122,7 +122,7 @@ impl ServiceClient {
         request: AccountingOperation,
     ) -> Result<AccountingOperationResponse, ServiceError> {
         let mut client = TacacsAgentClient::new(self.channel.clone());
-        let rpc_request: proto::AccountingRequest = (&request).into();
+        let rpc_request: proto::AccountingRequest = request.into();
         let reply = client
             .accounting(rpc_request)
             .await
@@ -197,7 +197,7 @@ impl ServiceClient {
         request: AuthorizationOperation,
     ) -> Result<AuthorizationOperationResponse, ServiceError> {
         let mut client = TacacsAgentClient::new(self.channel.clone());
-        let rpc_request: proto::AuthorizationRequest = (&request).into();
+        let rpc_request: proto::AuthorizationRequest = request.into();
         let reply = client
             .authorization(rpc_request)
             .await

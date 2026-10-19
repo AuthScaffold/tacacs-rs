@@ -66,7 +66,7 @@ async fn send_test_request(connection: &TacacsClient) -> anyhow::Result<()> {
     };
 
     connection
-        .execute(AccountingExchange::new(accounting_request))
+        .execute(&AccountingExchange::new(accounting_request)?)
         .await?;
     Ok(())
 }

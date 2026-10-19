@@ -89,7 +89,7 @@ async fn operations_with_policy(
             remote_address: "127.0.0.1".to_owned(),
             privilege_level: PrivilegeLevel::MAX,
         };
-        let reply = client.execute(authentication.exchange()?).await?;
+        let reply = client.execute(&authentication.exchange()?).await?;
         assert_eq!(reply.status, TacacsAuthenticationStatus::TacPlusAuthenStatusPass);
         let authorization = AuthorizationOperation::builder(
             "testuser",
@@ -102,7 +102,7 @@ async fn operations_with_policy(
         .command("show")
         .command_arg("version")
         .build()?;
-        let reply = client.execute(authorization.exchange()?).await?;
+        let reply = client.execute(&authorization.exchange()?).await?;
         assert!(matches!(
             reply.status,
             TacacsAuthorizationStatus::TacPlusPassAdd | TacacsAuthorizationStatus::TacPlusPassRepl
@@ -115,7 +115,7 @@ async fn operations_with_policy(
                 command: "show".to_owned(),
                 command_arguments: vec!["version".to_owned()],
             };
-            let reply = client.execute(operation.exchange()).await?;
+            let reply = client.execute(&operation.exchange()?).await?;
             assert_eq!(reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
         }
         client.stop_accepting_new_sessions().await;

@@ -35,7 +35,7 @@ async fn main() -> anyhow::Result<()> {
 
     for flags in [TacacsAccountingFlags::START, TacacsAccountingFlags::STOP] {
         let response = connection
-            .execute(AccountingExchange::new(AccountingRequest {
+            .execute(&AccountingExchange::new(AccountingRequest {
                 flags,
                 authen_method: TacacsAuthenticationMethod::TacPlusAuthenMethodNone,
                 priv_lvl: 0,
@@ -49,7 +49,7 @@ async fn main() -> anyhow::Result<()> {
                     "task_id=123".to_string(),
                     "cmd=test".to_string(),
                 ],
-            }))
+            })?)
             .await?;
 
         println!("Accounting response: {response:#?}");

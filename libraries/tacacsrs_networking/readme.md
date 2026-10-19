@@ -10,11 +10,12 @@ Most TACACS+ operations are one request followed by one reply. Accounting,
 authorization, and PAP authentication use the fixed exchange lane:
 
 ```rust,ignore
-let reply = client.execute(exchange).await?;
+let reply = client.execute(&exchange).await?;
 ```
 
-An exchange descriptor serializes its operation body and parses its typed
-reply. Networking owns the random session ID, request/reply sequence numbers
+An exchange constructor validates and serializes its body before execution.
+The executor borrows its immutable body and parses the typed reply.
+Networking owns the random session ID, request/reply sequence numbers
 `1/2`, header validation, transport selection, and cleanup.
 
 Transparent proxying and genuinely interactive authentication use a mutable
@@ -43,7 +44,7 @@ order and routes each packet by its TACACS+ session ID.
 Fixed exchanges register a direct one-shot route:
 
 ```text
-execute(exchange)
+execute(&exchange)
   -> reserve random nonzero session ID
   -> registry[session ID] = expected header + one-shot sender
   -> bounded outbound queue

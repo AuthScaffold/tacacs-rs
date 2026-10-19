@@ -28,7 +28,7 @@ impl Connection {
     /// Returns an error if the underlying exchange fails.
     pub(crate) async fn execute<Exchange>(
         &self,
-        exchange: Exchange,
+        exchange: &Exchange,
     ) -> anyhow::Result<Exchange::Reply>
     where
         Exchange: FixedExchange,

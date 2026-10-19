@@ -15,7 +15,7 @@ pub(crate) async fn send_direct(
     operation: &AccountingOperation,
 ) -> anyhow::Result<AccountingOperationResponse> {
     let reply = connection
-        .execute(operation.exchange())
+        .execute(&operation.exchange()?)
         .await
         .context("Failed to send accounting request")?;
 

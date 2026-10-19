@@ -538,7 +538,7 @@ async fn reply_to_expected_accounting(
 async fn execute(endpoint: PreparedEndpoint) -> Result<()> {
     let client = TacacsClient::connect_prepared(endpoint).await?;
     let reply = client
-        .execute(AccountingExchange::new(accounting_request()))
+        .execute(&AccountingExchange::new(accounting_request())?)
         .await?;
     assert_eq!(reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
     assert_eq!(reply.server_msg, "accepted");
@@ -764,7 +764,8 @@ async fn established_mtls_pin_survives_authentication_certificate_expiry() -> Re
         Ok::<(), anyhow::Error>(())
     });
     let client = TacacsClient::connect_prepared(endpoint.clone()).await?;
-    let first = client.execute(AccountingExchange::new(accounting_request()));
+    let prepared = AccountingExchange::new(accounting_request())?;
+    let first = client.execute(&prepared);
     tokio::pin!(first);
     let (handshake, first) = tokio::time::timeout(Duration::from_secs(3), async {
         tokio::join!(handshake_observed, &mut first)
@@ -805,23 +806,17 @@ async fn established_mtls_pin_survives_authentication_certificate_expiry() -> Re
     let _ = release_reply.send(());
     let (mut retained, reply) = tokio::time::timeout(Duration::from_secs(3), delayed).await???;
     assert_eq!(reply.header().seq_no, 2);
-    tokio::time::timeout(
-        Duration::from_secs(3),
-        client.execute(AccountingExchange::new(accounting_request())),
-    )
-    .await??;
+    tokio::time::timeout(Duration::from_secs(3), client.execute(&prepared)).await??;
     assert_eq!(counters.snapshot().connection_opens, 1);
     retained.complete().await;
     client
         .close_and_join(tacacsrs_networking::RequestDeadline::after(Duration::from_secs(2))?)
         .await?;
     let expired_client = TacacsClient::connect_prepared(endpoint).await?;
-    let error = tokio::time::timeout(
-        Duration::from_secs(3),
-        expired_client.execute_classified(AccountingExchange::new(accounting_request())),
-    )
-    .await?
-    .unwrap_err();
+    let error =
+        tokio::time::timeout(Duration::from_secs(3), expired_client.execute_classified(&prepared))
+            .await?
+            .unwrap_err();
     assert_eq!(error.transmission_state(), tacacsrs_networking::TransmissionState::NotSent);
     tokio::time::timeout(Duration::from_secs(3), peer).await???;
     Ok(())
@@ -1040,8 +1035,9 @@ async fn caller_deadline_controls_stalled_tls_after_client_certificate_expiry() 
         Ok::<(), anyhow::Error>(())
     });
     let started = tokio::time::Instant::now();
+    let prepared = AccountingExchange::new(accounting_request())?;
     let request = client.execute_classified_until(
-        AccountingExchange::new(accounting_request()),
+        &prepared,
         tacacsrs_networking::RequestDeadline::after(Duration::from_secs(4))?,
     );
     tokio::pin!(request);
@@ -1099,7 +1095,7 @@ async fn client_certificate_expiry_between_tcp_and_handshake_sends_no_tls_bytes(
     let client = TacacsClient::connect_prepared(endpoint).await?;
     let error = tokio::time::timeout(
         Duration::from_secs(6),
-        client.execute_classified(AccountingExchange::new(accounting_request())),
+        client.execute_classified(&AccountingExchange::new(accounting_request())?),
     )
     .await?
     .unwrap_err();
@@ -1145,7 +1141,7 @@ async fn client_certificate_expiry_in_destination_guard_prevents_tcp_attempt() -
     let client = TacacsClient::connect_prepared(endpoint).await?;
     let error = tokio::time::timeout(
         Duration::from_secs(6),
-        client.execute_classified(AccountingExchange::new(accounting_request())),
+        client.execute_classified(&AccountingExchange::new(accounting_request())?),
     )
     .await?
     .unwrap_err();

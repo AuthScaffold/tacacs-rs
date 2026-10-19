@@ -26,19 +26,13 @@ pub(crate) fn authorize_command(
     command: &str,
     argv: &[String],
 ) -> AuthorizationDecision {
-    let request = AuthorizationOperation {
-        user: user.to_owned(),
-        port: port.to_owned(),
-        remote_address: remote_address.to_owned(),
-        privilege_level: tacacsrs_protocol::privilege::PrivilegeLevel::MAX,
-        authentication_context: AuthorizationAuthenticationContext::TacacsAscii,
-        args: authorization_args(command, argv),
+    let request = match authorization_request(user, port, remote_address, command, argv) {
+        Ok(request) => request,
+        Err(error) => {
+            debug_log(flags, &format!("authorization request is invalid for user {user}: {error}"));
+            return AuthorizationDecision::Deny;
+        }
     };
-
-    if let Err(error) = request.validate() {
-        debug_log(flags, &format!("authorization request is invalid for user {user}: {error}"));
-        return AuthorizationDecision::Deny;
-    }
 
     let runtime = match RUNTIME.as_ref() {
         Ok(runtime) => runtime,
@@ -102,21 +96,28 @@ async fn connect_client(flags: c_int, endpoint: IpcEndpoint) -> anyhow::Result<S
     Ok(client)
 }
 
-fn authorization_args(command: &str, argv: &[String]) -> Vec<AuthorizationArg> {
-    let task_id = task_id().to_string();
-    let mut args = vec![
-        AuthorizationArg::mandatory("task_id", task_id),
-        AuthorizationArg::mandatory_key(AuthorizationKey::Protocol, "ssh"),
-        AuthorizationArg::mandatory_key(AuthorizationKey::Service, "shell"),
-        AuthorizationArg::mandatory_key(AuthorizationKey::Cmd, command),
-    ];
-
-    args.extend(
-        argv.iter().skip(1).map(|arg| {
-            AuthorizationArg::mandatory_key(AuthorizationKey::CmdArg, truncate_arg(arg))
-        }),
-    );
-    args
+fn authorization_request(
+    user: &str,
+    port: &str,
+    remote_address: &str,
+    command: &str,
+    argv: &[String],
+) -> anyhow::Result<AuthorizationOperation> {
+    let request = AuthorizationOperation::builder(
+        user,
+        u32::from(tacacsrs_protocol::privilege::PrivilegeLevel::MAX),
+        AuthorizationAuthenticationContext::TacacsAscii,
+    )
+    .port(port)
+    .remote_address(remote_address)
+    .arg(AuthorizationArg::mandatory("task_id", task_id().to_string()))
+    .key_value(AuthorizationKey::Protocol, true, "ssh")
+    .service("shell")
+    .command(command)
+    .command_args(argv.iter().skip(1).map(|argument| truncate_arg(argument)))
+    .build()?;
+    request.exchange()?;
+    Ok(request)
 }
 
 fn truncate_arg(value: &str) -> String {
@@ -144,5 +145,46 @@ mod tests {
             };
             assert_eq!(response_decision(response.status, &response.args), expected, "{name}");
         }
+    }
+
+    #[test]
+    fn builder_preserves_exact_command_metadata_and_character_truncation() {
+        let argv = vec!["ignored-argv-zero".into(), "users".into(), "x".repeat(248)];
+        let request = authorization_request("admin", "tty7", "192.0.2.7", "show", &argv).unwrap();
+        assert_eq!(request.user, "admin");
+        assert_eq!(request.port, "tty7");
+        assert_eq!(request.remote_address, "192.0.2.7");
+        assert_eq!(request.privilege_level, tacacsrs_protocol::privilege::PrivilegeLevel::MAX);
+        assert_eq!(request.authentication_context, AuthorizationAuthenticationContext::TacacsAscii);
+        assert_eq!(
+            request
+                .args
+                .iter()
+                .map(AuthorizationArg::to_wire)
+                .collect::<Vec<_>>(),
+            vec![
+                format!("task_id={}", task_id()),
+                "protocol=ssh".into(),
+                "service=shell".into(),
+                "cmd=show".into(),
+                "cmd-arg=users".into(),
+                format!("cmd-arg={}", "x".repeat(247)),
+            ]
+        );
+        assert_eq!(truncate_arg(&"\u{e9}".repeat(248)).chars().count(), 247);
+    }
+
+    #[test]
+    fn invalid_byte_length_denies_before_ipc_or_fallback() {
+        let argv = vec!["show".into(), "\u{e9}".repeat(247)];
+        assert!(authorization_request("admin", "tty0", "", "show", &argv).is_err());
+        assert_eq!(
+            authorize_command(0, "admin", "tty0", "", "show", &argv),
+            AuthorizationDecision::Deny
+        );
+        assert_eq!(
+            authorize_command(0, &"x".repeat(256), "tty0", "", "show", &[]),
+            AuthorizationDecision::Deny
+        );
     }
 }
