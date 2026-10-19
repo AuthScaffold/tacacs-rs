@@ -512,7 +512,7 @@ async fn operation_failure_does_not_move_other_operation_cursors() {
         .bind_server_for_operation(OperationKind::Authentication)
         .await
         .expect("primary authentication route");
-    state.note_bound_server_failure(&authentication).await;
+    authentication.note_failure().await;
     recover_fake_connection(&primary).await;
 
     let authorization = state
@@ -767,9 +767,9 @@ async fn shutdown_wakes_admission_and_rejects_reload_and_captured_routes() {
         .unwrap(),
     );
     let lease = state.capture_request(PolicyService::ClientApi, OperationKind::Accounting);
-    let _active = state.admit_request(&lease, 1).await.unwrap();
+    let _active = lease.admit(1).await.unwrap();
     let _bound = state.bind_request(&lease).await.unwrap();
-    let pending = state.admit_request(&lease, 1);
+    let pending = lease.admit(1);
     tokio::pin!(pending);
     std::future::poll_fn(|context| {
         assert!(std::future::Future::poll(pending.as_mut(), context).is_pending());
@@ -926,9 +926,9 @@ async fn captured_request_keeps_policy_while_admission_waits() {
         };
         state.reload_runtime_policy(policy(1024, 2));
         let captured = state.capture_request(service, OperationKind::Authentication);
-        let first = state.admit_request(&captured, 1).await.unwrap();
-        let second = state.admit_request(&captured, 1).await.unwrap();
-        let waiting = state.admit_request(&captured, 768);
+        let first = captured.admit(1).await.unwrap();
+        let second = captured.admit(1).await.unwrap();
+        let waiting = captured.admit(768);
         tokio::pin!(waiting);
         std::future::poll_fn(|context| {
             assert!(std::future::Future::poll(waiting.as_mut(), context).is_pending());
@@ -963,13 +963,116 @@ async fn captured_request_keeps_policy_while_admission_waits() {
         assert_eq!(retained.connection.server_address(), "server-a:49");
         let replacement = state.bind_request(&current).await.unwrap();
         assert_eq!(replacement.connection.server_address(), "server-b:49");
-        assert!(matches!(
-            state.admit_request(&current, 1).await,
-            Err(AdmissionError::CapacityTimeout { .. })
-        ));
+        assert!(matches!(current.admit(1).await, Err(AdmissionError::CapacityTimeout { .. })));
         drop(retained_permit);
-        state.admit_request(&current, 1).await.unwrap();
+        current.admit(1).await.unwrap();
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn captured_lease_admission_outlives_manager() {
+    use crate::config::{PolicyService, RequestLimits};
+    use crate::upstream::AdmissionError;
+
+    for service in [PolicyService::ClientApi, PolicyService::TacacsProxy] {
+        let connector = Arc::new(FakeConnector::new(HashMap::new()));
+        let manager = Arc::new(UpstreamManager::new(
+            vec![test_server("server-a:49")],
+            connector.clone(),
+            Duration::from_secs(30),
+            test_health(),
+        ));
+        let limits = RequestLimits::new(1024, 1).unwrap();
+        assert!(manager.reload_runtime_policy(
+            RuntimePolicy::new(
+                FailoverStrategy::default(),
+                FailoverStrategy::default(),
+                OperationPolicies::new(limits, limits, limits),
+                Duration::from_secs(30),
+            )
+            .unwrap(),
+        ));
+        let captured = manager.capture_request(service, OperationKind::Accounting);
+        let deadline = captured.deadline().expires_at();
+        let owner = Arc::downgrade(&manager);
+        drop(manager);
+        assert!(owner.upgrade().is_none());
+
+        assert!(matches!(
+            captured.reserve(1025),
+            Err(AdmissionError::BodyTooLarge {
+                actual: 1025,
+                maximum: 1024
+            })
+        ));
+        let active = captured.admit(1024).await.unwrap();
+        let queued = captured.reserve(0).unwrap();
+        assert!(matches!(captured.reserve(1), Err(AdmissionError::Full)));
+        drop(queued);
+        let queued = captured.reserve(1).unwrap();
+        drop(active);
+        let admitted = captured.admit_reserved(queued).await.unwrap();
+        drop(admitted);
+        assert_eq!(captured.deadline().expires_at(), deadline);
+        tokio::time::advance(deadline - tokio::time::Instant::now()).await;
+        assert!(matches!(captured.reserve(0), Err(AdmissionError::CapacityTimeout { .. })));
+        assert_eq!(connector.connect_attempts_for("server-a:49").await, 0);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn binding_outcomes_outlive_router_and_manager() {
+    use crate::config::PolicyService;
+    use crate::upstream::OperationRouter;
+
+    let primary = Arc::new(FakeConnection {
+        address: "server-a:49".to_owned(),
+        usable: AtomicBool::new(true),
+        fail_next_request: AtomicBool::new(false),
+    });
+    let backup = Arc::new(FakeConnection {
+        address: "server-b:49".to_owned(),
+        usable: AtomicBool::new(true),
+        fail_next_request: AtomicBool::new(false),
+    });
+    let connector = Arc::new(FakeConnector::new(HashMap::from([
+        (primary.address.clone(), primary.clone()),
+        (backup.address.clone(), backup.clone()),
+    ])));
+    let manager = Arc::new(UpstreamManager::new(
+        vec![test_server("server-a:49"), test_server("server-b:49")],
+        connector,
+        Duration::from_secs(5),
+        test_health(),
+    ));
+    let client = manager.current_server_set().client.clone();
+    let router = OperationRouter::new(manager.clone(), PolicyService::ClientApi);
+    let request = router.capture_request(OperationKind::Authentication);
+    let initial = request.bind().await.unwrap();
+    initial.note_failure().await;
+    recover_fake_connection(&primary).await;
+    tokio::time::advance(Duration::from_secs(5)).await;
+    let recovery = request.bind().await.unwrap();
+    assert_eq!(recovery.connection.server_address(), primary.address);
+    let owner = Arc::downgrade(&manager);
+    drop(initial);
+    drop(request);
+    drop(router);
+    drop(manager);
+    assert!(owner.upgrade().is_none());
+
+    recovery.note_success().await;
+    let restored = client
+        .bind(OperationKind::Authentication, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(restored.connection().server_address(), primary.address);
+    recovery.note_failure().await;
+    let fallback = client
+        .bind(OperationKind::Authentication, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(fallback.connection().server_address(), backup.address);
 }
 
 #[tokio::test(start_paused = true)]
@@ -999,7 +1102,7 @@ async fn real_request_recovers_a_higher_priority_operation_route() {
         .bind_server_for_operation(OperationKind::Authentication)
         .await
         .expect("initial primary route");
-    state.note_bound_server_failure(&initial).await;
+    initial.note_failure().await;
     recover_fake_connection(&primary).await;
     let fallback = state
         .bind_server_for_operation(OperationKind::Authentication)
@@ -1026,7 +1129,7 @@ async fn real_request_recovers_a_higher_priority_operation_route() {
     assert_eq!(current.connection.server_address(), backup.address);
     let recovery = state.bind_request(&captured).await.expect("recovery trial");
     assert_eq!(recovery.connection.server_address(), primary.address);
-    state.note_bound_server_success(&recovery).await;
+    recovery.note_success().await;
 
     let restored = state
         .bind_server_for_operation(OperationKind::Authentication)
@@ -1057,16 +1160,16 @@ async fn stale_failure_does_not_invalidate_a_recovered_connection() {
         .bind_server_for_operation(OperationKind::Authentication)
         .await
         .expect("initial binding");
-    state.note_bound_server_failure(&stale_binding).await;
+    stale_binding.note_failure().await;
     recover_fake_connection(&primary).await;
     tokio::time::advance(Duration::from_secs(5)).await;
     let recovered = state
         .bind_server_for_operation(OperationKind::Authentication)
         .await
         .expect("recovered binding");
-    state.note_bound_server_success(&recovered).await;
+    recovered.note_success().await;
 
-    state.note_bound_server_failure(&stale_binding).await;
+    stale_binding.note_failure().await;
     let current = state
         .bind_server_for_operation(OperationKind::Authentication)
         .await

@@ -2,8 +2,9 @@
 //!
 //! [`UpstreamManager`] holds state for every local service. A service must not
 //! see all of it. [`OperationRouter`] binds one [`PolicyService`] identity at
-//! construction and exposes only the operations that a request path needs:
-//! admission, plan construction, server binding, and outcome recording.
+//! construction and captures immutable request inputs. [`RequestRouting`] uses
+//! its lease for admission and its manager for binding and availability updates.
+//! [`BoundServer`] records outcomes through the networking binding.
 //!
 //! This keeps `PolicyService` out of every call site and stops a service from
 //! reading state that belongs to another service.
@@ -52,14 +53,14 @@ impl<Connector: EndpointConnector> RequestRouting<Connector> {
         &self,
         body_length: usize,
     ) -> Result<tacacsrs_networking::admission::AdmissionReservation, AdmissionError> {
-        UpstreamManager::reserve_request(&self.lease, body_length)
+        self.lease.reserve(body_length)
     }
 
     pub(crate) async fn admit_reserved(
         &self,
         reservation: tacacsrs_networking::admission::AdmissionReservation,
     ) -> Result<AdmissionPermit, AdmissionError> {
-        self.manager.admit_reserved(&self.lease, reservation).await
+        self.lease.admit_reserved(reservation).await
     }
 
     pub(crate) fn deadline(&self) -> tacacsrs_networking::RequestDeadline {
@@ -78,7 +79,7 @@ impl<Connector: EndpointConnector> RequestRouting<Connector> {
         &self,
         body_length: usize,
     ) -> Result<AdmissionPermit, AdmissionError> {
-        self.manager.admit_request(&self.lease, body_length).await
+        self.lease.admit(body_length).await
     }
 
     pub(crate) fn validate_body_length(&self, body_length: usize) -> Result<(), AdmissionError> {
@@ -100,15 +101,5 @@ impl<Connector: EndpointConnector> OperationRouter<Connector> {
             manager: Arc::clone(&self.manager),
             lease: self.manager.capture_request(self.service, operation),
         }
-    }
-
-    /// Records a successful request and completes a recovery trial when present.
-    pub(crate) async fn note_success(&self, bound_server: &BoundServer<Connector>) {
-        self.manager.note_bound_server_success(bound_server).await;
-    }
-
-    /// Records a request failure and moves the operation cursor when needed.
-    pub(crate) async fn note_failure(&self, bound_server: &BoundServer<Connector>) {
-        self.manager.note_bound_server_failure(bound_server).await;
     }
 }

@@ -13,8 +13,7 @@ use tacacsrs_networking::retry::{
 
 use super::UpstreamBridge;
 use crate::upstream::{
-    AttemptFailureKind, OperationKind, OperationRouter, RequestRouting, UpstreamConnection,
-    UpstreamRequestError,
+    AttemptFailureKind, OperationKind, RequestRouting, UpstreamConnection, UpstreamRequestError,
 };
 
 /// Operation-specific hooks used by the client API upstream bridge.
@@ -55,7 +54,6 @@ struct RoutedAttempt<'request, Operation, Connector: EndpointConnector>
 where
     Operation: RoutedOperation,
 {
-    router: &'request OperationRouter<Connector>,
     routing: RequestRouting<Connector>,
     exchange: &'request Operation::Exchange,
 }
@@ -137,11 +135,11 @@ where
             .and_then(std::convert::identity);
         match response {
             Ok(response) if Operation::is_server_error(&response) => {
-                self.router.note_failure(&bound_server).await;
+                bound_server.note_failure().await;
                 Attempt::Rejected(response)
             }
             Ok(response) => {
-                self.router.note_success(&bound_server).await;
+                bound_server.note_success().await;
                 Attempt::Accepted(response)
             }
             Err(error) if error.kind() == AttemptFailureKind::InvalidRequest => Attempt::Aborted(
@@ -171,7 +169,7 @@ where
                         .with_server(bound_server.connection.server_address()),
                     attempt_index,
                 );
-                self.router.note_failure(&bound_server).await;
+                bound_server.note_failure().await;
                 Attempt::Failed {
                     error: service_error,
                     disposition,
@@ -188,8 +186,8 @@ where
     /// Runs one client API operation against the selected TACACS+ server.
     ///
     /// The networking layer selects dedicated or single-connection behavior.
-    /// [`OperationRouter`] selects a server and records the outcome. The shared
-    /// failover executor decides whether another server receives the request.
+    /// The captured request binds a server, and that binding records the outcome.
+    /// The shared failover executor decides whether another server receives the request.
     pub(super) async fn execute_operation<Operation>(
         &self,
         request: Operation::Request,
@@ -226,7 +224,6 @@ where
         let plan = routing.failover_plan();
         let generation = routing.generation();
         let mut attempt = RoutedAttempt::<Operation, Connector> {
-            router: &self.router,
             routing,
             exchange: &exchange,
         };
