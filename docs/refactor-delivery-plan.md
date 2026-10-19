@@ -15,7 +15,8 @@ Propagate each intentional change through all affected consumers, tests, documen
 
 Canonical YANG, protocol correctness, protected secrets, explicit ownership, and supported platforms remain requirements.
 Per-library SemVer, executable CalVer, and hydrated release commits remain the current release policy.
-Do not merge PRs, publish releases, create release tags, or change that policy without separate authorization.
+The user authorizes squash merges after GitHub Copilot review and resolution of actionable comments, with all required checks passing.
+Do not publish releases, create release tags, or change release policy without separate authorization.
 Do not modify the existing diagnostics worktree.
 
 ## Review Provenance
@@ -53,10 +54,12 @@ Plan review status:
 ## Stack And Worktrees
 
 The tracking commit contains the two review documents and this complete plan.
-Implementation branches start from that reviewed commit, then from the final locally verified predecessor head.
-PR 01 targets `main` and includes the planning commit.
-Each subsequent PR targets its immediate predecessor branch.
-The tracking branch remains a stable planning anchor, not an unreviewed integration branch.
+Architecture reviews, the source ledger, this plan, and iteration receipts remain on `refactor/general` only.
+Implementation PR diffs must not include those tracking documents.
+Preserve accumulated receipts on the tracking branch before removing implementation copies.
+Implementation branches start from the verified predecessor, or updated `main` after the predecessor squash merge.
+A staged descendant targets its immediate predecessor until that predecessor merges; then retarget it to `main`.
+The tracking branch holds documentation and progress, not implementation integration commits.
 
 Branch names use `refactor/general-iterations/<slug>`.
 Do not use `refactor/general/<slug>`: the existing tracking ref prevents that Git ref hierarchy.
@@ -111,6 +114,11 @@ Do not start descendant implementation while predecessor review revisions remain
 10. Record exact routes, input/output content hashes, findings, dispositions, and executed gate evidence in the iteration receipt.
 11. Commit the final tested tree, push normally, and open the explicitly based stacked PR.
 12. Verify the remote head, base branch, PR URL, required workflow start, and current CI status.
+13. Request GitHub Copilot review on the final PR head. Wait for a completed review, not merely an empty comment list.
+14. Triage every review comment. Apply actionable fixes through the established two-model review and verification procedure.
+15. Request Copilot re-review after material fixes. Squash-merge only after actionable comments are resolved and required checks pass.
+16. Use a concise squash title and a description covering the change, review resolutions, checks, and material limitations.
+17. Record the PR and squash SHA on the tracking branch, update descendants without losing work, and continue with the next iteration.
 
 Give each reviewer the predecessor SHA, complete iteration diff, relevant contracts, and existing check results.
 Require direct necessary revisions, not only review advice.
@@ -123,7 +131,7 @@ Keep follow-up open until both reviews remain valid for the resulting content.
 Each reviewer marks only their own status after resolving their blockers and checking their revisions.
 
 Iteration receipts belong in the corresponding plan section or a linked PR body.
-Update the implementation branch's plan copy, not the stable tracking branch.
+The coordinator updates the plan on `refactor/general`; implementation agents return receipts without adding tracking documents to their PRs.
 Record status, branch, worktree, predecessor, tested head, reviewer evidence, PR URL, and unavailable gates.
 Use content hashes that include uncommitted and new reviewed files. `HEAD` alone does not identify a dirty input.
 For plan reviews, use `git hash-object docs/refactor-delivery-plan.md` before edits and after final validation.
@@ -184,6 +192,8 @@ That scheduling does not make a pending predecessor merge-ready.
 Do not publish a descendant as verified while a required predecessor gate fails.
 Pause dependent work on a concrete failure and repair the lowest affected iteration.
 Propagate fixes with normal forward merges and rerun descendant checks. Do not force-push published history.
+After a squash merge, preserve unpublished descendant work before changing its base.
+Verify the descendant diff against updated `main` excludes already-merged implementation and all tracking documents.
 
 For iterations 03, 05, 06, and 10, run applicable native prepared-source and independent TACACS+ interop cases.
 Name executed cases and prerequisites. An early-return test is not native execution evidence.
@@ -221,7 +231,10 @@ These invariants apply throughout the stack, especially iterations 03, 06, 07, 0
 
 ### 01: Secret Boundaries
 
-Status: planned. Scope: R1, R3, and the stacked CI prerequisite.
+Status: implemented; both named reviews and the final Astra follow-up on the Opus revision are complete.
+The final reviewed source fingerprint is `ab501f19db2266c3f2d9d34ee0350b327853aa1b3337cc5b5ff5f66754b3ba31`.
+Final local workspace gates passed. Hosted execution gates remain pending.
+Scope: R1, R3, and the stacked CI prerequisite.
 
 Implementation:
 
@@ -246,9 +259,285 @@ Acceptance:
 Checks: focused redaction tests, networking and proxy tests, workflow contracts, common Rust gates, and affected hosted platforms.
 Read the SONiC instruction file before changing mapping.
 
+#### Implementation Receipt
+
+- Branch: `refactor/general-iterations/01-secret-boundaries`.
+- Exclusive source root: `/home/vscode/tacacs-rs-01-secret-boundaries`.
+- Predecessor and tested `HEAD`: `daddcf63d908716defa59fc99951eaf7bccea455`. Implementation changes are uncommitted.
+- Source-diff blob: `a57cffc2fbc5c3ba25e67a19e7fd4af7665e9fe9`.
+	Command: `git diff --binary -- . ':!docs/refactor-delivery-plan.md' | git hash-object --stdin`.
+	This fingerprint excludes this receipt and includes every changed source, test, workflow, and crate guide.
+- No subagents, branches, commits, pushes, or PRs were created. The tracking and diagnostics worktrees were not modified.
+- PR base remains `main` for iteration 01. No remote workflow run exists for this uncommitted implementation.
+
+CLI security values now redact shared secrets and raw/base64 PSKs through direct and enclosing `Debug` implementations.
+Tests cover ordinary and pretty formatting, `Option`, `Vec`, security modes, CLI sources, and datastore inputs.
+The base64 fixture uses valid encoded bytes and verifies unchanged decoding.
+Raw SONiC table formatting exposes only column and row counts, never cell values, including unknown credential columns.
+
+Codec constructors now accept `Option<SecretBytes>`. All affected consumers use that contract without compatibility adapters.
+Dedicated, shared, promotion, and downstream proxy copies retain protected key owners.
+The writer key accessor is crate-private and returns a protected owner reference.
+Tests verify allocation-preserving constructor moves, shared final ownership, proxy capture/cloning, and an obfuscated exchange after promotion.
+Existing plaintext-body semantics remain unchanged. This work does not claim that all temporary buffers zeroize.
+
+The workflow accepts `refactor/general-iterations/**` as a PR base.
+An independent contract test asserts this literal prefix in the actual workflow, without deriving it from this plan.
+
+##### Regression Evidence
+
+These commands ran before their corresponding production fixes. Rust tests failed with static assertion messages, not formatted key bytes.
+The same focused commands passed after the fixes.
+
+```bash
+export CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-01-secret-boundaries
+cargo +1.88.0 test -p tacacsrs-config --lib input::model::tests --locked
+cargo +1.88.0 test -p tacacsrs-sonic --lib raw_table_debug_redacts --locked
+PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider .github/steps/release-manifest/test_workflow_contracts.py -k general_iteration
+cargo +1.88.0 test -p tacacsrs-networking --lib owned_key_debug_is_redacted --locked
+cargo +1.88.0 test -p tacacsrs-agent --lib downstream_key_capture_and_clone_debug_is_redacted --locked
+```
+
+Results before/after: CLI 2 failed/2 passed; SONiC 1 failed/1 passed; workflow 1 failed/1 passed; codec 2 failed/2 passed; proxy 1 failed/1 passed.
+The complete workflow-contract file then passed all 11 tests.
+The first proxy migration check found two unmigrated fixture arguments; both were corrected before the passing rerun.
+The first promotion characterization check found a fixture packet move error; the corrected check passed.
+
+##### Executed Gates
+
+Cargo commands used the exported cache above. The direct consumer profile used its own target subdirectory.
+Toolchains were Rust `1.88.0`, stable `1.99.1`, and nightly `1.101.0-nightly (7df81381d 2026-10-14)` for formatting and Clippy.
+Nightly Clippy was `0.1.101 (7df81381d0 2026-10-14)`.
+All commands below passed with exit status 0.
+
+```bash
+cargo +1.88.0 test -p tacacsrs-networking --lib protected_key --locked
+cargo +stable test -p tacacsrs-networking -p tacacsrs-agent -p tacacsrs-config -p tacacsrs-sonic --lib --all-features --locked --quiet
+cargo +stable test -p tacacsrs-networking -p tacacsrs-agent -p tacacsrs-config -p tacacsrs-sonic --all-features --locked --quiet
+cargo +1.88.0 check -p tacacsrs-networking -p tacacsrs-agent -p tacacsrs-config -p tacacsrs-sonic -p tacacsrs-agentd -p tacon --all-targets --all-features --locked --quiet
+cargo +nightly clippy -p tacacsrs-networking -p tacacsrs-agent -p tacacsrs-config -p tacacsrs-sonic -p tacacsrs-agentd -p tacon --all-targets --all-features --locked -- -D warnings
+cargo +nightly fmt --all -- --check
+RUSTDOCFLAGS='-D warnings' cargo +stable doc -p tacacsrs-networking -p tacacsrs-agent -p tacacsrs-config -p tacacsrs-sonic --no-deps --all-features --document-private-items --locked --quiet
+cargo +stable test --target-dir /home/vscode/.cache/tacacs-rs-01-secret-boundaries/consumer-direct --package tacacsrs-config --package tacacsrs-networking --target x86_64-unknown-linux-gnu --all-features --locked --quiet
+PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider .github/steps/cargo-metadata .github/steps/check-architecture .github/steps/compute-versions .github/steps/inject-versions .github/steps/release-manifest
+PYTHONDONTWRITEBYTECODE=1 python3 .github/steps/check-architecture/check_architecture.py --workspace . --target x86_64-unknown-linux-gnu --all-features
+PYTHONDONTWRITEBYTECODE=1 python3 .github/steps/check-architecture/check_architecture.py --workspace . --target x86_64-pc-windows-msvc --all-features
+cargo +1.88.0 llvm-cov -p tacacsrs-networking -p tacacsrs-agent --lib --all-features --locked --lcov --output-path /home/vscode/.cache/tacacs-rs-01-secret-boundaries/key-ownership.lcov --quiet
+```
+
+- Stable affected-package tests: 764 reported passed; two networking benchmarks ignored.
+	Two reported SONiC successes returned early because UID 1000 lacks their required root ownership.
+	These cases are `wrong_file_owner_and_group_are_rejected_when_privileged` and `reloadable_provider_recovers_when_protected_root_appears`.
+- Final redaction-test changes received another Rust 1.88 and stable focused run: CLI 2 passed, SONiC 1 passed.
+	`cargo +nightly clippy -p tacacsrs-config -p tacacsrs-sonic --all-targets --all-features --locked -- -D warnings` also passed afterward.
+- Direct-toolkit profile: 505 passed, two benchmarks ignored. Native dependencies are installed locally; this does not prove a hosted no-native profile.
+- Delivery tooling: 256 passed. Actual architecture checks covered 17 packages and eight guards on each platform.
+- Ownership coverage: 438 passed, two benchmarks ignored. The LCOV artifact remains outside the source tree in the iteration cache.
+	Reader lines: 189/216 hit; writer: 170/185; dedicated runtime: 53/59; shared runtime: 183/217.
+	Proxy bridge: 1632/1678; downstream packet I/O: 114/137. These totals include existing tests and are not full branch coverage claims.
+- Rust 1.88 Clippy could not run strictly because existing source uses the newer `clippy::unused_async_trait_impl` lint.
+	Stable Clippy is not installed. Installed nightly Clippy passed instead, with an existing Cargo advisory about optional `console-subscriber` usage.
+- Formatting was limited to changed Rust files with `rustfmt +nightly --edition 2021 --config skip_children=true`, then the workspace format check passed.
+	`git diff --check` passed. No dependencies or lockfiles changed.
+
+##### Pending Coordination
+
+- The coordinator reports no blocker from the main review. Independent implementation review evidence appears below.
+	Both `GPT-6 Astra (copilot)` and `Claude Opus 5.5 (copilot)` reviews are complete, including Astra follow-up on the material Opus revision.
+- Final local common gates passed after all source revisions; the coordinator receipt follows.
+- Windows execution, ARMhf execution, the two privileged SONiC cases, and an actual PR workflow run remain pending.
+	No SONiC VM, operator Redis instance, or operator credential source was accessed.
+- No unsafe, FFI, protocol parser, protobuf, or dependency changes require additional iteration-specific gates.
+
+#### Coordinator Final Gate Receipt
+
+The final sequence completed successfully on the twice-reviewed source fingerprint above.
+Every Cargo invocation used `/home/vscode/.cache/tacacs-rs-01-secret-boundaries`.
+The following gates ran in order and passed:
+
+```bash
+cargo +nightly fmt --all -- --check
+cargo +nightly clippy --workspace --all-targets --all-features --locked -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo +stable doc --workspace --no-deps --all-features --document-private-items --locked --quiet
+cargo +stable build --workspace --locked --quiet
+cargo +stable test --workspace --all-features --locked --quiet
+cargo +1.88.0 check --workspace --all-targets --all-features --locked --quiet
+PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider -q .github/steps/cargo-metadata .github/steps/check-architecture .github/steps/compute-versions .github/steps/inject-versions .github/steps/release-manifest
+git diff --check
+```
+
+The complete Rust suite had no failures and ten existing ignored tests.
+All 256 selected Python delivery tests passed.
+The existing optional `console-subscriber` Cargo advisory did not fail strict Clippy.
+Root-dependent early returns and hosted platform checks are not claimed as executed coverage.
+Subsequent receipt-only edits do not alter the reviewed source fingerprint.
+The tracking and diagnostics worktrees remain unchanged.
+
+#### Astra Iteration 01 Review Receipt
+
+Accepted invocation route: `GPT-6 Astra (copilot)`.
+The main coordinator supplied this exact `model` argument to `runSubagent`, and the tool accepted and executed the request.
+This provenance comes from invocation metadata, not the reviewer's self-description. Opus was pending at this first review.
+Review source: `/home/vscode/tacacs-rs-01-secret-boundaries`, branch `refactor/general-iterations/01-secret-boundaries`, unchanged `HEAD` `daddcf63d908716defa59fc99951eaf7bccea455`.
+Scope: the complete 16-file diff against `HEAD`, the iteration 01 contract, applicable instructions, crate guides, and adjacent ownership paths.
+
+Input and output source fingerprints are identical:
+`498f9862ffb36d2166c22cdf89a2886a6f2f577b852d8098f0cc16e8052baa51`.
+Command: `git diff --binary -- . ':!docs/refactor-delivery-plan.md' | sha256sum`.
+This receipt is outside that hash. No new source files exist outside the diff.
+
+Findings and dispositions:
+
+- No actionable defect or missing iteration 01 regression was found. No source or test revisions were necessary.
+- Codec, dedicated, shared, promotion, and downstream proxy keys retain `SecretBytes` owners. Clones also own zeroizing allocations; no ordinary key vectors remain retained in these paths.
+- The migration preserves cancellation, promotion fencing, transport shutdown, wire bytes, and key decoding. All affected callers compile on Rust 1.88.
+- CLI direct and enclosing `Debug` paths redact shared secrets and raw/base64 PSKs. Raw SONiC formatting exposes counts only, including for unknown columns.
+- New secret assertions do not print secret values on failure. The workflow contract reads the literal prefix from `on.pull_request.branches`, the base-branch filter.
+- Revisions: this receipt and iteration status only. Earlier test and coverage evidence remains unchanged; this review does not claim to rerun that coverage.
+
+Fresh commands below all returned exit status 0. The source root was the working directory, and every Cargo invocation used the exported cache.
+Stable was Rust 1.99.1; MSRV was Rust 1.88.0; nightly was Rust 1.101.0-nightly (7df81381d 2026-10-14).
+Stable Clippy is not installed. Nightly Clippy passed with the previously documented optional `console-subscriber` Cargo advisory.
+
+```bash
+export CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-01-secret-boundaries
+cargo +stable test -p tacacsrs-config --lib input::model::tests --all-features --locked
+cargo +stable test -p tacacsrs-sonic --lib raw_table_debug_redacts --all-features --locked
+cargo +stable test -p tacacsrs-networking -p tacacsrs-agent --lib --all-features --locked --quiet
+cargo +1.88.0 check -p tacacsrs-networking -p tacacsrs-agent -p tacacsrs-config -p tacacsrs-sonic -p tacacsrs-agentd -p tacon --all-targets --all-features --locked --quiet
+cargo +nightly clippy -p tacacsrs-networking -p tacacsrs-agent -p tacacsrs-config -p tacacsrs-sonic -p tacacsrs-agentd -p tacon --all-targets --all-features --locked -- -D warnings
+cargo +nightly fmt -p tacacsrs-networking -p tacacsrs-agent -p tacacsrs-config -p tacacsrs-sonic -p tacacsrs-agentd -- --check
+PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider .github/steps/release-manifest/test_workflow_contracts.py .github/steps/check-architecture
+PYTHONDONTWRITEBYTECODE=1 python3 .github/steps/check-architecture/check_architecture.py --workspace . --target x86_64-unknown-linux-gnu --all-features
+PYTHONDONTWRITEBYTECODE=1 python3 .github/steps/check-architecture/check_architecture.py --workspace . --target x86_64-pc-windows-msvc --all-features
+git diff --check
+```
+
+Results: CLI 2 passed; SONiC 1 passed; agent 198 passed; networking 240 passed and two existing benchmarks ignored.
+Python: 46 passed, including 11 workflow contracts. Each platform metadata check covered 17 packages and eight dependency guards.
+The reviewed source remains uncommitted. No branch, commit, push, PR, or subagent operation occurred; the tracking and diagnostics worktrees remain untouched.
+
+Unverified gates at this first review: Opus review, final full-workspace gates, Windows/ARMhf execution, privileged SONiC cases, and an actual hosted PR run.
+Existing coverage and consumer-profile evidence is retained, not replaced by a new execution claim.
+No plaintext-body zeroization or iteration 02 work forms part of this review.
+
+#### Opus Iteration 01 Review Receipt
+
+Accepted invocation route: `Claude Opus 5.5 (copilot)`.
+This provenance comes from the main coordinator's invocation metadata, not the reviewer's self-description.
+Review source: `/home/vscode/tacacs-rs-01-secret-boundaries`, branch `refactor/general-iterations/01-secret-boundaries`, unchanged `HEAD` `daddcf63d908716defa59fc99951eaf7bccea455`.
+Scope: the complete 16-file diff against `HEAD`, the iteration 01 contract, R1 and R3 in the architecture review, applicable instructions, and adjacent callers.
+
+Source fingerprints use `git diff --binary HEAD -- . ':(exclude)docs/refactor-delivery-plan.md' | sha256sum`.
+
+- Input: `498f9862ffb36d2166c22cdf89a2886a6f2f577b852d8098f0cc16e8052baa51`. This matches the Astra-reviewed source.
+- Output: `ab501f19db2266c3f2d9d34ee0350b327853aa1b3337cc5b5ff5f66754b3ba31`. The output diff has 18 files.
+
+Findings and dispositions:
+
+- Defect, fixed: the `tacacsrs-agentd` `Cli` derives `Debug` but stored `shared_secret` and `psk_key` as raw `String` values.
+	This is an enclosing CLI security input under R1. The same struct already protected `proxy_shared_secret`.
+	Both fields now use `SecretString` through clap value parsers. Empty-value acceptance and help text are unchanged.
+	The two consumers in `startup.rs` expose the value only to build `CliSecurityInputs`, as before.
+- Confirmed without change: codec, dedicated, shared, promotion, and downstream proxy paths retain `SecretBytes` owners.
+	Clones own separate zeroizing allocations. No ordinary key vector stays in these paths.
+- Confirmed without change: `PacketWriter::obfuscation_key` is crate-private. Its only production caller is dedicated promotion.
+- Confirmed without change: wire obfuscation, decoding, flags, timeout, cancellation, and promotion fencing are unchanged.
+- Confirmed without change: CLI `Option`, `Vec`, and enclosing formatting tests and SONiC count-only formatting, including unknown columns.
+- Confirmed without change: new assertions do not print secrets. The workflow test reads the literal prefix from `on.pull_request.branches`.
+- `tacon` `Cli` does not derive `Debug`, so it needs no change.
+- No zeroization claim covers temporary buffers, plaintext bodies, or the short-lived `CliSecurityInputs` copies.
+
+Direct changes:
+
+- `executables/tacacsrs_agentd/src/cli.rs`: `shared_secret` and `psk_key` use `SecretString`.
+- `executables/tacacsrs_agentd/src/startup.rs`: consumers expose the values explicitly.
+	A new `cli_shared_secret_and_psk_debug_is_redacted` regression covers `--shared-secret`, `-k`, and `--psk-key`.
+	It checks ordinary, pretty, `Option`, and `Vec` formatting, and it checks unchanged raw PSK bytes.
+	The test did not run before the fix. Derived `Debug` for `Option<String>` renders the value.
+
+Commands below used `CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-01-secret-boundaries`.
+Toolchains were stable Rust 1.99.1, Rust 1.88.0, and nightly 1.101.0 for formatting and Clippy. Stable Clippy is not installed.
+
+```bash
+cargo +stable test -p tacacsrs-agentd --bin tacacsrs-agentd --all-features --locked cli_
+cargo +nightly fmt --all -- --check
+cargo +stable test -p tacacsrs-agentd --all-features --locked --quiet
+cargo +1.88.0 check -p tacacsrs-agentd -p tacon -p tacacsrs-networking -p tacacsrs-agent -p tacacsrs-config -p tacacsrs-sonic --all-targets --all-features --locked --quiet
+cargo +nightly clippy -p tacacsrs-agentd -p tacon -p tacacsrs-networking -p tacacsrs-agent -p tacacsrs-config -p tacacsrs-sonic --all-targets --all-features --locked --quiet -- -D warnings
+cargo +stable test -p tacacsrs-networking -p tacacsrs-agent -p tacacsrs-config -p tacacsrs-sonic --lib --all-features --locked --quiet
+PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider -q .github/steps/release-manifest/test_workflow_contracts.py
+RUSTDOCFLAGS='-D warnings' cargo +stable doc -p tacacsrs-agentd --no-deps --all-features --document-private-items --locked --quiet
+git diff --check
+```
+
+- The first focused run failed to compile because of test-module paths. After the repair, the rerun passed 15 tests.
+- All later commands returned exit status 0.
+- `tacacsrs-agentd` tests: 72, 48, and 9 passed. The suite with eight existing ignored tests did not execute them.
+- Library tests: agent 198, configuration 107, networking 240 with two benchmarks ignored, and SONiC 48 passed. Workflow contracts: 11 passed.
+- Nightly Clippy reported only the existing optional `console-subscriber` Cargo advisory.
+
+Material revision: the agentd CLI type change required Astra rereview against the output fingerprint. The final follow-up below completes that review.
+Unverified gates at Opus handoff: Astra rereview, final full-workspace gates, Windows and ARMhf execution, privileged SONiC cases, and a hosted PR run.
+This review did not run hosted Windows, ARMhf, or privileged tests. It did not rerun coverage or the consumer profile.
+No branch, commit, push, PR, or subagent operation occurred.
+
+#### Final Astra Follow-up Receipt
+
+Accepted invocation route: `GPT-6 Astra (copilot)`, as supplied by the main coordinator's authoritative invocation metadata.
+Source root: `/home/vscode/tacacs-rs-01-secret-boundaries`, branch `refactor/general-iterations/01-secret-boundaries`.
+Unchanged `HEAD`: `daddcf63d908716defa59fc99951eaf7bccea455`.
+Input and output source fingerprints are identical: `ab501f19db2266c3f2d9d34ee0350b327853aa1b3337cc5b5ff5f66754b3ba31`.
+Command: `git diff --binary -- . ':!docs/refactor-delivery-plan.md' | sha256sum`.
+The hash covers 17 changed files outside this plan. No untracked source files exist.
+
+Scope: the Opus receipt, exact daemon CLI/startup diff, direct callers, secret wrappers, configuration conversion, and retained codec/proxy ownership changes.
+The locked Clap 4.6.6 implementation and a probe against the actual daemon CLI definition supplied additional parser evidence.
+
+Findings and disposition:
+
+- No new actionable product defect or required source revision. The Opus fix closes the daemon's derived `Cli::Debug` disclosure.
+- Both parsed fields and Clap's typed values use `SecretString`, with redacted formatting and zeroization on drop.
+	Typed retrieval as `String` fails. Extraction into `Cli` preserves the secret bytes.
+- Important boundary: Clap also retains raw `OsString` copies. `ArgMatches::get_raw` and ordinary/pretty `ArgMatches::Debug` expose those copies.
+	The daemon uses `Cli::parse()` and does not retain or log `ArgMatches`. This existing parser boundary does not invalidate the `Cli` fix.
+	This receipt does not certify raw argument redaction, process-argument secrecy, or temporary-buffer zeroization.
+- Startup explicitly exposes values only for the existing configuration conversion. Agentd PSKs remain raw bytes, not base64-decoded values.
+	Shared-secret short/long flags, attached/equal forms, empty-value parsing, PSK requirements, conflicts, and group selection retain their behavior.
+- Missing-option, duplicate-option, credential-conflict, and invalid-UTF-8 diagnostics excluded the test secrets in `Display` and `Debug` checks.
+	These checks do not certify arbitrary malformed command lines or secrets supplied to unrelated arguments.
+- Existing regression coverage is sufficient for this change. The new daemon regression and adjacent conversion/group tests passed.
+	Codec, dedicated, shared, promotion, and downstream proxy paths still retain protected key owners. No new password or key formatting path was found.
+- Changes from this follow-up: receipt and status only. Both named source reviews now remain valid for the final fingerprint.
+	No further Opus rereview is required. Final workspace gates remain the main coordinator's responsibility.
+
+Fresh checks returned exit status 0 from the exclusive source root:
+
+```bash
+export CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-01-secret-boundaries
+cargo +stable test -p tacacsrs-agentd --bin tacacsrs-agentd --all-features --locked cli_
+CARGO_PKG_VERSION=0.0.0-dev CARGO_PKG_AUTHORS=review rustc +stable --edition=2021 --test --crate-name astra_cli_contract -L dependency=/home/vscode/.cache/tacacs-rs-01-secret-boundaries/debug/deps --extern clap=/home/vscode/.cache/tacacs-rs-01-secret-boundaries/debug/deps/libclap-3bc3f578271e26c3.rlib --extern tacacsrs_config=/home/vscode/.cache/tacacs-rs-01-secret-boundaries/debug/deps/libtacacsrs_config-21d7a0d337856bf0.rlib --extern tacacsrs_secrets=/home/vscode/.cache/tacacs-rs-01-secret-boundaries/debug/deps/libtacacsrs_secrets-c507a274f58a9124.rlib -o /home/vscode/.cache/tacacs-rs-01-secret-boundaries/astra-cli-contract -
+/home/vscode/.cache/tacacs-rs-01-secret-boundaries/astra-cli-contract
+git diff --check
+```
+
+The Rust compiler consumed the six-test probe from stdin; its source is in the review invocation record, not a new repository file.
+The probe imports the unchanged daemon CLI definition and uses existing cached dependencies. The binary remains in the permitted cache.
+Results: 15 daemon tests passed; six probe tests passed, with no ignored cases.
+Probe cases covered protected shared-secret extraction, protected raw PSKs, empty values, raw Clap copies, parser errors, and invalid UTF-8 errors.
+Only fixed test sentinels were used. Assertions did not print secret values.
+
+Review gate: complete, with no source blocker. No full-workspace, hosted CI, Windows, ARMhf, privileged SONiC, coverage, or consumer-profile rerun is claimed.
+No other worktree edits, branches, commits, pushes, PRs, subagents, or operator endpoint access occurred.
+
 ### 02: YANG Choices
 
-Status: planned. Scope: R2.
+Status: implemented; both named reviews and the final Opus follow-up on the Astra revision are complete. Main's common gates remain PENDING. Scope: R2.
+
+The read-only scheduling preflight identified discarded nested metadata and synthetic parent cases.
+Implementation started from iteration 01's committed, locally verified head.
+The required first regression failed before the collector or emitter changed.
+The synthetic mandatory fixture checks conditional semantics independently of the optional client-identity choice.
 
 Preserve nested choice groups and their parent-case activation conditions in the generator.
 Enforce direct certificate-versus-EPSK exclusion during schema validation.
@@ -266,6 +555,326 @@ Acceptance:
 - Pinned regeneration runs twice with identical expected artifacts and manifests.
 
 Checks: generator Python tests, parser/generated-type tests, actual regeneration, common Rust gates, and affected platform builds.
+
+#### Implementation Receipt: 2026-10-19
+
+Ownership and tested source:
+
+- Worktree: `/home/vscode/tacacs-rs-02-yang-choices` only.
+- Branch: `refactor/general-iterations/02-yang-choices`.
+- Predecessor and tested `HEAD`: `4a2edf667a3207a76cad6b1e80e82dc15a3af147`.
+- Intended PR base: `refactor/general-iterations/01-secret-boundaries`. Main owns review, commit, push, and PR creation.
+- Tested source fingerprint: `3df3bde3212f2ab4db8023e6c059b3883e9ec24557273782d600d3dea5cfea4d`.
+- Fingerprint command: `git diff --binary HEAD -- . ':(exclude)docs/refactor-delivery-plan.md' | sha256sum`.
+- The fingerprint includes all six changed source, test, and generation files. No new source files are untracked. This receipt is excluded.
+
+Implementation scope:
+
+- `libraries/tacacsrs_config/yang/plugins/yang2rust.py`: retain complete parent cases, all nested groups, stable paths, and ancestor activation chains.
+- Choice fingerprints include mandatory constraints and activation. Nested constant names include their choice and case paths.
+- `libraries/tacacsrs_config/yang/test_yang2rust_defaults.py`: add the required fixture, mandatory-constraint deduplication checks, and deeper activation-chain checks.
+- `libraries/tacacsrs_config/src/validation.rs`: enforce the independent certificate/EPSK choice through generated activation metadata.
+- The actual client-identity authentication choice remains optional. Mandatory children apply only when every ancestor case is active.
+- Active `EndEntityCertWithKeyInlineDefinition::CHOICE_PRIVATE_KEY_TYPE` and `SymmetricKeyInlineDefinition::CHOICE_KEY_TYPE` now require a key selection.
+- `libraries/tacacsrs_config/tests/parse_validation.rs`: cover certificate-only, EPSK-only, both alternatives, incomplete inline keys, and inactive central-reference branches.
+- These parser checks cover direct and bundled credentials. Enumeration leaves the source unchanged.
+- Extend the existing metadata audit to TACACS+ and keystore choices. Migrate the old synthetic-case error assertion and complete one certificate fixture.
+- Regenerate `libraries/tacacsrs_config/src/generated.rs`; update only its hash in `libraries/tacacsrs_config/yang/generation-manifest.json`.
+- Generated fields, serde attributes, secret annotations, dependencies, YANG inputs, and the expanded tree remain unchanged.
+- No generated Rust was edited by hand. No generic backend behavior outside choices changed.
+
+Failed-before evidence:
+
+1. From `libraries/tacacsrs_config/yang`, run `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v test_yang2rust_defaults.GeneratedDefaultsTests.test_nested_mandatory_choice_retains_parent_case_activation`.
+	Exit 1 before the fix: the expected `explicit` case with label, certificate, and EPSK fields was absent.
+	Output contained separate `explicit/auth-type` and `explicit` cases, with no child group. The same command passed after the collector change.
+2. Run `CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-02-yang-choices cargo +1.88.0 test -p tacacsrs-config --test parse_validation client_identity_auth_type_is_exclusive --locked`.
+	Exit 101 before validation changed: `unwrap_err()` received `Ok` for a combined certificate/EPSK identity. The same command passed afterward.
+3. Run the same Cargo command with filter `active_inline_key_choices_require_key_material`.
+	Exit 101 before validation changed: an empty certificate inline definition parsed successfully. The same test passed afterward.
+	Filter `inline_key_choices` also passed both active-inline rejection and inactive-central acceptance tests.
+
+Regeneration evidence:
+
+- Copy the existing pinned upstream cache into this worktree's `libraries/tacacsrs_config/yang/.yang-cache/linux` before generation.
+- All subsequent generator cache writes used that private copy. No shared cache was changed.
+- Run `PYTHONDONTWRITEBYTECODE=1 python3 expand_yang_tree.py --features-ini feature-flags.ini --format rust --output ../src/generated.rs`.
+- Run the same command with `--format tree --output expanded-tree.txt`.
+- Run `CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-02-yang-choices cargo +nightly fmt --all` before recording the manifest hash.
+- Existing formatter policy excludes generated Rust through `ignore` and `format_generated_files = false`. Its byte-exact generator output remains unchanged by formatting.
+- Run `PYTHONDONTWRITEBYTECODE=1 python3 verify_generated.py`, without `--check`: exit 0.
+- That command ran real tree and Rust regeneration twice, then compared both passes and the checked-in artifacts byte for byte.
+- Both passes used pyang `2.7.1` and detached, clean upstream commit `97ca2414920c0de09171327b84aa11395f79e284`.
+- Pinned upstream module SHA-256: `2a58836b7117320f847eb5965f851c9a83d2a13180ecd2f5a62daff5f607f9fd`.
+
+| Artifact | First pass SHA-256 | Second pass SHA-256 |
+| --- | --- | --- |
+| Generated Rust | `a9ce045bf80767815c002ebb84ad46dcdaa2d21ac0c25db4b3d6713f7a6876a8` | `a9ce045bf80767815c002ebb84ad46dcdaa2d21ac0c25db4b3d6713f7a6876a8` |
+| Expanded tree | `5cf7da89cd79ae2c1fbb54e42e2429975283991066a27c439d61e348a15e1420` | `5cf7da89cd79ae2c1fbb54e42e2429975283991066a27c439d61e348a15e1420` |
+
+The updated generation manifest SHA-256 is `1c14fb718d4503d3c7b81b2f0e36d2c7a6536ceba51b418041c031a08a014c3f`.
+The unchanged secret-field manifest SHA-256 is `223ac5374a618666581a11bf8bc2c15acec7ef41b0b64b5ee97b80adb11b9fb0`.
+
+Executed checks:
+
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -v -p 'test_*.py'` from the generator directory: exit 0, 23 tests.
+- `CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-02-yang-choices cargo +1.88.0 test -p tacacsrs-config --lib validation::tests --locked`: exit 0, two activation tests.
+- The expanded parser metadata audit passed. The full parser suite passed all 90 tests.
+- `CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-02-yang-choices cargo +1.88.0 test -p tacacsrs-config --all-features --locked --quiet`: exit 0.
+- `CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-02-yang-choices cargo +stable test -p tacacsrs-config --all-features --locked --quiet`: exit 0 on Rust 1.99.1.
+- Each complete package run passed 262 tests and three doctests, with no ignored tests. This includes 34 generated-type and seven materialization tests.
+- `CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-02-yang-choices cargo +1.88.0 check -p tacacsrs-config --all-targets --all-features --locked`: exit 0.
+- Stable Clippy was unavailable; its attempted command stopped before linting. No installation or toolchain mutation occurred.
+- `CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-02-yang-choices cargo +nightly clippy -p tacacsrs-config --all-targets --all-features --locked -- -D warnings`: exit 0.
+- Nightly compiler: `1.101.0-nightly (7df81381d 2026-10-14)`.
+- `CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-02-yang-choices RUSTDOCFLAGS='-D warnings' cargo +stable doc -p tacacsrs-config --no-deps --all-features --document-private-items --locked`: exit 0.
+- `CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-02-yang-choices cargo +nightly fmt --all -- --check`: exit 0.
+- Editor diagnostics for the changed handwritten source and tests: no errors. `git diff --check`: exit 0.
+
+Pending ownership and limits:
+
+- GPT-6 Astra direct review: PENDING, main owns this gate.
+- Claude Opus 5.5 direct review: PENDING, main owns this gate.
+- Final common workspace gates after both reviews: PENDING, main owns these gates.
+- Hosted Windows and ARMhf builds and execution: PENDING. No hosted CI result is claimed.
+- No full-workspace build, test, lint, or documentation rerun is claimed here. Package checks do not replace those final gates.
+- No protocol, unsafe, FFI, dependency, or protobuf changes require additional parser fuzz, Miri, audit, or protobuf compatibility checks for this diff.
+- Incomplete inline definitions now fail earlier at parsing. This is an intentional schema correction, not a compatibility exception.
+- No subagents, named reviews, commits, branches, pushes, PRs, operator systems, or operator secrets were used by this implementation agent.
+- No other worktree received edits. There is no implementation blocker; publication remains main's responsibility.
+
+#### Astra Iteration 02 Review Receipt: 2026-10-19
+
+Accepted invocation route: `GPT-6 Astra (copilot)`, established by the coordinator's accepted invocation metadata.
+The first required iteration 02 review is complete. This receipt supersedes only the pending Astra gate above.
+Worktree: `/home/vscode/tacacs-rs-02-yang-choices`; branch: `refactor/general-iterations/02-yang-choices`.
+HEAD remains `4a2edf667a3207a76cad6b1e80e82dc15a3af147`.
+
+Source fingerprints exclude this plan. Command: `git diff --binary HEAD -- . ':(exclude)docs/refactor-delivery-plan.md' | sha256sum`.
+
+- Input: `3df3bde3212f2ab4db8023e6c059b3883e9ec24557273782d600d3dea5cfea4d`.
+- Output: `9853bc2008574dfc48c7463b2196b1ad979110b86c5fdf2d8d5313a428e18ef8`.
+
+Reviewed the full seven-file diff, iteration 02 plan and implementation receipt, current generated schema, generator fixtures, validation, enumeration, and runtime readiness.
+No historical review notes supplied the findings.
+
+Finding and disposition:
+
+- P2, fixed: distinct valid choice paths produced duplicate Rust constant names. `source/explicit/auth-type` collided with `source-explicit-auth-type`.
+- Choice names also collided with metadata suffixes, such as `source-path` versus the `source` path constant.
+- The emitter now reserves each complete constant family and adds numeric suffixes on collision. Exact choice paths and activation references remain unchanged.
+- Added `test_choice_constant_names_do_not_collide_with_paths_or_metadata`. The valid fixture failed before the fix: 24 constants had only 19 unique names.
+- The same test passes after the fix. An initial fixture used invalid repeated sibling choice names; pyang rejected it before emission. The corrected fixture isolates the defect.
+- No further source defect was identified in ancestor activation, complete parent cases, implicit cases, scoped mandatory validation, or choice-aware structural reuse.
+- Central references remain schema-valid without inline keys. Bundle expansion preserves the source, and runtime publication reuses schema validation.
+- Encrypted and hidden key features are disabled in the pinned schema. The new checks do not reject an enabled encrypted-key alternative.
+- Review source revisions affect only the generator and its regression test. Canonical fields, custom defaults, secret annotations, Rust validation, and policy remain unchanged.
+
+Executed checks, all final commands exit 0:
+
+- From `libraries/tacacsrs_config/yang`: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v test_yang2rust_defaults.GeneratedDefaultsTests.test_choice_constant_names_do_not_collide_with_paths_or_metadata`. Exit 1 before the emitter fix; exit 0 afterward.
+- From that directory: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -v -p 'test_*.py'`: 24 tests passed.
+- From that directory: `TMPDIR="$PWD" PYTHONDONTWRITEBYTECODE=1 python3 verify_generated.py --clean`: real tree and Rust regeneration passed twice from a fresh private pinned cache.
+- `CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-02-yang-choices cargo +1.88.0 test -p tacacsrs-config --test parse_validation --test generated_types --lib --all-features --locked --quiet`: 233 tests passed.
+- `CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-02-yang-choices cargo +stable test -p tacacsrs-config --all-features --locked --quiet`: 262 tests and three doctests passed.
+- `CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-02-yang-choices cargo +nightly clippy -p tacacsrs-config --all-targets --all-features --locked -- -D warnings`: passed.
+- The emitted collision-fixture constant block compiled with `rustc +1.88.0 --crate-type lib --emit=metadata -o <private-cache-temporary-directory>/choices.rmeta -`. An earlier `/dev/null` output attempt failed on temporary-file permissions, not Rust diagnostics.
+- Editor diagnostics reported no errors in the two revised Python files. `git diff --check` passed.
+
+Both regeneration passes matched the checked-in artifacts. No generated output or manifest revision was necessary.
+Generated Rust SHA-256: `a9ce045bf80767815c002ebb84ad46dcdaa2d21ac0c25db4b3d6713f7a6876a8`.
+Expanded tree SHA-256: `5cf7da89cd79ae2c1fbb54e42e2429975283991066a27c439d61e348a15e1420`.
+
+Claude Opus 5.5 must review the generator revision and output fingerprint. Its review remains PENDING.
+Final common workspace gates and affected Windows/ARMhf execution remain PENDING with main. No hosted CI result is claimed.
+There is no implementation blocker. No policy revision, other worktree edit, commit, branch, push, PR, subagent, or operator-secret access occurred.
+Main retains publication ownership. Tracking, iteration 01, and diagnostics worktrees remain untouched by this review.
+
+#### Claude Opus 5.5 Iteration 02 Review Receipt: 2026-10-19
+
+Accepted invocation route: `Claude Opus 5.5 (copilot)`, established by the coordinator's accepted model argument and the session model metadata.
+The second required iteration 02 review is complete. This receipt supersedes only the pending Claude Opus 5.5 gate above.
+Worktree: `/home/vscode/tacacs-rs-02-yang-choices`; branch: `refactor/general-iterations/02-yang-choices`.
+HEAD remains `4a2edf667a3207a76cad6b1e80e82dc15a3af147`.
+
+Source fingerprints exclude this plan. Command: `git diff --binary HEAD -- . ':(exclude)docs/refactor-delivery-plan.md' | sha256sum`.
+
+- Input: `9853bc2008574dfc48c7463b2196b1ad979110b86c5fdf2d8d5313a428e18ef8`. This matches the Astra output.
+- Output: `11ce3f2a91ab7d2f570104033a60c101703ce82ff58e8efb8b0074b47f710b94`.
+
+Reviewed the full seven-file diff, the iteration 02 plan, the implementation and Astra receipts, and the repository instructions.
+Audited nested-choice flattening, activation chains, constant naming, structural deduplication, validation consumers, and runtime credential construction.
+
+Finding and disposition:
+
+- P2, fixed: structural fingerprints did not delimit nested members. A case `{a, b}` and a case `{a}` followed by a sibling leaf `b` produced equal fingerprints.
+- The second structure was deduplicated into the first, so its type and choice constraints were wrong. Containers and lists had the same aliasing.
+- `_fingerprint` now encloses container, choice, and case sub-fingerprints in brackets. No other generator logic changed.
+- Added `test_case_membership_keeps_distinct_structures`. It failed before the fix: `pub struct Second` was absent. It passes after the fix.
+- The pinned schema had no aliased structures. Real regeneration output is unchanged.
+
+Audited with no further defect:
+
+- Nested parent cases include all nested-choice fields. Every nested group keeps its full path and complete ancestor activation chain.
+- The generator fingerprint uses the same path and activation encoding as the emitter. Mandatory status and leaf defaults stay in the key.
+- Constant-family allocation is deterministic in document order. Numeric suffixes reserve the base, `_MANDATORY`, `_PATH`, and `_ACTIVATION` names together.
+- The canonical `client-identity` `auth-type` choice is optional. Only the synthetic fixture is mandatory. Validation enforces at most one certificate or EPSK case.
+- `validate_activated_choice` checks a nested choice only when every ancestor case is present. The parser metadata audit maps every generated mandatory constant to a validator.
+- Inline key-type checks run only when `inline-definition` is present. Central keystore references and credential references stay valid without inline keys.
+- Production builders and CLI input always supply a private key. Only `prepare_endpoint` negative tests omit it, and they do not call schema validation.
+- Canonical YANG inputs, the expanded tree, secret annotations, and generated Rust are unchanged. No generated Rust was edited by hand.
+
+Executed checks, all exit 0 unless noted:
+
+- From the worktree root: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s libraries/tacacsrs_config/yang -p 'test_*.py' -k test_case_membership_keeps_distinct_structures`. Exit 1 before the fix; exit 0 afterward.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s libraries/tacacsrs_config/yang -p 'test_*.py'`: 25 tests passed.
+- From `libraries/tacacsrs_config/yang`: `TMPDIR="$PWD" PYTHONDONTWRITEBYTECODE=1 python3 verify_generated.py --clean`: real tree and Rust regeneration passed twice from a fresh private pinned cache and matched the checked-in artifacts.
+- `CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-02-yang-choices cargo +1.88.0 test -p tacacsrs-config --test parse_validation --test generated_types --lib --all-features --locked --quiet`: 233 tests passed.
+- `CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-02-yang-choices cargo +stable test -p tacacsrs-config --all-features --locked --quiet`: 262 tests and three doctests passed.
+- `CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-02-yang-choices cargo +nightly clippy -p tacacsrs-config --all-targets --all-features --locked -- -D warnings`: passed.
+- `git diff --check`: passed.
+
+| Artifact | SHA-256 after both passes |
+| --- | --- |
+| Generated Rust | `a9ce045bf80767815c002ebb84ad46dcdaa2d21ac0c25db4b3d6713f7a6876a8` |
+| Expanded tree | `5cf7da89cd79ae2c1fbb54e42e2429975283991066a27c439d61e348a15e1420` |
+| Generation manifest | `1c14fb718d4503d3c7b81b2f0e36d2c7a6536ceba51b418041c031a08a014c3f` |
+| Secret-field manifest | `223ac5374a618666581a11bf8bc2c15acec7ef41b0b64b5ee97b80adb11b9fb0` |
+
+Unverified gates and ownership:
+
+- The generator revision is material. GPT-6 Astra re-review of the fingerprint change is REQUIRED before publication.
+- Final common workspace gates: PENDING, main owns these gates. No full-workspace build, test, lint, or documentation result is claimed.
+- Hosted Windows and ARMhf builds and execution: PENDING. No hosted CI result is claimed.
+- No stable Clippy, formatting, or documentation rerun occurred, because no Rust source changed in this review.
+- No commit, branch, push, PR, subagent, other worktree edit, or operator-secret access occurred. Main retains publication ownership.
+
+#### Final Astra Iteration 02 Follow-up Receipt: 2026-10-19
+
+Accepted invocation route: `GPT-6 Astra (copilot)`, from the coordinator's invocation metadata for this follow-up, not reviewer self-identification.
+This follow-up reviews the material Opus fingerprint revision. Earlier receipts remain historical evidence for their recorded source hashes.
+Worktree: `/home/vscode/tacacs-rs-02-yang-choices` only; branch: `refactor/general-iterations/02-yang-choices`.
+HEAD remains `4a2edf667a3207a76cad6b1e80e82dc15a3af147`.
+
+Source fingerprints exclude this plan. Exact command: `git diff --binary -- . ':!docs/refactor-delivery-plan.md' | sha256sum`.
+
+- Input: `11ce3f2a91ab7d2f570104033a60c101703ce82ff58e8efb8b0074b47f710b94`. This matches the Opus output and the supplied review input.
+- Output: `800bd7089f910d1a8d485dbdb70b515b610ac0ba87eebe3ec347acfdeb56de23`.
+- All changed source files are tracked. The source diff still has six files; this follow-up changes only the generator and its existing test file.
+
+Finding and disposition:
+
+- P2, fixed: bracket delimiters do not prevent fingerprint collisions when valid string defaults contain the same delimiter text.
+- The new fixture places `a` inside `selector/one` and `b` outside that choice in both containers.
+- The first container uses defaults `a = "x:M:false]]|L:b:string:D:y"` and `b = "z"`.
+- The second uses defaults `a = "x"` and `b = "y:M:false]]|L:b:string:D:z"`.
+- Both produce the same old key. The second container incorrectly reuses the first type and its `b` default.
+- `test_default_delimiters_keep_distinct_structures` validates the fixture through pyang with no errors before generation.
+- It failed before the fix because `pub struct Second` was absent. After the fix, both types and their distinct defaults are present.
+- `_fingerprint` now returns a typed recursive tuple. The deduplication table uses `(module_name, fingerprint)` directly, without text encoding or escaping.
+- Leaf values, mandatory values, ordered children, choice paths, activation chains, and nested case boundaries remain separate tuple members.
+- The revision changes key representation only. It does not broaden the schema properties included in deduplication or rewrite collection and emission.
+
+Reviewed preservation:
+
+- The prior case-membership regression, nested mandatory and ancestor-activation tests, and constant-name collision test all pass.
+- Conditional validation still requires every ancestor case to be active. No validation code changed during this follow-up.
+- Canonical YANG inputs, real generated fields, serde attributes, defaults, secret annotations, and choice metadata remain byte-identical to the input revision.
+- No generated Rust or manifest was edited. No dependency, platform, or runtime behavior changed outside the corrected generator reuse.
+- No further source defect was identified within this follow-up's R2 scope.
+
+Executed commands:
+
+```bash
+cd /home/vscode/tacacs-rs-02-yang-choices
+TMPDIR="$PWD" PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s libraries/tacacsrs_config/yang -p 'test_*.py' -k test_default_delimiters_keep_distinct_structures
+TMPDIR="$PWD" PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s libraries/tacacsrs_config/yang -p 'test_*.py' -v
+cd /home/vscode/tacacs-rs-02-yang-choices/libraries/tacacsrs_config/yang
+TMPDIR="$PWD" PYTHONDONTWRITEBYTECODE=1 python3 verify_generated.py --clean
+cd /home/vscode/tacacs-rs-02-yang-choices
+CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-02-yang-choices cargo +stable test -p tacacsrs-config --all-features --locked --quiet
+CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-02-yang-choices cargo +1.88.0 test -p tacacsrs-config --test parse_validation --test generated_types --lib --all-features --locked --quiet
+CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-02-yang-choices cargo +nightly clippy -p tacacsrs-config --all-targets --all-features --locked -- -D warnings
+git diff --check
+git diff --binary -- . ':!docs/refactor-delivery-plan.md' | sha256sum
+sha256sum libraries/tacacsrs_config/src/generated.rs libraries/tacacsrs_config/yang/expanded-tree.txt libraries/tacacsrs_config/yang/generation-manifest.json libraries/tacacsrs_config/yang/secret-fields.toml
+git status --short --branch
+git diff --numstat
+```
+
+The focused test returned exit 1 before the fix and exit 0 immediately after it. All later checks returned exit 0.
+The expected string-expression assertions were aligned with the existing emitter's `to_owned()` spelling before the passing rerun.
+Generator suite: 26 passed. Stable configuration suite: 262 tests and three doctests passed, with no ignored tests.
+Rust 1.88 focused suite: 233 passed. Strict nightly package Clippy passed. Editor diagnostics reported no errors in both revised Python files.
+The real regeneration command rebuilt tree and Rust output twice from a fresh private pinned cache; it was not an offline hash-only check.
+Both passes matched each other and the checked-in artifacts. The secret-field manifest also passed its completeness checks.
+
+| Artifact | SHA-256 after both passes |
+| --- | --- |
+| Generated Rust | `a9ce045bf80767815c002ebb84ad46dcdaa2d21ac0c25db4b3d6713f7a6876a8` |
+| Expanded tree | `5cf7da89cd79ae2c1fbb54e42e2429975283991066a27c439d61e348a15e1420` |
+| Generation manifest | `1c14fb718d4503d3c7b81b2f0e36d2c7a6536ceba51b418041c031a08a014c3f` |
+| Secret-field manifest | `223ac5374a618666581a11bf8bc2c15acec7ef41b0b64b5ee97b80adb11b9fb0` |
+
+Remaining gates and ownership:
+
+- Astra follow-up: complete for the output fingerprint above. This does not mark both reviews complete for the final source.
+- Claude Opus 5.5 follow-up: **PENDING and REQUIRED** because the structured-key revision is a new material source change.
+- Main must run the final full-workspace gates and publish only after both required reviews cover the final source fingerprint.
+- Full-workspace build, test, lint, formatting, documentation, MSRV checks, and affected hosted Windows/ARMhf execution remain with main.
+- No fresh formatting or documentation run is claimed here; this follow-up changed no Rust source or generated output.
+- No branch, commit, push, PR, subagent, other worktree edit, or operator access occurred. Prior receipts and unrelated changes remain intact.
+
+#### Final Claude Opus 5.5 Iteration 02 Follow-up Receipt: 2026-10-19
+
+Accepted invocation route: `Claude Opus 5.5 (copilot)`, from the coordinator's invocation metadata for this follow-up.
+Worktree: `/home/vscode/tacacs-rs-02-yang-choices` only. HEAD remains `4a2edf667a3207a76cad6b1e80e82dc15a3af147`.
+
+Source fingerprints exclude this plan. Exact command: `git diff --binary -- . ':!docs/refactor-delivery-plan.md' | sha256sum`.
+
+- Input: `800bd7089f910d1a8d485dbdb70b515b610ac0ba87eebe3ec347acfdeb56de23`. This matches the Astra output.
+- Output: `800bd7089f910d1a8d485dbdb70b515b610ac0ba87eebe3ec347acfdeb56de23`. This follow-up changed no source.
+
+Reviewed the exact generator and test diff, the Astra follow-up receipt, and every `_fingerprint`, `_fingerprints`, `_flatten_choice`, and `choices` use.
+
+Disposition of the Astra structured-key revision: accepted, no defect.
+
+- Every fingerprint member is a `str`, `bool`, `None`, or nested tuple. Keys are hashable and compare structurally, so no delimiter or escape ambiguity remains.
+- The only caller builds `(module_name, fingerprint)`. Deduplication stays per module, and recursion order follows document order.
+- Leaf defaults and mandatory values stay separate members. Container, choice, and case bodies stay nested tuples.
+- Choice keys hold the path tuple, mandatory status, and activation tuple. They match the `_flatten_choice` path and activation chains for nested choices.
+- Containers and lists restart with an empty choice context, as `_fill_children` does. YANG identifiers cannot contain `/`, so the joined activation path is unambiguous.
+- The emitter, constant naming, sequence suffixes, and validation consumers did not change. Real generated types are byte-identical.
+
+Independent failed-before check: an in-memory patch encoded the top-level tuple as the old bracket string. No file was written.
+With that patch, `test_default_delimiters_keep_distinct_structures` failed because `pub struct Second` was absent. Without it, the test passes.
+
+Non-blocking observation, outside R2 and unchanged by this iteration: the fingerprint still uses `C` for both containers and lists and records only the type name.
+A future generator iteration can add node kind and type arguments. The pinned schema output is unchanged, so no current defect is visible.
+
+Executed checks, all exit 0:
+
+```bash
+cd /home/vscode/tacacs-rs-02-yang-choices
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s libraries/tacacsrs_config/yang -p 'test_*.py'
+cd libraries/tacacsrs_config/yang && TMPDIR="$PWD" PYTHONDONTWRITEBYTECODE=1 python3 verify_generated.py --clean
+cd /home/vscode/tacacs-rs-02-yang-choices
+export CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-02-yang-choices
+cargo +stable test -p tacacsrs-config --all-features --locked --quiet
+cargo +1.88.0 test -p tacacsrs-config --test parse_validation --test generated_types --lib --all-features --locked --quiet
+cargo +nightly clippy -p tacacsrs-config --all-targets --all-features --locked -- -D warnings
+git diff --check
+```
+
+- Generator suite: 26 passed. Clean regeneration passed twice and matched the checked-in artifacts.
+- Stable configuration suite: 262 tests and three doctests passed. Rust 1.88 focused suite: 233 passed. Nightly package Clippy passed.
+- Artifact hashes match the Astra table: generated Rust `a9ce045b…76a8`, expanded tree `5cf7da89…1420`, generation manifest `1c14fb71…14c3f`, secret-field manifest `223ac537…9fb0`.
+
+Final review status for source `800bd708…de23`: Astra and Claude Opus 5.5 reviews are complete. No further review is required.
+
+- Main's full-workspace build, test, lint, formatting, documentation, and MSRV gates: PENDING.
+- Hosted Windows and ARMhf builds and execution: PENDING. No hosted CI result is claimed.
+- No branch, commit, push, PR, subagent, or other worktree edit occurred. Main retains publication ownership.
 
 ### 03: Endpoint Addresses
 
