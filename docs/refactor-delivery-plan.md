@@ -1177,7 +1177,10 @@ Do not close R14 after this iteration alone.
 #### Implementation And Review Receipt
 
 Worktree: `/home/vscode/tacacs-rs-05-candidate-budgets`; branch: `refactor/general-iterations/05-candidate-budgets`.
-Starting head: `35d9924a089beb818c65937eee6e4e319b486e41`; publication will use the predecessor's squash-equivalent main base.
+Published as [PR #282](https://github.com/AuthScaffold/tacacs-rs/pull/282) against `main` at head `a9dfba8b5e427b11b9d9f87265cb65074dbd8c78`.
+The predecessor is squash `6602e12ff23065abeb3815b29b38be307e008d3c`; the complete retargeted tree equals tested checkpoint `7f5b3dd4a1fdffe2bda229bb97bd87a734ad8b4e`.
+Git records 45 implementation files, including the YANG rename, and no tracking documents.
+GitHub Copilot review was requested; required workflow `39252965825` is in progress and not yet claimed green.
 The review inventory includes 46 changed/new/deleted paths: 42 tracked paths plus four initially untracked files.
 The complete content manifest hashes sorted changed/new paths, a NUL, each current file's SHA-256 or `<deleted>`, and a newline.
 It excludes only the three tracking-document paths. A tracked diff alone does not cover the new implementation files.
