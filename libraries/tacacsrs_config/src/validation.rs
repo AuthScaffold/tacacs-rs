@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use crate::generated::keystore::{EndEntityCertWithKeyInlineDefinition, SymmetricKeyInlineDefinition};
 use crate::generated::tacacs_plus::{
     ClientCredentials, ClientIdentityCertificate, ServerAuthenticationCaCerts, ServerCredentials,
     TacacsPlus, TacacsPlusServer, Tls13Epsk, TlsClientClientIdentity,
@@ -256,6 +257,23 @@ fn validate_client_identity(
         ],
     )?;
 
+    validate_activated_choice(
+        &server.name,
+        "client-identity/auth-type",
+        TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT_EXPLICIT_AUTH_TYPE,
+        TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT_EXPLICIT_AUTH_TYPE_MANDATORY,
+        TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT_EXPLICIT_AUTH_TYPE_ACTIVATION,
+        &[(
+            TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT_PATH,
+            TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT,
+        )],
+        &[
+            ("credentials-reference", client_identity.credentials_reference.is_some()),
+            ("certificate", client_identity.certificate.is_some()),
+            ("tls13-epsk", client_identity.tls13_epsk.is_some()),
+        ],
+    )?;
+
     if let Some(ref certificate) = client_identity.certificate {
         validate_certificate_choice(&server.name, "client-identity/certificate", certificate)?;
     }
@@ -466,7 +484,17 @@ fn validate_certificate_choice(
             certificate.inline_definition.is_some(),
             certificate.central_keystore_reference.is_some(),
         ],
-    )
+    )?;
+    if let Some(inline) = &certificate.inline_definition {
+        validate_choice(
+            context,
+            &format!("{field_path}/inline-definition/private-key-type"),
+            EndEntityCertWithKeyInlineDefinition::CHOICE_PRIVATE_KEY_TYPE,
+            EndEntityCertWithKeyInlineDefinition::CHOICE_PRIVATE_KEY_TYPE_MANDATORY,
+            &[inline.cleartext_private_key.is_some()],
+        )?;
+    }
+    Ok(())
 }
 
 fn validate_epsk_choice(context: &str, field_path: &str, epsk: &Tls13Epsk) -> anyhow::Result<()> {
@@ -479,7 +507,17 @@ fn validate_epsk_choice(context: &str, field_path: &str, epsk: &Tls13Epsk) -> an
             epsk.inline_definition.is_some(),
             epsk.central_keystore_reference.is_some(),
         ],
-    )
+    )?;
+    if let Some(inline) = &epsk.inline_definition {
+        validate_choice(
+            context,
+            &format!("{field_path}/inline-definition/key-type"),
+            SymmetricKeyInlineDefinition::CHOICE_KEY_TYPE,
+            SymmetricKeyInlineDefinition::CHOICE_KEY_TYPE_MANDATORY,
+            &[inline.cleartext_symmetric_key.is_some()],
+        )?;
+    }
+    Ok(())
 }
 
 fn validate_trust_choice(
@@ -497,6 +535,42 @@ fn validate_trust_choice(
             certificates.central_truststore_reference.is_some(),
         ],
     )
+}
+
+type ChoiceCases<'a> = &'a [(&'a str, &'a [&'a str])];
+
+fn validate_activated_choice(
+    context: &str,
+    field_path: &str,
+    choice_cases: ChoiceCases<'_>,
+    mandatory: bool,
+    activation: &[(&str, &str)],
+    ancestors: &[(&str, ChoiceCases<'_>)],
+    field_presence: &[(&str, bool)],
+) -> anyhow::Result<()> {
+    let fields_present = |fields: &[&str]| {
+        fields.iter().any(|field| {
+            field_presence
+                .iter()
+                .any(|(name, present)| name == field && *present)
+        })
+    };
+    let active = activation.iter().all(|(path, case)| {
+        ancestors.iter().any(|(ancestor_path, cases)| {
+            ancestor_path == path
+                && cases
+                    .iter()
+                    .any(|(name, fields)| name == case && fields_present(fields))
+        })
+    });
+    if !active {
+        return Ok(());
+    }
+    let case_presence: Vec<_> = choice_cases
+        .iter()
+        .map(|(_, fields)| fields_present(fields))
+        .collect();
+    validate_choice(context, field_path, choice_cases, mandatory, &case_presence)
 }
 
 fn validate_choice(
@@ -724,4 +798,77 @@ fn validate_inline_asymmetric_key_material(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_activated_choice, ChoiceCases};
+
+    const SOURCE: ChoiceCases<'_> = &[
+        ("reference", &["reference"]),
+        ("explicit", &["label", "certificate", "tls13-epsk", "private-key"]),
+    ];
+    const AUTH_TYPE: ChoiceCases<'_> = &[
+        ("cert", &["certificate", "private-key"]),
+        ("epsk", &["tls13-epsk"]),
+    ];
+
+    #[test]
+    fn nested_mandatory_choice_requires_an_active_parent_case() {
+        for (reference, label, certificate, epsk, valid) in [
+            (false, false, false, false, true),
+            (true, false, false, false, true),
+            (false, true, false, false, false),
+            (false, true, true, false, true),
+            (false, false, true, false, true),
+            (false, false, false, true, true),
+            (false, false, true, true, false),
+        ] {
+            let result = validate_activated_choice(
+                "identity",
+                "auth-type",
+                AUTH_TYPE,
+                true,
+                &[("source", "explicit")],
+                &[("source", SOURCE)],
+                &[
+                    ("reference", reference),
+                    ("label", label),
+                    ("certificate", certificate),
+                    ("tls13-epsk", epsk),
+                ],
+            );
+            assert_eq!(result.is_ok(), valid, "{result:?}");
+        }
+    }
+
+    #[test]
+    fn nested_mandatory_choice_requires_every_ancestor_case() {
+        for (label, certificate, epsk, private_key, valid) in [
+            (true, false, false, false, true),
+            (false, false, true, false, true),
+            (false, true, false, false, false),
+            (false, true, false, true, true),
+            (false, false, false, true, true),
+        ] {
+            let result = validate_activated_choice(
+                "identity",
+                "key-type",
+                &[("private", &["private-key"])],
+                true,
+                &[
+                    ("source", "explicit"),
+                    ("source/explicit/auth-type", "cert"),
+                ],
+                &[("source", SOURCE), ("source/explicit/auth-type", AUTH_TYPE)],
+                &[
+                    ("label", label),
+                    ("certificate", certificate),
+                    ("tls13-epsk", epsk),
+                    ("private-key", private_key),
+                ],
+            );
+            assert_eq!(result.is_ok(), valid, "{result:?}");
+        }
+    }
 }
