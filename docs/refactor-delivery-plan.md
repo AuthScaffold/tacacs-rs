@@ -233,7 +233,10 @@ These invariants apply throughout the stack, especially iterations 03, 06, 07, 0
 
 Status: implemented; both named reviews and the final Astra follow-up on the Opus revision are complete.
 The final reviewed source fingerprint is `ab501f19db2266c3f2d9d34ee0350b327853aa1b3337cc5b5ff5f66754b3ba31`.
-Final local workspace gates passed. Hosted execution gates remain pending.
+Final local workspace gates passed. The original hosted run passed; the document-exclusion head is under refreshed CI.
+PR #278 now excludes all three tracking documents at head `c65d44ff63a4e123eb910faece355a0ca1b34ae2`.
+GitHub Copilot review `5566880340` completed on that head and recommended approval with no open issues or inline comments.
+Refreshed workflow `39198981281` must pass before the authorized squash merge.
 Scope: R1, R3, and the stacked CI prerequisite.
 
 Implementation:
@@ -532,7 +535,8 @@ No other worktree edits, branches, commits, pushes, PRs, subagents, or operator 
 
 ### 02: YANG Choices
 
-Status: implemented; both named reviews and the final Opus follow-up on the Astra revision are complete. Main's common gates remain PENDING. Scope: R2.
+Status: implemented; both named reviews and the final Opus follow-up on the Astra revision are complete.
+Final local common gates passed. Publication follows the predecessor's reviewed squash merge. Scope: R2.
 
 The read-only scheduling preflight identified discarded nested metadata and synthetic parent cases.
 Implementation started from iteration 01's committed, locally verified head.
@@ -875,6 +879,33 @@ Final review status for source `800bd708…de23`: Astra and Claude Opus 5.5 revi
 - Main's full-workspace build, test, lint, formatting, documentation, and MSRV gates: PENDING.
 - Hosted Windows and ARMhf builds and execution: PENDING. No hosted CI result is claimed.
 - No branch, commit, push, PR, subagent, or other worktree edit occurred. Main retains publication ownership.
+
+#### Coordinator Iteration 02 Final Gate Receipt
+
+The initial final-gate sequence was interrupted after Clippy and is not counted as a complete passing run.
+The coordinator reran the complete sequence successfully after moving tracking documents out of implementation worktrees.
+The validated implementation fingerprint remains `800bd7089f910d1a8d485dbdb70b515b610ac0ba87eebe3ec347acfdeb56de23`.
+Its calculation excludes all three tracking-document paths.
+
+Executed gates used `/home/vscode/.cache/tacacs-rs-02-yang-choices`:
+
+```bash
+cargo +nightly fmt --all -- --check
+cargo +nightly clippy --workspace --all-targets --all-features --locked -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo +stable doc --workspace --no-deps --all-features --document-private-items --locked --quiet
+cargo +stable build --workspace --locked --quiet
+cargo +stable test --workspace --all-features --locked --quiet
+cargo +1.88.0 check --workspace --all-targets --all-features --locked --quiet
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s libraries/tacacsrs_config/yang -p 'test_*.py' -q
+PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider -q .github/steps/cargo-metadata .github/steps/check-architecture .github/steps/compute-versions .github/steps/inject-versions .github/steps/release-manifest
+git diff --check
+```
+
+All gates passed, followed by the `ALL_ITERATION_02_GATES_PASSED` marker.
+The Rust suite had no failures and ten existing ignored tests.
+All 26 generator tests and 256 selected delivery tests passed.
+Prior clean double-regeneration and secret-annotation evidence remains unchanged.
+Hosted checks for iteration 02 are not yet claimed. Privileged or external-service early returns are not execution evidence.
 
 ### 03: Endpoint Addresses
 
