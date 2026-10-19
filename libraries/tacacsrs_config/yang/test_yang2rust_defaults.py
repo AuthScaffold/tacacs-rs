@@ -1,6 +1,7 @@
 """Check generated defaults and structural reuse for policy containers."""
 
 import io
+import re
 import tempfile
 import unittest
 
@@ -9,6 +10,150 @@ from plugins.yang2rust import Collector, RustEmitter
 
 
 class GeneratedDefaultsTests(unittest.TestCase):
+    def test_choice_constant_names_do_not_collide_with_paths_or_metadata(self):
+        output = self.generate('''
+container identity {
+    choice source {
+        case reference {
+            choice reference-auth-type { leaf reference { type string; } }
+        }
+        case explicit {
+            choice auth-type { leaf certificate { type string; } }
+        }
+    }
+    choice source-explicit-auth-type { leaf fallback { type string; } }
+    choice source-explicit-auth-type-2 { leaf alternative { type string; } }
+    choice source-path { leaf location { type string; } }
+}
+''')
+        constants = re.findall(r'pub const (CHOICE_\w+):', output)
+        self.assertEqual(len(constants), len(set(constants)), constants)
+        self.assertEqual(len(constants), 24)
+        self.assertIn('"source/reference/reference-auth-type";', output)
+        self.assertIn('"source/explicit/auth-type";', output)
+        self.assertIn('"source-explicit-auth-type";', output)
+        self.assertIn('"source-path";', output)
+        self.assertIn('&[("source", "reference")];', output)
+        self.assertIn('&[("source", "explicit")];', output)
+        self.assertIn('("reference", &["reference"]),', output)
+        self.assertIn('("explicit", &["certificate"]),', output)
+
+    def test_nested_mandatory_choice_retains_parent_case_activation(self):
+        output = self.generate('''
+container identity {
+    choice source {
+        case reference { leaf reference { type string; } }
+        case explicit {
+            leaf label { type string; }
+            choice auth-type {
+                mandatory true;
+                case cert { leaf certificate { type string; } }
+                case epsk { leaf tls13-epsk { type string; } }
+            }
+        }
+    }
+}
+''')
+        self.assertIn(
+            '("explicit", &["label", "certificate", "tls13-epsk"]),', output
+        )
+        self.assertIn('pub const CHOICE_SOURCE_EXPLICIT_AUTH_TYPE:', output)
+        self.assertIn('CHOICE_SOURCE_EXPLICIT_AUTH_TYPE_MANDATORY: bool = true;', output)
+        self.assertIn(
+            'CHOICE_SOURCE_EXPLICIT_AUTH_TYPE_ACTIVATION: &[(&str, &str)] = '
+            '&[("source", "explicit")];', output
+        )
+        self.assertIn('("cert", &["certificate"]),', output)
+        self.assertIn('("epsk", &["tls13-epsk"]),', output)
+
+    def test_choice_constraints_keep_distinct_structures(self):
+        for nested in [False, True]:
+            with self.subTest(nested=nested):
+                choice = '''choice auth-type {
+                    mandatory %s;
+                    case cert { leaf certificate { type string; } }
+                    case epsk { leaf tls13-epsk { type string; } }
+                }'''
+                if nested:
+                    choice = 'choice source { case explicit { ' + choice + ' } }'
+                output = self.generate(
+                    'container optional { ' + choice % 'false' + ' }'
+                    'container required { ' + choice % 'true' + ' }'
+                )
+                self.assertIn('pub struct Optional', output)
+                self.assertIn('pub struct Required', output)
+                name = 'SOURCE_EXPLICIT_AUTH_TYPE' if nested else 'AUTH_TYPE'
+                self.assertIn(f'CHOICE_{name}_MANDATORY: bool = false;', output)
+                self.assertIn(f'CHOICE_{name}_MANDATORY: bool = true;', output)
+
+    def test_case_membership_keeps_distinct_structures(self):
+        output = self.generate('''
+container first {
+    choice selector { case one { leaf a { type string; } leaf b { type string; } } }
+}
+container second {
+    choice selector { case one { leaf a { type string; } } }
+    leaf b { type string; }
+}
+''')
+        self.assertIn('pub struct First', output)
+        self.assertIn('pub struct Second', output)
+        self.assertIn('("one", &["a", "b"]),', output)
+        self.assertIn('("one", &["a"]),', output)
+
+    def test_default_delimiters_keep_distinct_structures(self):
+        output = self.generate('''
+container first {
+    choice selector {
+        case one {
+            leaf a { type string; default "x:M:false]]|L:b:string:D:y"; }
+        }
+    }
+    leaf b { type string; default "z"; }
+}
+container second {
+    choice selector {
+        case one { leaf a { type string; default "x"; } }
+    }
+    leaf b { type string; default "y:M:false]]|L:b:string:D:z"; }
+}
+''')
+        self.assertIn('pub struct First', output)
+        self.assertIn('pub struct Second', output)
+        self.assertIn('"z".to_owned()', output)
+        self.assertIn('"y:M:false]]|L:b:string:D:z".to_owned()', output)
+
+    def test_nested_choices_retain_full_activation_paths(self):
+        output = self.generate('''
+container identity {
+    choice source {
+        case explicit {
+            choice auth-type {
+                case cert {
+                    choice key-type {
+                        mandatory true;
+                        leaf private-key { type string; }
+                    }
+                }
+                case epsk {
+                    choice symmetric-type { leaf symmetric-key { type string; } }
+                }
+            }
+        }
+    }
+}
+''')
+        self.assertIn(
+            'CHOICE_SOURCE_EXPLICIT_AUTH_TYPE_CERT_KEY_TYPE_PATH: &str = '
+            '"source/explicit/auth-type/cert/key-type";', output
+        )
+        self.assertIn(
+            'CHOICE_SOURCE_EXPLICIT_AUTH_TYPE_CERT_KEY_TYPE_ACTIVATION: '
+            '&[(&str, &str)] = &[("source", "explicit"), '
+            '("source/explicit/auth-type", "cert")];', output
+        )
+        self.assertIn('pub const CHOICE_SOURCE_EXPLICIT_AUTH_TYPE_EPSK_SYMMETRIC_TYPE:', output)
+
     def test_binary_leaf_list_in_choice_uses_optional_list_serializer(self):
         output = self.generate('''
 container evidence {

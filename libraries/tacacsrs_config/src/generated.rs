@@ -178,6 +178,8 @@ pub mod tacacs_plus {
             ("central-keystore", &["central-keystore-reference"]),
         ];
         pub const CHOICE_INLINE_OR_KEYSTORE_MANDATORY: bool = true;
+        pub const CHOICE_INLINE_OR_KEYSTORE_PATH: &str = "inline-or-keystore";
+        pub const CHOICE_INLINE_OR_KEYSTORE_ACTIVATION: &[(&str, &str)] = &[];
     }
 
     fn default_tls13_epsk_hash() -> EpskSupportedHash { EpskSupportedHash::Sha256 }
@@ -241,6 +243,8 @@ pub mod tacacs_plus {
             ("central-keystore", &["central-keystore-reference"]),
         ];
         pub const CHOICE_INLINE_OR_KEYSTORE_MANDATORY: bool = true;
+        pub const CHOICE_INLINE_OR_KEYSTORE_PATH: &str = "inline-or-keystore";
+        pub const CHOICE_INLINE_OR_KEYSTORE_ACTIVATION: &[(&str, &str)] = &[];
     }
 
     /// Identity credentials that a TLS client may present
@@ -274,6 +278,8 @@ pub mod tacacs_plus {
             ("tls13-epsk", &["tls13-epsk"]),
         ];
         pub const CHOICE_AUTH_TYPE_MANDATORY: bool = false;
+        pub const CHOICE_AUTH_TYPE_PATH: &str = "auth-type";
+        pub const CHOICE_AUTH_TYPE_ACTIVATION: &[(&str, &str)] = &[];
     }
 
     /// A set of CA certificates used by the TLS client to
@@ -307,6 +313,8 @@ pub mod tacacs_plus {
             ("central-truststore", &["central-truststore-reference"]),
         ];
         pub const CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY: bool = true;
+        pub const CHOICE_INLINE_OR_TRUSTSTORE_PATH: &str = "inline-or-truststore";
+        pub const CHOICE_INLINE_OR_TRUSTSTORE_ACTIVATION: &[(&str, &str)] = &[];
     }
 
     /// Identity credentials that a TLS client may use
@@ -403,9 +411,21 @@ pub mod tacacs_plus {
         /// Each inner slice is one case; at most one case may have fields set.
         pub const CHOICE_REF_OR_EXPLICIT: &[(&str, &[&str])] = &[
             ("ref", &["credentials-reference"]),
-            ("explicit/auth-type", &["certificate", "tls13-epsk"]),
+            ("explicit", &["certificate", "tls13-epsk"]),
         ];
         pub const CHOICE_REF_OR_EXPLICIT_MANDATORY: bool = false;
+        pub const CHOICE_REF_OR_EXPLICIT_PATH: &str = "ref-or-explicit";
+        pub const CHOICE_REF_OR_EXPLICIT_ACTIVATION: &[(&str, &str)] = &[];
+        /// YANG choice `auth-type` (optional).
+        ///
+        /// Each inner slice is one case; at most one case may have fields set.
+        pub const CHOICE_REF_OR_EXPLICIT_EXPLICIT_AUTH_TYPE: &[(&str, &[&str])] = &[
+            ("certificate", &["certificate"]),
+            ("tls13-epsk", &["tls13-epsk"]),
+        ];
+        pub const CHOICE_REF_OR_EXPLICIT_EXPLICIT_AUTH_TYPE_MANDATORY: bool = false;
+        pub const CHOICE_REF_OR_EXPLICIT_EXPLICIT_AUTH_TYPE_PATH: &str = "ref-or-explicit/explicit/auth-type";
+        pub const CHOICE_REF_OR_EXPLICIT_EXPLICIT_AUTH_TYPE_ACTIVATION: &[(&str, &str)] = &[("ref-or-explicit", "explicit")];
     }
 
     /// Specifies how a TLS client can authenticate TLS servers.
@@ -485,6 +505,8 @@ pub mod tacacs_plus {
             ("explicit", &["ca-certs", "ee-certs", "tls13-epsks", "require-crls", "require-ocsp", "require-stapled-ocsp"]),
         ];
         pub const CHOICE_REF_OR_EXPLICIT_MANDATORY: bool = false;
+        pub const CHOICE_REF_OR_EXPLICIT_PATH: &str = "ref-or-explicit";
+        pub const CHOICE_REF_OR_EXPLICIT_ACTIVATION: &[(&str, &str)] = &[];
     }
 
     fn default_tacacs_plus_server_timeout() -> u16 { 5 }
@@ -596,6 +618,8 @@ pub mod tacacs_plus {
             ("obfuscation", &["shared-secret"]),
         ];
         pub const CHOICE_SECURITY_MANDATORY: bool = true;
+        pub const CHOICE_SECURITY_PATH: &str = "security";
+        pub const CHOICE_SECURITY_ACTIVATION: &[(&str, &str)] = &[];
         /// YANG choice `source-type` (optional).
         ///
         /// Each inner slice is one case; at most one case may have fields set.
@@ -604,6 +628,8 @@ pub mod tacacs_plus {
             ("source-interface", &["source-interface"]),
         ];
         pub const CHOICE_SOURCE_TYPE_MANDATORY: bool = false;
+        pub const CHOICE_SOURCE_TYPE_PATH: &str = "source-type";
+        pub const CHOICE_SOURCE_TYPE_ACTIVATION: &[(&str, &str)] = &[];
     }
 
     /// Container for TACACS+ configurations and operations.
@@ -697,6 +723,8 @@ pub mod keystore {
             ("cleartext-private-key", &["cleartext-private-key"]),
         ];
         pub const CHOICE_PRIVATE_KEY_TYPE_MANDATORY: bool = true;
+        pub const CHOICE_PRIVATE_KEY_TYPE_PATH: &str = "private-key-type";
+        pub const CHOICE_PRIVATE_KEY_TYPE_ACTIVATION: &[(&str, &str)] = &[];
     }
 
     /// A reference to a specific certificate associated with
@@ -748,6 +776,8 @@ pub mod keystore {
             ("cleartext-symmetric-key", &["cleartext-symmetric-key"]),
         ];
         pub const CHOICE_KEY_TYPE_MANDATORY: bool = true;
+        pub const CHOICE_KEY_TYPE_PATH: &str = "key-type";
+        pub const CHOICE_KEY_TYPE_ACTIVATION: &[(&str, &str)] = &[];
     }
 
 }
@@ -1315,6 +1345,8 @@ pub mod tacacsrs {
             ("provider", &["evidence-reference"]),
         ];
         pub const CHOICE_EVIDENCE_MANDATORY: bool = true;
+        pub const CHOICE_EVIDENCE_PATH: &str = "evidence";
+        pub const CHOICE_EVIDENCE_ACTIVATION: &[(&str, &str)] = &[];
     }
 
     fn default_require_ocsp_max_response_age_seconds() -> u32 { 300 }
@@ -1357,6 +1389,8 @@ pub mod tacacsrs {
             ("provider", &["evidence-reference"]),
         ];
         pub const CHOICE_EVIDENCE_MANDATORY: bool = true;
+        pub const CHOICE_EVIDENCE_PATH: &str = "evidence";
+        pub const CHOICE_EVIDENCE_ACTIVATION: &[(&str, &str)] = &[];
     }
 
     fn default_require_stapled_ocsp_max_response_age_seconds() -> u32 { 300 }
