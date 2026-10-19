@@ -78,6 +78,49 @@ impl<Connector: EndpointConnector> RoutingLease<Connector> {
         self.runtime.generation
     }
 
+    pub(crate) fn reserve(
+        &self,
+        body_length: usize,
+    ) -> Result<tacacsrs_networking::admission::AdmissionReservation, AdmissionError> {
+        self.validate_body_length(body_length)?;
+        let runtime = &self.runtime;
+        let operation = self.operation;
+        if runtime.server_set.client.eligible_count(operation) == 0 {
+            return Err(AdmissionError::NoEligibleServer { operation });
+        }
+        runtime.admission.reserve(operation, self.deadline())
+    }
+
+    pub(crate) async fn admit_reserved(
+        &self,
+        reservation: tacacsrs_networking::admission::AdmissionReservation,
+    ) -> Result<crate::upstream::AdmissionPermit, AdmissionError> {
+        let runtime = &self.runtime;
+        let operation = self.operation;
+        let wait_timeout = runtime
+            .server_set
+            .client
+            .active_endpoint(operation)
+            .await
+            .and_then(|endpoint| endpoint.prepared().connection_timeout())
+            .unwrap_or(Duration::ZERO);
+        reservation
+            .wait_until(self.deadline().capped(wait_timeout))
+            .await
+            .map_err(|error| match error {
+                tacacsrs_networking::admission::AdmissionError::Closed => AdmissionError::Closed,
+                _ => AdmissionError::CapacityTimeout { wait_timeout },
+            })
+    }
+
+    pub(crate) async fn admit(
+        &self,
+        body_length: usize,
+    ) -> Result<crate::upstream::AdmissionPermit, AdmissionError> {
+        let reservation = self.reserve(body_length)?;
+        self.admit_reserved(reservation).await
+    }
+
     pub(crate) fn validate_body_length(&self, body_length: usize) -> Result<(), AdmissionError> {
         let maximum = self
             .runtime
@@ -150,6 +193,16 @@ pub(crate) struct BoundServer<
 }
 
 impl<Connector: EndpointConnector> BoundServer<Connector> {
+    /// Records failure for this binding's connection generation and operation.
+    pub(crate) async fn note_failure(&self) {
+        self.binding.note_failure().await;
+    }
+
+    /// Completes this binding's recovery trial after a successful request.
+    pub(crate) async fn note_success(&self) {
+        self.binding.note_success().await;
+    }
+
     pub(crate) fn observe_failure(
         &self,
     ) -> tacacsrs_networking::routed::FailureObservation<Connector> {

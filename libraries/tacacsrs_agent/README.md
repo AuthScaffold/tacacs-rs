@@ -78,6 +78,26 @@ router binds one `PolicyService` identity at construction. A service therefore
 cannot read another service's state, cannot change the runtime configuration,
 and does not pass a service identity on each call.
 
+`OperationRouter::capture_request` captures one runtime snapshot, operation, retry plan, and absolute deadline.
+`RequestRouting` owns the resulting `RoutingLease`. The lease reserves and admits work from those captured inputs.
+The request retains the manager for binding and generation-aware availability publication, not for admission or outcomes.
+`BoundServer` records success and failure through its networking binding. Typed attempts and raw conversations do not retain a router for outcomes.
+
+```text
+OperationRouter -- service identity --> RequestRouting
+                 |-- RoutingLease: snapshot, plan, deadline, admission
+                 `-- manager: bind + availability publication
+                    |
+                    v
+                  BoundServer
+                    |
+                    v
+                networking BoundEndpoint: fenced outcomes
+```
+
+Networking retains the generation-fenced failure guard and bounded cleanup owner after request expiry.
+Cleanup does not renew the request deadline or permit replay. Downstream continuation waits do not arm an upstream failure guard.
+
 ## Connector Composition
 
 `TacacsClientService` is the public, nongeneric service facade.
@@ -233,7 +253,7 @@ Tower retry and balancing layers do not model these rules directly.
 
 Tower can wrap the local gRPC transport, but it does not own upstream routing.
 The runtime uses one shared failover plan for typed IPC operations and proxy
-initial packets. It uses Tokio semaphores for operation-wide admission.
+initial packets. Networking admission pools enforce shared operation capacity.
 
 ## Architecture overview
 
@@ -268,9 +288,9 @@ initial packets. It uses Tokio semaphores for operation-wide admission.
   v
 ┌──────────────────────────────┐
 │ UpstreamManager              │
-│ - operation server catalogs  │
-│ - shared operation cursors   │
-│ - recovery circuits          │
+│ - catalog/policy publication │
+│ - generation-aware health    │
+│ - captured request binding   │
 └──────┬───────────────────────┘
        │ creates / reuses sessions
        v
@@ -319,12 +339,12 @@ GrpcService decodes the request
 client_api::upstream_bridge maps the typed operation
   |
   v
-UpstreamManager chooses the active server
+RequestRouting binds its captured catalog through the manager
   |
   +--> no responsive server
   |      |
   |      v
-  |   return ServiceError { retriable: true }
+  |   return ServiceError (Unavailable, Routing, NotSent)
   |
   v
 reuse or establish upstream connection
@@ -338,9 +358,9 @@ send TACACS+ accounting request
   +--> upstream error
   |      |
   |      v
-  |   clear cached connection
-  |   advance the operation cursor
-  |   return ServiceError { server, retriable: true }
+  |   BoundServer records the generation-fenced failure
+  |   networking retires the failed connection and advances the operation cursor
+  |   return ServiceError with the original delivery facts
   |
   v
 map reply to the operation-specific response

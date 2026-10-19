@@ -116,7 +116,6 @@ impl<Connector: EndpointConnector> UpstreamConversationProvider<Connector> {
 pub(super) struct ManagedProxyConversation<
     Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
 > {
-    router: OperationRouter<Connector>,
     bound_server: BoundServer<Connector>,
     conversation: ClientConversation,
 }
@@ -157,13 +156,12 @@ where
             Ok(conversation) => {
                 observation.disarm();
                 Ok(ManagedProxyConversation {
-                    router: self.router.clone(),
                     bound_server,
                     conversation,
                 })
             }
             Err(error) => {
-                self.router.note_failure(&bound_server).await;
+                bound_server.note_failure().await;
                 Err(error)
             }
         }
@@ -214,11 +212,11 @@ impl<Connector: EndpointConnector> ProxyConversation for ManagedProxyConversatio
     }
 
     async fn note_success(&self) {
-        self.router.note_success(&self.bound_server).await;
+        self.bound_server.note_success().await;
     }
 
     async fn note_failure(&self) {
-        self.router.note_failure(&self.bound_server).await;
+        self.bound_server.note_failure().await;
     }
 }
 

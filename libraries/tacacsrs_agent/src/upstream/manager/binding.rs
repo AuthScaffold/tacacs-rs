@@ -84,18 +84,4 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             }
         }
     }
-
-    pub(in crate::upstream) async fn note_bound_server_failure(
-        &self,
-        bound_server: &BoundServer<Connector>,
-    ) {
-        bound_server.binding.note_failure().await;
-    }
-
-    pub(in crate::upstream) async fn note_bound_server_success(
-        &self,
-        bound_server: &BoundServer<Connector>,
-    ) {
-        bound_server.binding.note_success().await;
-    }
 }

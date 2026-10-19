@@ -6,7 +6,7 @@
 //! # Atomic publication commit
 //!
 //! The manager owns the active catalog (`active_snapshot`), its fields, and the
-//! read and admission surface. Every snapshot write lives next door in the
+//! request-capture surface. Captured leases own admission. Every snapshot write lives in the
 //! [`publication`] module:
 //! [`publish_policy`](UpstreamManager::publish_policy),
 //! [`publish_initial_health`](UpstreamManager::publish_initial_health), and
@@ -33,7 +33,7 @@ use crate::config::{PreparedProxyPolicy, RuntimePolicy};
 use crate::config::{FailoverStrategy, OperationPolicies};
 use crate::runtime::RuntimeHealthPublisher;
 use crate::upstream::admission::AdmissionRegistry;
-use crate::upstream::{AdmissionError, OperationKind, ProxyTransportSettings};
+use crate::upstream::{OperationKind, ProxyTransportSettings};
 #[cfg(test)]
 use crate::upstream::UpstreamConnector;
 
@@ -430,54 +430,6 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
     #[cfg(test)]
     pub(crate) fn eligible_server_count(&self, operation: OperationKind) -> usize {
         self.current_server_set().client.eligible_count(operation)
-    }
-
-    /// Waits for shared operation capacity with the captured request inputs.
-    ///
-    /// Services reach this through [`crate::upstream::OperationRouter`].
-    pub(in crate::upstream) async fn admit_request(
-        &self,
-        lease: &RoutingLease<Connector>,
-        body_length: usize,
-    ) -> Result<crate::upstream::AdmissionPermit, AdmissionError> {
-        let reservation = Self::reserve_request(lease, body_length)?;
-        self.admit_reserved(lease, reservation).await
-    }
-
-    pub(in crate::upstream) fn reserve_request(
-        lease: &RoutingLease<Connector>,
-        body_length: usize,
-    ) -> Result<tacacsrs_networking::admission::AdmissionReservation, AdmissionError> {
-        lease.validate_body_length(body_length)?;
-        let runtime = &lease.runtime;
-        let operation = lease.operation;
-        if runtime.server_set.client.eligible_count(operation) == 0 {
-            return Err(AdmissionError::NoEligibleServer { operation });
-        }
-        runtime.admission.reserve(operation, lease.deadline())
-    }
-
-    pub(in crate::upstream) async fn admit_reserved(
-        &self,
-        lease: &RoutingLease<Connector>,
-        reservation: tacacsrs_networking::admission::AdmissionReservation,
-    ) -> Result<crate::upstream::AdmissionPermit, AdmissionError> {
-        let runtime = &lease.runtime;
-        let operation = lease.operation;
-        let wait_timeout = runtime
-            .server_set
-            .client
-            .active_endpoint(operation)
-            .await
-            .and_then(|endpoint| endpoint.prepared().connection_timeout())
-            .unwrap_or(std::time::Duration::ZERO);
-        reservation
-            .wait_until(lease.deadline().capped(wait_timeout))
-            .await
-            .map_err(|error| match error {
-                tacacsrs_networking::admission::AdmissionError::Closed => AdmissionError::Closed,
-                _ => AdmissionError::CapacityTimeout { wait_timeout },
-            })
     }
 
     /// Atomically replaces the configured TACACS+ server set.
