@@ -331,7 +331,11 @@ unsafe extern "C" {
 
 impl ProvidedResponse {
     #[allow(unsafe_code)]
-    pub(super) fn prepare(encoded: &[u8], maximum_age: Duration) -> anyhow::Result<Self> {
+    pub(super) fn prepare(
+        encoded: &[u8],
+        maximum_age: Duration,
+        payload: &crate::PreparationPayload,
+    ) -> anyhow::Result<Self> {
         let policy = CertificateRevocationPolicy::require_stapled_ocsp(maximum_age)?;
         ensure!(
             encoded.len() <= MAXIMUM_STAPLE_BYTES,
@@ -339,7 +343,10 @@ impl ProvidedResponse {
         );
         let response = OcspResponse::from_der(encoded)?;
         ensure!(
-            response.to_der()?.as_slice() == encoded,
+            payload
+                .native_bytes(encoded.len(), || response.to_der())?
+                .as_slice()
+                == encoded,
             "Fetched OCSP response must contain one DER object"
         );
         ensure!(
@@ -392,6 +399,7 @@ impl ProvidedResponse {
                 SystemTime::now(),
             )?
         };
+        payload.retain(encoded.len())?;
         Ok(Self {
             encoded: Arc::from(encoded),
             policy,

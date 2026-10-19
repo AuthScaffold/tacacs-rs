@@ -182,7 +182,6 @@ where
     /// Returns an error if validation, reference expansion, or native preparation
     /// fails. Failure leaves the active runtime generation unchanged.
     pub(super) async fn reload_tacacs_plus(&self, tacacs_plus: TacacsPlus) -> anyhow::Result<()> {
-        let _reload_guard = self.reload_publication_lock.lock().await;
         let proxy_downstream_obfuscation = self
             .manager
             .proxy_transport_settings()
@@ -225,7 +224,6 @@ where
         tacacs_plus: TacacsPlus,
         proxy_downstream_obfuscation: PreparedProxyPolicy,
     ) -> anyhow::Result<()> {
-        let _reload_guard = self.reload_publication_lock.lock().await;
         self.reload_tacacs_plus_inner(tacacs_plus, proxy_downstream_obfuscation)
             .await
     }
@@ -237,12 +235,11 @@ where
     ) -> anyhow::Result<()> {
         proxy_downstream_obfuscation.shared_secret()?;
         let servers = enumerate_supported_servers(&tacacs_plus, &self.config.validation_options)?;
-        self.manager
-            .reload_shared_servers_with_proxy_downstream_obfuscation(
-                servers.into_iter().map(Arc::new).collect(),
-                proxy_downstream_obfuscation,
-            )
-            .await?;
+        self.reload_materialized_servers_with_proxy_downstream_obfuscation(
+            servers.into_iter().map(Arc::new).collect(),
+            proxy_downstream_obfuscation,
+        )
+        .await?;
         Ok(())
     }
 
@@ -275,13 +272,10 @@ where
         &self,
         candidate: crate::upstream::manager::PublicationCandidate<
             impl FnOnce() -> Option<crate::runtime::MaterializationCommit> + Send,
+            Connector,
         >,
     ) -> anyhow::Result<()> {
-        candidate.proxy_downstream_obfuscation.shared_secret()?;
-        tacacsrs_config::prepare::validate_materialized_servers(
-            candidate.servers.iter().map(AsRef::as_ref),
-            &self.config.validation_options,
-        )?;
+        let candidate = self.prepare_materialized_servers(candidate).await?;
         let _reload_guard = if let Some(preparation) = candidate.preparation.as_ref() {
             preparation
                 .admission
@@ -292,8 +286,19 @@ where
         };
         self.manager
             .reload_shared_servers_with_retirement(candidate, None)
-            .await?;
-        Ok(())
+            .await
+    }
+
+    pub(super) async fn prepare_materialized_servers<Commit: Send>(
+        &self,
+        candidate: crate::upstream::manager::PublicationCandidate<Commit, Connector>,
+    ) -> anyhow::Result<crate::upstream::manager::PublicationCandidate<Commit, Connector>> {
+        candidate.proxy_downstream_obfuscation.shared_secret()?;
+        tacacsrs_config::prepare::validate_materialized_servers(
+            candidate.servers.iter().map(AsRef::as_ref),
+            &self.config.validation_options,
+        )?;
+        self.manager.prepare_candidate(candidate).await
     }
 
     /// Returns the number of configured TACACS+ servers.

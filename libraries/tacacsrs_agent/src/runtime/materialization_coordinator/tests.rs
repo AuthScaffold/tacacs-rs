@@ -40,12 +40,12 @@ fn published_empty_and_withdrawn_material_have_distinct_revision_and_expiry_stat
         [MaterialExpiry::Source, MaterialExpiry::Credentials],
         [MaterialExpiry::Credentials, MaterialExpiry::Source],
     ] {
-        let mut published = PublishedMaterial::Applied(AppliedCatalog {
+        let mut published = PublishedMaterial::Applied(Arc::new(AppliedCatalog {
             servers: Vec::new(),
             lifetimes: BTreeMap::new(),
             revision,
             credential_references: true,
-        });
+        }));
         assert!(published.servers().is_empty());
         assert!(published.applied().is_some());
         assert_eq!(published.active_revision(), Some(revision));
@@ -519,7 +519,7 @@ async fn candidate_raw_owner_sharing_does_not_relabel_retained_filtered_copy() {
         .await
         .unwrap();
     let prepared = coordinator
-        .materialize(material_limit(attempt, 32))
+        .materialize(material_limit(attempt.clone(), 32))
         .await
         .unwrap();
     assert_eq!(
@@ -529,6 +529,8 @@ async fn candidate_raw_owner_sharing_does_not_relabel_retained_filtered_copy() {
             .unwrap(),
         (16, 16, 32)
     );
+    drop(prepared);
+    let prepared = coordinator.materialize(attempt).await.unwrap();
     coordinator.publish(prepared, &service).await.unwrap();
     let refresh = coordinator
         .credential_change(&CredentialChangeScope::Unknown)
@@ -539,7 +541,7 @@ async fn candidate_raw_owner_sharing_does_not_relabel_retained_filtered_copy() {
         .await
         .is_err());
     let prepared = coordinator
-        .materialize(material_limit(refresh, 32))
+        .materialize(material_limit(refresh.clone(), 32))
         .await
         .unwrap();
     assert_eq!(
@@ -726,7 +728,7 @@ async fn candidate_partial_refresh_keeps_retained_logical_payload() {
         .is_err());
     assert_eq!(*provider.calls.lock().unwrap(), ["z-first"]);
     let prepared = coordinator
-        .materialize(material_limit(refresh, 32))
+        .materialize(material_limit(refresh.clone(), 32))
         .await
         .unwrap();
     assert_eq!(
@@ -736,11 +738,92 @@ async fn candidate_partial_refresh_keeps_retained_logical_payload() {
             .unwrap(),
         (32, 0, 32)
     );
+    drop(prepared);
+    let prepared = coordinator.materialize(refresh).await.unwrap();
     coordinator.publish(prepared, &service).await.unwrap();
     assert!(Arc::ptr_eq(&retained, &coordinator.active_servers().await[1]));
 }
 
 struct SlowSuccessfulResolver(Arc<CountingResolver>);
+
+#[tokio::test]
+async fn prepared_payload_exact_limit_includes_new_reused_and_partial_destinations() {
+    for partial in [false, true] {
+        for reuse in [false, true] {
+            for excess in [false, true] {
+                let coordinator = MaterializationCoordinator::new(
+                    resolver(&[("object-a", &[7; 16]), ("object-b", &[8; 16])]),
+                    ValidationOptions::default(),
+                );
+                let service = service();
+                let mut canonical = if partial {
+                    two_servers()
+                } else {
+                    source("object-a", "192.0.2.20")
+                };
+                if partial {
+                    canonical.server[1]
+                        .client_identity
+                        .as_mut()
+                        .unwrap()
+                        .tls13_epsk
+                        .as_mut()
+                        .unwrap()
+                        .central_keystore_reference = Some("object-b".to_owned());
+                }
+                let attempt = coordinator
+                    .accept_source(
+                        canonical.clone(),
+                        canonical.clone(),
+                        PreparedProxyPolicy::unobfuscated(),
+                    )
+                    .await;
+                if reuse {
+                    let prepared = coordinator.materialize(attempt).await.unwrap();
+                    coordinator.publish(prepared, &service).await.unwrap();
+                }
+                let attempt = if reuse && partial {
+                    coordinator
+                        .credential_change(&known("object-a"))
+                        .await
+                        .unwrap()
+                } else {
+                    coordinator
+                        .accept_source(
+                            canonical.clone(),
+                            canonical,
+                            PreparedProxyPolicy::unobfuscated(),
+                        )
+                        .await
+                };
+                let exact = if partial {
+                    106
+                } else {
+                    52
+                };
+                let prepared = coordinator
+                    .materialize(material_limit(attempt, exact - u64::from(excess)))
+                    .await
+                    .unwrap();
+                let result = coordinator.publish(prepared, &service).await;
+                assert_eq!(result.is_ok(), !excess, "partial={partial}, reuse={reuse}");
+                assert_eq!(
+                    service.server_count(),
+                    if reuse || !excess {
+                        if partial {
+                            2
+                        } else {
+                            1
+                        }
+                    } else {
+                        0
+                    }
+                );
+                assert_eq!(coordinator.preparation_slot.available_permits(), 1);
+            }
+        }
+    }
+}
 
 #[async_trait]
 impl CredentialResolver for SlowSuccessfulResolver {
@@ -816,8 +899,10 @@ async fn candidate_final_fence_rejects_tighter_policy_without_publication() {
             tokio::time::advance(Duration::from_secs(25)).await;
         }
         let before = health.snapshot();
+        let ledger = prepared.preparation.ledger.clone();
         assert!(coordinator.publish(prepared, &service).await.is_err());
         assert_eq!(health.snapshot(), before);
+        assert_eq!(ledger.lock().unwrap().charges().1, 0);
         assert!(Arc::ptr_eq(&active[0], &coordinator.active_servers().await[0]));
     }
 }
@@ -872,22 +957,287 @@ async fn candidate_postcommit_pause_past_deadline_still_reports_published() {
         resolver(&[("object-a", &[7; 16])]),
         ValidationOptions::default(),
     );
-    let service = service();
+    let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+    let service = service_with_health(health.clone());
     let canonical = source("object-a", "192.0.2.20");
     let attempt = coordinator
         .accept_source(canonical.clone(), canonical, PreparedProxyPolicy::unobfuscated())
         .await;
     let prepared = coordinator.materialize(attempt).await.unwrap();
     let release = service.pause_next_publication();
+    let mut updates = health.subscribe();
     let publishing = coordinator.publish(prepared, &service);
     tokio::pin!(publishing);
-    assert!(futures_util::poll!(&mut publishing).is_pending());
+    tokio::select! {
+        result = &mut publishing => panic!("publication completed before retirement release: {result:?}"),
+        changed = updates.changed() => changed.unwrap(),
+    }
     assert_eq!(service.server_count(), 1);
     assert_eq!(coordinator.preparation_slot.available_permits(), 1);
     tokio::time::advance(Duration::from_secs(31)).await;
     release.notify_one();
     assert_eq!(publishing.await.unwrap(), PublicationOutcome::Published);
     assert_eq!(coordinator.active_servers().await.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_preparation_does_not_block_source_expiry() {
+    let coordinator = Arc::new(MaterializationCoordinator::new(
+        resolver(&[("object-a", &[7; 16])]),
+        ValidationOptions::default(),
+    ));
+    let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+    let service = Arc::new(service_with_health(health.clone()));
+    let canonical = source("object-a", "192.0.2.20");
+    let attempt = coordinator
+        .accept_source(canonical.clone(), canonical, PreparedProxyPolicy::unobfuscated())
+        .await;
+    let prepared = coordinator.materialize(attempt).await.unwrap();
+    coordinator.publish(prepared, &service).await.unwrap();
+    let revision = health.snapshot().materialization_revision().unwrap();
+    let canonical = source("object-a", "192.0.2.21");
+    let attempt = coordinator
+        .accept_source(canonical.clone(), canonical, PreparedProxyPolicy::unobfuscated())
+        .await;
+    let prepared = coordinator.materialize(attempt).await.unwrap();
+    coordinator.source_unavailable(&health, true).await;
+    let (entered, release) = service.pause_native_preparation();
+    let release = ReleaseNative(Some(release));
+    let publishing = {
+        let coordinator = coordinator.clone();
+        let service = service.clone();
+        tokio::spawn(async move { coordinator.publish(prepared, &service).await })
+    };
+    tokio::time::timeout(Duration::from_secs(2), entered.notified())
+        .await
+        .expect("native worker must enter the barrier");
+    assert_eq!(coordinator.preparation_slot.available_permits(), 0);
+    let expired = tokio::time::timeout(
+        Duration::from_secs(1),
+        coordinator.expire_source(revision, &service, &health),
+    )
+    .await;
+    assert!(expired.is_ok(), "source expiry blocked behind native preparation");
+    expired.unwrap().unwrap();
+    assert_eq!(service.server_count(), 0);
+    assert_eq!(coordinator.preparation_slot.available_permits(), 0);
+    drop(release);
+    assert_eq!(publishing.await.unwrap().unwrap(), PublicationOutcome::Superseded);
+    assert_eq!(service.server_count(), 0);
+}
+
+struct ReleaseNative(Option<std::sync::mpsc::Sender<()>>);
+
+impl Drop for ReleaseNative {
+    fn drop(&mut self) {
+        if let Some(release) = self.0.take() {
+            let _ = release.send(());
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_client_setup_does_not_block_expiry_or_policy_publication() {
+    let coordinator = Arc::new(MaterializationCoordinator::new(
+        resolver(&[("object-a", &[7; 16])]),
+        ValidationOptions::default(),
+    ));
+    let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+    let service = Arc::new(service_with_health(health.clone()));
+    let canonical = source("object-a", "192.0.2.20");
+    let attempt = coordinator
+        .accept_source(canonical.clone(), canonical, PreparedProxyPolicy::unobfuscated())
+        .await;
+    let prepared = coordinator.materialize(attempt).await.unwrap();
+    coordinator.publish(prepared, &service).await.unwrap();
+    let revision = health.snapshot().materialization_revision().unwrap();
+    let canonical = source("object-a", "192.0.2.21");
+    let attempt = coordinator
+        .accept_source(canonical.clone(), canonical, PreparedProxyPolicy::unobfuscated())
+        .await;
+    let prepared = coordinator.materialize(attempt).await.unwrap();
+    let (entered, release) = service.pause_client_preparation();
+    let publishing = {
+        let coordinator = coordinator.clone();
+        let service = service.clone();
+        tokio::spawn(async move { coordinator.publish(prepared, &service).await })
+    };
+    tokio::time::timeout(Duration::from_secs(2), entered.notified())
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        service
+            .reload_runtime_policy(crate::RuntimePolicy::default())
+            .await
+            .unwrap();
+        coordinator.source_unavailable(&health, true).await;
+        coordinator
+            .expire_source(revision, &service, &health)
+            .await
+            .unwrap();
+    })
+    .await
+    .unwrap();
+    assert_eq!(service.server_count(), 0);
+    assert_eq!(coordinator.preparation_slot.available_permits(), 0);
+    release.notify_one();
+    assert_eq!(publishing.await.unwrap().unwrap(), PublicationOutcome::Superseded);
+    assert_eq!(coordinator.preparation_slot.available_permits(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_preparation_final_fence_preserves_concurrent_transitions() {
+    for transition in [
+        "source",
+        "source-rejected",
+        "credentials",
+        "credentials-rejected",
+        "source-first",
+        "credentials-first",
+        "policy",
+        "stop",
+        "catalog-aba",
+        "revocation",
+    ] {
+        let coordinator = Arc::new(MaterializationCoordinator::new(
+            resolver(&[("object-a", &[7; 16])]),
+            ValidationOptions::default(),
+        ));
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let service = Arc::new(service_with_health(health.clone()));
+        let canonical = source("object-a", "192.0.2.20");
+        let attempt = coordinator
+            .accept_source(
+                canonical.clone(),
+                canonical.clone(),
+                PreparedProxyPolicy::unobfuscated(),
+            )
+            .await;
+        let prepared = coordinator.materialize(attempt).await.unwrap();
+        coordinator.publish(prepared, &service).await.unwrap();
+        let baseline = health.snapshot().materialization_revision().unwrap();
+        let next = source("object-a", "192.0.2.21");
+        let attempt = coordinator
+            .accept_source(next.clone(), next, PreparedProxyPolicy::unobfuscated())
+            .await;
+        let prepared = coordinator.materialize(attempt).await.unwrap();
+        let (entered, release) = service.pause_native_preparation();
+        let release = ReleaseNative(Some(release));
+        let publishing = {
+            let coordinator = coordinator.clone();
+            let service = service.clone();
+            tokio::spawn(async move { coordinator.publish(prepared, &service).await })
+        };
+        tokio::time::timeout(Duration::from_secs(2), entered.notified())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            match transition {
+                "source" | "source-rejected" => {
+                    let revision = coordinator.admit_source(source("object-a", "192.0.2.22")).await;
+                    if transition == "source-rejected" { assert!(coordinator.reject_source(revision, &health).await); }
+                }
+                "credentials" | "credentials-rejected" => {
+                    let attempt = coordinator.credential_change(&known("object-a")).await.unwrap();
+                    if transition == "credentials-rejected" { assert!(coordinator.report_credential_result(&attempt, &health, true).await); }
+                }
+                "source-first" | "credentials-first" => {
+                    coordinator.source_unavailable(&health, true).await;
+                    coordinator.credentials_unavailable(&health).await;
+                    let order = if transition == "source-first" { [MaterialExpiry::Source, MaterialExpiry::Credentials] } else { [MaterialExpiry::Credentials, MaterialExpiry::Source] };
+                    for kind in order { coordinator.expire_material(kind, baseline, &service, &health).await.unwrap(); }
+                    assert_eq!(service.server_count(), 0);
+                }
+                "policy" => {
+                    let policy = tacacsrs_config::policy::parse_runtime_policy(br#"{"tacacsrs:runtime-policy":{"candidate-preparation":{"max-retained-material-bytes":1}}}"#).unwrap();
+                    service.apply_policy_candidate(Some(&policy)).await.unwrap();
+                }
+                "stop" => { service.serve_until(std::future::ready(()), Vec::new()).await.unwrap(); }
+                "catalog-aba" => {
+                    service.reload_materialized_servers_with_proxy_downstream_obfuscation(Vec::new(), PreparedProxyPolicy::unobfuscated()).await.unwrap();
+                    service.reload_materialized_servers_with_proxy_downstream_obfuscation(coordinator.active_servers().await, PreparedProxyPolicy::unobfuscated()).await.unwrap();
+                }
+                "revocation" => {
+                    let active = coordinator.active_servers().await;
+                    let mut replacement = tacacsrs_config::TacacsPlusServerBuilder::new(
+                        &active[0].name,
+                        active[0].server_type,
+                        &active[0].address,
+                        active[0].port,
+                    ).with_tls_server_authentication().build();
+                    replacement.server_authentication.as_mut().unwrap().require_stapled_ocsp =
+                        Some(tacacsrs_config::tacacsrs::RequireStapledOcsp { max_response_age_seconds: 300 });
+                    service.reload_materialized_servers_with_proxy_downstream_obfuscation(
+                        vec![Arc::new(replacement)], PreparedProxyPolicy::unobfuscated(),
+                    ).await.unwrap();
+                }
+                _ => unreachable!(),
+            }
+        }).await.unwrap_or_else(|_| panic!("{transition} blocked behind native preparation"));
+        let expected = health.snapshot();
+        assert_eq!(coordinator.preparation_slot.available_permits(), 0);
+        drop(release);
+        let result = publishing.await.unwrap();
+        assert!(!matches!(result, Ok(PublicationOutcome::Published)), "{transition}");
+        assert_eq!(health.snapshot(), expected, "late completion overwrote {transition}");
+        assert_eq!(coordinator.preparation_slot.available_permits(), 1);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_native_worker_seals_registration_and_retains_capacity_until_disposal() {
+    let coordinator = MaterializationCoordinator::new(
+        resolver(&[("object-a", &[7; 16])]),
+        ValidationOptions::default(),
+    );
+    let service = service();
+    let canonical = source("object-a", "192.0.2.20");
+    let attempt = coordinator
+        .accept_source(canonical.clone(), canonical.clone(), PreparedProxyPolicy::unobfuscated())
+        .await;
+    let prepared = coordinator.materialize(attempt).await.unwrap();
+    let observer = prepared.preparation.scope.register().unwrap();
+    let (entered, release) = service.pause_native_preparation();
+    let release = ReleaseNative(Some(release));
+    let mut publishing = Box::pin(coordinator.publish(prepared, &service));
+    assert!(futures_util::poll!(&mut publishing).is_pending());
+    tokio::time::timeout(Duration::from_secs(2), entered.notified())
+        .await
+        .unwrap();
+    drop(publishing);
+    assert!(observer.register().is_none());
+    drop(observer);
+    assert_eq!(coordinator.preparation_slot.available_permits(), 0);
+    for _ in 0..32 {
+        let attempt = coordinator
+            .accept_source(
+                canonical.clone(),
+                canonical.clone(),
+                PreparedProxyPolicy::unobfuscated(),
+            )
+            .await;
+        let mut waiting = Box::pin(coordinator.materialize(attempt));
+        assert!(futures_util::poll!(&mut waiting).is_pending());
+        assert_eq!(service.native_preparation_counts(), (1, 1));
+        drop(waiting);
+    }
+    let attempt = coordinator
+        .accept_source(canonical.clone(), canonical, PreparedProxyPolicy::unobfuscated())
+        .await;
+    let mut waiting = Box::pin(coordinator.materialize(attempt));
+    assert!(futures_util::poll!(&mut waiting).is_pending());
+    assert_eq!(service.server_count(), 0);
+    drop(release);
+    let prepared = tokio::time::timeout(Duration::from_secs(2), waiting)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(service.native_preparation_counts(), (0, 1));
+    assert_eq!(coordinator.preparation_slot.available_permits(), 0);
+    coordinator.publish(prepared, &service).await.unwrap();
+    assert_eq!(service.server_count(), 1);
+    assert_eq!(coordinator.preparation_slot.available_permits(), 1);
+    assert_eq!(service.native_preparation_counts(), (0, 1));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

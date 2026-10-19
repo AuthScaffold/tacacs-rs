@@ -45,7 +45,7 @@ impl Drop for OwnedScope {
 }
 
 pub(super) struct CrlScope {
-    identity: Option<Vec<u8>>,
+    identity: Option<crate::preparation_payload::PayloadBytes>,
     reasons: u16,
     certificates: CertificateScope,
     pub(super) has_reason_flags: bool,
@@ -86,7 +86,11 @@ impl CrlScope {
     }
 
     #[allow(unsafe_code)]
-    pub(super) fn read(crl: &X509Crl) -> anyhow::Result<Self> {
+    pub(super) fn read(
+        crl: &X509Crl,
+        payload: &crate::PreparationPayload,
+        encoded_bound: usize,
+    ) -> anyhow::Result<Self> {
         let nid = Nid::ISSUING_DISTRIBUTION_POINT.as_raw();
         // SAFETY: Extension pointers borrow the live CRL. The checked NID selects
         // NativeScope decoding. OwnedScope retains all decoded fields through encoding.
@@ -119,7 +123,10 @@ impl CrlScope {
                 .context("Could not encode CRL scope")?;
             let encoded = X509Extension::from_ptr(encoded.as_ptr());
             ensure!(
-                encoded.to_der()? == X509ExtensionRef::from_ptr(extension).to_der()?,
+                payload.native_bytes(encoded_bound, || encoded.to_der())?
+                    == payload
+                        .native_bytes(encoded_bound, || X509ExtensionRef::from_ptr(extension)
+                            .to_der())?,
                 "CRL scope must round-trip as one DER value"
             );
             let mut matching_scope = scope.0.as_ptr().read();
@@ -162,7 +169,8 @@ impl CrlScope {
             ))
             .ok_or_else(ErrorStack::get)
             .context("Could not encode CRL scope identity")?;
-            let identity = X509Extension::from_ptr(identity.as_ptr()).to_der()?;
+            let identity = X509Extension::from_ptr(identity.as_ptr());
+            let identity = payload.native_bytes(encoded_bound, || identity.to_der())?;
             Ok(Self {
                 identity: Some(identity),
                 reasons,
@@ -200,7 +208,7 @@ mod tests {
 
     fn partition(reasons: u16) -> CrlScope {
         CrlScope {
-            identity: Some(vec![1]),
+            identity: Some(vec![1].into()),
             reasons,
             certificates: CertificateScope::All,
             has_reason_flags: true,
@@ -252,7 +260,7 @@ mod tests {
         assert!(scope.merge(&partition(6)).is_err());
         assert!(scope
             .merge(&CrlScope {
-                identity: Some(vec![2]),
+                identity: Some(vec![2].into()),
                 reasons: 4,
                 certificates: CertificateScope::All,
                 has_reason_flags: true,

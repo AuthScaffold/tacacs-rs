@@ -8,7 +8,7 @@ use tokio::sync::oneshot;
 use crate::{PreparedEndpoint, RequestDeadline};
 use crate::connection::task::DriverTask;
 
-use super::{EndpointConnector, OperationKind};
+use super::{Endpoint, EndpointConnector, OperationKind};
 
 /// Maximum graceful retirement wait before forcing connector cleanup.
 const FAILURE_RETIREMENT_BUDGET: std::time::Duration = std::time::Duration::from_secs(1);
@@ -25,8 +25,10 @@ struct State<Connection: ?Sized> {
 
 pub(super) struct EndpointLifecycle<Connector: EndpointConnector> {
     pub(super) endpoint_name: String,
+    endpoint_identity: Option<Arc<()>>,
     connector: Arc<Connector>,
     state: Mutex<State<Connector::Connection>>,
+    _payload: crate::PreparationPayload,
 }
 
 struct SetupGuard(Arc<DriverTask>);
@@ -62,6 +64,7 @@ impl<Connector: EndpointConnector> EndpointLifecycle<Connector> {
     pub(super) fn new(connector: Arc<Connector>, endpoint_name: &str) -> Self {
         Self {
             endpoint_name: endpoint_name.to_owned(),
+            endpoint_identity: None,
             connector,
             state: Mutex::new(State {
                 closed: false,
@@ -72,7 +75,15 @@ impl<Connector: EndpointConnector> EndpointLifecycle<Connector> {
                 runtime: None,
                 retirement: None,
             }),
+            _payload: crate::PreparationPayload::default(),
         }
+    }
+
+    pub(super) fn for_endpoint(connector: Arc<Connector>, endpoint: &Endpoint) -> Self {
+        let mut lifecycle = Self::new(connector, endpoint.name());
+        lifecycle.endpoint_identity = Some(endpoint.identity());
+        lifecycle._payload = endpoint.prepared().preparation_payload.clone();
+        lifecycle
     }
 
     pub(super) fn ensure_open(&self) -> anyhow::Result<()> {
@@ -340,6 +351,17 @@ impl<Connector: EndpointConnector> EndpointLifecycle<Connector> {
         result
     }
 
+    fn is_unused(&self) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.cutoff.is_none()
+            && state.connections.is_empty()
+            && state.setups.iter().all(|task| task.is_finished())
+            && state.cleanups.iter().all(|task| task.is_finished())
+    }
+
     fn is_retiring(&self) -> bool {
         let state = self
             .state
@@ -380,6 +402,29 @@ impl<Connector: EndpointConnector> Default for RoutingRuntime<Connector> {
 }
 
 impl<Connector: EndpointConnector> RoutingRuntime<Connector> {
+    pub(super) fn discard_idle(&self, endpoint: &Arc<EndpointLifecycle<Connector>>) {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .1
+            .retain(|lifecycle| !Arc::ptr_eq(endpoint, lifecycle) || !lifecycle.is_unused());
+    }
+
+    pub(super) fn retains_endpoint(&self, endpoint: &Endpoint) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .1
+            .iter()
+            .any(|lifecycle| {
+                lifecycle
+                    .endpoint_identity
+                    .as_ref()
+                    .is_some_and(|retained| Arc::ptr_eq(retained, &endpoint.identity()))
+                    && !lifecycle.finished()
+            })
+    }
+
     pub(super) fn retiring_endpoints(&self) -> Vec<Arc<EndpointLifecycle<Connector>>> {
         let endpoints = self
             .state

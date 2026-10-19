@@ -19,26 +19,31 @@ struct CrlNumber([u8; 20]);
 pub(super) struct CrlMetadata {
     number: Option<CrlNumber>,
     base_number: Option<CrlNumber>,
-    scope: Option<Vec<u8>>,
-    authority: Option<Vec<u8>>,
+    scope: Option<crate::preparation_payload::PayloadBytes>,
+    authority: Option<crate::preparation_payload::PayloadBytes>,
     freshest: bool,
 }
 
 impl CrlMetadata {
-    pub(super) fn read(crl: &X509Crl) -> anyhow::Result<Self> {
-        let number = read_number(crl, Nid::CRL_NUMBER, false)?;
-        let base_number = read_number(crl, Nid::DELTA_CRL, true)?;
+    pub(super) fn read(
+        crl: &X509Crl,
+        payload: &crate::PreparationPayload,
+        encoded_bound: usize,
+    ) -> anyhow::Result<Self> {
+        let number = read_number(crl, Nid::CRL_NUMBER, false, payload, encoded_bound)?;
+        let base_number = read_number(crl, Nid::DELTA_CRL, true, payload, encoded_bound)?;
         let scope = extension(crl, Nid::ISSUING_DISTRIBUTION_POINT)?
-            .map(X509ExtensionRef::to_der)
+            .map(|extension| payload.native_bytes(encoded_bound, || extension.to_der()))
             .transpose()?;
-        let authority = checked_extension(crl, ExtensionKind::Authority)?;
-        let freshest = checked_extension(crl, ExtensionKind::Freshest)?.is_some();
+        let authority = checked_extension(crl, ExtensionKind::Authority, payload, encoded_bound)?;
+        let freshest =
+            checked_extension(crl, ExtensionKind::Freshest, payload, encoded_bound)?.is_some();
         ensure!(
             base_number.is_none() || !freshest,
             "Delta CRLs cannot contain freshest-CRL references"
         );
         ensure!(base_number.is_none() || number.is_some(), "Delta CRL has no CRL number");
-        validate_entries(crl, base_number.is_some())?;
+        validate_entries(crl, base_number.is_some(), payload, encoded_bound)?;
         Ok(Self {
             number,
             base_number,
@@ -128,7 +133,13 @@ fn extension(crl: &X509Crl, nid: Nid) -> anyhow::Result<Option<&X509ExtensionRef
 }
 
 #[allow(unsafe_code)]
-fn read_number(crl: &X509Crl, nid: Nid, critical: bool) -> anyhow::Result<Option<CrlNumber>> {
+fn read_number(
+    crl: &X509Crl,
+    nid: Nid,
+    critical: bool,
+    payload: &crate::PreparationPayload,
+    encoded_bound: usize,
+) -> anyhow::Result<Option<CrlNumber>> {
     let Some(extension) = extension(crl, nid)? else {
         return Ok(None);
     };
@@ -152,7 +163,8 @@ fn read_number(crl: &X509Crl, nid: Nid, critical: bool) -> anyhow::Result<Option
         .context("Could not encode CRL number")?;
         let encoded = X509Extension::from_ptr(encoded.as_ptr());
         ensure!(
-            encoded.to_der()? == extension.to_der()?,
+            payload.native_bytes(encoded_bound, || encoded.to_der())?
+                == payload.native_bytes(encoded_bound, || extension.to_der())?,
             "CRL number must round-trip as one DER value"
         );
         let value = integer.to_bn()?;
@@ -160,6 +172,7 @@ fn read_number(crl: &X509Crl, nid: Nid, critical: bool) -> anyhow::Result<Option
             !value.is_negative() && value.num_bits() <= 159,
             "CRL number must be nonnegative and fit 20 DER octets"
         );
+        let _bytes = payload.temporary(usize::try_from(value.num_bytes())?)?;
         let bytes = value.to_vec();
         let mut result = [0; 20];
         result[20 - bytes.len()..].copy_from_slice(&bytes);
@@ -174,7 +187,12 @@ enum ExtensionKind {
 }
 
 #[allow(unsafe_code)]
-fn validate_entries(crl: &X509Crl, delta: bool) -> anyhow::Result<()> {
+fn validate_entries(
+    crl: &X509Crl,
+    delta: bool,
+    payload: &crate::PreparationPayload,
+    encoded_bound: usize,
+) -> anyhow::Result<()> {
     for entry in crl.get_revoked().into_iter().flatten() {
         // SAFETY: Each extension borrows an entry owned by the live CRL. The
         // typed reason owns its decoded value; re-encoding returns an owned extension.
@@ -199,7 +217,10 @@ fn validate_entries(crl: &X509Crl, delta: bool) -> anyhow::Result<()> {
                 .context("Could not encode CRL entry reason")?;
             let encoded = X509Extension::from_ptr(encoded.as_ptr());
             ensure!(
-                encoded.to_der()? == X509ExtensionRef::from_ptr(original).to_der()?,
+                payload.native_bytes(encoded_bound, || encoded.to_der())?
+                    == payload
+                        .native_bytes(encoded_bound, || X509ExtensionRef::from_ptr(original)
+                            .to_der())?,
                 "CRL entry reason must round-trip as one DER value"
             );
             let reason = reason.get_i64()?;
@@ -249,7 +270,12 @@ impl Drop for DecodedExtension {
 }
 
 #[allow(unsafe_code)]
-fn checked_extension(crl: &X509Crl, kind: ExtensionKind) -> anyhow::Result<Option<Vec<u8>>> {
+fn checked_extension(
+    crl: &X509Crl,
+    kind: ExtensionKind,
+    payload: &crate::PreparationPayload,
+    encoded_bound: usize,
+) -> anyhow::Result<Option<crate::preparation_payload::PayloadBytes>> {
     let Some(extension) = extension(crl, kind.nid())? else {
         return Ok(None);
     };
@@ -279,8 +305,12 @@ fn checked_extension(crl: &X509Crl, kind: ExtensionKind) -> anyhow::Result<Optio
         ))
         .ok_or_else(ErrorStack::get)
         .context("Could not encode CRL metadata")?;
-        let encoded = X509Extension::from_ptr(encoded.as_ptr()).to_der()?;
-        ensure!(encoded == extension.to_der()?, "CRL metadata must round-trip as one DER value");
+        let encoded = X509Extension::from_ptr(encoded.as_ptr());
+        let encoded = payload.native_bytes(encoded_bound, || encoded.to_der())?;
+        ensure!(
+            encoded == payload.native_bytes(encoded_bound, || extension.to_der())?,
+            "CRL metadata must round-trip as one DER value"
+        );
         Ok(Some(encoded))
     }
 }
@@ -322,13 +352,13 @@ mod tests {
         base.freshest = false;
         assert!(!delta.matches_base(&base));
         base.freshest = true;
-        delta.scope = Some(vec![1]);
+        delta.scope = Some(vec![1].into());
         assert!(!delta.matches_base(&base));
-        base.scope = Some(vec![1]);
+        base.scope = Some(vec![1].into());
         assert!(delta.matches_base(&base));
-        delta.authority = Some(vec![2]);
+        delta.authority = Some(vec![2].into());
         assert!(!delta.matches_base(&base));
-        base.authority = Some(vec![2]);
+        base.authority = Some(vec![2].into());
         assert!(delta.matches_base(&base));
         base.base_number = Some(number(1));
         assert!(!delta.matches_base(&base));

@@ -80,6 +80,7 @@ pub struct TlsClientConfig {
     revocation_issuers: Vec<X509>,
     verification: CertificateVerification,
     provided_ocsp: Option<super::revocation::ProvidedResponse>,
+    payload: crate::PreparationPayload,
 }
 
 impl std::fmt::Debug for TlsClientConfig {
@@ -120,6 +121,29 @@ impl TlsClientConfig {
         identity: Option<CertificateIdentity<'_>>,
         verification: CertificateVerification,
     ) -> Result<Self> {
+        Self::prepare_with_payload(
+            peer_identity,
+            sni_name,
+            trust,
+            identity,
+            verification,
+            crate::PreparationPayload::default(),
+        )
+    }
+
+    /// Prepares certificate TLS with explicit Rust payload admission.
+    /// # Errors
+    /// Returns a material, native preparation, or payload admission error.
+    pub fn prepare_with_payload(
+        peer_identity: &str,
+        sni_name: Option<&str>,
+        trust: CertificateTrust<'_>,
+        identity: Option<CertificateIdentity<'_>>,
+        verification: CertificateVerification,
+        payload: crate::PreparationPayload,
+    ) -> Result<Self> {
+        payload.retain(peer_identity.len())?;
+        payload.retain(sni_name.map_or(0, str::len))?;
         crate::ServerAddress::new(peer_identity, 1).context("invalid TLS peer identity")?;
         if let Some(name) = sni_name {
             anyhow::ensure!(
@@ -128,9 +152,11 @@ impl TlsClientConfig {
             );
             crate::ServerAddress::new(name, 1).context("invalid TLS SNI name")?;
         }
-        let mut builder = TlsConfigurationBuilder::new().with_certificate_verification_disabled(
-            verification == CertificateVerification::DisabledForDevelopment,
-        );
+        let mut builder = TlsConfigurationBuilder::new()
+            .with_payload(payload.clone())
+            .with_certificate_verification_disabled(
+                verification == CertificateVerification::DisabledForDevelopment,
+            );
         let peer_pins = matches!(&trust, CertificateTrust::Certificates { end_entities, .. } if !end_entities.is_empty());
         let mut revocation_issuers = Vec::new();
         if let CertificateTrust::Certificates {
@@ -144,25 +170,43 @@ impl TlsClientConfig {
             );
             let authorities = authorities
                 .iter()
-                .map(|data| parse_certificate_data(data))
+                .map(|data| {
+                    Ok((
+                        parse_certificate_data_accounted(data, &payload)?,
+                        payload
+                            .native_bytes(data.len(), || Ok::<_, anyhow::Error>(data.to_vec()))?,
+                    ))
+                })
                 .collect::<Result<Vec<_>>>()?;
             let end_entities = end_entities
                 .iter()
-                .map(|data| parse_certificate_data(data))
+                .map(|data| {
+                    Ok((
+                        parse_certificate_data_accounted(data, &payload)?,
+                        payload
+                            .native_bytes(data.len(), || Ok::<_, anyhow::Error>(data.to_vec()))?,
+                    ))
+                })
                 .collect::<Result<Vec<_>>>()?;
-            revocation_issuers.clone_from(&authorities);
+            revocation_issuers = authorities
+                .iter()
+                .map(|(certificate, _)| certificate.clone())
+                .collect();
             builder = builder.with_certificate_trust(authorities, end_entities);
         }
         let mut has_client_intermediates = false;
         if let Some(identity) = identity {
             has_client_intermediates = !identity.intermediates.is_empty();
-            let certificate = parse_certificate_data(identity.certificate)
+            let certificate = parse_certificate_data_accounted(identity.certificate, &payload)
                 .context("Failed to parse TLS certificate")?;
             if let Some(public_key_info) = identity.public_key_info {
                 let public_key = PKey::public_key_from_der(public_key_info)
                     .context("failed to parse DER client public key information")?;
                 anyhow::ensure!(
-                    public_key.public_key_to_der()?.as_slice() == public_key_info,
+                    payload
+                        .native_bytes(public_key_info.len(), || public_key.public_key_to_der())?
+                        .as_slice()
+                        == public_key_info,
                     "Client public key must contain exactly one DER SubjectPublicKeyInfo value"
                 );
                 let certificate_key = certificate
@@ -176,12 +220,13 @@ impl TlsClientConfig {
             let key = parse_private_key_data(identity.private_key, identity.private_key_encoding)
                 .context("Failed to parse TLS private key")?;
             let mut chain = Vec::with_capacity(identity.intermediates.len() + 1);
-            chain.push(certificate);
+            chain.push((certificate, identity.certificate.len()));
             for intermediate in identity.intermediates {
-                chain.push(
-                    parse_certificate_data(intermediate)
+                chain.push((
+                    parse_certificate_data_accounted(intermediate, &payload)
                         .context("Failed to parse TLS client intermediate certificate")?,
-                );
+                    intermediate.len(),
+                ));
             }
             builder = builder.with_client_auth_der(chain, key);
         }
@@ -203,6 +248,7 @@ impl TlsClientConfig {
             evidence_lifetime: None,
             peer_identity: peer_identity.to_owned(),
             sni_name: sni_name.map(str::to_owned),
+            payload,
         })
     }
 
@@ -232,7 +278,8 @@ impl TlsClientConfig {
             self.verification == CertificateVerification::Required && !self.peer_pins,
             "CRL mode requires CA authentication with certificate verification enabled"
         );
-        let evidence = super::revocation::crls::CrlEvidence::prepare(lists, maximum_age)?;
+        let evidence =
+            super::revocation::crls::CrlEvidence::prepare(lists, maximum_age, &self.payload)?;
         self.evidence_lifetime = Some(match self.evidence_lifetime {
             Some(lifetime) => lifetime.intersect(evidence.lifetime)?,
             None => evidence.lifetime,
@@ -330,7 +377,8 @@ impl TlsClientConfig {
             self.verification == CertificateVerification::Required,
             "Fetched OCSP requires certificate verification"
         );
-        let response = super::revocation::ProvidedResponse::prepare(encoded, maximum_age)?;
+        let response =
+            super::revocation::ProvidedResponse::prepare(encoded, maximum_age, &self.payload)?;
         self.evidence_lifetime = Some(match self.evidence_lifetime {
             Some(current) => current.intersect(response.lifetime)?,
             None => response.lifetime,
@@ -352,7 +400,15 @@ fn data_contains_pem_header(data: &[u8]) -> bool {
         .any(|window| window == PEM_HEADER)
 }
 
+#[cfg(test)]
 fn parse_certificate_data(data: &[u8]) -> Result<X509> {
+    parse_certificate_data_accounted(data, &crate::PreparationPayload::default())
+}
+
+fn parse_certificate_data_accounted(
+    data: &[u8],
+    payload: &crate::PreparationPayload,
+) -> Result<X509> {
     anyhow::ensure!(!data.is_empty(), "certificate DER data is empty");
     anyhow::ensure!(
         !data_contains_pem_header(data),
@@ -360,7 +416,10 @@ fn parse_certificate_data(data: &[u8]) -> Result<X509> {
     );
     let certificate = X509::from_der(data).context("failed to parse DER certificate")?;
     anyhow::ensure!(
-        certificate.to_der()?.as_slice() == data,
+        payload
+            .native_bytes(data.len(), || certificate.to_der())?
+            .as_slice()
+            == data,
         "certificate input must contain exactly one DER certificate without trailing data"
     );
     Ok(certificate)

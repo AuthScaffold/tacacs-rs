@@ -40,6 +40,7 @@ pub mod admission;
 mod deadline;
 mod codec;
 mod endpoint;
+mod preparation_payload;
 mod establish;
 mod exchange_error;
 mod destination;
@@ -59,6 +60,7 @@ pub use statistics::{
 pub use deadline::{DeadlineElapsed, RequestDeadline};
 pub use codec::{PacketReadResult, PacketReader, PacketWriteResult, PacketWriter};
 pub use endpoint::{ConnectionGuard, PreparedEndpoint};
+pub use preparation_payload::{PreparationPayload, PreparationPayloadLedger};
 pub use destination::ServerAddress;
 pub use transport::tls::{
     CertificateIdentity, CertificateTrust, CertificateVerification, CertificateRevocationPolicy,

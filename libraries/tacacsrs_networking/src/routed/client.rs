@@ -24,6 +24,8 @@ pub struct RoutedClient<Connector: EndpointConnector = NativeConnector> {
     catalog: Arc<Catalog<Connector>>,
     connector: Arc<Connector>,
     runtime: Arc<RoutingRuntime<Connector>>,
+    #[cfg(test)]
+    drop_checkpoint: Option<Arc<std::sync::Barrier>>,
 }
 
 impl<Connector: EndpointConnector> Clone for RoutedClient<Connector> {
@@ -32,6 +34,18 @@ impl<Connector: EndpointConnector> Clone for RoutedClient<Connector> {
             catalog: Arc::clone(&self.catalog),
             connector: Arc::clone(&self.connector),
             runtime: Arc::clone(&self.runtime),
+            #[cfg(test)]
+            drop_checkpoint: self.drop_checkpoint.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl<Connector: EndpointConnector> Drop for RoutedClient<Connector> {
+    fn drop(&mut self) {
+        if let Some(checkpoint) = &self.drop_checkpoint {
+            checkpoint.wait();
+            checkpoint.wait();
         }
     }
 }
@@ -63,15 +77,17 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
             .into_iter()
             .map(|endpoint| {
                 let lifecycle =
-                    Arc::new(EndpointLifecycle::new(connector.clone(), endpoint.name()));
+                    Arc::new(EndpointLifecycle::for_endpoint(connector.clone(), &endpoint));
                 runtime.register(lifecycle.clone());
-                Arc::new(EndpointSlot::new(endpoint, lifecycle))
+                Arc::new(EndpointSlot::new(endpoint, lifecycle, Arc::downgrade(&runtime)))
             })
             .collect();
         Self {
             catalog: Arc::new(Catalog::new(slots)),
             connector,
             runtime,
+            #[cfg(test)]
+            drop_checkpoint: None,
         }
     }
 
@@ -86,12 +102,16 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
                     .find(|slot| slot.endpoint.same_identity(&endpoint))
                     .cloned()
                     .unwrap_or_else(|| {
-                        let lifecycle = Arc::new(EndpointLifecycle::new(
+                        let lifecycle = Arc::new(EndpointLifecycle::for_endpoint(
                             self.connector.clone(),
-                            endpoint.name(),
+                            &endpoint,
                         ));
                         self.runtime.register(lifecycle.clone());
-                        Arc::new(EndpointSlot::new(endpoint, lifecycle))
+                        Arc::new(EndpointSlot::new(
+                            endpoint,
+                            lifecycle,
+                            Arc::downgrade(&self.runtime),
+                        ))
                     })
             })
             .collect();
@@ -99,6 +119,8 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
             catalog: Arc::new(Catalog::new(slots)),
             connector: Arc::clone(&self.connector),
             runtime: Arc::clone(&self.runtime),
+            #[cfg(test)]
+            drop_checkpoint: None,
         };
         for operation in OperationKind::ALL {
             if let Some(previous) = self.active_endpoint(operation).await {
@@ -162,6 +184,12 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
                 }
             }
         }
+    }
+
+    /// Reports whether an endpoint has an active or unfinished retirement lifecycle.
+    #[must_use]
+    pub fn retains_endpoint(&self, endpoint: &Endpoint) -> bool {
+        self.runtime.retains_endpoint(endpoint)
     }
 
     /// Schedules terminal retirement of removed endpoints without delaying publication.
@@ -629,6 +657,160 @@ mod tests {
             )],
             connector,
         )
+    }
+
+    #[tokio::test]
+    async fn discarded_replacement_releases_speculative_lifecycle() {
+        let client = controlled_client(ControlledConnector::default());
+        let endpoint = Endpoint::new(
+            "discarded",
+            PreparedEndpoint::new(
+                crate::ServerAddress::new("127.0.0.1", 49).unwrap(),
+                crate::PreparedTransport::Tcp,
+                false,
+                None,
+                ConnectOptions::default(),
+            ),
+            OperationKind::ALL,
+        );
+        let replacement = client.with_endpoints(vec![endpoint.clone()]).await;
+        assert!(client.retains_endpoint(&endpoint));
+        drop(replacement);
+        assert!(!client.retains_endpoint(&endpoint));
+    }
+
+    #[derive(Debug)]
+    struct DisposalLedger {
+        bytes: Arc<std::sync::atomic::AtomicU64>,
+    }
+
+    impl crate::PreparationPayloadLedger for DisposalLedger {
+        fn reserve(&self, bytes: u64) -> anyhow::Result<()> {
+            self.bytes.fetch_add(bytes, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn release(&self, bytes: u64) {
+            self.bytes.fetch_sub(bytes, Ordering::SeqCst);
+        }
+    }
+
+    async fn assert_concurrent_disposal(shared_catalog: bool) {
+        let bytes = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let ledger = Arc::new(DisposalLedger {
+            bytes: bytes.clone(),
+        });
+        let weak_ledger = Arc::downgrade(&ledger);
+        let payload = crate::PreparationPayload::new(ledger);
+        let name = "discarded";
+        payload.retain(name.len() * 2).unwrap();
+        let mut prepared = PreparedEndpoint::new(
+            crate::ServerAddress::new("127.0.0.1", 49).unwrap(),
+            crate::PreparedTransport::Tcp,
+            false,
+            None,
+            ConnectOptions::default(),
+        );
+        prepared.preparation_payload = payload;
+        let endpoint = Endpoint::new(name, prepared, OperationKind::ALL);
+        let observer = RoutedClient::with_connector(Vec::new(), ControlledConnector::default());
+        let mut first = observer.with_endpoints(vec![endpoint.clone()]).await;
+        let mut second = if shared_catalog {
+            first.clone()
+        } else {
+            first.with_endpoints(vec![endpoint.clone()]).await
+        };
+        assert_eq!(Arc::ptr_eq(&first.catalog, &second.catalog), shared_catalog);
+        assert!(Arc::ptr_eq(&first.catalog.endpoints[0], &second.catalog.endpoints[0]));
+        let lifecycle = Arc::downgrade(&first.catalog.endpoints[0].lifecycle);
+        let slot = Arc::downgrade(&first.catalog.endpoints[0]);
+        let checkpoint = Arc::new(std::sync::Barrier::new(3));
+        first.drop_checkpoint = Some(checkpoint.clone());
+        second.drop_checkpoint = Some(checkpoint.clone());
+
+        let (retained_during_drop, charged_during_drop) = std::thread::scope(|scope| {
+            scope.spawn(move || drop(first));
+            scope.spawn(move || drop(second));
+            checkpoint.wait();
+            let retained = observer.retains_endpoint(&endpoint)
+                && lifecycle.upgrade().is_some()
+                && slot.upgrade().is_some()
+                && weak_ledger.upgrade().is_some();
+            let charged = bytes.load(Ordering::SeqCst);
+            checkpoint.wait();
+            (retained, charged)
+        });
+
+        assert!(retained_during_drop);
+        assert_eq!(charged_during_drop, u64::try_from(name.len() * 2).unwrap());
+        assert!(slot.upgrade().is_none());
+        assert!(
+            !observer.retains_endpoint(&endpoint),
+            "the final slot owner must unregister its unused lifecycle"
+        );
+        assert!(lifecycle.upgrade().is_none(), "the lifecycle name owner must drop");
+        assert!(weak_ledger.upgrade().is_some());
+        assert_eq!(bytes.load(Ordering::SeqCst), charged_during_drop);
+        drop(endpoint);
+        assert_eq!(bytes.load(Ordering::SeqCst), 0);
+        assert!(weak_ledger.upgrade().is_none());
+    }
+
+    /// Both old catalog-count checks finish before either client releases its catalog.
+    #[tokio::test]
+    async fn concurrent_disposal_of_final_client_clones() {
+        assert_concurrent_disposal(true).await;
+    }
+
+    /// Both old slot-count scans finish before either catalog releases the shared slot.
+    #[tokio::test]
+    async fn concurrent_disposal_of_catalogs_sharing_slot() {
+        assert_concurrent_disposal(false).await;
+    }
+
+    #[tokio::test]
+    async fn disposal_of_one_catalog_preserves_reused_slot_and_connection() {
+        let first = controlled_client(ControlledConnector::default());
+        let endpoint = first.catalog.endpoints[0].endpoint.clone();
+        let replacement = first.with_endpoints(vec![endpoint.clone()]).await;
+        let observer = first.with_endpoints(Vec::new()).await;
+        drop(first);
+        assert!(observer.retains_endpoint(&endpoint));
+
+        let binding = replacement
+            .bind(OperationKind::Accounting, Duration::ZERO)
+            .await
+            .unwrap();
+        let remaining = replacement.clone();
+        drop(replacement);
+        assert!(observer.retains_endpoint(&endpoint));
+        let reused = remaining
+            .bind(OperationKind::Accounting, Duration::ZERO)
+            .await
+            .unwrap();
+        assert!(Arc::ptr_eq(binding.connection(), reused.connection()));
+        assert_eq!(observer.connector.attempts.load(Ordering::SeqCst), 1);
+        drop(binding);
+        drop(reused);
+        drop(remaining);
+        assert!(observer.retains_endpoint(&endpoint));
+        observer
+            .close_and_join(crate::RequestDeadline::after(Duration::ZERO).unwrap())
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn disposal_of_slot_after_runtime_releases_lifecycle() {
+        let client = controlled_client(ControlledConnector::default());
+        let slot = client.catalog.endpoints[0].clone();
+        let runtime = Arc::downgrade(&client.runtime);
+        let lifecycle = Arc::downgrade(&slot.lifecycle);
+        drop(client);
+        assert!(runtime.upgrade().is_none());
+        assert!(lifecycle.upgrade().is_some());
+        drop(slot);
+        assert!(lifecycle.upgrade().is_none());
     }
 
     #[tokio::test(start_paused = true)]

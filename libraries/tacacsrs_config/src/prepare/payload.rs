@@ -219,6 +219,27 @@ impl ConfigurationMaterialBudget {
         Ok(())
     }
 
+    /// Reserves additional live Rust payload before a prepared copy.
+    /// # Errors
+    /// Returns an error for overflow or an exceeded limit.
+    pub fn reserve_extra(&mut self, bytes: u64) -> anyhow::Result<()> {
+        self.retain_extra(
+            self.extra
+                .checked_add(bytes)
+                .context("candidate payload size overflow")?,
+        )
+    }
+
+    /// Releases bytes only after their additional payload owner drops.
+    /// # Panics
+    /// Panics if `bytes` exceeds the current extra payload reservation.
+    pub fn release_extra(&mut self, bytes: u64) {
+        self.extra = self
+            .extra
+            .checked_sub(bytes)
+            .expect("released payload was reserved");
+    }
+
     fn charge(&mut self, logical: u64, extra: u64) -> anyhow::Result<()> {
         let total = logical
             .checked_add(extra)

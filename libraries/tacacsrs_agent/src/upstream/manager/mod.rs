@@ -64,6 +64,8 @@ pub(crate) struct UpstreamManager<
     connect_options: PrepareOptions,
     /// Serializes generation publication and server-availability observations.
     publication: PublicationController,
+    prepared_history:
+        std::sync::Mutex<Vec<(tacacsrs_networking::routed::Endpoint, Arc<TacacsPlusServer>)>>,
 }
 
 #[cfg(test)]
@@ -152,7 +154,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
     ) -> anyhow::Result<Self> {
         let servers = servers
             .into_iter()
-            .map(|server| PreparedServer::new(server, connect_options).map(Arc::new))
+            .map(|server| PreparedServer::new(server, connect_options.clone()).map(Arc::new))
             .collect::<anyhow::Result<Vec<_>>>()?;
         let credential_lifetime = servers
             .iter()
@@ -160,6 +162,13 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                 lifetime.intersect(server.evidence_lifetime)
             })?;
         let server_set = Arc::new(ServerSet::new(servers, connector));
+        let prepared_history = std::sync::Mutex::new(
+            server_set
+                .servers
+                .iter()
+                .map(|slot| (slot.endpoint.clone(), slot.server.clone()))
+                .collect(),
+        );
         Ok(Self {
             closed: std::sync::atomic::AtomicBool::new(false),
             catalog_reload_lock: tokio::sync::Mutex::new(()),
@@ -174,6 +183,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             })),
             connect_options,
             publication: PublicationController::new(health),
+            prepared_history,
         })
     }
 
@@ -463,6 +473,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn reload_shared_servers_with_proxy_downstream_obfuscation(
         &self,
         servers: Vec<Arc<TacacsPlusServer>>,
@@ -474,6 +485,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
 
     /// Commits caller bookkeeping with the catalog, before health readers see it.
     /// The callback must not block, fail, or acquire runtime or health locks.
+    #[cfg(test)]
     pub(crate) async fn reload_shared_servers_with_commit(
         &self,
         servers: Vec<Arc<TacacsPlusServer>>,

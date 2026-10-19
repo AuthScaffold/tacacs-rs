@@ -19,6 +19,7 @@ pub struct PskClientConfig {
     psk_dhe_ke_groups: Option<PskDheKeGroups>,
     ssl_context: SslContext,
     server_name: Option<String>,
+    _payload: crate::PreparationPayload,
 }
 
 impl std::fmt::Debug for PskClientConfig {
@@ -48,6 +49,30 @@ impl PskClientConfig {
         groups: &[PskDheGroup],
         server_name: Option<&str>,
     ) -> Result<Self> {
+        Self::prepare_with_payload(
+            identity,
+            key,
+            handshake_hash,
+            groups,
+            server_name,
+            crate::PreparationPayload::default(),
+        )
+    }
+
+    /// Prepares PSK TLS with explicit admission for Rust callback payload.
+    /// # Errors
+    /// Returns a material, native preparation, or payload admission error.
+    pub fn prepare_with_payload(
+        identity: &str,
+        key: &[u8],
+        handshake_hash: PskHash,
+        groups: &[PskDheGroup],
+        server_name: Option<&str>,
+        payload: crate::PreparationPayload,
+    ) -> Result<Self> {
+        payload.retain(identity.len())?;
+        payload.retain(key.len())?;
+        payload.retain(server_name.map_or(0, str::len))?;
         if let Some(name) = server_name {
             anyhow::ensure!(
                 name.parse::<std::net::IpAddr>().is_err(),
@@ -55,6 +80,7 @@ impl PskClientConfig {
             );
             crate::ServerAddress::new(name, 1).context("invalid TLS PSK SNI name")?;
         }
+        payload.retain(PskDheKeGroups::payload_bytes(groups)?)?;
         let psk_dhe_ke_groups = PskDheKeGroups::new(groups);
         let ssl_context =
             create_psk_ssl_context(identity, key, handshake_hash, psk_dhe_ke_groups.as_ref())
@@ -71,6 +97,7 @@ impl PskClientConfig {
             psk_dhe_ke_groups,
             ssl_context,
             server_name: server_name.map(str::to_owned),
+            _payload: payload,
         })
     }
 

@@ -6,11 +6,12 @@ use openssl::x509::verify::X509VerifyFlags;
 
 /// Builds a native context from validated certificate and key objects.
 pub(crate) struct TlsConfigurationBuilder {
-    root_certificates: Option<Vec<X509>>,
-    end_entity_certificates: Vec<X509>,
-    certificate_chain: Option<Vec<X509>>,
+    root_certificates: Option<Vec<(X509, crate::preparation_payload::PayloadBytes)>>,
+    end_entity_certificates: Vec<(X509, crate::preparation_payload::PayloadBytes)>,
+    certificate_chain: Option<Vec<(X509, usize)>>,
     private_key: Option<PKey<Private>>,
     disable_certificate_verification: bool,
+    payload: crate::PreparationPayload,
 }
 
 impl TlsConfigurationBuilder {
@@ -23,14 +24,20 @@ impl TlsConfigurationBuilder {
             certificate_chain: None,
             private_key: None,
             disable_certificate_verification: false,
+            payload: crate::PreparationPayload::default(),
         }
+    }
+
+    pub(crate) fn with_payload(mut self, payload: crate::PreparationPayload) -> Self {
+        self.payload = payload;
+        self
     }
 
     /// Selects explicit trust anchors and exact peer certificates.
     pub(crate) fn with_certificate_trust(
         mut self,
-        authorities: Vec<X509>,
-        end_entities: Vec<X509>,
+        authorities: Vec<(X509, crate::preparation_payload::PayloadBytes)>,
+        end_entities: Vec<(X509, crate::preparation_payload::PayloadBytes)>,
     ) -> Self {
         self.root_certificates = Some(authorities);
         self.end_entity_certificates = end_entities;
@@ -41,7 +48,7 @@ impl TlsConfigurationBuilder {
     /// already decoded into OpenSSL certificate and key objects.
     pub(crate) fn with_client_auth_der(
         mut self,
-        cert_chain: Vec<X509>,
+        cert_chain: Vec<(X509, usize)>,
         key: PKey<Private>,
     ) -> Self {
         self.certificate_chain = Some(cert_chain);
@@ -110,11 +117,11 @@ impl TlsConfigurationBuilder {
             if cert_chain.is_empty() {
                 anyhow::bail!("Client certificate chain was not provided");
             }
-            validate_client_chain(&cert_chain)?;
+            validate_client_chain(&cert_chain, &self.payload)?;
 
-            let leaf = cert_chain.remove(0);
+            let (leaf, _) = cert_chain.remove(0);
             builder.set_certificate(&leaf)?;
-            for cert in cert_chain {
+            for (cert, _) in cert_chain {
                 builder.add_extra_chain_cert(cert)?;
             }
             builder.set_private_key(&key)?;
@@ -152,21 +159,26 @@ pub(super) fn validate_client_certificate_dates(
     Ok(())
 }
 
-fn validate_client_chain(chain: &[X509]) -> anyhow::Result<()> {
+fn validate_client_chain(
+    chain: &[(X509, usize)],
+    payload: &crate::PreparationPayload,
+) -> anyhow::Result<()> {
     if chain.len() < 2 {
         return Ok(());
     }
-    let mut seen = std::collections::BTreeSet::new();
-    for certificate in chain {
+    let mut seen = Vec::new();
+    for (certificate, encoded_bytes) in chain {
+        let encoded = payload.native_bytes(*encoded_bytes, || certificate.to_der())?;
         anyhow::ensure!(
-            seen.insert(certificate.to_der()?),
+            !seen.contains(&encoded),
             "Client certificate chain contains duplicate certificates"
         );
+        seen.push(encoded);
     }
     for pair in chain.windows(2) {
-        let issuer = &pair[1];
+        let issuer = &pair[1].0;
         anyhow::ensure!(
-            issuer.issued(&pair[0]) == X509VerifyResult::OK,
+            issuer.issued(&pair[0].0) == X509VerifyResult::OK,
             "Client intermediate certificates must follow issuer order"
         );
         let public_key = issuer.public_key()?;
@@ -182,17 +194,17 @@ fn validate_client_chain(chain: &[X509]) -> anyhow::Result<()> {
     let anchor = chain
         .last()
         .ok_or_else(|| anyhow::anyhow!("Client certificate chain is empty"))?;
-    store.add_cert(anchor.clone())?;
+    store.add_cert(anchor.0.clone())?;
     let store = store.build();
     let mut untrusted = openssl::stack::Stack::new()?;
-    for certificate in chain.iter().skip(1).take(chain.len() - 2) {
+    for (certificate, _) in chain.iter().skip(1).take(chain.len() - 2) {
         untrusted.push(certificate.clone())?;
     }
     let mut verification = X509StoreContext::new()?;
     anyhow::ensure!(
         verification.init(
             &store,
-            &chain[0],
+            &chain[0].0,
             &untrusted,
             openssl::x509::X509StoreContextRef::verify_cert
         )?,
@@ -203,17 +215,11 @@ fn validate_client_chain(chain: &[X509]) -> anyhow::Result<()> {
 
 fn configure_certificate_trust(
     builder: &mut SslContextBuilder,
-    authorities: Vec<X509>,
-    end_entities: Vec<X509>,
+    authorities: Vec<(X509, crate::preparation_payload::PayloadBytes)>,
+    end_entities: Vec<(X509, crate::preparation_payload::PayloadBytes)>,
 ) -> anyhow::Result<()> {
-    let authority_der = authorities
-        .iter()
-        .map(|certificate| certificate.to_der())
-        .collect::<Result<Vec<_>, _>>()?;
-    let peer_der = end_entities
-        .iter()
-        .map(|certificate| certificate.to_der())
-        .collect::<Result<Vec<_>, _>>()?;
+    let (authorities, authority_der): (Vec<_>, Vec<_>) = authorities.into_iter().unzip();
+    let (end_entities, peer_der): (Vec<_>, Vec<_>) = end_entities.into_iter().unzip();
     anyhow::ensure!(
         !authority_der.is_empty() || !peer_der.is_empty(),
         "Explicit certificate trust must contain certificates"
@@ -245,7 +251,7 @@ fn configure_certificate_trust(
         let exact_peer = context.current_cert().is_some_and(|certificate| {
             certificate
                 .to_der()
-                .is_ok_and(|der| peer_der.contains(&der))
+                .is_ok_and(|der| peer_der.iter().any(|pin| pin.as_slice() == der))
         });
         let authority_path = context
             .chain()
@@ -253,7 +259,7 @@ fn configure_certificate_trust(
             .is_some_and(|anchor| {
                 anchor
                     .to_der()
-                    .is_ok_and(|der| authority_der.contains(&der))
+                    .is_ok_and(|der| authority_der.iter().any(|pin| pin.as_slice() == der))
             });
         let accepted = if exact_peer || authority_path {
             true
@@ -324,7 +330,16 @@ mod tests {
         let (cert_chain, key_der) = sample_client_auth_der();
 
         let config = TlsConfigurationBuilder::new()
-            .with_client_auth_der(cert_chain, key_der)
+            .with_client_auth_der(
+                cert_chain
+                    .into_iter()
+                    .map(|certificate| {
+                        let bytes = certificate.to_der().unwrap().len();
+                        (certificate, bytes)
+                    })
+                    .collect(),
+                key_der,
+            )
             .build();
 
         assert!(config.is_ok(), "unexpected error: {config:?}");
@@ -364,7 +379,10 @@ mod tests {
             for insecure in [false, true] {
                 assert!(
                     TlsConfigurationBuilder::new()
-                        .with_client_auth_der(vec![certificate.clone()], key.clone())
+                        .with_client_auth_der(
+                            vec![(certificate.clone(), certificate.to_der().unwrap().len())],
+                            key.clone()
+                        )
                         .with_certificate_verification_disabled(insecure)
                         .build()
                         .is_err(),

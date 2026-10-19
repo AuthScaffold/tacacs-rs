@@ -108,7 +108,7 @@ struct WithdrawnMaterial {
 enum PublishedMaterial {
     #[default]
     Unpublished,
-    Applied(AppliedCatalog),
+    Applied(Arc<AppliedCatalog>),
     Withdrawn(WithdrawnMaterial),
 }
 
@@ -809,22 +809,27 @@ impl MaterializationCoordinator {
         prepared: PreparedMaterialization,
         service: &TacacsClientService,
     ) -> anyhow::Result<PublicationOutcome> {
-        let mut state = prepared.attempt.admission.run(self.state.lock()).await?;
+        let state = prepared.attempt.admission.run(self.state.lock()).await?;
         if prepared.attempt.revision != state.revision {
             return Ok(PublicationOutcome::Superseded);
         }
         if state.published.expired().contains(MaterialExpiry::Source) && !state.source_current {
             return Ok(PublicationOutcome::Superseded);
         }
+        let published = state.published.applied().map(|_| match &state.published {
+            PublishedMaterial::Applied(catalog) => Arc::clone(catalog),
+            _ => unreachable!("applied catalog was checked"),
+        });
+        drop(state);
 
         let mut candidate_by_name = prepared
             .candidates
             .into_iter()
             .map(|(server, lifetime)| (server.name.clone(), (server, lifetime)))
             .collect::<BTreeMap<_, _>>();
-        let active_by_name = state
-            .published
-            .servers()
+        let active_by_name = published
+            .as_ref()
+            .map_or(&[][..], |catalog| catalog.servers.as_slice())
             .iter()
             .map(|server| (server.name.as_str(), Arc::clone(server)))
             .collect::<BTreeMap<_, _>>();
@@ -836,16 +841,14 @@ impl MaterializationCoordinator {
                 .get(&desired.name)
                 .map(|(_, lifetime)| *lifetime)
                 .or_else(|| {
-                    state
-                        .published
-                        .applied()
+                    published
+                        .as_ref()
                         .and_then(|catalog| catalog.lifetimes.get(&desired.name))
                         .copied()
                 })
                 .ok_or_else(|| anyhow::anyhow!("active credential validity is missing"))?;
-            if let Some(previous) = state
-                .published
-                .applied()
+            if let Some(previous) = published
+                .as_ref()
                 .and_then(|catalog| catalog.lifetimes.get(&desired.name))
             {
                 if previous.validity == lifetime.validity {
@@ -870,34 +873,47 @@ impl MaterializationCoordinator {
         }
         drop(candidate_by_name);
         drop(prepared.runtime_source);
+        drop(active_by_name);
+        drop(published);
 
-        service
-            .publish_materialized_servers(crate::upstream::manager::PublicationCandidate::new(
-                next_active.clone(),
+        let candidate = service
+            .prepare_materialized_servers(crate::upstream::manager::PublicationCandidate::new(
+                next_active,
                 prepared.proxy_policy,
                 Some(validity),
                 Some(prepared.preparation),
-                move || {
-                    let credential_references = state
-                        .desired_runtime
-                        .dependencies()
-                        .as_ref()
-                        .is_none_or(|dependencies| !dependencies.is_empty());
-                    state.published = PublishedMaterial::Applied(AppliedCatalog {
-                        servers: next_active,
-                        lifetimes: next_lifetimes,
-                        revision: state.revision,
-                        credential_references,
-                    });
-                    Some(MaterializationCommit {
-                        revision: state.revision,
-                        source_current: state.source_current,
-                        expired: ExpiredMaterial::None,
-                        credential_references,
-                        validity,
-                    })
-                },
+                (),
             ))
+            .await?;
+        let mut state = prepared.attempt.admission.run(self.state.lock()).await?;
+        if prepared.attempt.revision != state.revision
+            || (state.published.expired().contains(MaterialExpiry::Source) && !state.source_current)
+        {
+            return Ok(PublicationOutcome::Superseded);
+        }
+        let next_active = candidate.servers.clone();
+
+        service
+            .publish_materialized_servers(candidate.with_commit(move || {
+                let credential_references = state
+                    .desired_runtime
+                    .dependencies()
+                    .as_ref()
+                    .is_none_or(|dependencies| !dependencies.is_empty());
+                state.published = PublishedMaterial::Applied(Arc::new(AppliedCatalog {
+                    servers: next_active,
+                    lifetimes: next_lifetimes,
+                    revision: state.revision,
+                    credential_references,
+                }));
+                Some(MaterializationCommit {
+                    revision: state.revision,
+                    source_current: state.source_current,
+                    expired: ExpiredMaterial::None,
+                    credential_references,
+                    validity,
+                })
+            }))
             .await?;
         Ok(PublicationOutcome::Published)
     }

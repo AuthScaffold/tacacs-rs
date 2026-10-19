@@ -86,6 +86,16 @@ pub(crate) struct PskDheKeGroups {
 }
 
 impl PskDheKeGroups {
+    pub(super) fn payload_bytes(groups: &[PskDheGroup]) -> anyhow::Result<usize> {
+        groups
+            .iter()
+            .try_fold(groups.len().saturating_sub(1), |total, group| {
+                total
+                    .checked_add(group.openssl_name().len())
+                    .ok_or_else(|| anyhow::anyhow!("PSK group payload size overflow"))
+            })
+    }
+
     pub(crate) fn new(groups: &[PskDheGroup]) -> Option<Self> {
         if groups.is_empty() {
             return None;

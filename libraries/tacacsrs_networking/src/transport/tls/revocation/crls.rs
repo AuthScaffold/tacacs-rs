@@ -40,6 +40,7 @@ impl CrlEvidence {
     pub(in crate::transport::tls) fn prepare(
         encoded: &[&[u8]],
         maximum_age: Duration,
+        payload: &crate::PreparationPayload,
     ) -> anyhow::Result<Self> {
         ensure!(!encoded.is_empty(), "Required CRL set is empty");
         ensure!(encoded.len() <= MAXIMUM_CRLS, "CRL set exceeds the 128-list limit");
@@ -63,11 +64,14 @@ impl CrlEvidence {
         for data in encoded {
             let crl = X509Crl::from_der(data).context("Invalid DER CRL")?;
             ensure!(
-                crl.to_der()?.as_slice() == *data,
+                payload
+                    .native_bytes(data.len(), || crl.to_der())?
+                    .as_slice()
+                    == *data,
                 "CRL input must contain exactly one DER object"
             );
-            let scope = CrlScope::read(&crl)?;
-            let entry = CrlMetadata::read(&crl)?;
+            let scope = CrlScope::read(&crl, payload, data.len())?;
+            let entry = CrlMetadata::read(&crl, payload, data.len())?;
             ensure!(
                 !entry.uses_delta() || !scope.has_reason_flags,
                 "Delta evidence with reason flags is not supported"

@@ -109,6 +109,19 @@ TACACS+ shared-secret obfuscation is not confidentiality. PAP is allowed over
 the operator-configured transport for interoperability. Prefer TACACS+ over TLS
 1.3 for production deployments.
 
+## Preparation Payload
+
+`PreparationPayloadLedger` provides checked reservation and release without a configuration schema or async runtime.
+`PreparationPayload` shares the reservations for one endpoint. Byte owners release temporary reservations only after their buffers drop.
+Native TLS preparation can accept this owner through `prepare_with_payload`. The ordinary `prepare` methods are unmanaged entry points.
+They use the same implementation without a candidate limit. They are not a global resource guarantee.
+
+The payload measure includes Rust strings, keys, callback DER, fetched evidence, and temporary metadata and comparison buffers.
+It excludes native object internals, fixed-layout and collection metadata, allocator slack, connection execution, and process RSS.
+Known byte copies require reservation before allocation. Opaque native encodings pass a handoff check before retention or another copy.
+The caller must retain its registered work lease through blocking execution and queued results.
+The agent owns this scheduling contract. Networking does not create a preparation executor.
+
 ## Baseline
 
 The ignored `routing_burst_baseline` tests compare registry mechanics without
