@@ -118,7 +118,20 @@ Do not start descendant implementation while predecessor review revisions remain
 14. Triage every review comment. Apply actionable fixes through the established two-model review and verification procedure.
 15. Request Copilot re-review after material fixes. Squash-merge only after actionable comments are resolved and required checks pass.
 16. Use a concise squash title and a description covering the change, review resolutions, checks, and material limitations.
-17. Record the PR and squash SHA on the tracking branch, update descendants without losing work, and continue with the next iteration.
+17. Record the PR and squash SHA on the tracking branch and update descendants without losing work.
+18. Confirm the merged iteration's worktree is clean and no process uses its resources. Remove its worktree, owned cache, and completed temporary artifacts.
+19. Verify active/protected worktrees remain intact, then continue with the next iteration.
+
+Cleanup starts only after merge and preservation of the review, generation, and verification receipts.
+Use `git worktree remove` without forcing dirty worktrees. Do not delete branch history or shared toolchains/registries as cache cleanup.
+Delete only exact iteration-owned paths. Already absent caches need no recovery or recreation.
+Active iteration resources and the pre-existing diagnostics worktree are excluded.
+
+Cleanup receipt, 2026-10-19: merged PRs #278 through #281 were confirmed merged and their worktrees clean and idle.
+Their four implementation worktrees were removed without force. Iteration 01/02 caches were already absent; the remaining 03/04 caches occupied about 44 GiB and were removed.
+Known completed PR drafts, merge descriptions, the test-alert reply draft, old CI watch log, and one owned completed interop directory were removed.
+Branches, merge commits, GitHub review records, and this tracking evidence remain available.
+The active iteration 05 worktree/cache/draft and the pre-existing diagnostics checkout were preserved and verified.
 
 Give each reviewer the predecessor SHA, complete iteration diff, relevant contracts, and existing check results.
 Require direct necessary revisions, not only review advice.
