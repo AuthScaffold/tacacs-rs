@@ -1331,7 +1331,9 @@ GitHub returned `merged: true` and squash `efdc20d60b4d756a37e99c5b13c0c3580781b
 Fetched `origin/main` and the reviewed topic head have identical tree `717dcc9a01be9ff38f684d615cbf6ee0b13b51d3`.
 The published iteration 06 branch integrated this squash through a normal merge, without rewriting history.
 Its complete tested tree stayed unchanged, as did the uncommitted iteration 07 patch after its parent fast-forward.
-Cleanup of iteration 05's clean idle worktree, owned cache, and completed temporary artifacts is next.
+After preserving this receipt, the clean idle iteration 05 worktree was removed without force.
+Its exact owned 18 GiB cache and six completed PR/reply/squash-description temporary files were removed.
+Branch history and GitHub evidence remain intact. Active iterations 06 and 07 and the diagnostics checkout were preserved.
 
 #### Canonical Contract
 
@@ -1577,7 +1579,11 @@ Do not rewrite or force-push its published history. Rerun affected checks and re
 Initial Copilot review `5574390116` on `572652e3c41936fbad46a4c961e2be7f52560a30` reported no open issues; no threads were unresolved.
 After predecessor squash, normal merge `f8a59ac9fef6700d310d0f796c488462e361ceef` retains tested tree `9d04f8c7cb54d2c80aff65bce44000ef3a385688` exactly.
 Focused Rust 1.88 reruns passed 235 agent, 257 networking, and 83 protocol tests; two existing networking benchmarks remained ignored.
-The final-head push, base retarget, fresh review request, and required CI are pending. Earlier-head review and queued CI do not clear the merge head.
+The final head was pushed normally and PR #283 now targets `main`, with exactly 36 implementation files and no tracking documents.
+Fresh Copilot review `5574629008` on `f8a59ac9fef6700d310d0f796c488462e361ceef` reports no open issues; all threads are resolved.
+Retargeting superseded workflow `39285678964`; its cancellation is not a source failure or a passing gate.
+Replacement workflow `39285889531` runs on the same final head. ARMhf, Windows tests, MSRV, and all consumer profiles passed at the latest observation.
+Remaining build and aggregate checks are still in progress. No merge clearance is claimed.
 
 Prepare one immutable validated body and encoded length before admission.
 Reuse that body for eligible attempts without renewing request deadlines.
@@ -1601,7 +1607,66 @@ Checks: protocol/agent/networking/IPC/CLI/Bash tests, native interop, connector 
 
 ### 07: Binding Outcomes
 
-Status: planned. Scope: R10.
+Status: published as staged PR #284 on reviewed predecessor `f8a59ac9fef6700d310d0f796c488462e361ceef`; both named reviews accepted the unchanged source.
+Coordinator final workspace gates passed. Scope: R10.
+
+#### Implementation And Review Receipt
+
+Worktree: `/home/vscode/tacacs-rs-07-binding-outcomes`; branch: `refactor/general-iterations/07-binding-outcomes`.
+Eight tracked files are modified, with no new or deleted files and no tracking-document changes.
+Lease-only admission moved from manager methods to `RoutingLease::{reserve, admit_reserved, admit}`.
+`RequestRouting` calls its lease directly and retains manager ownership only for binding and availability publication.
+`BoundServer::{note_success, note_failure}` replace behavior-free router and manager outcome forwarders.
+Typed attempts and raw managed conversations no longer retain a router solely for recording outcomes.
+Guard scopes, disarm conditions, absolute deadlines, delivery classifications, retry decisions, raw pinning, session mapping, and reply acknowledgement remain unchanged.
+
+The first focused compile exposed seven test consumers of the removed admission API. Those consumers were migrated before further changes.
+Structural characterization checks then passed: captured retry across reload, cancellation releasing capacity, and two cases where leases or bindings outlive their former manager/router.
+Rust 1.88 package checks passed 237 agent, 257 networking, four connector, and 11 networking doctests.
+Two existing networking benchmarks remain ignored. Agent tests had no ignored cases.
+The standalone generic connector fixture compiled. The monomorphic fixture failed with the expected Send generality diagnostic.
+An unwritable initial output location was corrected and is not counted as verification.
+Strict agent Clippy, private docs, nightly formatting, 35 architecture checks, diagnostics, and whitespace checks passed.
+
+Focused coverage ran with the existing LLVM tools and all 237 agent tests:
+
+```bash
+CARGO_TARGET_DIR=/home/vscode/.cache/tacacs-rs-07-binding-outcomes cargo +1.88.0 llvm-cov test -p tacacsrs-agent --lib --all-features --locked --lcov --output-path /home/vscode/.cache/tacacs-rs-07-binding-outcomes/agent-ownership.lcov
+```
+
+Covered lines were 217/221 in the lease/binding file, 64/73 in typed routing, and 212/290 in raw sessions.
+These figures are focused evidence, not a complete coverage claim.
+
+`GPT-6 Astra (copilot)` accepted the source without edits and independently passed 112 selected behavior tests.
+Those selections covered manager behavior, typed routing, raw bridging, networking routes, admission, retry, and connector boundaries.
+It also passed the compiler fixture, strict Clippy, formatting, 35 architecture tests, and whitespace checks.
+`Claude Opus 5.5 (copilot)` accepted the same unchanged source and passed 82 manager/router/bridge tests, with no ignored cases.
+Both reviews confirmed explicit shutdown still closes admission and generation fencing remains owned by the networking binding.
+Cleanup still depends on connectors honoring their close/join contracts; no new hard-cancellation guarantee is introduced.
+
+Both reviewers cover complete changed-content manifest `f43a267645340a9b92a0e74f749cf580290d8b2057a021ca57fc0d9e159582c5`.
+The separate tracked binary patch SHA-256 is `d0c2c4b5b2d04bd163f1e0472b0a88a73f4d962ce9b7ade9763525a5b9abec77`.
+Parent integration preserved that patch byte for byte.
+No parser, schema, dependency, or unsafe changes require fuzz, compatibility, audit, or new Miri checks.
+Independent native prepared-source and peer suites were not rerun for this structural iteration.
+#### Coordinator Final Gate Receipt
+
+The complete final sequence used `/home/vscode/.cache/tacacs-rs-07-binding-outcomes` and emitted `ALL_ITERATION_07_GATES_PASSED`.
+Formatting, strict nightly workspace Clippy, warning-free private docs, stable build, all-feature tests, and Rust 1.88 all-target checks passed.
+All 26 YANG tests and 256 selected delivery tests passed. Whitespace checks passed and the reviewed patch hash is unchanged.
+The final run included 237 agent tests, 257 passing networking unit tests, 83 protocol tests, and 55 native prepared-source cases.
+Ten existing ignored Rust tests remain excluded; the independent peer runner was not rerun for this structural iteration.
+The existing optional `console-subscriber` manifest advisory did not fail Clippy. No local validation process remains active.
+Windows and ARMhf remain current-head hosted gates, not executed local evidence.
+
+#### Publication Receipt
+
+[PR #284](https://github.com/AuthScaffold/tacacs-rs/pull/284) targets `refactor/general-iterations/06-prepared-operations`.
+Published head `ded01e643f27d1847ca7e847bc154464433db5bb` has tested tree `9c03e697aa8a65e10d750145048f4998d6fbfe0c`.
+The remote PR reports exactly eight implementation files, no tracking documents, and the `skip-release` label.
+Copilot review was requested on that head. Required workflow `39290252584` started and is in progress.
+The predecessor remains subject to its replacement required workflow `39285889531`; pending checks are not merge clearance.
+No iteration 07 worktree or cache is eligible for cleanup before merge and preservation of its receipts.
 
 Move lease-only admission operations onto captured requests and outcome recording onto bindings.
 Remove behavior-free router/manager forwarding and unnecessary router retention from attempts.
@@ -1623,6 +1688,15 @@ Checks: typed/raw retry, cancellation, stale-outcome and continuation tests, con
 ### 08: File Observation
 
 Status: planned. Scope: R13.
+
+Read-only preflight confirms two owners in the current predecessor: private `source/file.rs::FileObservation` and public `source/policy.rs::FilePolicyObservation`.
+Their common mechanism owns pending invalidation, debounce state, a retained read task, watcher failures, and platform directory checks.
+Keep the public policy wrapper and both parsing/event contracts separate from the private shared mechanism.
+Configuration can have a finite baseline without a native watcher; that mode must still return its baseline and then end.
+Keep separate invalidation and failure receivers so failure checks cannot consume changes received during an active read.
+Configuration alone owns previous-snapshot delta history. Do not introduce policy snapshot history into the observer.
+Started operating-system reads can finish after drop, but must not publish into a dropped observation. Preserve that limitation without claiming hard I/O cancellation.
+No iteration 08 branch, worktree, cache, or implementation exists yet.
 
 Extract one private owned file-observation mechanism for debounce, retained reads, failure priority, and cleanup.
 Keep separate configuration and policy parsing, events, and accepted-snapshot state.
