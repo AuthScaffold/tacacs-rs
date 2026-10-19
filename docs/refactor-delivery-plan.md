@@ -1170,7 +1170,7 @@ Checks: resolution/materialization/source-immutability tests, provider suites, d
 
 ### 05: Candidate Budgets
 
-Status: implemented; both named reviews cover the final complete content manifest. Final common local gates passed.
+Status: squash-merged as `efdc20d60b4d756a37e99c5b13c0c3580781b9fc`; both named reviews and final local and hosted gates passed.
 Scope: R14 admission and configuration-material phase.
 Iteration 10 completes R14 through prepared-runtime accounting and native preparation lock ownership.
 Do not close R14 after this iteration alone.
@@ -1320,6 +1320,18 @@ Required workflow `39277505296` remains queued at the last reliable observation.
 GitHub reported Actions, Pages, and Webhooks incident `8tzbpcnl75jp`, updated at 2026-10-19 15:54 UTC.
 That incident is consistent with current service trouble, but does not prove the cause of the initial queue delay.
 The PR remains unmerged. No required-check bypass or unsupported hosted-platform success claim is authorized.
+
+#### Merge Receipt
+
+Required current-head workflow `39277505296` subsequently completed successfully on `8e0bdc9dbc329acab018ce5e92bb72e50fe88049`.
+ARMhf job `118145680649`, Windows testing job `118149258839`, and both CI-success gates passed.
+Copilot review `5573894855` had no open issues, all review threads were resolved, and the PR-scoped open-alert query was empty.
+The final mergeability check was clean. The guarded REST squash request specified that exact reviewed head.
+GitHub returned `merged: true` and squash `efdc20d60b4d756a37e99c5b13c0c3580781b9fc`.
+Fetched `origin/main` and the reviewed topic head have identical tree `717dcc9a01be9ff38f684d615cbf6ee0b13b51d3`.
+The published iteration 06 branch integrated this squash through a normal merge, without rewriting history.
+Its complete tested tree stayed unchanged, as did the uncommitted iteration 07 patch after its parent fast-forward.
+Cleanup of iteration 05's clean idle worktree, owned cache, and completed temporary artifacts is next.
 
 #### Canonical Contract
 
@@ -1495,8 +1507,8 @@ Checks: canonical policy/default tests, actual YANG regeneration, paused-time an
 
 ### 06: Prepared Operations
 
-Status: published as staged PR #283; both named reviews and coordinator final gates passed.
-The PR targets iteration 05 while required hosted checks remain pending, as permitted by the common procedure.
+Status: published as PR #283; both named reviews and coordinator final gates passed.
+The predecessor merged; normal merge `f8a59ac9fef6700d310d0f796c488462e361ceef` preserves the complete tested tree for retargeting to `main`.
 Scope: R6 and the consuming-IPC/Bash-builder portions of R15.
 
 #### Initial Implementation Receipt
@@ -1562,6 +1574,10 @@ Copilot review was requested on that head. Required workflow `39282835429` start
 An empty initial comment list or pending workflow is not merge clearance.
 After predecessor merge, update this published branch through a normal forward merge of updated `main`, then retarget and verify the complete tree.
 Do not rewrite or force-push its published history. Rerun affected checks and require current-head review and CI before merge.
+Initial Copilot review `5574390116` on `572652e3c41936fbad46a4c961e2be7f52560a30` reported no open issues; no threads were unresolved.
+After predecessor squash, normal merge `f8a59ac9fef6700d310d0f796c488462e361ceef` retains tested tree `9d04f8c7cb54d2c80aff65bce44000ef3a385688` exactly.
+Focused Rust 1.88 reruns passed 235 agent, 257 networking, and 83 protocol tests; two existing networking benchmarks remained ignored.
+The final-head push, base retarget, fresh review request, and required CI are pending. Earlier-head review and queued CI do not clear the merge head.
 
 Prepare one immutable validated body and encoded length before admission.
 Reuse that body for eligible attempts without renewing request deadlines.
