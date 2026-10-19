@@ -33,19 +33,141 @@ enum SelectionTrigger {
     Dependency(DependencyKey),
 }
 
+enum DependencyKnowledge {
+    Unknown,
+    Known(BTreeMap<DependencyKey, BTreeSet<String>>),
+}
+
+impl DependencyKnowledge {
+    fn as_ref(&self) -> Option<&BTreeMap<DependencyKey, BTreeSet<String>>> {
+        match self {
+            Self::Unknown => None,
+            Self::Known(index) => Some(index),
+        }
+    }
+
+    fn index_mut(&mut self) -> &mut BTreeMap<DependencyKey, BTreeSet<String>> {
+        if matches!(self, Self::Unknown) {
+            *self = Self::Known(BTreeMap::new());
+        }
+        match self {
+            Self::Known(index) => index,
+            Self::Unknown => unreachable!("dependency index was initialized"),
+        }
+    }
+}
+
+struct FilteredSource {
+    source: Arc<TacacsPlus>,
+    proxy_policy: PreparedProxyPolicy,
+    dependencies: DependencyKnowledge,
+}
+
+enum DesiredRuntime {
+    Unfiltered(DependencyKnowledge),
+    Filtered(FilteredSource),
+}
+
+impl DesiredRuntime {
+    fn projection(&self) -> Option<&FilteredSource> {
+        match self {
+            Self::Unfiltered(_) => None,
+            Self::Filtered(projection) => Some(projection),
+        }
+    }
+
+    fn dependencies(&self) -> &DependencyKnowledge {
+        match self {
+            Self::Unfiltered(dependencies) => dependencies,
+            Self::Filtered(projection) => &projection.dependencies,
+        }
+    }
+
+    fn dependencies_mut(&mut self) -> &mut DependencyKnowledge {
+        match self {
+            Self::Unfiltered(dependencies) => dependencies,
+            Self::Filtered(projection) => &mut projection.dependencies,
+        }
+    }
+}
+
+struct AppliedCatalog {
+    servers: Vec<Arc<TacacsPlusServer>>,
+    lifetimes: BTreeMap<String, super::CredentialLifetime>,
+    revision: MaterializationRevision,
+    credential_references: bool,
+}
+
+struct WithdrawnMaterial {
+    revision: MaterializationRevision,
+    expired: ExpiredMaterial,
+    credential_references: bool,
+}
+
+#[derive(Default)]
+enum PublishedMaterial {
+    #[default]
+    Unpublished,
+    Applied(AppliedCatalog),
+    Withdrawn(WithdrawnMaterial),
+}
+
+impl PublishedMaterial {
+    fn applied(&self) -> Option<&AppliedCatalog> {
+        match self {
+            Self::Applied(catalog) => Some(catalog),
+            Self::Unpublished | Self::Withdrawn(_) => None,
+        }
+    }
+
+    fn servers(&self) -> &[Arc<TacacsPlusServer>] {
+        self.applied().map_or(&[], |catalog| &catalog.servers)
+    }
+
+    fn active_revision(&self) -> Option<MaterializationRevision> {
+        self.applied().map(|catalog| catalog.revision)
+    }
+
+    fn revision(&self) -> Option<MaterializationRevision> {
+        match self {
+            Self::Unpublished => None,
+            Self::Applied(catalog) => Some(catalog.revision),
+            Self::Withdrawn(material) => Some(material.revision),
+        }
+    }
+
+    fn expired(&self) -> ExpiredMaterial {
+        match self {
+            Self::Withdrawn(material) => material.expired,
+            Self::Unpublished | Self::Applied(_) => ExpiredMaterial::None,
+        }
+    }
+
+    fn credential_references(&self) -> bool {
+        match self {
+            Self::Unpublished => false,
+            Self::Applied(catalog) => catalog.credential_references,
+            Self::Withdrawn(material) => material.credential_references,
+        }
+    }
+
+    fn withdraw(&mut self, kind: MaterialExpiry) {
+        if let Some(revision) = self.revision() {
+            *self = Self::Withdrawn(WithdrawnMaterial {
+                revision,
+                expired: self.expired().with(kind),
+                credential_references: self.credential_references(),
+            });
+        }
+    }
+}
+
 struct CoordinatorState {
     desired_source: Option<Arc<TacacsPlus>>,
-    desired_runtime_source: Option<Arc<TacacsPlus>>,
-    desired_proxy_policy: Option<PreparedProxyPolicy>,
-    desired_dependencies: Option<BTreeMap<DependencyKey, BTreeSet<String>>>,
-    active_servers: Vec<Arc<TacacsPlusServer>>,
-    active_lifetimes: BTreeMap<String, super::CredentialLifetime>,
+    desired_runtime: DesiredRuntime,
+    published: PublishedMaterial,
     revision: MaterializationRevision,
-    active_revision: Option<MaterializationRevision>,
-    withdrawn_revision: Option<MaterializationRevision>,
     source_current: bool,
-    expired: ExpiredMaterial,
-    active_credential_references: bool,
     source_admission: Option<CandidateAdmission>,
     pending_refresh: bool,
 }
@@ -54,17 +176,12 @@ impl Default for CoordinatorState {
     fn default() -> Self {
         Self {
             desired_source: None,
-            desired_runtime_source: None,
-            desired_proxy_policy: None,
-            desired_dependencies: Some(BTreeMap::new()),
-            active_servers: Vec::new(),
-            active_lifetimes: BTreeMap::new(),
+            desired_runtime: DesiredRuntime::Unfiltered(
+                DependencyKnowledge::Known(BTreeMap::new()),
+            ),
+            published: PublishedMaterial::Unpublished,
             revision: MaterializationRevision::default(),
-            active_revision: None,
-            withdrawn_revision: None,
             source_current: false,
-            expired: ExpiredMaterial::None,
-            active_credential_references: false,
             source_admission: None,
             pending_refresh: false,
         }
@@ -213,9 +330,7 @@ impl MaterializationCoordinator {
         state.desired_source = Some(source);
         state.source_admission = Some(admission);
         state.pending_refresh = false;
-        state.desired_runtime_source = None;
-        state.desired_proxy_policy = None;
-        state.desired_dependencies = None;
+        state.desired_runtime = DesiredRuntime::Unfiltered(DependencyKnowledge::Unknown);
         state.source_current = true;
         self.revision_updates.send_replace(state.revision);
         state.revision.source
@@ -230,9 +345,7 @@ impl MaterializationCoordinator {
         if state.revision.source != revision {
             return false;
         }
-        state.desired_runtime_source = None;
-        state.desired_proxy_policy = None;
-        state.desired_dependencies = None;
+        state.desired_runtime = DesiredRuntime::Unfiltered(DependencyKnowledge::Unknown);
         state.source_current = false;
         health.reject_source_candidate();
         true
@@ -242,9 +355,7 @@ impl MaterializationCoordinator {
         let mut state = self.state.lock().await;
         state.revision.source.advance();
         state.source_current = false;
-        state.desired_runtime_source = None;
-        state.desired_proxy_policy = None;
-        state.desired_dependencies = None;
+        state.desired_runtime = DesiredRuntime::Unfiltered(DependencyKnowledge::Unknown);
         self.revision_updates.send_replace(state.revision);
         health.reject_source_candidate();
     }
@@ -289,9 +400,11 @@ impl MaterializationCoordinator {
         if state.revision.source != revision {
             return None;
         }
-        state.desired_runtime_source = Some(Arc::clone(&runtime_source));
-        state.desired_proxy_policy = Some(proxy_policy.clone());
-        state.desired_dependencies = None;
+        state.desired_runtime = DesiredRuntime::Filtered(FilteredSource {
+            source: Arc::clone(&runtime_source),
+            proxy_policy,
+            dependencies: DependencyKnowledge::Unknown,
+        });
         Some(MaterializationAttempt {
             revision: state.revision,
             source_update: true,
@@ -335,14 +448,19 @@ impl MaterializationCoordinator {
         if scheduled
             && (self.resolver.is_none()
                 || state
-                    .desired_dependencies
+                    .desired_runtime
+                    .dependencies()
                     .as_ref()
                     .is_some_and(BTreeMap::is_empty)
-                || state.expired.contains(MaterialExpiry::Source))
+                || state.published.expired().contains(MaterialExpiry::Source))
         {
             return None;
         }
-        let Some(runtime_source) = state.desired_runtime_source.clone() else {
+        let Some(runtime_source) = state
+            .desired_runtime
+            .projection()
+            .map(|projection| Arc::clone(&projection.source))
+        else {
             if state.desired_source.is_some() {
                 if scheduled && state.pending_refresh {
                     return None;
@@ -352,7 +470,7 @@ impl MaterializationCoordinator {
                 }
                 state.revision.credentials.advance();
                 self.revision_updates.send_replace(state.revision);
-                if state.active_credential_references {
+                if state.published.credential_references() {
                     if let Some(health) = health {
                         health.set_degraded(crate::DegradationReason::CredentialsStale, true);
                     }
@@ -360,9 +478,8 @@ impl MaterializationCoordinator {
             }
             return None;
         };
-        state.desired_proxy_policy.as_ref()?;
-        let selection = if state.active_revision == Some(state.revision) {
-            match (scope, state.desired_dependencies.as_ref()) {
+        let selection = if state.published.active_revision() == Some(state.revision) {
+            match (scope, state.desired_runtime.dependencies().as_ref()) {
                 (CredentialChangeScope::Known { kind, reference }, Some(dependencies)) => {
                     let key = DependencyKey {
                         kind: *kind,
@@ -385,11 +502,14 @@ impl MaterializationCoordinator {
             return None;
         }
         #[cfg(test)]
-        let selected_servers =
-            selected_server_names(&selection, &runtime_source, state.desired_dependencies.as_ref());
+        let selected_servers = selected_server_names(
+            &selection,
+            &runtime_source,
+            state.desired_runtime.dependencies().as_ref(),
+        );
         state.revision.credentials.advance();
         self.revision_updates.send_replace(state.revision);
-        if state.active_credential_references {
+        if state.published.credential_references() {
             if let Some(health) = health {
                 health.set_degraded(crate::DegradationReason::CredentialsStale, true);
             }
@@ -507,7 +627,8 @@ impl MaterializationCoordinator {
         let state = attempt.admission.run(self.state.lock()).await?;
         anyhow::ensure!(
             state.revision == attempt.revision
-                && !(state.expired.contains(MaterialExpiry::Source) && !state.source_current),
+                && !(state.published.expired().contains(MaterialExpiry::Source)
+                    && !state.source_current),
             "candidate preparation was superseded"
         );
         Ok(())
@@ -526,23 +647,18 @@ impl MaterializationCoordinator {
         self.check_attempt(&attempt).await?;
         let (runtime_source, proxy_policy, active_servers, selected_servers) = {
             let state = attempt.admission.run(self.state.lock()).await?;
+            let projection = state
+                .desired_runtime
+                .projection()
+                .ok_or_else(|| anyhow::anyhow!("candidate source is missing"))?;
             (
-                state
-                    .desired_runtime_source
-                    .clone()
-                    .ok_or_else(|| anyhow::anyhow!("candidate source is missing"))?,
-                state
-                    .desired_proxy_policy
-                    .clone()
-                    .ok_or_else(|| anyhow::anyhow!("candidate proxy policy is missing"))?,
-                state.active_servers.clone(),
+                Arc::clone(&projection.source),
+                projection.proxy_policy.clone(),
+                state.published.servers().to_vec(),
                 selected_server_names(
                     &attempt.selection,
-                    state
-                        .desired_runtime_source
-                        .as_ref()
-                        .ok_or_else(|| anyhow::anyhow!("candidate source is missing"))?,
-                    state.desired_dependencies.as_ref(),
+                    &projection.source,
+                    projection.dependencies.as_ref(),
                 ),
             )
         };
@@ -607,7 +723,7 @@ impl MaterializationCoordinator {
                 state.revision == attempt.revision,
                 "candidate preparation was superseded"
             );
-            let index = state.desired_dependencies.get_or_insert_with(BTreeMap::new);
+            let index = state.desired_runtime.dependencies_mut().index_mut();
             for names in index.values_mut() {
                 names.retain(|name| !selected_servers.contains(name));
             }
@@ -670,20 +786,22 @@ impl MaterializationCoordinator {
     ) -> bool {
         let state = self.state.lock().await;
         if attempt.revision != state.revision
-            || (state.expired.contains(MaterialExpiry::Source) && !state.source_current)
+            || (state.published.expired().contains(MaterialExpiry::Source) && !state.source_current)
         {
             return false;
         }
         if failed {
-            health
-                .reject_materialization(attempt.source_update, state.active_credential_references);
+            health.reject_materialization(
+                attempt.source_update,
+                state.published.credential_references(),
+            );
         }
         true
     }
 
     pub(crate) async fn credentials_unavailable(&self, health: &crate::RuntimeHealthPublisher) {
         let state = self.state.lock().await;
-        health.credential_notifications_unavailable(state.active_credential_references);
+        health.credential_notifications_unavailable(state.published.credential_references());
     }
 
     pub(crate) async fn publish(
@@ -695,7 +813,7 @@ impl MaterializationCoordinator {
         if prepared.attempt.revision != state.revision {
             return Ok(PublicationOutcome::Superseded);
         }
-        if state.expired.contains(MaterialExpiry::Source) && !state.source_current {
+        if state.published.expired().contains(MaterialExpiry::Source) && !state.source_current {
             return Ok(PublicationOutcome::Superseded);
         }
 
@@ -705,7 +823,8 @@ impl MaterializationCoordinator {
             .map(|(server, lifetime)| (server.name.clone(), (server, lifetime)))
             .collect::<BTreeMap<_, _>>();
         let active_by_name = state
-            .active_servers
+            .published
+            .servers()
             .iter()
             .map(|server| (server.name.as_str(), Arc::clone(server)))
             .collect::<BTreeMap<_, _>>();
@@ -716,9 +835,19 @@ impl MaterializationCoordinator {
             let mut lifetime = candidate_by_name
                 .get(&desired.name)
                 .map(|(_, lifetime)| *lifetime)
-                .or_else(|| state.active_lifetimes.get(&desired.name).copied())
+                .or_else(|| {
+                    state
+                        .published
+                        .applied()
+                        .and_then(|catalog| catalog.lifetimes.get(&desired.name))
+                        .copied()
+                })
                 .ok_or_else(|| anyhow::anyhow!("active credential validity is missing"))?;
-            if let Some(previous) = state.active_lifetimes.get(&desired.name) {
+            if let Some(previous) = state
+                .published
+                .applied()
+                .and_then(|catalog| catalog.lifetimes.get(&desired.name))
+            {
                 if previous.validity == lifetime.validity {
                     lifetime = previous.intersect(lifetime)?;
                 }
@@ -749,20 +878,22 @@ impl MaterializationCoordinator {
                 Some(validity),
                 Some(prepared.preparation),
                 move || {
-                    state.active_servers = next_active;
-                    state.active_lifetimes = next_lifetimes;
-                    state.active_revision = Some(state.revision);
-                    state.withdrawn_revision = None;
-                    state.expired = ExpiredMaterial::None;
-                    state.active_credential_references = state
-                        .desired_dependencies
+                    let credential_references = state
+                        .desired_runtime
+                        .dependencies()
                         .as_ref()
                         .is_none_or(|dependencies| !dependencies.is_empty());
+                    state.published = PublishedMaterial::Applied(AppliedCatalog {
+                        servers: next_active,
+                        lifetimes: next_lifetimes,
+                        revision: state.revision,
+                        credential_references,
+                    });
                     Some(MaterializationCommit {
                         revision: state.revision,
                         source_current: state.source_current,
                         expired: ExpiredMaterial::None,
-                        credential_references: state.active_credential_references,
+                        credential_references,
                         validity,
                     })
                 },
@@ -797,26 +928,25 @@ impl MaterializationCoordinator {
         let should_expire = match kind {
             MaterialExpiry::Source => {
                 snapshot.datastore() != crate::DatastoreState::Current
-                    && !state.expired.contains(MaterialExpiry::Source)
+                    && !state.published.expired().contains(MaterialExpiry::Source)
             }
             MaterialExpiry::Credentials => {
-                !state.expired.contains(MaterialExpiry::Credentials)
+                !state
+                    .published
+                    .expired()
+                    .contains(MaterialExpiry::Credentials)
                     && (!validity.is_valid()
                         || snapshot
                             .degradation_reasons()
                             .contains(&crate::DegradationReason::CredentialsStale))
             }
         };
-        if state.active_revision.or(state.withdrawn_revision) != Some(expected) || !should_expire {
+        if state.published.revision() != Some(expected) || !should_expire {
             return Ok(());
         }
         service
             .withdraw_expired_material(move || {
-                state.active_servers.clear();
-                state.active_lifetimes.clear();
-                state.active_revision = None;
-                state.withdrawn_revision = Some(expected);
-                state.expired = state.expired.with(kind);
+                state.published.withdraw(kind);
                 if matches!(kind, MaterialExpiry::Credentials) {
                     state.revision.credentials.advance();
                     self.revision_updates.send_replace(state.revision);
@@ -824,8 +954,8 @@ impl MaterializationCoordinator {
                 Some(MaterializationCommit {
                     revision: expected,
                     source_current: state.source_current,
-                    expired: state.expired,
-                    credential_references: state.active_credential_references,
+                    expired: state.published.expired(),
+                    credential_references: state.published.credential_references(),
                     validity,
                 })
             })
@@ -834,7 +964,7 @@ impl MaterializationCoordinator {
 
     #[cfg(test)]
     pub(crate) async fn active_servers(&self) -> Vec<Arc<TacacsPlusServer>> {
-        self.state.lock().await.active_servers.clone()
+        self.state.lock().await.published.servers().to_vec()
     }
 
     #[cfg(test)]

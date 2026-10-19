@@ -16,6 +16,62 @@ use tacacsrs_credential_resolution::{
 
 use super::*;
 
+#[test]
+fn default_state_has_known_empty_dependencies_and_no_publication() {
+    let state = CoordinatorState::default();
+    assert!(state.desired_runtime.projection().is_none());
+    assert!(
+        matches!(state.desired_runtime.dependencies(), DependencyKnowledge::Known(index) if index.is_empty())
+    );
+    assert!(matches!(state.published, PublishedMaterial::Unpublished));
+    assert!(state.published.active_revision().is_none());
+    assert!(state.published.revision().is_none());
+    assert!(!state.published.credential_references());
+    let mut dependencies = DependencyKnowledge::Unknown;
+    assert!(dependencies.as_ref().is_none());
+    assert!(dependencies.index_mut().is_empty());
+    assert!(dependencies.as_ref().is_some_and(BTreeMap::is_empty));
+}
+
+#[test]
+fn published_empty_and_withdrawn_material_have_distinct_revision_and_expiry_state() {
+    let revision = MaterializationRevision::default();
+    for order in [
+        [MaterialExpiry::Source, MaterialExpiry::Credentials],
+        [MaterialExpiry::Credentials, MaterialExpiry::Source],
+    ] {
+        let mut published = PublishedMaterial::Applied(AppliedCatalog {
+            servers: Vec::new(),
+            lifetimes: BTreeMap::new(),
+            revision,
+            credential_references: true,
+        });
+        assert!(published.servers().is_empty());
+        assert!(published.applied().is_some());
+        assert_eq!(published.active_revision(), Some(revision));
+        assert!(published.expired() == ExpiredMaterial::None);
+        published.withdraw(order[0]);
+        assert!(published.applied().is_none());
+        assert!(published.active_revision().is_none());
+        assert_eq!(published.revision(), Some(revision));
+        assert!(published.credential_references());
+        assert!(published.expired().contains(order[0]));
+        assert!(!published.expired().contains(order[1]));
+        published.withdraw(order[1]);
+        let expired = published.expired();
+        assert!(expired.contains(MaterialExpiry::Source));
+        assert!(expired.contains(MaterialExpiry::Credentials));
+        published.withdraw(order[0]);
+        assert!(published.expired() == expired);
+        assert_eq!(published.revision(), Some(revision));
+        assert!(published.credential_references());
+        assert!(published.servers().is_empty());
+    }
+    let mut unpublished = PublishedMaterial::Unpublished;
+    unpublished.withdraw(MaterialExpiry::Source);
+    assert!(matches!(unpublished, PublishedMaterial::Unpublished));
+}
+
 struct MutableResolver {
     unavailable: Mutex<BTreeSet<String>>,
     material: Mutex<BTreeMap<String, Vec<u8>>>,
@@ -150,6 +206,142 @@ fn known(reference: &str) -> CredentialChangeScope {
     CredentialChangeScope::Known {
         kind: CredentialKind::SymmetricKey,
         reference: CredentialReference::SymmetricKey(reference.to_owned()),
+    }
+}
+
+#[tokio::test]
+async fn empty_filtered_source_publishes_a_known_empty_catalog() {
+    let coordinator = MaterializationCoordinator::without_resolver(ValidationOptions::default());
+    let service = service();
+    assert!(coordinator.refresh_credentials().await.is_none());
+    let attempt = coordinator
+        .accept_source(
+            source("object-a", "192.0.2.20"),
+            TacacsPlus::empty(),
+            PreparedProxyPolicy::unobfuscated(),
+        )
+        .await;
+    let revision = attempt.revision;
+    let prepared = coordinator.materialize(attempt).await.unwrap();
+    coordinator.publish(prepared, &service).await.unwrap();
+    assert!(coordinator.refresh_credentials().await.is_none());
+    assert!(coordinator
+        .credential_change(&known("object-a"))
+        .await
+        .is_none());
+    let state = coordinator.state.lock().await;
+    assert!(
+        matches!(state.desired_runtime.dependencies(), DependencyKnowledge::Known(index) if index.is_empty())
+    );
+    assert!(matches!(state.published, PublishedMaterial::Applied(_)));
+    assert_eq!(state.published.active_revision(), Some(revision));
+    assert!(state.published.servers().is_empty());
+    assert!(!state.published.credential_references());
+}
+
+#[tokio::test]
+async fn known_dependency_with_empty_names_does_not_schedule_full_refresh() {
+    let coordinator = MaterializationCoordinator::new(
+        resolver(&[("object-a", b"valid-material-long-enough")]),
+        ValidationOptions::default(),
+    );
+    let service = service();
+    let canonical = source("object-a", "192.0.2.20");
+    let attempt = coordinator
+        .accept_source(canonical.clone(), canonical, PreparedProxyPolicy::unobfuscated())
+        .await;
+    let prepared = coordinator.materialize(attempt).await.unwrap();
+    coordinator.publish(prepared, &service).await.unwrap();
+    let revision = {
+        let mut state = coordinator.state.lock().await;
+        for names in state
+            .desired_runtime
+            .dependencies_mut()
+            .index_mut()
+            .values_mut()
+        {
+            names.clear();
+        }
+        state.revision
+    };
+    assert!(coordinator
+        .credential_change(&known("object-a"))
+        .await
+        .is_none());
+    assert!(coordinator
+        .credential_change(&known("unrelated"))
+        .await
+        .is_none());
+    assert_eq!(coordinator.state.lock().await.revision, revision);
+    let attempt = coordinator
+        .credential_change(&CredentialChangeScope::Unknown)
+        .await
+        .unwrap();
+    assert_eq!(attempt.selected_server_names(), &BTreeSet::from(["primary".to_owned()]));
+}
+
+#[tokio::test]
+async fn rejected_sources_retain_raw_source_and_invalidate_late_publication() {
+    for observation in [false, true] {
+        let coordinator = MaterializationCoordinator::new(
+            resolver(&[("object-a", b"valid-material-long-enough")]),
+            ValidationOptions::default(),
+        );
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let service = service_with_health(health.clone());
+        let canonical = source("object-a", "192.0.2.20");
+        let attempt = coordinator
+            .accept_source(canonical.clone(), canonical, PreparedProxyPolicy::unobfuscated())
+            .await;
+        let prepared = coordinator.materialize(attempt).await.unwrap();
+        coordinator.publish(prepared, &service).await.unwrap();
+        let refresh = coordinator
+            .credential_change(&known("object-a"))
+            .await
+            .unwrap();
+        let late = coordinator.materialize(refresh).await.unwrap();
+        let raw = Arc::new(source("object-b", "192.0.2.21"));
+        let admission =
+            CandidateAdmission::new(crate::config::RuntimeCandidateLimits::default()).unwrap();
+        let revision = coordinator
+            .admit_source_at(Arc::clone(&raw), admission)
+            .await;
+        let admitted = coordinator.state.lock().await.revision;
+        if observation {
+            coordinator.reject_observation(&health).await;
+        } else {
+            assert!(coordinator.reject_source(revision, &health).await);
+        }
+        assert_eq!(
+            coordinator.publish(late, &service).await.unwrap(),
+            PublicationOutcome::Superseded
+        );
+        let rejected = {
+            let state = coordinator.state.lock().await;
+            assert!(Arc::ptr_eq(state.desired_source.as_ref().unwrap(), &raw));
+            assert!(state.desired_runtime.projection().is_none());
+            assert!(matches!(state.desired_runtime.dependencies(), DependencyKnowledge::Unknown));
+            assert!(!state.source_current);
+            assert_eq!(state.revision.source != admitted.source, observation);
+            assert_eq!(*coordinator.revision_updates.borrow(), state.revision);
+            state.revision
+        };
+        assert!(coordinator.refresh_credentials().await.is_none());
+        let refreshed = coordinator.state.lock().await.revision;
+        assert_ne!(refreshed.credentials, rejected.credentials);
+        assert_eq!(refreshed.source, rejected.source);
+        assert!(coordinator.refresh_credentials().await.is_none());
+        assert_eq!(coordinator.state.lock().await.revision, refreshed);
+        assert!(coordinator
+            .observe_credentials(&CredentialChangeScope::Unknown, Some(&health))
+            .await
+            .is_none());
+        assert_ne!(coordinator.state.lock().await.revision.credentials, refreshed.credentials);
+        assert!(health
+            .snapshot()
+            .degradation_reasons()
+            .contains(&crate::DegradationReason::CredentialsStale));
+        assert_eq!(service.server_count(), 1);
     }
 }
 
@@ -1213,7 +1405,13 @@ async fn blocked_old_resolution_cannot_replace_new_yang_snapshot() {
     assert_eq!(coordinator.active_servers().await[0].address, "192.0.2.31");
     let state = coordinator.state.lock().await;
     assert_eq!(state.desired_source.as_deref(), Some(&current_source));
-    assert_eq!(state.desired_runtime_source.as_deref(), Some(&current_source));
+    assert_eq!(
+        state
+            .desired_runtime
+            .projection()
+            .map(|projection| projection.source.as_ref()),
+        Some(&current_source)
+    );
 }
 
 #[tokio::test]
@@ -1260,7 +1458,13 @@ async fn credential_rotation_preserves_authoritative_yang_references() {
     assert_ne!(original.as_ref(), coordinator.active_servers().await[0].as_ref());
     let state = coordinator.state.lock().await;
     assert_eq!(state.desired_source.as_deref(), Some(&desired));
-    assert_eq!(state.desired_runtime_source.as_deref(), Some(&desired));
+    assert_eq!(
+        state
+            .desired_runtime
+            .projection()
+            .map(|projection| projection.source.as_ref()),
+        Some(&desired)
+    );
 }
 
 #[tokio::test]
