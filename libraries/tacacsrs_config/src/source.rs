@@ -29,6 +29,7 @@ use crate::{TacacsPlus, ValidationOptions};
 pub(crate) mod directory_watch;
 pub mod policy;
 mod file;
+mod file_observation;
 mod static_datastore;
 
 pub use file::CliFileDatastore;

@@ -16,16 +16,12 @@ use async_trait::async_trait;
 use notify::event::ModifyKind;
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::watch;
-use tokio::task::JoinHandle;
-use tokio::time::Instant;
 
 use crate::input::{tacacs_plus_from_cli_input, CliDatastoreInput};
 use crate::TacacsPlus;
 #[cfg(windows)]
 use super::directory_watch::DirectoryWatch;
-use super::directory_watch::acknowledge_observation_active;
-#[cfg(not(windows))]
-use super::directory_watch::{wait_for_native_change, wait_for_observation_failure};
+use super::file_observation::{FileObservationState, ObservationContext};
 use super::{
     ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigDatastore, ConfigDelta,
     ConfigObservation, DatastoreRuntimePolicy, InitialLoadPolicy,
@@ -119,16 +115,20 @@ impl CliFileDatastore {
             Some(watcher)
         };
         Ok(FileObservation {
-            watcher,
-            #[cfg(windows)]
-            directory_watch,
+            observation: FileObservationState::new(
+                watcher,
+                #[cfg(windows)]
+                directory_watch,
+                invalidations,
+                input.debounce,
+                ObservationContext {
+                    failure: "Configuration observation failed",
+                    stopped: "configuration watcher stopped",
+                    reader_stopped: "configuration reader stopped",
+                },
+            ),
             input,
-            failures: invalidations.clone(),
-            invalidations,
             previous: None,
-            pending: true,
-            debounce_until: None,
-            read: None,
         })
     }
 }
@@ -163,152 +163,25 @@ impl ConfigDatastore for CliFileDatastore {
 }
 
 struct FileObservation {
-    watcher: Option<RecommendedWatcher>,
-    #[cfg(windows)]
-    directory_watch: Option<DirectoryWatch>,
+    observation: FileObservationState<TacacsPlus>,
     input: CliDatastoreInput,
-    failures: watch::Receiver<Option<Arc<notify::Error>>>,
-    invalidations: watch::Receiver<Option<Arc<notify::Error>>>,
     previous: Option<Arc<TacacsPlus>>,
-    pending: bool,
-    debounce_until: Option<Instant>,
-    read: Option<JoinHandle<anyhow::Result<TacacsPlus>>>,
-}
-
-impl Drop for FileObservation {
-    fn drop(&mut self) {
-        if let Some(read) = &self.read {
-            read.abort();
-        }
-    }
-}
-
-impl FileObservation {
-    async fn wait_for_debounce(&mut self, deadline: Instant) -> anyhow::Result<()> {
-        #[cfg(windows)]
-        {
-            let directory_watch = self
-                .directory_watch
-                .as_mut()
-                .context("configuration directory watch is missing")?;
-            tokio::select! {
-                biased;
-                error = directory_watch.wait_for_observation_failure(
-                    &mut self.failures,
-                    "Configuration observation failed",
-                    "configuration watcher stopped",
-                ) => return Err(error),
-                () = tokio::time::sleep_until(deadline) => {}
-            }
-        }
-        #[cfg(not(windows))]
-        tokio::select! {
-            biased;
-            error = wait_for_observation_failure(
-                &mut self.failures,
-                "Configuration observation failed",
-                "configuration watcher stopped",
-            ) => return Err(error),
-            () = tokio::time::sleep_until(deadline) => {}
-        }
-        Ok(())
-    }
-
-    async fn read_candidate(&mut self) -> anyhow::Result<anyhow::Result<TacacsPlus>> {
-        let read = self
-            .read
-            .as_mut()
-            .context("configuration read is missing")?;
-        let candidate;
-        if self.watcher.is_some() {
-            #[cfg(windows)]
-            {
-                let directory_watch = self
-                    .directory_watch
-                    .as_mut()
-                    .context("configuration directory watch is missing")?;
-                candidate = tokio::select! {
-                    biased;
-                    error = directory_watch.wait_for_observation_failure(
-                        &mut self.failures,
-                        "Configuration observation failed",
-                        "configuration watcher stopped",
-                    ) => return Err(error),
-                    candidate = read => candidate,
-                };
-            }
-            #[cfg(not(windows))]
-            {
-                candidate = tokio::select! {
-                    biased;
-                    error = wait_for_observation_failure(
-                        &mut self.failures,
-                        "Configuration observation failed",
-                        "configuration watcher stopped",
-                    ) => return Err(error),
-                    candidate = read => candidate,
-                };
-            }
-            acknowledge_observation_active(
-                &mut self.failures,
-                "Configuration observation failed",
-                "configuration watcher stopped",
-            )?;
-        } else {
-            candidate = read.await;
-        }
-        #[cfg(windows)]
-        if let Some(directory_watch) = &self.directory_watch {
-            directory_watch
-                .ensure_current()
-                .context("Configuration observation failed")?;
-        }
-        self.read = None;
-        candidate.context("configuration reader stopped")
-    }
 }
 
 #[async_trait]
 impl ConfigObservation for FileObservation {
     async fn next(&mut self) -> anyhow::Result<Option<ConfigChangeEvent>> {
-        if !self.pending {
-            if self.watcher.is_none() {
-                return Ok(None);
-            }
-            #[cfg(windows)]
-            self.directory_watch
-                .as_mut()
-                .context("configuration directory watch is missing")?
-                .wait_for_change(&mut self.invalidations, "configuration watcher stopped")
-                .await?;
-            #[cfg(not(windows))]
-            wait_for_native_change(&mut self.invalidations, "configuration watcher stopped")
-                .await?;
-            self.pending = true;
-            self.debounce_until = Some(Instant::now() + self.input.debounce);
-        }
-        if self.read.is_none() {
-            if let Some(deadline) = self.debounce_until {
-                self.wait_for_debounce(deadline).await?;
-            }
-            if self.watcher.is_some() {
-                acknowledge_observation_active(
-                    &mut self.invalidations,
-                    "Configuration observation failed",
-                    "configuration watcher stopped",
-                )?;
-            }
-            #[cfg(windows)]
-            if let Some(directory_watch) = &self.directory_watch {
-                directory_watch.ensure_current()?;
-            }
-            let input = self.input.clone();
-            self.read =
-                Some(tokio::task::spawn_blocking(move || tacacs_plus_from_cli_input(&input)));
-        }
-        let candidate = self.read_candidate().await?;
-        self.pending = false;
-        self.debounce_until = None;
+        let input = &self.input;
+        let Some(candidate) = self
+            .observation
+            .next(|| {
+                let input = input.clone();
+                tokio::task::spawn_blocking(move || tacacs_plus_from_cli_input(&input))
+            })
+            .await?
+        else {
+            return Ok(None);
+        };
         Ok(Some(if let Ok(snapshot) = candidate {
             let snapshot = Arc::new(snapshot);
             let delta = ConfigDelta::diff(self.previous.as_deref(), &snapshot);
@@ -389,7 +262,66 @@ mod tests {
         let modified = Event::new(EventKind::Modify(ModifyKind::Any)).add_path(path.clone());
         assert!(event_touches_watched_path(&modified, std::slice::from_ref(&path)));
         let rescan = Event::new(EventKind::Other).set_flag(Flag::Rescan);
-        assert!(event_touches_watched_path(&rescan, &[path]));
+        assert!(event_touches_watched_path(&rescan, std::slice::from_ref(&path)));
+        assert!(event_touches_watched_path(
+            &Event::new(EventKind::Any),
+            std::slice::from_ref(&path)
+        ));
+        let unrelated = Event::new(EventKind::Any).add_path(PathBuf::from("/tmp/other.json"));
+        assert!(!event_touches_watched_path(&unrelated, std::slice::from_ref(&path)));
+        let credential = PathBuf::from("/credentials/key.pem");
+        let credential_change = Event::new(EventKind::Any).add_path(credential.clone());
+        assert!(event_touches_watched_path(&credential_change, &[path, credential]));
+    }
+
+    #[tokio::test]
+    async fn atomic_replace_and_delete_recreate_preserve_delta_history() {
+        let path = temp_config(&config("192.0.2.10"));
+        let datastore = CliFileDatastore::new(
+            CliDatastoreInput::new(CliConfigSource::YangFile { path: path.clone() }, "file")
+                .with_debounce(Duration::ZERO),
+        );
+        let mut observation = datastore.observe().await.unwrap();
+        next_change(&mut observation).await;
+        let replacement = path.with_extension("new");
+        fs::write(&replacement, config("192.0.2.11")).unwrap();
+        fs::rename(replacement, &path).unwrap();
+        let replaced = next_change(&mut observation).await;
+        assert_eq!(replaced.config.server[0].address, "192.0.2.11");
+        assert_eq!(replaced.delta.modified_servers, ["primary"]);
+
+        fs::remove_file(&path).unwrap();
+        assert!(matches!(
+            timeout(Duration::from_secs(1), observation.next())
+                .await
+                .unwrap()
+                .unwrap(),
+            Some(ConfigChangeEvent::CandidateRejected)
+        ));
+        fs::write(&path, config("192.0.2.12")).unwrap();
+        let recreated = next_change(&mut observation).await;
+        assert_eq!(recreated.config.server[0].address, "192.0.2.12");
+        assert_eq!(recreated.delta.modified_servers, ["primary"]);
+        assert!(recreated.delta.added_servers.is_empty());
+        drop(observation);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn inline_observation_yields_one_baseline_then_ends() {
+        let datastore = CliFileDatastore::new(CliDatastoreInput::new(
+            CliConfigSource::Inline {
+                servers: vec![CliServerInput::new("server-0", "192.0.2.10:49")],
+                security: CliSecurity::from_cli_inputs(CliSecurityInputs {
+                    shared_secret: Some("test-secret".to_owned()),
+                    ..CliSecurityInputs::default()
+                }),
+            },
+            "cli",
+        ));
+        let mut observation = datastore.observe().await.unwrap();
+        assert!(matches!(observation.next().await.unwrap(), Some(ConfigChangeEvent::Changed(_))));
+        assert!(observation.next().await.unwrap().is_none());
     }
 
     fn temp_config(contents: &str) -> PathBuf {
@@ -550,7 +482,7 @@ mod tests {
             "file",
         ));
         let mut observation = datastore.open_observation().await.unwrap();
-        let mut lifetime = observation.invalidations.clone();
+        let mut lifetime = observation.observation.invalidations.clone();
         fs::write(&path, config("192.0.2.11")).unwrap();
         let Some(ConfigChangeEvent::Changed(change)) = observation.next().await.unwrap() else {
             panic!("observation must yield the current baseline");
@@ -573,8 +505,8 @@ mod tests {
         let mut observation = datastore.open_observation().await.unwrap();
         observation.next().await.unwrap();
         let (events, invalidations) = watch::channel(None);
-        observation.failures = invalidations.clone();
-        observation.invalidations = invalidations;
+        observation.observation.failures = invalidations.clone();
+        observation.observation.invalidations = invalidations;
         for _ in 0..10_000 {
             events.send_replace(None);
         }
@@ -610,13 +542,13 @@ mod tests {
         let mut observation = datastore.open_observation().await.unwrap();
         let first = tacacs_plus_from_cli_input(&observation.input).unwrap();
         let (release, ready) = tokio::sync::oneshot::channel();
-        observation.read = Some(tokio::spawn(async move {
+        observation.observation.read = Some(tokio::spawn(async move {
             ready.await.unwrap();
             Ok(first)
         }));
         let (events, invalidations) = watch::channel(None);
-        observation.failures = invalidations.clone();
-        observation.invalidations = invalidations;
+        observation.observation.failures = invalidations.clone();
+        observation.observation.invalidations = invalidations;
         {
             let next = observation.next();
             tokio::pin!(next);
@@ -638,7 +570,7 @@ mod tests {
             panic!("invalidation during the read must trigger reconciliation");
         };
         assert_eq!(latest.config.server[0].address, "192.0.2.11");
-        assert!(!observation.invalidations.has_changed().unwrap());
+        assert!(!observation.observation.invalidations.has_changed().unwrap());
         drop(observation);
         fs::remove_file(path).unwrap();
     }
@@ -652,9 +584,9 @@ mod tests {
         );
         let mut observation = datastore.open_observation().await.unwrap();
         let candidate = tacacs_plus_from_cli_input(&observation.input).unwrap();
-        observation.read = Some(tokio::spawn(async move { Ok(candidate) }));
+        observation.observation.read = Some(tokio::spawn(async move { Ok(candidate) }));
         timeout(Duration::from_secs(1), async {
-            while !observation.read.as_ref().unwrap().is_finished() {
+            while !observation.observation.read.as_ref().unwrap().is_finished() {
                 tokio::task::yield_now().await;
             }
         })
@@ -662,8 +594,8 @@ mod tests {
         .expect("candidate read must be ready");
         let (events, invalidations) =
             watch::channel(Some(Arc::new(notify::Error::generic("test observation loss"))));
-        observation.failures = invalidations.clone();
-        observation.invalidations = invalidations;
+        observation.observation.failures = invalidations.clone();
+        observation.observation.invalidations = invalidations;
 
         let error = observation.next().await.unwrap_err();
         assert!(error.to_string().contains("test observation loss"));
@@ -729,7 +661,7 @@ mod tests {
         let mut observation = datastore.open_observation().await.unwrap();
         let candidate = tacacs_plus_from_cli_input(&observation.input).unwrap();
         let (release, stalled) = tokio::sync::oneshot::channel();
-        observation.read = Some(tokio::spawn(async move {
+        observation.observation.read = Some(tokio::spawn(async move {
             stalled.await.unwrap();
             Ok(candidate)
         }));
@@ -748,7 +680,7 @@ mod tests {
         }
 
         release.send(()).unwrap();
-        let read = observation.read.take().unwrap();
+        let read = observation.observation.read.take().unwrap();
         read.await.unwrap().unwrap();
         drop(observation);
         fs::remove_dir_all(renamed).unwrap();
