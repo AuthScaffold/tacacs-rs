@@ -918,7 +918,8 @@ Hosted checks for iteration 02 are not yet claimed. Privileged or external-servi
 
 Status: implemented; both named reviews cover the final source. Final common workspace gates passed. Scope: R4 and R11.
 Worktree: `/home/vscode/tacacs-rs-03-endpoint-addresses`; branch: `refactor/general-iterations/03-endpoint-addresses`.
-Published as [PR #280](https://github.com/AuthScaffold/tacacs-rs/pull/280) against `main` at head `1ed047f79f40a93c788f125b7728eb4108f2ce0b`.
+Published as [PR #280](https://github.com/AuthScaffold/tacacs-rs/pull/280) against `main`, initially at `1ed047f79f40a93c788f125b7728eb4108f2ce0b`.
+The reviewed Windows repair is now published at `02d2bbc82f8fec4a49800856bb842d7642ca6d40`.
 The parent is predecessor squash `7d60ee481554ed98234b51a18d99475cf76939f7`.
 The complete retargeted tree equals tested checkpoint `a387c4313aa7f594368cc19dc9e5a4d7e1abeac7`.
 The PR has 41 implementation/product-documentation paths and no tracking documents.
@@ -1021,6 +1022,11 @@ Twelve destination tests and three production loop-guard tests passed; Opus also
 The full coordinator gate sequence then passed again: formatting, strict nightly Clippy, private docs, stable workspace build/all-feature tests, MSRV all-target checks, 256 delivery tests, and whitespace checks.
 It emitted `ALL_ITERATION_03_WINDOWS_REPAIR_GATES_PASSED`, with no Rust failures and ten existing ignored tests.
 The exact Windows timeout cause remains unproven locally. Fresh hosted Windows CI and Copilot re-review on the repaired head remain required before merge.
+Fresh Windows testing job `117965858744` passed on repair head `02d2bbc82f8fec4a49800856bb842d7642ca6d40`.
+Copilot re-review `5568863719` reported no open issues and requested final security/platform confirmation.
+Aggregate workflow `39223264314` subsequently passed on the repaired head.
+After confirming unchanged head, no open Copilot issues or inline comments, and clean mergeability, PR #280 was squash-merged as `3dc393aa8dfc71d9406bdbf9dca6fb83207d548b`.
+The merge used an expected-head guard and a description covering the API refactor, Windows repair, reviews, and verification limits.
 
 #### Planned Acceptance Criteria
 
@@ -1045,7 +1051,73 @@ Checks: endpoint/parser/loop-guard tests, native TLS/PSK/revocation cases, indep
 
 ### 04: Credential Targets
 
-Status: planned. Scope: R5 and small provider-contract clarifications.
+Status: implemented; both named reviews accepted the same source without revisions. Final common workspace gates passed.
+Scope: R5 and small provider-contract clarifications.
+Worktree: `/home/vscode/tacacs-rs-04-credential-targets`; branch: `refactor/general-iterations/04-credential-targets`.
+The parent fast-forwarded from initial PR #280 head to repair head `02d2bbc82f8fec4a49800856bb842d7642ca6d40` without changing the iteration's diff.
+Reviewed source-diff SHA-256: `603203cb887170eb8b3442dee0088cec84d1af32953331c3dfc92bc29f23a19a`, excluding all three tracking-document paths.
+
+#### Implementation And Review Receipt
+
+Configuration now owns `ServerResolutionPlan`, containing the neutral plan and a private plan-local slot-to-usage map.
+Its public `neutral_plan()` accessor exposes only a shared borrow.
+The existing neutral constructor assigns slots in input order without dropping or reordering requests.
+Materialization associates validated results by slot and matches typed usage/material pairs before target mutation.
+Diagnostic field paths no longer select installation behavior, and the CA/EE Boolean is removed.
+Both bag destinations reuse one converter while retaining distinct usage and result variants.
+Validity intersection, unresolved-reference rejection, final validation, and canonical-source immutability remain intact.
+
+Combined provider types are named `HttpEvidenceResolver` and `EvidenceFetchLimits`.
+CRL and OCSP source types, CLI flags, retrieval authorization, and registered-failure/no-fallback behavior remain unchanged.
+All in-tree consumers, examples, fixtures, and product guides migrate directly without compatibility aliases.
+Change-stream documentation distinguishes worker ownership and notification recovery from cancellation of arbitrary I/O.
+No manifests, lockfiles, or dependencies changed, and the neutral crate acquires no schema or runtime edge.
+
+Both required accepted routes reviewed the complete 18-file diff sequentially:
+
+- `GPT-6 Astra (copilot)` accepted input/output hash `603203cb887170eb8b3442dee0088cec84d1af32953331c3dfc92bc29f23a19a` without revisions.
+- `Claude Opus 5.5 (copilot)` accepted the same unchanged hash without revisions; no further Astra follow-up was required.
+
+The first typed installer probe failed against the old string-based signature with two expected compile errors, then passed after implementation.
+Checks covered all six destinations in direct and local-bundle configurations, wrong-kind rejection, immutable source/siblings, staged failure, and reordered neutral slots.
+The coordinator independently reran both typed bag tests after propagating the repaired parent.
+
+Scoped evidence used `/home/vscode/.cache/tacacs-rs-04-credential-targets` and included:
+
+- Configuration materialization 9 tests, resolution 7, typed bag installation 2, and five configuration doctests.
+- Neutral contracts 11 tests; HTTP provider 9 tests and one doctest.
+- Agent materialization 15 and configuration supervision 46 tests.
+- SONiC provider and watcher suites, with privileged-owner requirements explicitly excluded or reported as early returns where applicable.
+- Daemon provider composition 3 tests and the downloaded-CRL native-verification case.
+- The central-resolution example, Rust 1.88 affected all-target checks, strict private Rust 1.99 Clippy, private docs, formatting, and architecture guards.
+
+No hosted Windows or ARMhf execution for this iteration is claimed.
+Final workspace gates, parent aggregate CI, publication, GitHub Copilot review, and merge remain coordinator-owned.
+Opus noted pre-existing guide text describing some HTTP evidence features as unimplemented; that unchanged wording is deferred rather than expanding this typed-target implementation.
+
+#### Coordinator Final Gate Receipt
+
+The full final sequence passed on the unchanged reviewed diff `603203cb887170eb8b3442dee0088cec84d1af32953331c3dfc92bc29f23a19a`.
+Every Cargo command used `/home/vscode/.cache/tacacs-rs-04-credential-targets`.
+
+```bash
+cargo +nightly fmt --all -- --check
+cargo +nightly clippy --workspace --all-targets --all-features --locked -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo +stable doc --workspace --no-deps --all-features --document-private-items --locked --quiet
+cargo +stable build --workspace --locked --quiet
+cargo +stable test --workspace --all-features --locked --quiet
+cargo +1.88.0 check --workspace --all-targets --all-features --locked --quiet
+PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider -q .github/steps/cargo-metadata .github/steps/check-architecture .github/steps/compute-versions .github/steps/inject-versions .github/steps/release-manifest
+git diff --check
+```
+
+The sequence emitted `ALL_ITERATION_04_GATES_PASSED`.
+No Rust tests failed; ten existing tests remained ignored. All 256 selected Python delivery tests passed.
+Privileged or external-service early returns are not execution claims.
+The predecessor subsequently passed required CI and merged; publication now proceeds from its squash-equivalent base.
+GitHub Copilot review and hosted checks for iteration 04 remain required on the published head.
+
+#### Planned Acceptance Criteria
 
 Retain typed installation targets from central-reference inspection through resolution-slot association and materialization.
 Derive field paths for diagnostics rather than using those strings as control flow.
