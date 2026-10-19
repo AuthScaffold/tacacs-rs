@@ -1182,8 +1182,9 @@ Published as [PR #282](https://github.com/AuthScaffold/tacacs-rs/pull/282) again
 The predecessor is squash `6602e12ff23065abeb3815b29b38be307e008d3c`; the complete retargeted tree equals tested checkpoint `7f5b3dd4a1fdffe2bda229bb97bd87a734ad8b4e`.
 Git records 45 implementation files, including the YANG rename, and no tracking documents.
 The initial PR workflow was `39252965825`; later review fixes are published at `e3f60473f6ad8a8b4f03bfaa332acbc68e43debf`.
-Fresh required workflow `39258678652` is in progress. Copilot re-review on that head is pending; the earlier changes-requested assessment is not merge clearance.
-Copilot review `5571680215` raised two actionable lifecycle findings. Iteration 06 implementation is paused while they are repaired and re-reviewed.
+Required workflow `39258678652` failed ARMhf in two HTTP test peers. Review `5572195730` confirmed the first two lifecycle findings resolved and raised a payload-disposal ownership finding.
+The next repair passes both named reviews and all final local gates. Fresh current-head Copilot review and required CI remain necessary before merge.
+Iteration 06 implementation is complete locally; its reviews and publication wait for the parent repair.
 The review inventory includes 46 changed/new/deleted paths: 42 tracked paths plus four initially untracked files.
 The complete content manifest hashes sorted changed/new paths, a NUL, each current file's SHA-256 or `<deleted>`, and a newline.
 It excludes only the three tracking-document paths. A tracked diff alone does not cover the new implementation files.
@@ -1279,6 +1280,46 @@ CodeQL alerts `204` and `205` separately flagged coordinator fixture calls in a 
 Both model routes independently verified identical test-file blobs across alert and repaired commits, fixed keystore-reference JSON, and a test-only parser `expect` sink.
 Replies `4314317907` and `4314318314` record that evidence. Only those alerts were dismissed as `used in tests`; their conversations are resolved.
 The PR-scoped open-alert query returned no findings. No source suppression or unrelated native-error safety claim was made.
+
+#### Publication Ownership And ARM Fixture Repair Receipt
+
+Copilot HIGH comment `4314332435` identified premature capacity release during cancellation at both publication-lock waits.
+Async function argument disposal released preparation before server, proxy, and commit-closure payload owners.
+`GPT-6 Astra (copilot)` added internal `PublicationCandidate<Commit>` and migrated the coordinator, service, and manager calls.
+The ordered owner retains candidate servers, proxy policy, prepared server references, and commit captures before the preparation lease.
+It stays intact across waits. Successful atomic commit still releases capacity before postcommit retirement.
+Strengthened regressions failed at both actual lock waits before the repair, observing a surviving server owner after lease release.
+Six focused tests passed afterward. Coverage includes unpolled cancellation, admission and outer timeouts, prepared-client suspension, native failure, final fencing, and retained provider work.
+
+ARMhf job `118080434561` failed two HTTP/OCSP process fixtures at first-read assertions; 46 other native cases passed.
+Single TCP reads do not guarantee a complete request. Cancellation can close a connection before it sends a complete request.
+Astra added bounded known-client request parsing, exact body consumption, and pending-read barriers in the existing fixture module.
+The tests retain their original deadlines, fail-closed and recovery checks, source equality checks, and shutdown assertions.
+Deterministic empty-connection and one-byte-fragment regressions both failed before the fix.
+Executed requests showed a 108-byte GET header and a 169-byte POST header with all 115 body bytes consumed.
+Both process tests verified pending I/O before termination and EOF afterward.
+
+`Claude Opus 5.5 (copilot)` accepted the ownership repair and fixed malformed partial requests that the fixture could otherwise discard silently.
+Its new six-case regression failed before that change. Seven reader tests and all 55 native cases passed on stable and Rust 1.88.
+Astra reviewed the material revision without retained edits. A temporary probe tested every byte boundary of four valid requests.
+The final ten-file repair diff against `e3f60473f6ad8a8b4f03bfaa332acbc68e43debf` is `cb216d0c3071abb58d2a83cc565802659d9290305ef951b51f0463ef5a90ac06`.
+The complete changed-content manifest is `ba27c472d3ae1c6c5384e8f4d361acdaa996ef8345da62a175120e90f50d0b70`.
+The fixture SHA-256 is `7426af326cad3586936c05a9309441b529008ee2cb9d286486c3081664703492`.
+
+The coordinator reran the full final sequence and received `ALL_ITERATION_05_OWNERSHIP_ARM_FIXTURE_GATES_PASSED`.
+Formatting, strict workspace Clippy, private docs, build, all-feature workspace tests, and MSRV all-target checks passed.
+The run included 232 agent tests, 55 native prepared-source tests, 26 YANG tests, and 256 delivery tests.
+Ten existing ignored Rust tests remain excluded. The existing optional `console-subscriber` manifest advisory did not fail Clippy.
+No dependency, schema, or generated-artifact change belongs to this repair.
+Fresh hosted ARMhf success remains required; local evidence does not establish the complete cause of the earlier ARM failure.
+Prepared-runtime accounting, native allocator limits, RSS, and preparation/expiry-lock independence remain iteration 10 work.
+The repair is published as `8e0bdc9dbc329acab018ce5e92bb72e50fe88049`; evidence reply `4315616938` and thread resolution are recorded.
+Current-head Copilot review `5573894855` reports no open issues and confirms the disposal-order finding resolved.
+Its generic final-review reminder is not a human approval claim. Both named direct reviews and the coordinator's local gates are recorded above.
+Required workflow `39277505296` remains queued at the last reliable observation. Job-list requests then returned a transport error and HTTP 502.
+GitHub reported Actions, Pages, and Webhooks incident `8tzbpcnl75jp`, updated at 2026-10-19 15:54 UTC.
+That incident is consistent with current service trouble, but does not prove the cause of the initial queue delay.
+The PR remains unmerged. No required-check bypass or unsupported hosted-platform success claim is authorized.
 
 #### Canonical Contract
 
@@ -1454,7 +1495,73 @@ Checks: canonical policy/default tests, actual YANG regeneration, paused-time an
 
 ### 06: Prepared Operations
 
-Status: planned. Scope: R6 and the consuming-IPC/Bash-builder portions of R15.
+Status: published as staged PR #283; both named reviews and coordinator final gates passed.
+The PR targets iteration 05 while required hosted checks remain pending, as permitted by the common procedure.
+Scope: R6 and the consuming-IPC/Bash-builder portions of R15.
+
+#### Initial Implementation Receipt
+
+Worktree: `/home/vscode/tacacs-rs-06-prepared-operations`; branch: `refactor/general-iterations/06-prepared-operations`.
+The implementation has 36 tracked modified files, no new files, and no tracking-document changes.
+`FixedExchange: Send + Sync` borrows protected prepared bodies and requires `Reply: Send`.
+Fallible concrete constructors encode once. Captured request deadlines cover preparation and admission; allowed attempts borrow the same exchange.
+Networking retains packet headers, fresh session IDs, obfuscation, reply validation, and transport ownership.
+IPC consumes owned requests. Bash uses its existing builder while preserving exact mandatory metadata and argument order.
+The invalid fixed-request regression ran one test and failed before preparation moved ahead of connection creation.
+The passing form observes zero connections, messages, and sessions. Serialization characterization observed one encoding across two fresh session IDs.
+
+Initial affected-package tests passed on Rust 1.88 and stable: protocol 83, networking 257, agent 228, IPC 39, CLI 66, and Bash 8.
+The independent peer runner passed nine cases. Native prepared-source tests passed 48 cases before the parent fixture additions.
+Nine pure exchange Miri tests and four 30-second existing fuzz targets passed with private writable corpora.
+The Rust 1.88 generic connector fixture compiled; the monomorphic fixture failed with the expected Send generality diagnostic.
+An initial unwritable compiler-output location was corrected; that environmental failure is not counted as verification.
+Affected formatting, strict Clippy, private docs, architecture checks, and three isolated Linux consumer profiles passed.
+Windows, ARMhf, coverage, both named reviews, and coordinator final gates are not claimed complete.
+
+Initial complete changed-content manifest: `862a9d14937effbefe143db5db9da9623757a56ca5e4ec6d247bec0ad27af6c8`.
+Initial tracked patch SHA-256: `3adb5c3e3307b340a3b8ba2356a277f65740be0137d546e51ae321fe0cef8d29`.
+
+#### Named Review Receipt
+
+The parent fast-forward from `e3f60473` to `8e0bdc9` preserved the complete iteration 06 patch byte for byte.
+`GPT-6 Astra (copilot)` reviewed all 36 changed paths and accepted the unchanged implementation without source edits.
+It reran affected Rust 1.88 tests: protocol 83, networking 257, agent 235, IPC 39, CLI 66, Bash 8, and configuration 269.
+It also passed connector boundaries, 23 doctests, all 55 native prepared-source cases, and nine independent peer cases.
+The generic connector fixture compiled; its monomorphic counterpart failed with the expected Send generality diagnostic.
+Affected strict Clippy, private docs, formatting, architecture, and whitespace checks passed.
+
+`Claude Opus 5.5 (copilot)` found no behavior, security, or contract defect.
+It corrected two stale rustdoc sentences that still described execution-time request encoding.
+The focused warning-free networking docs check ran immediately after that docs-only edit.
+Affected tests, networking doctests, strict Clippy, and formatting passed afterward.
+The coordinator accepted that nonmaterial documentation correction; Astra's behavior review remains applicable.
+Neither reviewer claims current Windows, ARMhf, coverage, or full-workspace execution.
+
+The coordinator recomputed the complete final manifest using the specified NUL-delimited recipe:
+`9b7a84ba66f96d0494e41e8f347383f7d0215e898d9e0a3b91f51739b919a520`.
+The final tracked binary patch SHA-256 is `87c51c14664c1b336d15135cc2d6911c47118f2f7302cf3dad16228285a843c4`.
+The Opus report used space-delimited manifest records; its aggregate is not this canonical complete-content fingerprint.
+#### Coordinator Final Gate Receipt
+
+The complete workspace gate sequence used `/home/vscode/.cache/tacacs-rs-06-prepared-operations` and emitted `ALL_ITERATION_06_GATES_PASSED`.
+Formatting, strict nightly Clippy, warning-free private docs, stable build, all-feature tests, and Rust 1.88 all-target checks passed.
+All 26 YANG generator tests and 256 selected delivery tests passed. Whitespace validation passed.
+The run included 235 agent tests, 257 passing networking unit tests, 83 protocol tests, and all 55 native prepared-source cases.
+Eight manual-peer tests and two existing networking benchmarks remain ignored; the separate nine-case peer run supplies executed interop evidence.
+No source bytes changed during the gate run. The final patch hash still matches the reviewed value above.
+The existing optional `console-subscriber` manifest advisory did not fail Clippy. No validation process remains active.
+The clean local checkpoint is `572652e3c41936fbad46a4c961e2be7f52560a30`, with tree `9d04f8c7cb54d2c80aff65bce44000ef3a385688`.
+Hosted Windows and ARMhf success is not claimed. Merge remains gated on the predecessor's merge and current-head required checks.
+
+#### Publication Receipt
+
+[PR #283](https://github.com/AuthScaffold/tacacs-rs/pull/283) targets `refactor/general-iterations/05-candidate-budgets` at predecessor `8e0bdc9dbc329acab018ce5e92bb72e50fe88049`.
+Its published head is `572652e3c41936fbad46a4c961e2be7f52560a30`; its tree equals the tested checkpoint above.
+The remote PR reports exactly 36 changed files and the `skip-release` label. No tracking documents occur in its diff.
+Copilot review was requested on that head. Required workflow `39282835429` started in queued state during the reported Actions incident.
+An empty initial comment list or pending workflow is not merge clearance.
+After predecessor merge, update this published branch through a normal forward merge of updated `main`, then retarget and verify the complete tree.
+Do not rewrite or force-push its published history. Rerun affected checks and require current-head review and CI before merge.
 
 Prepare one immutable validated body and encoded length before admission.
 Reuse that body for eligible attempts without renewing request deadlines.
