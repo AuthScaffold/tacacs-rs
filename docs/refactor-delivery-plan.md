@@ -1509,8 +1509,7 @@ Checks: canonical policy/default tests, actual YANG regeneration, paused-time an
 
 ### 06: Prepared Operations
 
-Status: published as PR #283; both named reviews and coordinator final gates passed.
-The predecessor merged; normal merge `f8a59ac9fef6700d310d0f796c488462e361ceef` preserves the complete tested tree for retargeting to `main`.
+Status: squash-merged as `ab347c178906b7ebef9918a3153d366712d01595`; both named reviews and final local and hosted gates passed.
 Scope: R6 and the consuming-IPC/Bash-builder portions of R15.
 
 #### Initial Implementation Receipt
@@ -1585,6 +1584,17 @@ Retargeting superseded workflow `39285678964`; its cancellation is not a source 
 Replacement workflow `39285889531` runs on the same final head. ARMhf, Windows tests, MSRV, and all consumer profiles passed at the latest observation.
 Remaining build and aggregate checks are still in progress. No merge clearance is claimed.
 
+#### Merge Receipt
+
+Replacement required workflow `39285889531` subsequently completed successfully on final head `f8a59ac9fef6700d310d0f796c488462e361ceef`.
+ARMhf job `118172693794`, Windows testing job `118176104969`, and both CI-success gates passed.
+Copilot review `5574629008` had no open issues. All threads were resolved, the PR-scoped open-alert query was empty, and mergeability was clean.
+The guarded squash request specified that exact reviewed head. GitHub returned `merged: true` and squash `ab347c178906b7ebef9918a3153d366712d01595`.
+Fetched `origin/main` equals the complete tested tree `9d04f8c7cb54d2c80aff65bce44000ef3a385688`.
+Iteration 07 integrated the squash through normal merge `d01637e9f78a0c46254820196a51f5d25ea7bdc4`, preserving its complete tested tree.
+All 237 agent tests passed again. Iteration 08 fast-forwarded its parent without changing its complete changed-content fingerprint, including the new file.
+Iteration 06 cleanup follows preservation of this receipt.
+
 Prepare one immutable validated body and encoded length before admission.
 Reuse that body for eligible attempts without renewing request deadlines.
 Keep session ID, sequence, packet flags, and obfuscation in networking.
@@ -1607,7 +1617,7 @@ Checks: protocol/agent/networking/IPC/CLI/Bash tests, native interop, connector 
 
 ### 07: Binding Outcomes
 
-Status: published as staged PR #284 on reviewed predecessor `f8a59ac9fef6700d310d0f796c488462e361ceef`; both named reviews accepted the unchanged source.
+Status: published as PR #284; normal merge `d01637e9f78a0c46254820196a51f5d25ea7bdc4` preserves the source accepted by both named reviews.
 Coordinator final workspace gates passed. Scope: R10.
 
 #### Implementation And Review Receipt
@@ -1667,6 +1677,9 @@ The remote PR reports exactly eight implementation files, no tracking documents,
 Copilot review was requested on that head. Required workflow `39290252584` started and is in progress.
 The predecessor remains subject to its replacement required workflow `39285889531`; pending checks are not merge clearance.
 No iteration 07 worktree or cache is eligible for cleanup before merge and preservation of its receipts.
+Copilot review `5574977456` on the original published head reported no open issues and recommended approval.
+After predecessor merge, integration head `d01637e9f78a0c46254820196a51f5d25ea7bdc4` retains tested tree `9c03e697aa8a65e10d750145048f4998d6fbfe0c` exactly.
+All 237 agent tests passed again. Final-head publication, retargeting, fresh review, and required checks remain pending.
 
 Move lease-only admission operations onto captured requests and outcome recording onto bindings.
 Remove behavior-free router/manager forwarding and unnecessary router retention from attempts.
