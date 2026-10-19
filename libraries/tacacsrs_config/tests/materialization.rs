@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use tacacsrs_config::crypto_types::{PrivateKeyFormat, PublicKeyFormat, SymmetricKeyFormat};
-use tacacsrs_config::{ValidationOptions, parse_yang_json};
+use tacacsrs_config::{
+    CentralCredentialUsage, TacacsPlus, TacacsPlusServer, ValidationOptions, parse_yang_json,
+};
 use tacacsrs_config::prepare::{
     MaterializationErrorKind, enumerate_materialized_servers, materialize_servers,
 };
@@ -15,6 +17,280 @@ struct CompleteResolver {
 }
 
 struct DuplicateBagNameResolver;
+
+const USAGES: [CentralCredentialUsage; 6] = [
+    CentralCredentialUsage::ClientCertificateWithKey,
+    CentralCredentialUsage::ClientTls13Epsk,
+    CentralCredentialUsage::ServerCaCertificateBag,
+    CentralCredentialUsage::ServerEeCertificateBag,
+    CentralCredentialUsage::ServerCertificateRevocationLists,
+    CentralCredentialUsage::ServerOcspResponse,
+];
+
+fn destination_source(usage: CentralCredentialUsage, bundled: bool) -> TacacsPlus {
+    use serde_json::json;
+
+    let opaque = "../ opaque reference/https://provider.test/?private=sentinel";
+    let (container, bundles, field, reference) = match usage {
+        CentralCredentialUsage::ClientCertificateWithKey => (
+            "client-identity",
+            "client-credentials",
+            "certificate",
+            json!({"central-keystore-reference":{"asymmetric-key":opaque,"certificate":opaque}}),
+        ),
+        CentralCredentialUsage::ClientTls13Epsk => (
+            "client-identity",
+            "client-credentials",
+            "tls13-epsk",
+            json!({"central-keystore-reference":opaque,"external-identity":"fixture-client"}),
+        ),
+        CentralCredentialUsage::ServerCaCertificateBag => (
+            "server-authentication",
+            "server-credentials",
+            "ca-certs",
+            json!({"central-truststore-reference":opaque}),
+        ),
+        CentralCredentialUsage::ServerEeCertificateBag => (
+            "server-authentication",
+            "server-credentials",
+            "ee-certs",
+            json!({"central-truststore-reference":opaque}),
+        ),
+        CentralCredentialUsage::ServerCertificateRevocationLists => (
+            "server-authentication",
+            "server-credentials",
+            "tacacsrs:require-crls",
+            json!({"evidence-reference":opaque}),
+        ),
+        CentralCredentialUsage::ServerOcspResponse => (
+            "server-authentication",
+            "server-credentials",
+            "tacacsrs:require-ocsp",
+            json!({"evidence-reference":opaque}),
+        ),
+    };
+    let mut source = json!({"server":[
+        {"name":"target","server-type":"accounting","address":"192.0.2.1","port":300,"timeout":7},
+        {"name":"sibling","server-type":"accounting","address":"192.0.2.2","port":49,"shared-secret":"sibling-secret"}
+    ]});
+    if bundled {
+        source[bundles] = json!([{"id":"local-bundle",field:reference}]);
+        source["server"][0][container] = json!({"credentials-reference":"local-bundle"});
+    } else {
+        source["server"][0][container] = json!({field:reference});
+    }
+    parse_yang_json(&json!({"ietf-system-tacacs-plus:tacacs-plus":source}).to_string()).unwrap()
+}
+
+fn check_destination(
+    usage: CentralCredentialUsage,
+    server: &TacacsPlusServer,
+    original: &TacacsPlusServer,
+) {
+    let mut restored = server.clone();
+    match usage {
+        CentralCredentialUsage::ClientCertificateWithKey => {
+            let target = server
+                .client_identity
+                .as_ref()
+                .unwrap()
+                .certificate
+                .as_ref()
+                .unwrap();
+            assert!(target.central_keystore_reference.is_none());
+            let inline = target.inline_definition.as_ref().unwrap();
+            assert!(inline.cert_data.as_deref() == Some(b"resolved-certificate"));
+            assert!(
+                inline
+                    .cleartext_private_key
+                    .as_ref()
+                    .unwrap()
+                    .expose_secret()
+                    == b"resolved-private-key"
+            );
+            assert!(
+                inline.intermediate_certificate
+                    == [
+                        b"first-intermediate".to_vec(),
+                        b"second-intermediate".to_vec()
+                    ]
+            );
+            restored.client_identity.as_mut().unwrap().certificate = original
+                .client_identity
+                .as_ref()
+                .unwrap()
+                .certificate
+                .clone();
+        }
+        CentralCredentialUsage::ClientTls13Epsk => {
+            let target = server
+                .client_identity
+                .as_ref()
+                .unwrap()
+                .tls13_epsk
+                .as_ref()
+                .unwrap();
+            assert!(target.central_keystore_reference.is_none());
+            assert!(
+                target
+                    .inline_definition
+                    .as_ref()
+                    .unwrap()
+                    .cleartext_symmetric_key
+                    .as_ref()
+                    .unwrap()
+                    .expose_secret()
+                    == b"resolved-epsk-material"
+            );
+            assert_eq!(target.external_identity, "fixture-client");
+            restored.client_identity.as_mut().unwrap().tls13_epsk = original
+                .client_identity
+                .as_ref()
+                .unwrap()
+                .tls13_epsk
+                .clone();
+        }
+        CentralCredentialUsage::ServerCaCertificateBag
+        | CentralCredentialUsage::ServerEeCertificateBag => {
+            let auth = server.server_authentication.as_ref().unwrap();
+            let (target, expected) = match usage {
+                CentralCredentialUsage::ServerCaCertificateBag => {
+                    restored.server_authentication.as_mut().unwrap().ca_certs = original
+                        .server_authentication
+                        .as_ref()
+                        .unwrap()
+                        .ca_certs
+                        .clone();
+                    (auth.ca_certs.as_ref().unwrap(), b"resolved-ca-primary".as_slice())
+                }
+                _ => {
+                    restored.server_authentication.as_mut().unwrap().ee_certs = original
+                        .server_authentication
+                        .as_ref()
+                        .unwrap()
+                        .ee_certs
+                        .clone();
+                    (auth.ee_certs.as_ref().unwrap(), b"resolved-ee-primary".as_slice())
+                }
+            };
+            assert!(target.central_truststore_reference.is_none());
+            assert!(
+                target.inline_definition.as_ref().unwrap().certificate[0].cert_data == expected
+            );
+        }
+        CentralCredentialUsage::ServerCertificateRevocationLists => {
+            let target = server
+                .server_authentication
+                .as_ref()
+                .unwrap()
+                .require_crls
+                .as_ref()
+                .unwrap();
+            assert!(target.evidence_reference.is_none());
+            assert!(target.crl.as_ref().unwrap() == &[b"resolved-crl".to_vec()]);
+            restored
+                .server_authentication
+                .as_mut()
+                .unwrap()
+                .require_crls = original
+                .server_authentication
+                .as_ref()
+                .unwrap()
+                .require_crls
+                .clone();
+        }
+        CentralCredentialUsage::ServerOcspResponse => {
+            let target = server
+                .server_authentication
+                .as_ref()
+                .unwrap()
+                .require_ocsp
+                .as_ref()
+                .unwrap();
+            assert!(target.evidence_reference.is_none());
+            assert!(target.response.as_deref() == Some(b"resolved-ocsp"));
+            restored
+                .server_authentication
+                .as_mut()
+                .unwrap()
+                .require_ocsp = original
+                .server_authentication
+                .as_ref()
+                .unwrap()
+                .require_ocsp
+                .clone();
+        }
+    }
+    assert!(restored == *original);
+}
+
+#[tokio::test]
+async fn typed_destinations_materialize_direct_and_local_bundle_references() {
+    for usage in USAGES {
+        for bundled in [false, true] {
+            let source = destination_source(usage, bundled);
+            let original = source.clone();
+            let enumerated = tacacsrs_config::enumerate_servers(&source).unwrap();
+            let materialized = enumerate_materialized_servers(
+                &source,
+                &CompleteResolver {
+                    failing_server: None,
+                },
+                &ValidationOptions::default(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(materialized.len(), 2);
+            check_destination(usage, materialized[0].server(), &enumerated[0]);
+            assert!(materialized[1].server() == &original.server[1]);
+            assert!(source == original);
+            assert!(tacacsrs_config::inspect_central_references(materialized[0].server())
+                .unwrap()
+                .is_empty());
+        }
+    }
+}
+
+#[tokio::test]
+async fn wrong_kind_results_reject_every_destination_without_source_mutation() {
+    use tacacsrs_credential_resolution::{FakeCredentialResolver, ResolutionErrorKind};
+
+    for usage in USAGES {
+        for bundled in [false, true] {
+            let source = destination_source(usage, bundled);
+            let original = source.clone();
+            let server = tacacsrs_config::enumerate_servers(&source)
+                .unwrap()
+                .remove(0);
+            let plan = tacacsrs_config::prepare::resolution_plan(&server).unwrap();
+            let request = &plan.neutral_plan().requests()[0];
+            let wrong = if request.kind() == CredentialKind::CaCertificateBag {
+                ResolvedCredential::EeCertificateBag(CertificateBagMaterial {
+                    validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
+                    certificates: Vec::new(),
+                })
+            } else {
+                ResolvedCredential::CaCertificateBag(CertificateBagMaterial {
+                    validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
+                    certificates: Vec::new(),
+                })
+            };
+            let resolver = FakeCredentialResolver::new().with_response(request.slot(), wrong);
+            let error =
+                enumerate_materialized_servers(&source, &resolver, &ValidationOptions::default())
+                    .await
+                    .unwrap_err();
+            assert_eq!(error.kind(), MaterializationErrorKind::Resolution);
+            assert_eq!(
+                error.resolution_error().unwrap().kind(),
+                ResolutionErrorKind::ResponseMismatch
+            );
+            assert_eq!(error.field_path(), Some(usage.field_path()));
+            assert!(!format!("{error:?}").contains("sentinel"));
+            assert!(source == original);
+        }
+    }
+}
 
 struct ValidityResolver {
     identity: tacacsrs_credential_resolution::CredentialValidity,
@@ -449,6 +725,18 @@ async fn selected_set_failure_returns_no_partial_candidates() {
                         "shared-secret": "inline-secret"
                     },
                     {
+                        "name": "staged",
+                        "server-type": "accounting",
+                        "address": "192.0.2.42",
+                        "port": 300,
+                        "client-identity": {
+                            "tls13-epsk": {
+                                "central-keystore-reference": "opaque-staged-reference",
+                                "external-identity": "staged-client"
+                            }
+                        }
+                    },
+                    {
                         "name": "failing",
                         "server-type": "accounting",
                         "address": "192.0.2.41",
@@ -465,6 +753,7 @@ async fn selected_set_failure_returns_no_partial_candidates() {
         }"#,
     )
     .expect("selected server configuration must parse");
+    let original = source.clone();
     let enumerated =
         tacacsrs_config::enumerate_servers(&source).expect("server enumeration must succeed");
 
@@ -483,6 +772,7 @@ async fn selected_set_failure_returns_no_partial_candidates() {
     let debug = format!("{error:?}");
     assert!(!debug.contains("opaque-failing-reference"));
     assert!(!debug.contains("resolved-epsk-material"));
+    assert!(source == original);
 }
 
 #[async_trait]

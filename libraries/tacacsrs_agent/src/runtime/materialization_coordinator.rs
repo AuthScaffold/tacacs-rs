@@ -503,7 +503,7 @@ fn dependency_index(source: &TacacsPlus) -> Option<BTreeMap<DependencyKey, BTree
     for source_server in &source.server {
         let server = enumerate_server(source, &source_server.name).ok()?;
         let plan = resolution_plan(&server).ok()?;
-        for request in plan.requests() {
+        for request in plan.neutral_plan().requests() {
             dependencies
                 .entry(DependencyKey {
                     kind: request.kind(),

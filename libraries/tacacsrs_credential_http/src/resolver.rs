@@ -13,30 +13,30 @@ use tacacsrs_credential_resolution::{
     CredentialValidity, ProviderErrorKind, PublicBytes, ResolutionError, ResolvedCredential,
 };
 
-use crate::{CrlFetchLimits, HttpCrlSource, HttpOcspSource};
+use crate::{EvidenceFetchLimits, HttpCrlSource, HttpOcspSource};
 
-/// Retrieves complete CRL sets from explicitly registered HTTP(S) sources.
+/// Retrieves CRL sets and OCSP responses from explicitly registered HTTP(S) sources.
 ///
 /// Redirects, environment proxies, and idle connection pooling are disabled.
 /// HTTPS uses normal platform certificate and hostname verification.
 /// Dropping a resolution future cancels its owned request and releases capacity.
-pub struct HttpCrlResolver {
+pub struct HttpEvidenceResolver {
     client: Client,
     sources: BTreeMap<String, Vec<Url>>,
     ocsp_sources: BTreeMap<String, HttpOcspSource>,
-    limits: CrlFetchLimits,
+    limits: EvidenceFetchLimits,
     capacity: Semaphore,
     fallback: Option<Arc<dyn CredentialResolver>>,
 }
 
-impl HttpCrlResolver {
+impl HttpEvidenceResolver {
     /// Creates a reusable provider client with fixed reference-to-location mappings.
     ///
     /// # Errors
     /// Rejects duplicate references or an unavailable HTTP client backend. Errors omit source details.
     pub fn new(
         sources: impl IntoIterator<Item = HttpCrlSource>,
-        limits: CrlFetchLimits,
+        limits: EvidenceFetchLimits,
     ) -> anyhow::Result<Self> {
         let mut registered = BTreeMap::new();
         for source in sources {
@@ -57,7 +57,7 @@ impl HttpCrlResolver {
             .pool_max_idle_per_host(0)
             .timeout(limits.timeout)
             .build()
-            .map_err(|_| anyhow::anyhow!("Could not initialize HTTP CRL retrieval"))?;
+            .map_err(|_| anyhow::anyhow!("Could not initialize HTTP evidence retrieval"))?;
         Ok(Self {
             client,
             sources: registered,
@@ -198,7 +198,7 @@ impl HttpCrlResolver {
 }
 
 #[async_trait]
-impl CredentialResolver for HttpCrlResolver {
+impl CredentialResolver for HttpEvidenceResolver {
     async fn resolve(
         &self,
         request: &CredentialRequest,
@@ -254,10 +254,10 @@ impl CredentialResolver for HttpCrlResolver {
     }
 }
 
-impl fmt::Debug for HttpCrlResolver {
+impl fmt::Debug for HttpEvidenceResolver {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("HttpCrlResolver")
+            .debug_struct("HttpEvidenceResolver")
             .field("source_count", &self.sources.len())
             .field("ocsp_source_count", &self.ocsp_sources.len())
             .field("limits", &self.limits)

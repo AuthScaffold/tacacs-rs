@@ -22,6 +22,6 @@ pub use materialization::{
     enumerate_materialized_servers, materialize_server, materialize_servers, MaterializationError,
     MaterializationErrorKind, MaterializedServer,
 };
-pub use planning::resolution_plan;
+pub use planning::{resolution_plan, ServerResolutionPlan};
 pub use endpoint::{prepare_endpoint, PrepareOptions};
 pub use readiness::validate_materialized_servers;

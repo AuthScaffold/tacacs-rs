@@ -213,15 +213,15 @@ impl fmt::Debug for HttpCrlSource {
     }
 }
 
-/// Resource limits for one provider and each complete CRL-set fetch.
+/// Resource limits for one provider and each CRL-set or OCSP fetch.
 #[derive(Debug, Clone, Copy)]
-pub struct CrlFetchLimits {
+pub struct EvidenceFetchLimits {
     pub(crate) timeout: Duration,
     pub(crate) maximum_bytes: usize,
     pub(crate) maximum_concurrent: usize,
 }
 
-impl CrlFetchLimits {
+impl EvidenceFetchLimits {
     /// Sets a total fetch timeout, aggregate byte cap, and active-fetch cap.
     ///
     /// # Errors
@@ -234,19 +234,19 @@ impl CrlFetchLimits {
     ) -> anyhow::Result<Self> {
         ensure!(
             !timeout.is_zero() && maximum_bytes > 0 && maximum_concurrent > 0,
-            "HTTP CRL limits must be positive"
+            "HTTP evidence limits must be positive"
         );
         ensure!(
             maximum_bytes <= 4 * 1024 * 1024,
-            "HTTP CRL byte cap exceeds the native evidence limit"
+            "HTTP evidence byte cap exceeds the native evidence limit"
         );
         ensure!(
             maximum_concurrent <= tokio::sync::Semaphore::MAX_PERMITS,
-            "HTTP CRL concurrency exceeds the runtime limit"
+            "HTTP evidence concurrency exceeds the runtime limit"
         );
         ensure!(
             timeout <= Duration::from_secs(u64::from(u32::MAX)),
-            "HTTP CRL timeout exceeds the supported range"
+            "HTTP evidence timeout exceeds the supported range"
         );
         Ok(Self {
             timeout,
@@ -256,7 +256,7 @@ impl CrlFetchLimits {
     }
 }
 
-impl Default for CrlFetchLimits {
+impl Default for EvidenceFetchLimits {
     fn default() -> Self {
         Self {
             timeout: Duration::from_secs(10),
@@ -295,12 +295,12 @@ mod tests {
             ["http://example.test/crl", "http://example.test/crl"]
         )
         .is_err());
-        assert!(CrlFetchLimits::new(Duration::ZERO, 1, 1).is_err());
-        assert!(CrlFetchLimits::new(Duration::MAX, 1, 1).is_err());
-        assert!(CrlFetchLimits::new(Duration::from_secs(1), 1, usize::MAX).is_err());
-        assert!(CrlFetchLimits::new(Duration::from_secs(1), 0, 1).is_err());
-        assert!(CrlFetchLimits::new(Duration::from_secs(1), 4 * 1024 * 1024 + 1, 1).is_err());
-        assert!(CrlFetchLimits::new(Duration::from_secs(1), 1, 0).is_err());
+        assert!(EvidenceFetchLimits::new(Duration::ZERO, 1, 1).is_err());
+        assert!(EvidenceFetchLimits::new(Duration::MAX, 1, 1).is_err());
+        assert!(EvidenceFetchLimits::new(Duration::from_secs(1), 1, usize::MAX).is_err());
+        assert!(EvidenceFetchLimits::new(Duration::from_secs(1), 0, 1).is_err());
+        assert!(EvidenceFetchLimits::new(Duration::from_secs(1), 4 * 1024 * 1024 + 1, 1).is_err());
+        assert!(EvidenceFetchLimits::new(Duration::from_secs(1), 1, 0).is_err());
         assert!(HttpCrlSource::new("", ["http://example.test/crl"]).is_err());
         assert!(HttpCrlSource::new(
             "too-many",

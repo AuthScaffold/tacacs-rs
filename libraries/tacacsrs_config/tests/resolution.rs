@@ -98,6 +98,7 @@ async fn fake_resolver_completes_all_request_variants() {
     let certificate_plan =
         tacacsrs_config::prepare::resolution_plan(&certificate_and_trust_server())
             .expect("certificate plan must build");
+    let certificate_plan = certificate_plan.neutral_plan();
     assert_eq!(
         certificate_plan
             .requests()
@@ -114,7 +115,7 @@ async fn fake_resolver_completes_all_request_variants() {
         .with_response(certificate_plan.requests()[0].slot(), certificate_material())
         .with_response(certificate_plan.requests()[1].slot(), ca_material())
         .with_response(certificate_plan.requests()[2].slot(), ee_material());
-    let certificate_set = resolve_plan(&certificate_plan, &certificate_resolver)
+    let certificate_set = resolve_plan(certificate_plan, &certificate_resolver)
         .await
         .expect("certificate plan must resolve");
     assert_eq!(certificate_set.len(), 3);
@@ -128,6 +129,7 @@ async fn fake_resolver_completes_all_request_variants() {
 
     let epsk_plan =
         tacacsrs_config::prepare::resolution_plan(&epsk_server()).expect("EPSK plan must build");
+    let epsk_plan = epsk_plan.neutral_plan();
     let epsk_resolver = FakeCredentialResolver::new().with_response(
         epsk_plan.requests()[0].slot(),
         ResolvedCredential::SymmetricKey(SymmetricKeyMaterial {
@@ -136,7 +138,7 @@ async fn fake_resolver_completes_all_request_variants() {
             key: SecretBytes::new(b"epsk".to_vec()),
         }),
     );
-    let epsk_set = resolve_plan(&epsk_plan, &epsk_resolver)
+    let epsk_set = resolve_plan(epsk_plan, &epsk_resolver)
         .await
         .expect("EPSK plan must resolve");
     assert_eq!(
@@ -152,6 +154,7 @@ async fn fake_resolver_completes_all_request_variants() {
 fn request_plan_is_deterministic_explicit_and_redacted() {
     let plan = tacacsrs_config::prepare::resolution_plan(&certificate_and_trust_server())
         .expect("plan must build");
+    let plan = plan.neutral_plan();
     let first = &plan.requests()[0];
     assert_eq!(first.context().server_name(), "certificate-server");
     assert_eq!(first.context().field_path(), "client-identity/certificate");
@@ -277,8 +280,10 @@ fn resolution_plan_covers_all_variants_after_bundle_enumeration() {
     let servers = enumerate_servers(&config).expect("bundles must enumerate");
     let certificate_plan = tacacsrs_config::prepare::resolution_plan(&servers[0])
         .expect("certificate plan must build");
+    let certificate_plan = certificate_plan.neutral_plan();
     let epsk_plan =
         tacacsrs_config::prepare::resolution_plan(&servers[1]).expect("EPSK plan must build");
+    let epsk_plan = epsk_plan.neutral_plan();
 
     assert_eq!(
         certificate_plan
@@ -318,10 +323,11 @@ fn resolution_plan_covers_all_variants_after_bundle_enumeration() {
 fn result_set_rejects_missing_duplicate_unexpected_and_mismatched_responses() {
     let plan = tacacsrs_config::prepare::resolution_plan(&certificate_and_trust_server())
         .expect("plan must build");
+    let plan = plan.neutral_plan();
     let slots = plan.requests();
 
     let missing = ResolvedCredentialSet::from_responses(
-        &plan,
+        plan,
         [
             ResolvedResponse::new(slots[0].slot(), certificate_material()),
             ResolvedResponse::new(slots[1].slot(), ca_material()),
@@ -332,7 +338,7 @@ fn result_set_rejects_missing_duplicate_unexpected_and_mismatched_responses() {
     assert_eq!(missing.slot(), Some(slots[2].slot()));
 
     let duplicate = ResolvedCredentialSet::from_responses(
-        &plan,
+        plan,
         [
             ResolvedResponse::new(slots[0].slot(), certificate_material()),
             ResolvedResponse::new(slots[0].slot(), certificate_material()),
@@ -342,7 +348,7 @@ fn result_set_rejects_missing_duplicate_unexpected_and_mismatched_responses() {
     assert_eq!(duplicate.kind(), ResolutionErrorKind::DuplicateResponse);
 
     let unexpected = ResolvedCredentialSet::from_responses(
-        &plan,
+        plan,
         [ResolvedResponse::new(
             tacacsrs_credential_resolution::RequestSlot::from_index(99),
             certificate_material(),
@@ -352,7 +358,7 @@ fn result_set_rejects_missing_duplicate_unexpected_and_mismatched_responses() {
     assert_eq!(unexpected.kind(), ResolutionErrorKind::UnexpectedResponse);
 
     let mismatch = ResolvedCredentialSet::from_responses(
-        &plan,
+        plan,
         [
             ResolvedResponse::new(
                 slots[0].slot(),
@@ -376,10 +382,11 @@ fn result_set_rejects_missing_duplicate_unexpected_and_mismatched_responses() {
 async fn provider_failures_are_typed_and_sanitized() {
     let plan =
         tacacsrs_config::prepare::resolution_plan(&epsk_server()).expect("EPSK plan must build");
+    let plan = plan.neutral_plan();
     let resolver = FakeCredentialResolver::new()
         .with_error(plan.requests()[0].slot(), ProviderErrorKind::AccessDenied);
 
-    let error = resolve_plan(&plan, &resolver)
+    let error = resolve_plan(plan, &resolver)
         .await
         .expect_err("provider error must propagate");
     assert_eq!(error.kind(), ResolutionErrorKind::AccessDenied);

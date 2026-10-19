@@ -36,6 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let server = enumerate_server(&config, "primary")?;
     let plan = tacacsrs_config::prepare::resolution_plan(&server)?;
+    let plan = plan.neutral_plan();
 
     assert_eq!(plan.requests().len(), 2);
     assert_eq!(plan.requests()[0].kind(), CredentialKind::CertificateWithKey);
@@ -64,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }],
             }),
         );
-    let result_set = resolve_plan(&plan, &resolver).await?;
+    let result_set = resolve_plan(plan, &resolver).await?;
 
     let ResolvedCredential::CertificateWithKey(client_identity) = result_set
         .credential(plan.requests()[0].slot())

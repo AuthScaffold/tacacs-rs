@@ -14,7 +14,7 @@ use crate::keystore::{EndEntityCertWithKeyInlineDefinition, SymmetricKeyInlineDe
 use crate::truststore::{CertsCertificate, CertsInlineDefinition};
 use crate::{
     TacacsPlus, TacacsPlusServer, ValidationOptions, enumerate_servers, inspect_central_references,
-    validation,
+    validation, CentralCredentialUsage,
 };
 
 /// Stable materialization error category.
@@ -219,7 +219,7 @@ async fn materialize_server_unvalidated(
     resolver: &dyn CredentialResolver,
 ) -> Result<MaterializedServer, MaterializationError> {
     let plan = super::resolution_plan(&server).map_err(MaterializationError::resolution)?;
-    let result_set = resolve_plan(&plan, resolver)
+    let result_set = resolve_plan(plan.neutral_plan(), resolver)
         .await
         .map_err(MaterializationError::resolution)?;
     let mut credentials = result_set
@@ -228,7 +228,14 @@ async fn materialize_server_unvalidated(
         .collect::<BTreeMap<_, _>>();
 
     let mut validity = CredentialValidity::unbounded();
-    for request in plan.requests() {
+    for request in plan.neutral_plan().requests() {
+        let usage = plan.usage(request.slot()).ok_or_else(|| {
+            MaterializationError::new(
+                MaterializationErrorKind::InvalidMaterial,
+                Some(server.name.clone()),
+                None,
+            )
+        })?;
         let credential = credentials.remove(&request.slot()).ok_or_else(|| {
             MaterializationError::new(
                 MaterializationErrorKind::InvalidMaterial,
@@ -243,7 +250,7 @@ async fn materialize_server_unvalidated(
                 None,
             )
         })?;
-        install_credential(&mut server, request.context().field_path(), credential)?;
+        install_credential(&mut server, usage, credential)?;
     }
 
     let references = inspect_central_references(&server).map_err(|_| {
@@ -266,58 +273,71 @@ async fn materialize_server_unvalidated(
 
 fn install_credential(
     server: &mut TacacsPlusServer,
-    field_path: &'static str,
+    usage: CentralCredentialUsage,
     credential: ResolvedCredential,
 ) -> Result<(), MaterializationError> {
     let server_name = server.name.clone();
-    match credential {
-        ResolvedCredential::OcspResponse(material) => {
-            if field_path == "server-authentication/tacacsrs:require-ocsp" {
-                server
-                    .server_authentication
-                    .as_mut()
-                    .and_then(|auth| auth.require_ocsp.as_mut())
-                    .map(|policy| {
-                        policy.response = Some(material.response.into_bytes());
-                        policy.evidence_reference = None;
-                    })
-            } else {
-                None
-            }
+    match (usage, credential) {
+        (
+            CentralCredentialUsage::ServerOcspResponse,
+            ResolvedCredential::OcspResponse(material),
+        ) => server
+            .server_authentication
+            .as_mut()
+            .and_then(|auth| auth.require_ocsp.as_mut())
+            .map(|policy| {
+                policy.response = Some(material.response.into_bytes());
+                policy.evidence_reference = None;
+            }),
+        (
+            CentralCredentialUsage::ServerCertificateRevocationLists,
+            ResolvedCredential::CertificateRevocationLists(material),
+        ) => install_revocation_lists(server, material),
+        (
+            CentralCredentialUsage::ClientCertificateWithKey,
+            ResolvedCredential::CertificateWithKey(material),
+        ) => install_certificate_with_key(server, material),
+        (CentralCredentialUsage::ClientTls13Epsk, ResolvedCredential::SymmetricKey(material)) => {
+            install_symmetric_key(server, material)
         }
-        ResolvedCredential::CertificateRevocationLists(material) => {
-            install_revocation_lists(server, field_path, material)
+        (
+            CentralCredentialUsage::ServerCaCertificateBag,
+            ResolvedCredential::CaCertificateBag(material),
+        )
+        | (
+            CentralCredentialUsage::ServerEeCertificateBag,
+            ResolvedCredential::EeCertificateBag(material),
+        ) => {
+            let target = server
+                .server_authentication
+                .as_mut()
+                .and_then(|auth| match usage {
+                    CentralCredentialUsage::ServerCaCertificateBag => auth.ca_certs.as_mut(),
+                    CentralCredentialUsage::ServerEeCertificateBag => auth.ee_certs.as_mut(),
+                    _ => None,
+                });
+            target.and_then(|target| {
+                let inline = certificate_bag(material)?;
+                target.inline_definition = Some(inline);
+                target.central_truststore_reference = None;
+                Some(())
+            })
         }
-        ResolvedCredential::CertificateWithKey(material) => {
-            install_certificate_with_key(server, field_path, material)
-        }
-        ResolvedCredential::SymmetricKey(material) => {
-            install_symmetric_key(server, field_path, material)
-        }
-        ResolvedCredential::CaCertificateBag(material) => {
-            install_certificate_bag(server, field_path, material, true)
-        }
-        ResolvedCredential::EeCertificateBag(material) => {
-            install_certificate_bag(server, field_path, material, false)
-        }
+        _ => None,
     }
     .ok_or_else(|| {
         MaterializationError::new(
             MaterializationErrorKind::InvalidMaterial,
             Some(server_name),
-            Some(field_path),
+            Some(usage.field_path()),
         )
     })
 }
 
 fn install_revocation_lists(
     server: &mut TacacsPlusServer,
-    field_path: &str,
     material: tacacsrs_credential_resolution::CertificateRevocationListsMaterial,
 ) -> Option<()> {
-    if field_path != "server-authentication/tacacsrs:require-crls" {
-        return None;
-    }
     let policy = server
         .server_authentication
         .as_mut()?
@@ -336,12 +356,8 @@ fn install_revocation_lists(
 
 fn install_certificate_with_key(
     server: &mut TacacsPlusServer,
-    field_path: &'static str,
     material: CertificateWithKeyMaterial,
 ) -> Option<()> {
-    if field_path != "client-identity/certificate" {
-        return None;
-    }
     if material.public_key_format.is_some() != material.public_key.is_some() {
         return None;
     }
@@ -364,12 +380,8 @@ fn install_certificate_with_key(
 
 fn install_symmetric_key(
     server: &mut TacacsPlusServer,
-    field_path: &'static str,
     material: SymmetricKeyMaterial,
 ) -> Option<()> {
-    if field_path != "client-identity/tls13-epsk" {
-        return None;
-    }
     let epsk = server.client_identity.as_mut()?.tls13_epsk.as_mut()?;
     epsk.inline_definition = Some(SymmetricKeyInlineDefinition {
         key_format: material.key_format.map(Into::into),
@@ -379,21 +391,7 @@ fn install_symmetric_key(
     Some(())
 }
 
-fn install_certificate_bag(
-    server: &mut TacacsPlusServer,
-    field_path: &'static str,
-    material: CertificateBagMaterial,
-    is_ca: bool,
-) -> Option<()> {
-    let expected_path = if is_ca {
-        "server-authentication/ca-certs"
-    } else {
-        "server-authentication/ee-certs"
-    };
-    if field_path != expected_path {
-        return None;
-    }
-
+fn certificate_bag(material: CertificateBagMaterial) -> Option<CertsInlineDefinition> {
     let mut names = BTreeSet::new();
     let mut certificates = Vec::with_capacity(material.certificates.len());
     if material.certificates.is_empty() {
@@ -409,17 +407,9 @@ fn install_certificate_bag(
         });
     }
 
-    let authentication = server.server_authentication.as_mut()?;
-    let target = if is_ca {
-        authentication.ca_certs.as_mut()?
-    } else {
-        authentication.ee_certs.as_mut()?
-    };
-    target.inline_definition = Some(CertsInlineDefinition {
+    Some(CertsInlineDefinition {
         certificate: certificates,
-    });
-    target.central_truststore_reference = None;
-    Some(())
+    })
 }
 
 fn validate_candidates(
@@ -452,4 +442,90 @@ fn validate_candidates(
         .zip(validities)
         .map(|(server, validity)| MaterializedServer { server, validity })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use tacacsrs_credential_resolution::NamedCertificateMaterial;
+
+    use crate::CentralCredentialUsage;
+
+    use super::*;
+
+    fn trust_server() -> TacacsPlusServer {
+        crate::parse_yang_json(
+            r#"{"ietf-system-tacacs-plus:tacacs-plus":{"server":[{
+                "name":"trust","server-type":"accounting","address":"192.0.2.1","port":300,
+                "server-authentication":{
+                    "ca-certs":{"central-truststore-reference":"opaque-ca"},
+                    "ee-certs":{"central-truststore-reference":"opaque-ee"}
+                }
+            }]}}"#,
+        )
+        .unwrap()
+        .server
+        .remove(0)
+    }
+
+    fn bag() -> CertificateBagMaterial {
+        CertificateBagMaterial {
+            validity: CredentialValidity::unbounded(),
+            certificates: vec![NamedCertificateMaterial {
+                name: "fixture".to_owned(),
+                certificate: PublicBytes::new(vec![1, 2, 3]),
+            }],
+        }
+    }
+
+    #[test]
+    fn typed_bag_installation_selects_only_the_matching_destination() {
+        for usage in [
+            CentralCredentialUsage::ServerCaCertificateBag,
+            CentralCredentialUsage::ServerEeCertificateBag,
+        ] {
+            let mut server = trust_server();
+            let original = server.server_authentication.clone().unwrap();
+            let credential = match usage {
+                CentralCredentialUsage::ServerCaCertificateBag => {
+                    ResolvedCredential::CaCertificateBag(bag())
+                }
+                _ => ResolvedCredential::EeCertificateBag(bag()),
+            };
+            install_credential(&mut server, usage, credential).unwrap();
+            let auth = server.server_authentication.unwrap();
+            let target = match usage {
+                CentralCredentialUsage::ServerCaCertificateBag => {
+                    assert!(auth.ee_certs == original.ee_certs);
+                    auth.ca_certs.unwrap()
+                }
+                _ => {
+                    assert!(auth.ca_certs == original.ca_certs);
+                    auth.ee_certs.unwrap()
+                }
+            };
+            assert!(target.central_truststore_reference.is_none());
+            assert!(target.inline_definition.unwrap().certificate[0].cert_data == [1, 2, 3]);
+        }
+    }
+
+    #[test]
+    fn typed_bag_installation_rejects_swapped_variants_without_mutation() {
+        for (usage, credential) in [
+            (
+                CentralCredentialUsage::ServerCaCertificateBag,
+                ResolvedCredential::EeCertificateBag(bag()),
+            ),
+            (
+                CentralCredentialUsage::ServerEeCertificateBag,
+                ResolvedCredential::CaCertificateBag(bag()),
+            ),
+        ] {
+            let mut server = trust_server();
+            let original = server.clone();
+            let error = install_credential(&mut server, usage, credential).unwrap_err();
+            assert_eq!(error.kind(), MaterializationErrorKind::InvalidMaterial);
+            assert_eq!(error.field_path(), Some(usage.field_path()));
+            assert!(server == original);
+        }
+    }
 }

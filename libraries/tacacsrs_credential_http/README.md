@@ -11,14 +11,14 @@ The provider returns untrusted bytes through the existing credential-resolution 
 
 ```rust,no_run
 use std::sync::Arc;
-use tacacsrs_credential_http::{CrlFetchLimits, HttpCrlResolver, HttpCrlSource};
+use tacacsrs_credential_http::{EvidenceFetchLimits, HttpEvidenceResolver, HttpCrlSource};
 
-let resolver = Arc::new(HttpCrlResolver::new(
+let resolver = Arc::new(HttpEvidenceResolver::new(
 	[HttpCrlSource::new(
 		"primary-ca-crls",
 		["https://pki.example.net/root.crl", "https://pki.example.net/issuer.crl"],
 	)?],
-	CrlFetchLimits::default(),
+	EvidenceFetchLimits::default(),
 )?);
 # Ok::<(), anyhow::Error>(())
 ```
@@ -73,7 +73,7 @@ Discovery does not inspect live TLS peers or authorize any new outbound destinat
 
 `HttpOcspSource::new` creates a SHA-256 certificate-ID request for an explicit responder and certificate/issuer pair.
 `HttpOcspSource::from_certificate` selects the first authorized AIA responder in a registered certificate.
-`HttpCrlResolver::with_ocsp_sources` adds these requests to the shared resolver.
+`HttpEvidenceResolver::with_ocsp_sources` adds these requests to the shared resolver.
 Requests use POST and OCSP content types. Responses are capped at 64 KiB, further limited by the configured byte cap.
 The same total timeout, concurrency, proxy, redirect, decoding, cancellation, and fallback rules apply.
 The provider returns untrusted `OcspResponseMaterial`; native TLS verifies the response against the actual peer before client authentication.
