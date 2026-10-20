@@ -19,6 +19,29 @@ The user authorizes squash merges after GitHub Copilot review and resolution of 
 Do not publish releases, create release tags, or change release policy without separate authorization.
 Do not modify the existing diagnostics worktree.
 
+### WSL Resumption, 2026-10-20
+
+The user renewed authority to finish iteration 10 and continue through iterations 11 through 18 autonomously.
+This authority includes commits, pushes, pull requests, and squash merges after every review and verification gate passes.
+Required tool approvals still apply.
+
+Implementation runs through `GPT 6.1 Sol` subagents.
+Sequential direct reviews run through `GPT 6 Astra`, then `Claude Opus 5.5`.
+Reviewers can make necessary direct revisions.
+Material revisions return to each reviewer whose earlier conclusion they invalidate.
+An unavailable named model blocks its gate rather than permitting a silent substitution.
+
+The tracking checkout is `/home/ubuntu/tacacs-rs`.
+Restored implementation worktrees are `/home/ubuntu/tacacs-rs-10-prepared-publication` and `/home/ubuntu/tacacs-rs-11-embedding-api`.
+Each implementation uses its separate `$HOME/.cache/tacacs-rs-<slug>` target directory.
+The restored iteration 11 binary patch matches SHA-256 `e43aab42a4db5e210a9fac137d9d2b3963da0ead82cb973c598a21184768eb7f`.
+Its 15 modified files remain protected while iteration 10 review repairs finish.
+
+The original chat archive passed its recorded checksum.
+All 319 restored files match the archive, and the restored chat index passes SQLite integrity checks.
+Recovery used a separate directory, without replacing live VS Code session databases.
+This recovery restores context, not a guarantee of native chat import.
+
 ## Review Provenance
 
 The required reviewer routes are `GPT-6 Astra (copilot)` and `Claude Opus 5.5 (copilot)`.
@@ -1927,9 +1950,10 @@ Checks: unchanged coordinator/publication/supervisor regressions, connector proo
 
 ### 10: Prepared Publication
 
-Status: published as PR #287 against merged `main`; implementation, scoped validation, both named reviews, and material concurrency-repair follow-up are complete.
-Coordinator full-workspace gates passed. R14 remains open pending current-head hosted verification and final merge review.
-Worktree: `/home/vscode/tacacs-rs-10-prepared-publication`; branch: `refactor/general-iterations/10-prepared-publication`.
+Status: published as PR #287 against `main`; both named repair reviews and final local workspace gates are complete.
+Repair head `e90b0732b51cb1410c85fd5462da50f030806005` requires fresh completed hosted review, required CI, and merge.
+R14 remains open.
+Worktree: `/home/ubuntu/tacacs-rs-10-prepared-publication`; branch: `refactor/general-iterations/10-prepared-publication`.
 Scope: R7 and R14 prepared-runtime completion, built on iterations 05 and 09.
 
 Local preflight anchor: `PreparedServer::new` calls `prepare_endpoint` synchronously inside catalog reload while service and coordinator publication locks are also held.
@@ -2027,6 +2051,82 @@ All 30 reviewed implementation files, including the new payload module, are comm
 Copilot review was requested on that head. Required workflow `39334465618` is in progress.
 Hosted requirements, completed review, findings disposition, and clean mergeability remain necessary before merging or closing R14.
 
+#### WSL Review-Repair Handoff
+
+PR #287 remained open at head `b35fc958350e71521ca75179c2a1cab49ae597d1` after recovery.
+Both primary CI success gates passed, but the CodeQL aggregate failed.
+Two Copilot findings remained unresolved: inconsistent proxy-policy/catalog snapshots and quadratic certificate duplicate detection.
+CodeQL alert 206 also required investigation before disposition.
+
+`GPT 6.1 Sol` repaired both defects in eight tracked files, without dependencies, unsafe code, or new files.
+Upstream-only reload now captures the implicit proxy policy and preparation base from one snapshot.
+The existing publication fence rejects that snapshot after a concurrent secret rotation.
+Native preparation remains outside publication and coordinator locks.
+Certificate deduplication now uses accounted `PayloadBytes` keys in a `BTreeSet`.
+
+Both regressions failed before repair and passed afterward.
+Distinct-chain comparison counts fell from 2,016/32,640 to 696/4,146 for 64/256 certificates.
+Exact-limit, one-byte-over, and reservation-release assertions passed.
+Scoped suites passed 819 tests, with two existing manual benchmarks ignored.
+All 55 native prepared-source cases and nine independent peer scenarios passed.
+The focused coverage run passed 516 tests, with two benchmarks ignored.
+Targeted private docs, MSRV checks, nightly formatting, and nightly strict Clippy passed.
+Existing unknown-lint diagnostics prevent stable strict Clippy from serving as the local lint gate.
+
+The delegate traced alert 206 to `cert_chain.remove(0)`, not a logging operation.
+Its recommended disposition is false positive, pending named review and coordinator disposition.
+No alert suppression or GitHub change belongs to this implementation handoff.
+
+Complete repair-content manifest SHA-256: `cfc153ab4a009d27bb363a8c8cddf0b4acff95abea70a9ed33222ea5d277f74a`.
+Tracked repair patch SHA-256: `157331d0ebf08d3e0f48b61c9d37b278c33e3bd6de5b1bec6200e25f1a6c6765`.
+Both named repair reviews, final whole-workspace gates, publication, current-head hosted review, and merge remain pending.
+R14 remains open.
+
+`GPT 6 Astra` subsequently approved the repair tree without revisions.
+Its focused checks produced 19 passes across 18 distinct tests, with no failures or skips.
+It independently classified alert 206 as false positive at the inspected callsite.
+The repair manifest and patch remain unchanged.
+The complete 31-path iteration manifest is `b8ec7ce92cf4885441f9551d6b4002a1aa2dd37430e7b8ab64cc30687fb5adb3`.
+The complete base-to-tree patch is `3c9bbd221eaf2243cb5d5b89dad45460c2ba8eb07d7c5f522d6c095bc9a41d28`.
+Opus review and every later gate remain pending.
+
+`Claude Opus 5.5` approved both production repairs and added one test-only duplicate-rejection assertion.
+An isolated replay without duplicate detection passes the earlier test but fails this assertion.
+The test also checks the duplicate's peak charge and complete reservation release.
+No production code changed during this review.
+Opus passed 251 agent tests, 25 extra proxy regressions, ten repetitions of eight native cases, and seven networking cases.
+Nightly formatting, strict targeted Clippy, and networking MSRV checks passed.
+The final eight-file repair manifest is `95ff95298fd8d8987333095f116d3958ec497f9443b96b021d039119e3e64897`.
+Its repair patch is `538521a8465d945d5862e3590bed5eb704cd3779387ec30fe23fedad8aa375ae`.
+The complete 31-path iteration manifest is `1fbeae2eabee1989042f48bad3b4831fd1ad5560c173fad7fe2b981723ace927`.
+The complete base-to-tree patch is `58e017ff5412afe8b44fce55f95cf4572764a53a210edb365f905050bf3ca32d`.
+Astra's focused final-tree follow-up and the final common gates remain pending.
+
+Both reviewers independently confirmed that alert 206 reports a non-logging vector operation.
+The coordinator dismissed it as false positive on 2026-10-20, without code suppression.
+Current-head hosted verification remains necessary after publication.
+
+`GPT 6 Astra` subsequently reviewed Opus's test-only addition and retained approval without further edits.
+The enhanced duplicate regression passed once more, with comparison counts 696/4,146.
+Both named reviews now cover the final repair tree identified above.
+The coordinator recorded the alert disposition on PR #287 and resolved its CodeQL review thread.
+Final whole-workspace gates are in progress; the implementation remains uncommitted pending those results.
+
+#### WSL Repair Publication
+
+Final common gates passed on 2026-10-20.
+They include nightly formatting, strict nightly workspace Clippy, stable private docs, stable build, and stable all-feature tests.
+The tests passed 1,320 cases across 46 suites, with ten existing ignored cases.
+Rust 1.88 all-target/all-feature checks and Linux/Windows metadata architecture checks also passed.
+The Windows metadata check does not replace hosted Windows compilation or execution.
+
+The exact reviewed repair tree was committed and pushed normally as `e90b0732b51cb1410c85fd5462da50f030806005`.
+Both actionable Copilot threads now contain repair evidence and are resolved.
+A fresh Copilot review was requested on that head.
+Pull-request workflow `39360179146` and CodeQL workflow `39360175760` started on the repaired head.
+Their completion and final merge remain pending.
+The current receipt is also recorded in [the PR discussion](https://github.com/AuthScaffold/tacacs-rs/pull/287#issuecomment-6282075479).
+
 Carry source metadata, prepared endpoint identity, validity, budgets, and admitted revisions in one derived candidate.
 Move native preparation outside coordinator state and publication locks while keeping preparation concurrency explicitly bounded.
 Use at most one active preparation per coordinator initially, including cancelled-but-running blocking work.
@@ -2062,7 +2162,15 @@ Checks: deterministic interleaving tests, native prepared-source/retirement case
 
 ### 11: Embedding API
 
-Status: planned. Scope: R9.
+Status: restored implementation resumed under `GPT 6.1 Sol`; named reviews and final gates remain pending.
+Scope: R9.
+
+The original 15-file work remains preserved in the recovery patch and stash `b2b4f0e9dc638d8fce9c1fd70f5e58b541412d82`.
+The WSL worktree advanced from `b35fc958350e71521ca75179c2a1cab49ae597d1` to reviewed parent repair `e90b0732b51cb1410c85fd5462da50f030806005`.
+Restoration merged fourteen paths and produced one engine conflict.
+The implementation delegate owns its resolution and must preserve both the embedding redesign and atomic parent snapshot fence.
+The stash remains retained; no restored work was discarded.
+Publication remains blocked until predecessor hosted review and required checks pass.
 
 Local preflight confirms that daemon startup builds a waiting `TacacsClientService`; private `PreparedService::run` then composes configuration and policy supervisors.
 The public service also exposes populated/waiting constructors and several direct reload variants. The latter bypass supervised materialization bookkeeping by contract.
