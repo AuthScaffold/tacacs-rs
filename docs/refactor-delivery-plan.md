@@ -2704,7 +2704,7 @@ Set a bounded prototype effort before coding. Stop when a required capability fa
 
 ### 15: TOML Editing
 
-Status: both final reviews and accepted-environment gates are complete; published as PR #292 against `main`.
+Status: PR #292 merged as `b93b0a83141a61912006c660902653e6236e2dac` after both final reviews and all current-head gates passed.
 Prototype: `/home/ubuntu/tacacs-rs-15-toml-editing-prototype`, branch `refactor/general-prototypes/15-toml-editing`.
 Integration: `/home/ubuntu/tacacs-rs-15-toml-editing`, branch `refactor/general-iterations/15-toml-editing`.
 Both start from reviewed predecessor `4d1ce5321dd7f95ba2e9abf4f4e742c45637e419` and use separate caches.
@@ -2881,6 +2881,20 @@ Fresh Copilot review `5582436859` on the published head reports no open issues.
 It retains current-head hosted platform execution as a required release-tooling gate.
 Hosted verification remains in progress.
 
+#### Merge Receipt
+
+Every current-head hosted check on `680b6f3c8c813e6f3c803673975a4bd73208c433` subsequently passed.
+This includes Linux, Windows, ARMhf, tool installation, container execution, and aggregate CI.
+The final recheck found the reviewed head, clean mergeability, and no unresolved review threads.
+PR #292 was squash-merged as `b93b0a83141a61912006c660902653e6236e2dac` at 2026-10-20 08:45 UTC.
+No protection bypass, release, or tag was used.
+The merged source exactly matches the reviewed integration tree.
+
+Both completed TOML worktrees are clean and have no active directory users.
+Their dedicated caches occupy approximately 58 MiB and 39 MiB.
+Cleanup awaits preservation of this receipt.
+The accepted global TOML Kit pin and isolated remote prototype history remain retained.
+
 Compare TOML Kit with the current hydration implementation.
 Evaluate `toml_edit` only if an existing Rust tool can own the work without another executable.
 Keep Cargo metadata authoritative for member discovery.
@@ -2895,7 +2909,7 @@ Checks: hydration/version/rehearsal Python suites, fixture-based no-publish rehe
 
 ### 16: Systemd Notifications
 
-Status: bounded evaluation started through `GPT 6.1 Sol`.
+Status: Astra supports non-adoption; Opus's direct decision-document review is in progress.
 Prototype: `/home/ubuntu/tacacs-rs-16-systemd-notifications-prototype`, branch `refactor/general-prototypes/16-systemd-notifications`.
 Integration: `/home/ubuntu/tacacs-rs-16-systemd-notifications`, branch `refactor/general-iterations/16-systemd-notifications`.
 Both start from reviewed predecessor `680b6f3c8c813e6f3c803673975a4bd73208c433` and use separate caches.
@@ -2904,6 +2918,57 @@ Required capability failure or lack of concrete deletion ends the prototype earl
 Only private sockets and owned processes are permitted; real host service notifications and configuration changes are excluded.
 Rejected or blocked adoption produces a reproducible documentation-only integration decision.
 Publication remains blocked until predecessor review findings and required checks clear.
+
+#### Evaluation Handoff
+
+`GPT 6.1 Sol` rejected the two tested direct APIs after a valid pressure result within three minutes and forty seconds.
+Final focused checks completed within seven minutes and fourteen seconds.
+The integration contains only `docs/systemd-notification-evaluation.md`.
+No rejected dependency or production code enters integration.
+
+The evaluated APIs are `sd-notify 0.5.0` and `libsystemd 0.7.2`, both under permissive dual licenses.
+Their Linux dependency closures contain two and 32 packages respectively, including each candidate.
+Neither requires a systemd development package or the libsystemd C library.
+The selected `sd-notify` closure passes Rust 1.88 checks.
+The combined experimental lockfile fails because selected `uuid 1.28.0` requires Rust 1.89.
+That prototype-only result does not change the workspace MSRV, lockfile, or either package's declared minimum.
+
+Three normal private-socket cases delivered `READY=1` with the owned child's PID/UID/GID.
+The tested `sd-notify` API failed Linux abstract addressing.
+Three non-draining receiver cases blocked past a 750ms process deadline and required exact-child termination and reaping.
+Fresh nonblocking senders returned `EAGAIN` before candidate calls, confirming receiver pressure rather than a full sender buffer.
+All filler sockets stayed open, and no receiver read occurred before termination.
+Seven characterization cases passed as expected observations, including four required-acceptance failures.
+This is rejection evidence, not seven successful adoption cases.
+
+The unchanged owner passed ten host tests, fifteen supervision tests, and one native stalled-helper shutdown regression.
+Prototype formatting, strict Clippy, and private docs passed.
+No live service manager, host unit, shared notification environment, or operator VM changed.
+Kernel credential observations do not prove real service-manager `NotifyAccess` policy.
+No rejected-dependency audit or unrelated integration Rust rebuild is claimed.
+
+The frozen four-file prototype is preserved as `3a759ba3cf9c2cf3654d5bf739e578eb2c4a14de`.
+Its isolated prototype ref is pushed for durable replay, not opened as a PR or merged into integration.
+TOML prototype `40daab01a3b9ae042de87da6dff3b48b94e5f30e` is likewise preserved on its isolated remote ref.
+Notification prototype changed-source manifest: `b1696a991049878d6d8f1db2612ae3f63cfbe42d3d656c43b3f0c477a41c0e87`.
+Complete prototype patch: `0457f6f764a3da6ce49a595f8ad106cdc867aa3c595ab7b99042ce36d355a718`.
+Initial one-document integration manifest: `89edd4804f1a0f0dae9bfd25e834196045875e269c301d22c6b5119d254bf59c`.
+Complete initial integration patch: `2048c9450759307df7bc000b1e41fcd509422e6681f0e4d131f8d8b1c88f5292`.
+Both named decision reviews and final document checks remain pending.
+
+Astra independently reproduced all seven characterization cases, including the four acceptance failures.
+The receiver-saturation guards, blocked kernel waits, exact-child termination, and reaping all reproduced.
+Ten host tests, fifteen supervision tests, and the native stalled-helper shutdown regression passed again.
+Package source/checksum, feature, dependency-closure, native-prerequisite, and declared/resolved-MSRV facts were independently verified.
+Prototype formatting, strict Clippy, documentation, and link checks passed.
+
+Astra added exact remote prototype provenance and conditional recovery instructions to the integration document.
+Nine links, shell syntax, and prose checks passed.
+The frozen prototype remains unchanged.
+Current document hash: `a6f65098b9727b7aaf2950ada1e3aebe3cf4e0f5f22f08a3e79386853ca57f4b`.
+Canonical changed-source manifest: `b4a210312e235b04f2cdc0c0da2b3ead74b0fd2d002dd05729590869b2ac592b`.
+Complete one-document patch: `5d091f889792391097a122205509c69bce31aa548982b8d2dcfbf88b2aa9dcff`.
+Opus review and final document gates remain pending.
 
 Compare direct notification APIs with the subprocess owner.
 Test pathname and abstract sockets, sender attribution, auto/strict selection, retries, and one-shot ready/stopping behavior.
