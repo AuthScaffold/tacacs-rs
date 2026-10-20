@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+import products as product_registry
+
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -71,9 +73,7 @@ def registry():
 
 
 def test_registry_preserves_exact_matrix():
-    from products import registry_products
-
-    assert registry_products(registry(), metadata()) == EXPECTED
+    assert product_registry.registry_products(registry(), metadata()) == EXPECTED
 
 
 def test_independent_packaging_policy():
@@ -102,33 +102,27 @@ def test_independent_packaging_policy():
     ("sbom_formats", ["json"]),
 ])
 def test_registry_rejects_stale_or_unsupported_policy(field, value):
-    from products import RegistryError, registry_products
-
     data = registry()
     data["products"][0][field] = value
-    with pytest.raises(RegistryError):
-        registry_products(data, metadata())
+    with pytest.raises(product_registry.RegistryError):
+        product_registry.registry_products(data, metadata())
 
 
 def test_every_policy_field_is_required():
-    from products import RegistryError, registry_products
-
     for field in registry()["products"][0]:
         data = registry()
         del data["products"][0][field]
-        with pytest.raises(RegistryError, match="fields"):
-            registry_products(data, metadata())
+        with pytest.raises(product_registry.RegistryError, match="fields"):
+            product_registry.registry_products(data, metadata())
 
 
 def test_workspace_enrollment_does_not_enroll_a_product():
-    from products import registry_products
-
     data = metadata()
     extra = copy.deepcopy(data["packages"][0])
     extra.update(id="experimental", name="experimental")
     data["packages"].append(extra)
     data["workspace_members"].append(extra["id"])
-    assert registry_products(registry(), data) == EXPECTED
+    assert product_registry.registry_products(registry(), data) == EXPECTED
 
 
 @pytest.mark.parametrize("data", [
@@ -139,16 +133,12 @@ def test_workspace_enrollment_does_not_enroll_a_product():
     {"schema_version": 1, "products": [None]},
 ])
 def test_invalid_registry_shapes(data):
-    from products import RegistryError, registry_products
-
-    with pytest.raises(RegistryError):
-        registry_products(data, metadata())
+    with pytest.raises(product_registry.RegistryError):
+        product_registry.registry_products(data, metadata())
 
 
 @pytest.mark.parametrize("mutation", ["unknown-field", "duplicate-asset", "duplicate-target", "packaging", "control", "bad-type"])
 def test_rejects_ambiguous_or_incomplete_records(mutation):
-    from products import RegistryError, registry_products
-
     data = registry()
     first = data["products"][0]
     if mutation == "unknown-field":
@@ -163,14 +153,12 @@ def test_rejects_ambiguous_or_incomplete_records(mutation):
         first["features"] = "\nproducts=[]"
     else:
         first["features"] = []
-    with pytest.raises(RegistryError):
-        registry_products(data, metadata())
+    with pytest.raises(product_registry.RegistryError):
+        product_registry.registry_products(data, metadata())
 
 
 @pytest.mark.parametrize("mutation", ["not-member", "kind", "crate-type", "required-feature"])
 def test_cargo_target_contract(mutation):
-    from products import RegistryError, registry_products
-
     meta = metadata()
     package = meta["packages"][0]
     if mutation == "not-member":
@@ -181,13 +169,11 @@ def test_cargo_target_contract(mutation):
         package["targets"][0]["crate_types"] = ["rlib"]
     else:
         package["targets"][0]["required-features"] = ["extra"]
-    with pytest.raises(RegistryError):
-        registry_products(registry(), meta)
+    with pytest.raises(product_registry.RegistryError):
+        product_registry.registry_products(registry(), meta)
 
 
 def test_declared_features_and_default_feature_closure():
-    from products import registry_products
-
     data = registry()
     data["products"][0]["features"] = "extra"
     meta = metadata()
@@ -195,8 +181,8 @@ def test_declared_features_and_default_feature_closure():
     meta["packages"][0]["targets"][0]["required-features"] = ["extra"]
     expected = copy.deepcopy(EXPECTED)
     expected[0]["features"] = "extra"
-    assert registry_products(data, meta) == expected
-    assert registry_products(registry(), meta) == EXPECTED
+    assert product_registry.registry_products(data, meta) == expected
+    assert product_registry.registry_products(registry(), meta) == EXPECTED
 
 
 @pytest.mark.parametrize("target,linux_only,expected", [
@@ -206,39 +192,31 @@ def test_declared_features_and_default_feature_closure():
     ("x86_64-pc-windows-msvc", False, EXPECTED[4:]),
 ])
 def test_selection_and_metadata_helper_contract(monkeypatch, target, linux_only, expected):
-    import products
-
     calls = []
-    monkeypatch.setattr(products, "load_metadata", lambda workspace, **kwargs: calls.append((workspace, kwargs)) or metadata())
-    assert products.load_products(ROOT, target=target, linux_only=linux_only) == expected
+    monkeypatch.setattr(product_registry, "load_metadata", lambda workspace, **kwargs: calls.append((workspace, kwargs)) or metadata())
+    assert product_registry.load_products(ROOT, target=target, linux_only=linux_only) == expected
     assert calls == [(ROOT, {"target": target, "no_deps": True, "locked": True})]
 
 
 @pytest.mark.parametrize("target,linux_only", [("unknown", False), ("x86_64-pc-windows-msvc", True)])
 def test_empty_selection_is_an_error(monkeypatch, target, linux_only):
-    import products
-
-    monkeypatch.setattr(products, "load_metadata", lambda *args, **kwargs: metadata())
-    with pytest.raises(products.RegistryError, match="no registered products"):
-        products.load_products(ROOT, target=target, linux_only=linux_only)
+    monkeypatch.setattr(product_registry, "load_metadata", lambda *args, **kwargs: metadata())
+    with pytest.raises(product_registry.RegistryError, match="no registered products"):
+        product_registry.load_products(ROOT, target=target, linux_only=linux_only)
 
 
 @pytest.mark.parametrize("content", ['{"products":[],"products":[]}', "invalid", ""])
 def test_read_rejects_duplicate_or_invalid_json(tmp_path, content):
-    from products import RegistryError, read_registry
-
     path = tmp_path / "registry.json"
     path.write_text(content)
-    with pytest.raises(RegistryError):
-        read_registry(path)
+    with pytest.raises(product_registry.RegistryError):
+        product_registry.read_registry(path)
 
 
 def test_cli_and_action_output_shape(tmp_path, monkeypatch, capsys):
-    import products
-
-    monkeypatch.setattr(products, "load_metadata", lambda *args, **kwargs: metadata())
+    monkeypatch.setattr(product_registry, "load_metadata", lambda *args, **kwargs: metadata())
     output = tmp_path / "github-output"
-    assert products.main(["--workspace", str(ROOT), "--github-output", str(output)]) == 0
+    assert product_registry.main(["--workspace", str(ROOT), "--github-output", str(output)]) == 0
     assert json.loads(capsys.readouterr().out) == EXPECTED
     lines = output.read_text().splitlines()
     assert len(lines) == 1
@@ -255,12 +233,10 @@ def test_cli_and_action_output_shape(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_failure_never_emits_an_empty_matrix(tmp_path, monkeypatch, capsys):
-    import products
-
-    monkeypatch.setattr(products, "read_registry", lambda path: {"schema_version": 1, "products": []})
-    monkeypatch.setattr(products, "load_metadata", lambda *args, **kwargs: metadata())
+    monkeypatch.setattr(product_registry, "read_registry", lambda path: {"schema_version": 1, "products": []})
+    monkeypatch.setattr(product_registry, "load_metadata", lambda *args, **kwargs: metadata())
     output = tmp_path / "github-output"
-    assert products.main(["--workspace", str(ROOT), "--github-output", str(output)]) == 1
+    assert product_registry.main(["--workspace", str(ROOT), "--github-output", str(output)]) == 1
     assert not output.exists()
     captured = capsys.readouterr()
     assert captured.out == ""
