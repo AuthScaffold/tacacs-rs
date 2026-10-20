@@ -127,7 +127,7 @@ jobs:
       - name: Install pinned test prerequisites
         shell: bash
         run: |
-          python3 -m pip install pytest==8.4.2 PyYAML==6.0.3
+          python3 -m pip install pytest==8.4.2 PyYAML==6.0.3 -r .github/steps/inject-versions/requirements.txt
           rustup toolchain install nightly-2025-11-23 --profile minimal
       - name: Test delivery scripts and workflow contracts
         shell: bash
