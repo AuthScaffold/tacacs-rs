@@ -87,6 +87,8 @@ mod tests {
             source_ip: None,
             source_interface: None,
             vrf_instance: None,
+            egress_interface: None,
+            binding_policy: crate::tacacsrs::BindingPolicy::BestEffort,
             single_connection: false,
             timeout: 5,
         }

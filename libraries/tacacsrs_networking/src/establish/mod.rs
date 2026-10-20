@@ -12,6 +12,9 @@ use crate::endpoint::{ConnectionGuard, PreparedEndpoint};
 use crate::transport::BoxedTransport;
 use crate::transport::{tls, tls_psk};
 
+#[cfg(all(test, target_os = "linux"))]
+mod tests_binding;
+
 /// One fully prepared transport, selected before endpoint construction.
 #[derive(Clone, Debug)]
 pub enum PreparedTransport {
@@ -44,7 +47,7 @@ pub enum ConnectPreflight {
     AccountingWatchdog,
 }
 
-/// TCP connection timeout and optional TACACS+ preflight.
+/// TCP connection timeout, local binding, and optional TACACS+ preflight.
 ///
 /// Certificate verification belongs to TLS preparation, not execution controls.
 ///
@@ -54,6 +57,7 @@ pub enum ConnectPreflight {
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct ConnectOptions {
+    binding: crate::LocalBinding,
     /// Connection timeout. When `None`, no timeout is applied to the TCP
     /// connection phase. Callers must apply other timeouts.
     timeout: Option<Duration>,
@@ -62,6 +66,17 @@ pub struct ConnectOptions {
 }
 
 impl ConnectOptions {
+    pub(crate) fn local_binding(&self) -> &crate::LocalBinding {
+        &self.binding
+    }
+
+    /// Sets the derived local source, egress, VRF, and fallback policy.
+    #[must_use]
+    pub fn with_local_binding(mut self, binding: crate::LocalBinding) -> Self {
+        self.binding = binding;
+        self
+    }
+
     pub(crate) const fn timeout(&self) -> Option<Duration> {
         self.timeout
     }
@@ -181,11 +196,13 @@ async fn establish_transport_inner(
         .map(|guard| guard as &dyn ConnectionGuard)
         .or(endpoint.connection_guard.as_deref());
     let tcp_stream = match options.timeout {
-        Some(dur) => tokio::time::timeout(dur, connect_tcp(address, connection_guard))
-            .await
-            .with_context(|| format!("Connection to TACACS+ server {address} timed out"))?
-            .with_context(|| format!("Failed to establish TCP connection to {address}"))?,
-        None => connect_tcp(address, connection_guard)
+        Some(dur) => {
+            tokio::time::timeout(dur, connect_tcp(address, connection_guard, &options.binding))
+                .await
+                .with_context(|| format!("Connection to TACACS+ server {address} timed out"))?
+                .with_context(|| format!("Failed to establish TCP connection to {address}"))?
+        }
+        None => connect_tcp(address, connection_guard, &options.binding)
             .await
             .with_context(|| format!("Failed to establish TCP connection to {address}"))?,
     };

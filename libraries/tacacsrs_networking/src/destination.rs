@@ -189,20 +189,33 @@ fn parse_port(port: &str) -> anyhow::Result<u16> {
 pub(crate) async fn connect_tcp(
     address: &ServerAddress,
     guard: Option<&dyn ConnectionGuard>,
+    binding: &crate::LocalBinding,
 ) -> anyhow::Result<tokio::net::TcpStream> {
-    connect_after_resolution(resolve_server_addresses(address), guard).await
+    connect_resolved(resolve_server_addresses(address), guard, binding).await
 }
 
+#[cfg(test)]
 async fn connect_after_resolution(
     resolution: impl std::future::Future<Output = anyhow::Result<Vec<SocketAddr>>> + Send,
     guard: Option<&dyn ConnectionGuard>,
 ) -> anyhow::Result<tokio::net::TcpStream> {
+    connect_resolved(resolution, guard, &crate::LocalBinding::default()).await
+}
+
+async fn connect_resolved(
+    resolution: impl std::future::Future<Output = anyhow::Result<Vec<SocketAddr>>> + Send,
+    guard: Option<&dyn ConnectionGuard>,
+    binding: &crate::LocalBinding,
+) -> anyhow::Result<tokio::net::TcpStream> {
     let mut last_error = None;
     for server_address in resolution.await? {
+        if !binding.matches_family(server_address) {
+            continue;
+        }
         if let Some(guard) = guard {
             guard.check_destination(server_address)?;
         }
-        match tokio::net::TcpStream::connect(server_address).await {
+        match crate::binding::connect(server_address, binding).await {
             Ok(stream) => {
                 if let Some(guard) = guard {
                     guard.check_connected(
@@ -459,16 +472,20 @@ mod tests {
             for _ in 0..2 {
                 let (connected, accepted) =
                     tokio::time::timeout(std::time::Duration::from_secs(2), async {
-                        tokio::try_join!(super::connect_tcp(&address, Some(&guard)), async {
-                            let accepted = match &ipv6_listener {
-                                Some(ipv6_listener) => tokio::select! {
-                                    accepted = listener.accept() => accepted,
-                                    accepted = ipv6_listener.accept() => accepted,
-                                },
-                                None => listener.accept().await,
-                            };
-                            accepted.map_err(anyhow::Error::from)
-                        })
+                        let binding = crate::LocalBinding::default();
+                        tokio::try_join!(
+                            super::connect_tcp(&address, Some(&guard), &binding),
+                            async {
+                                let accepted = match &ipv6_listener {
+                                    Some(ipv6_listener) => tokio::select! {
+                                        accepted = listener.accept() => accepted,
+                                        accepted = ipv6_listener.accept() => accepted,
+                                    },
+                                    None => listener.accept().await,
+                                };
+                                accepted.map_err(anyhow::Error::from)
+                            }
+                        )
                     })
                     .await
                     .unwrap_or_else(|_| panic!("guard exchange timed out for {host}"))
@@ -571,7 +588,7 @@ mod tests {
         let mapped = ServerAddress::new("::ffff:127.0.0.1", guard.0.port()).unwrap();
         let error = tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            super::connect_tcp(&mapped, Some(&guard)),
+            super::connect_tcp(&mapped, Some(&guard), &crate::LocalBinding::default()),
         )
         .await
         .expect("the mapped destination must reach the guard")

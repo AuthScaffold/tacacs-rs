@@ -72,15 +72,25 @@ Compatibility rows accept these project extension keys:
 | Key                 | YANG field         | Notes |
 |---------------------|--------------------|-------|
 | `single_connection` | `single-connection`| Boolean |
-| `vrf_name`          | `vrf-instance`     | VRF name for outbound traffic |
+| `vrf`               | `vrf-instance`     | Canonical SONiC key. `mgmt` selects that VRF. `default` or empty selects no VRF. |
+| `vrf_name`          | `vrf-instance`     | Extension alias. Supports other Linux VRF names. |
 | `src_ip`            | `source-ip`        | Mutually exclusive with `src_intf` |
 | `src_intf`          | `source-interface` | Falls back to the global `TACPLUS` row |
+| `egress_intf`       | `tacacsrs:egress-interface` | Forces Linux egress through this device. Supports a global default. |
+| `binding_policy`    | `tacacsrs:binding-policy` | `best-effort` (default) or `strict`. Supports a global default. |
 | `server_type`       | `server-type`      | Defaults to `all` |
 
-The mapper preserves `vrf_name`, `src_ip`, and `src_intf` in canonical YANG for reporting.
-The client transport does not implement these binding controls, so runtime preparation rejects configurations that select them.
-This also applies when `src_intf` comes from `TACPLUS|global`.
-The daemon keeps the previous active generation instead of silently ignoring the requested binding.
+The mapper preserves these controls in canonical YANG. Linux applies them during each connection.
+`src_intf` derives a source address. It does not force egress.
+For management egress without a fixed source IP, set `egress_intf` to the Linux device name.
+Omit `src_ip` and `src_intf` for kernel source selection.
+An interface in a VRF automatically selects that VRF.
+An explicit VRF selection must match the VRF of each requested interface.
+`vrf_name` also normalizes `default` and empty values to no VRF.
+If both VRF keys exist, their normalized selections must match. Conflicting selections reject the snapshot.
+The canonical `vrf` key follows the [upstream SONiC TACACS+ model](https://github.com/sonic-net/sonic-buildimage/blob/master/src/sonic-yang-models/yang-models/sonic-system-tacacs.yang).
+`config tacacs add --use-mgmt-vrf` writes `vrf=mgmt`.
+See [local TCP binding](yang-config-guide.md#local-tcp-binding) for fallback scope and deployment requirements.
 
 The bridge tolerates unknown compatibility fields and logs their names. It
 does not log their values. Compatibility rows reject `use_tls`, `domain_name`,
@@ -104,6 +114,7 @@ server:
 | `psk_hash` | `sha-256` or `sha-384`; default `sha-256` |
 | `psk_key_exchange` | `psk-dhe` or `psk-only`; default `psk-dhe` |
 | `psk_key_exchange_groups` | Optional colon-separated groups for `psk-dhe` |
+| `vrf`, `vrf_name`, `src_ip`, `src_intf`, `egress_intf`, `binding_policy` | Same local binding semantics and VRF conflict rules as compatibility rows |
 
 The client accepts a connection only when the negotiated PSK key exchange matches `psk_key_exchange`.
 A `psk-only` row rejects a peer-selected DHE exchange, even if the native TLS handshake succeeds.

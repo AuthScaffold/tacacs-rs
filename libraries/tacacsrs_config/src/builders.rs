@@ -134,10 +134,51 @@ impl TacacsPlusServerBuilder {
                 source_ip: None,
                 source_interface: None,
                 vrf_instance: None,
+                egress_interface: None,
+                binding_policy: crate::tacacsrs::BindingPolicy::BestEffort,
                 single_connection: false,
                 timeout: 5,
             },
         }
+    }
+
+    /// Selects an explicit source IP without changing the egress interface.
+    #[must_use]
+    pub fn with_source_ip(mut self, address: std::net::IpAddr) -> Self {
+        self.server.source_ip = Some(address.to_string());
+        self.server.source_interface = None;
+        self
+    }
+
+    /// Derives a source address from an interface without forcing egress.
+    #[must_use]
+    pub fn with_source_interface(mut self, name: impl Into<String>) -> Self {
+        self.server.source_interface = Some(name.into());
+        self.server.source_ip = None;
+        self
+    }
+
+    /// Forces Linux egress through this device, with automatic source selection.
+    ///
+    /// An explicit source choice remains in effect.
+    #[must_use]
+    pub fn with_egress_interface(mut self, name: impl Into<String>) -> Self {
+        self.server.egress_interface = Some(name.into());
+        self
+    }
+
+    /// Selects a Linux VRF device.
+    #[must_use]
+    pub fn with_vrf_instance(mut self, name: impl Into<String>) -> Self {
+        self.server.vrf_instance = Some(name.into());
+        self
+    }
+
+    /// Selects strict or best-effort behavior for unavailable local constraints.
+    #[must_use]
+    pub fn with_binding_policy(mut self, policy: crate::tacacsrs::BindingPolicy) -> Self {
+        self.server.binding_policy = policy;
+        self
     }
 
     /// Sets the server timeout in seconds.

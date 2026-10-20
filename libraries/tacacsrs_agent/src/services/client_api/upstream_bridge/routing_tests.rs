@@ -244,6 +244,8 @@ fn server(address: &str) -> Arc<TacacsPlusServer> {
         source_ip: None,
         source_interface: None,
         vrf_instance: None,
+        egress_interface: None,
+        binding_policy: tacacsrs_config::tacacsrs::BindingPolicy::BestEffort,
     })
 }
 

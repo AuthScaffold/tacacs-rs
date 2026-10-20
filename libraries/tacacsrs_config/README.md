@@ -17,6 +17,7 @@
 - CLI input normalization, credential-file loading, and file watching under `input`
 - A reusable `TacacsPlusServerBuilder` for constructing `TacacsPlusServer` values in code
 - A project-owned YANG augmentation for TLS 1.3 PSK DHE key exchange group selection
+- Canonical source, egress-interface, VRF, and local binding policy for Linux TCP connections
 
 `tacacsrs-credential-resolution` defines provider-neutral requests, material, and resolver contracts.
 This crate owns their conversion to and from canonical YANG fields. Provider implementations remain outside configuration.
@@ -134,7 +135,7 @@ The timeout bounds TCP connection establishment, not TLS handshakes or complete 
 Callers must replace networking `ConnectOptions` with `prepare::PrepareOptions` at this API boundary.
 Set a different timeout in the canonical YANG source or with `TacacsPlusServerBuilder::with_timeout` before preparation.
 Schema-free callers use `PreparedEndpoint::new` with one `PreparedTransport` and a validated `ServerAddress`.
-`ConnectOptions` controls only the TCP timeout and optional preflight.
+`ConnectOptions` controls the TCP timeout, optional preflight, and derived local binding.
 `TlsClientConfig::prepare` takes `CertificateVerification`, peer identity, trust, and optional SNI. It does not accept a verification boolean.
 Disabled verification emits a warning and rejects required revocation evidence. Credential validation and authentication certificate dates still apply.
 Attach stapled OCSP, fetched OCSP, and CRLs to that configuration before endpoint construction.
@@ -194,7 +195,10 @@ This shared check rejects invalid choices, duplicate names or endpoints, unresol
 An empty runtime set is permitted so a service can wait for configuration. Parsed YANG documents still require a nonempty server list.
 Each changed endpoint must also finish native context construction before the generation becomes active.
 
-Runtime preparation rejects `source-ip`, `source-interface`, and `vrf-instance` because the transport does not implement binding through those fields.
+Linux runtime connections support `source-ip`, `source-interface`, and `vrf-instance`.
+`source-interface` derives a source address. It does not force egress.
+The project `tacacsrs:egress-interface` leaf forces egress through a named Linux device.
+See [local TCP binding](../../docs/yang-config-guide.md#local-tcp-binding) for semantics, fallback, and deployment requirements.
 It also rejects PSK derivation fields and `one-symmetric-key-format`, which the native PSK path does not implement.
 Schema-valid source values remain available for reports and round trips. Validation relaxations do not enable these unsupported transport capabilities.
 

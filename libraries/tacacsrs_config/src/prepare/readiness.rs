@@ -31,12 +31,7 @@ pub(super) fn validate_runtime_features(server: &TacacsPlusServer) -> anyhow::Re
     let references = crate::inspect_central_references(server)
         .context("Expand credential bundles before endpoint preparation")?;
     ensure!(references.is_empty(), "Resolve central credentials before endpoint preparation");
-    ensure!(server.source_ip.is_none(), "source-ip is not supported by the client transport");
-    ensure!(
-        server.source_interface.is_none(),
-        "source-interface is not supported by the client transport"
-    );
-    ensure!(server.vrf_instance.is_none(), "vrf-instance is not supported by the client transport");
+    crate::validation::prepare_local_binding(server)?;
     let epsk = server
         .client_identity
         .as_ref()
@@ -90,17 +85,17 @@ mod tests {
     }
 
     #[test]
-    fn policy_relaxation_is_explicit_and_cannot_enable_unsupported_transport_fields() {
+    fn schema_relaxation_does_not_weaken_local_binding_validation() {
         let mut server = server();
         server.shared_secret = None;
         assert!(validate_materialized_servers([&server], &ValidationOptions::default()).is_err());
         let options = ValidationOptions::new()
             .with_relaxation(ValidationRelaxation::AllowPlainTcpWithoutSharedSecret);
         validate_materialized_servers([&server], &options).unwrap();
-        server.source_interface = Some("private-interface".to_owned());
+        server.source_interface = Some("private/interface".to_owned());
         let error = validate_materialized_servers([&server], &options).unwrap_err();
-        assert!(error.to_string().contains("source-interface"));
-        assert!(!format!("{error:#}").contains("private-interface"));
+        assert!(error.to_string().contains("device name"));
+        assert!(!format!("{error:#}").contains("private/interface"));
     }
 
     #[test]
@@ -210,9 +205,6 @@ mod tests {
         use crate::prepare::PrepareOptions;
 
         for field in [
-            "source-ip",
-            "source-interface",
-            "vrf-instance",
             "context",
             "target-protocol",
             "target-kdf",
@@ -234,9 +226,6 @@ mod tests {
                 .as_mut()
                 .unwrap();
             match field {
-                "source-ip" => server.source_ip = Some("192.0.2.200".to_owned()),
-                "source-interface" => server.source_interface = Some("private-source".to_owned()),
-                "vrf-instance" => server.vrf_instance = Some("private-source".to_owned()),
                 "context" => epsk.context = Some("private-source".to_owned()),
                 "target-protocol" => epsk.target_protocol = Some(7),
                 "target-kdf" => epsk.target_kdf = Some(1),
