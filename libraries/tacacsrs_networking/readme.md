@@ -119,6 +119,8 @@ They use the same implementation without a candidate limit. They are not a globa
 The payload measure includes Rust strings, keys, callback DER, fetched evidence, and temporary metadata and comparison buffers.
 It excludes native object internals, fixed-layout and collection metadata, allocator slack, connection execution, and process RSS.
 Known byte copies require reservation before allocation. Opaque native encodings pass a handoff check before retention or another copy.
+Client-chain deduplication stores accounted DER owners in a `BTreeSet` to avoid quadratic comparisons.
+All live DER buffers retain their reservations until the set drops, including rejection paths.
 The caller must retain its registered work lease through blocking execution and queued results.
 The agent owns this scheduling contract. Networking does not create a preparation executor.
 

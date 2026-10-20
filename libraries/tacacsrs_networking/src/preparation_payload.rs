@@ -135,9 +135,19 @@ pub(crate) struct PayloadBytes {
     _reservation: PayloadReservation,
 }
 
+#[cfg(test)]
+thread_local! {
+    static PAYLOAD_COMPARISONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl PayloadBytes {
     pub(crate) fn as_slice(&self) -> &[u8] {
         &self.bytes
+    }
+
+    #[cfg(test)]
+    pub(crate) fn comparison_count() -> usize {
+        PAYLOAD_COMPARISONS.get()
     }
 }
 
@@ -155,6 +165,8 @@ impl From<Vec<u8>> for PayloadBytes {
 
 impl PartialEq for PayloadBytes {
     fn eq(&self, other: &Self) -> bool {
+        #[cfg(test)]
+        PAYLOAD_COMPARISONS.set(PAYLOAD_COMPARISONS.get() + 1);
         self.bytes == other.bytes
     }
 }
@@ -169,6 +181,8 @@ impl PartialOrd for PayloadBytes {
 
 impl Ord for PayloadBytes {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        #[cfg(test)]
+        PAYLOAD_COMPARISONS.set(PAYLOAD_COMPARISONS.get() + 1);
         self.bytes.cmp(&other.bytes)
     }
 }

@@ -462,15 +462,8 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         &self,
         servers: Vec<Arc<TacacsPlusServer>>,
     ) -> anyhow::Result<()> {
-        let proxy_downstream_obfuscation = self
-            .proxy_transport_settings()
-            .downstream_obfuscation()
-            .clone();
-        self.reload_shared_servers_with_proxy_downstream_obfuscation(
-            servers,
-            proxy_downstream_obfuscation,
-        )
-        .await
+        self.reload_shared_servers_with_retirement(self.capture_upstream_reload(servers), None)
+            .await
     }
 
     #[cfg(test)]

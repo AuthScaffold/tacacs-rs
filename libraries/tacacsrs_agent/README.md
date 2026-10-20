@@ -117,6 +117,8 @@ The agent exchange interface remains because it owns protocol-to-service error c
 Catalog replacement, applied-configuration status, eligible-server count, and availability reset now commit under the same publication lock.
 Health readers cannot observe a partially updated publication. Policy-only updates advance the runtime generation without resetting availability or replacing global admission.
 An unchanged catalog reload preserves observed upstream availability. A rejected replacement leaves the published generation and applied-health metadata unchanged.
+An upstream-only reload captures the current proxy policy and preparation base from one runtime snapshot.
+A concurrent catalog or proxy-policy replacement rejects that reload at publication. A retry captures the replacement policy.
 
 Materialized updates also commit the coordinator's active-server set and active source generation inside the runtime publication boundary.
 Cancellation before publication leaves the prior runtime and active material unchanged.

@@ -53,6 +53,9 @@ pub(crate) struct ServiceRuntime<
     request_tracker: Arc<RequestTracker>,
     /// Shared protocol-neutral runtime health publisher.
     pub(super) health: RuntimeHealthPublisher,
+    #[cfg(test)]
+    pub(super) implicit_reload_pause:
+        std::sync::Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
 }
 
 struct ServiceRunGuard<'service, Connector: EndpointConnector>(
@@ -172,6 +175,8 @@ where
             reload_publication_lock: Mutex::new(()),
             request_tracker,
             health,
+            #[cfg(test)]
+            implicit_reload_pause: std::sync::Mutex::new(None),
         })
     }
 
@@ -182,13 +187,22 @@ where
     /// Returns an error if validation, reference expansion, or native preparation
     /// fails. Failure leaves the active runtime generation unchanged.
     pub(super) async fn reload_tacacs_plus(&self, tacacs_plus: TacacsPlus) -> anyhow::Result<()> {
-        let proxy_downstream_obfuscation = self
+        let servers = enumerate_supported_servers(&tacacs_plus, &self.config.validation_options)?;
+        let candidate = self
             .manager
-            .proxy_transport_settings()
-            .downstream_obfuscation()
-            .clone();
-        self.reload_tacacs_plus_inner(tacacs_plus, proxy_downstream_obfuscation)
-            .await
+            .capture_upstream_reload(servers.into_iter().map(Arc::new).collect());
+        #[cfg(test)]
+        self.wait_for_implicit_reload_pause().await;
+        self.publish_materialized_servers(candidate).await
+    }
+
+    #[cfg(test)]
+    async fn wait_for_implicit_reload_pause(&self) {
+        let pause = self.implicit_reload_pause.lock().unwrap().take();
+        if let Some((entered, release)) = pause {
+            entered.notify_one();
+            release.notified().await;
+        }
     }
 
     /// Atomically applies a validated runtime policy to new requests.
@@ -220,15 +234,6 @@ where
     /// Returns an error if validation, reference expansion, or native preparation
     /// fails. Failure leaves the active runtime generation unchanged.
     pub(super) async fn reload_tacacs_plus_with_proxy_downstream_obfuscation(
-        &self,
-        tacacs_plus: TacacsPlus,
-        proxy_downstream_obfuscation: PreparedProxyPolicy,
-    ) -> anyhow::Result<()> {
-        self.reload_tacacs_plus_inner(tacacs_plus, proxy_downstream_obfuscation)
-            .await
-    }
-
-    async fn reload_tacacs_plus_inner(
         &self,
         tacacs_plus: TacacsPlus,
         proxy_downstream_obfuscation: PreparedProxyPolicy,

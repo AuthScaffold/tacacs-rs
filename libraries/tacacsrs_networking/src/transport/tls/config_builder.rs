@@ -166,14 +166,17 @@ fn validate_client_chain(
     if chain.len() < 2 {
         return Ok(());
     }
-    let mut seen = Vec::new();
+    #[expect(
+        clippy::mutable_key_type,
+        reason = "Only immutable DER bytes determine ordering. Accounting guards do not affect keys."
+    )]
+    let mut seen = std::collections::BTreeSet::new();
     for (certificate, encoded_bytes) in chain {
         let encoded = payload.native_bytes(*encoded_bytes, || certificate.to_der())?;
         anyhow::ensure!(
-            !seen.contains(&encoded),
+            seen.insert(encoded),
             "Client certificate chain contains duplicate certificates"
         );
-        seen.push(encoded);
     }
     for pair in chain.windows(2) {
         let issuer = &pair[1].0;
@@ -343,6 +346,113 @@ mod tests {
             .build();
 
         assert!(config.is_ok(), "unexpected error: {config:?}");
+    }
+
+    #[test]
+    fn client_chain_duplicate_lookup_is_subquadratic_and_accounted() {
+        use std::sync::{Arc, Mutex};
+
+        use crate::preparation_payload::PayloadBytes;
+        use crate::{PreparationPayload, PreparationPayloadLedger};
+
+        #[derive(Debug)]
+        struct Ledger {
+            limit: u64,
+            counts: Mutex<(u64, u64)>,
+        }
+
+        impl PreparationPayloadLedger for Ledger {
+            fn reserve(&self, bytes: u64) -> anyhow::Result<()> {
+                let mut counts = self.counts.lock().unwrap();
+                let next = counts.0.checked_add(bytes).unwrap();
+                anyhow::ensure!(next <= self.limit, "comparison payload limit");
+                counts.0 = next;
+                counts.1 = counts.1.max(next);
+                Ok(())
+            }
+
+            fn release(&self, bytes: u64) {
+                let mut counts = self.counts.lock().unwrap();
+                counts.0 = counts.0.checked_sub(bytes).unwrap();
+            }
+        }
+
+        let (sample, key) = sample_client_auth_der();
+        let mut measurements = Vec::new();
+        for count in [64, 256] {
+            let chain = (1..=count)
+                .map(|serial| {
+                    let mut certificate = X509::builder().unwrap();
+                    certificate.set_version(2).unwrap();
+                    certificate
+                        .set_serial_number(
+                            &openssl::bn::BigNum::from_u32(serial)
+                                .unwrap()
+                                .to_asn1_integer()
+                                .unwrap(),
+                        )
+                        .unwrap();
+                    certificate
+                        .set_subject_name(sample[0].subject_name())
+                        .unwrap();
+                    certificate
+                        .set_issuer_name(sample[0].issuer_name())
+                        .unwrap();
+                    certificate.set_pubkey(&key).unwrap();
+                    certificate.set_not_before(sample[0].not_before()).unwrap();
+                    certificate.set_not_after(sample[0].not_after()).unwrap();
+                    certificate
+                        .sign(&key, openssl::hash::MessageDigest::sha256())
+                        .unwrap();
+                    let certificate = certificate.build();
+                    let bytes = certificate.to_der().unwrap().len();
+                    (certificate, bytes)
+                })
+                .collect::<Vec<_>>();
+            let bytes = chain.iter().map(|(_, bytes)| *bytes as u64).sum::<u64>();
+            for limit in [bytes - 1, bytes] {
+                let ledger = Arc::new(Ledger {
+                    limit,
+                    counts: Mutex::new((0, 0)),
+                });
+                let payload = PreparationPayload::new(ledger.clone());
+                let before = PayloadBytes::comparison_count();
+                let error = super::validate_client_chain(&chain, &payload).unwrap_err();
+                let comparisons = PayloadBytes::comparison_count() - before;
+                assert_eq!(payload.retained_bytes(), 0);
+                let (live, peak) = *ledger.counts.lock().unwrap();
+                assert_eq!(live, 0, "all comparison owners must release their reservations");
+                if limit == bytes {
+                    assert_eq!(peak, bytes, "deduplication must charge all live DER owners");
+                    assert!(error.to_string().contains("issuer order"));
+                    measurements.push(comparisons);
+                } else {
+                    assert!(error.to_string().contains("comparison payload limit"));
+                    assert!(peak < bytes);
+                }
+            }
+            let mut duplicated = chain.clone();
+            duplicated.push(chain[chain.len() / 2].clone());
+            let duplicated_bytes = bytes + chain[chain.len() / 2].1 as u64;
+            let ledger = Arc::new(Ledger {
+                limit: duplicated_bytes,
+                counts: Mutex::new((0, 0)),
+            });
+            let payload = PreparationPayload::new(ledger.clone());
+            let error = super::validate_client_chain(&duplicated, &payload).unwrap_err();
+            assert!(error.to_string().contains("duplicate certificates"));
+            assert_eq!(payload.retained_bytes(), 0);
+            assert_eq!(
+                *ledger.counts.lock().unwrap(),
+                (0, duplicated_bytes),
+                "the duplicate must be charged before lookup and released after rejection"
+            );
+        }
+        println!("DER comparisons for 64 and 256 certificates: {measurements:?}");
+        assert!(
+            measurements[1] < measurements[0] * 8,
+            "four times as many certificates must need less than eight times as many comparisons"
+        );
     }
 
     #[test]

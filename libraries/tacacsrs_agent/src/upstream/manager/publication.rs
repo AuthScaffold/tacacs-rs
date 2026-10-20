@@ -71,6 +71,7 @@ pub(crate) struct PublicationCandidate<
     pub(crate) proxy_downstream_obfuscation: PreparedProxyPolicy,
     pub(crate) validity: Option<crate::runtime::CredentialLifetime>,
     prepared_servers: Vec<Arc<PreparedServer>>,
+    preparation_base: Option<Arc<ServerSet<Connector>>>,
     catalog: Option<PreparedCatalog<Connector>>,
     commit: Commit,
     pub(crate) preparation: Option<Arc<crate::runtime::candidate_preparation::Preparation>>,
@@ -166,6 +167,7 @@ impl<Commit, Connector: EndpointConnector> PublicationCandidate<Commit, Connecto
             proxy_downstream_obfuscation,
             validity,
             prepared_servers: Vec::new(),
+            preparation_base: None,
             catalog: None,
             commit,
             preparation,
@@ -178,6 +180,7 @@ impl<Commit, Connector: EndpointConnector> PublicationCandidate<Commit, Connecto
             proxy_downstream_obfuscation: self.proxy_downstream_obfuscation,
             validity: self.validity,
             prepared_servers: self.prepared_servers,
+            preparation_base: self.preparation_base,
             catalog: self.catalog,
             commit,
             preparation: self.preparation,
@@ -426,6 +429,26 @@ impl PublicationController {
 /// file. Each takes the `active_snapshot` write lock and commits through the
 /// controller in one health mutation.
 impl<Connector: EndpointConnector> UpstreamManager<Connector> {
+    /// Captures the implicit proxy policy and its catalog identity from one snapshot.
+    pub(crate) fn capture_upstream_reload(
+        &self,
+        servers: Vec<Arc<TacacsPlusServer>>,
+    ) -> PublicationCandidate<
+        impl FnOnce() -> Option<crate::runtime::MaterializationCommit> + Send,
+        Connector,
+    > {
+        let runtime = self.current_runtime();
+        let mut candidate = PublicationCandidate::new(
+            servers,
+            runtime.proxy_downstream_obfuscation.clone(),
+            None,
+            None,
+            || None,
+        );
+        candidate.preparation_base = Some(runtime.server_set.clone());
+        candidate
+    }
+
     #[cfg(test)]
     pub(crate) fn native_preparation_counts(&self) -> (usize, usize) {
         (
@@ -499,7 +522,10 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             return Ok(candidate);
         }
         self.ensure_open()?;
-        let previous = self.current_server_set();
+        let previous = candidate
+            .preparation_base
+            .take()
+            .unwrap_or_else(|| self.current_server_set());
         if let Some(preparation) = &candidate.preparation {
             for server in &candidate.servers {
                 if let Some(slot) = previous
