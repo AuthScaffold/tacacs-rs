@@ -3025,7 +3025,7 @@ Checks: private Unix datagram tests, process lifecycle/timeout cases, dependency
 
 ### 17: Codec Evaluation
 
-Status: both final reviews and document gates are complete; documentation-only decision published as PR #294 against `main`.
+Status: PR #294 merged as `94c9c4caff5a74bb9b9d7de6b0c74b3d40665cc8` after both final reviews and all current-head gates passed.
 Prototype: `/home/ubuntu/tacacs-rs-17-codec-evaluation-prototype`, branch `refactor/general-prototypes/17-codec-evaluation`.
 Integration: `/home/ubuntu/tacacs-rs-17-codec-evaluation`, branch `refactor/general-iterations/17-codec-evaluation`.
 Both start from reviewed predecessor `0518d4753e24292da9866a3c4f71233f232353fb` and use separate caches.
@@ -3123,6 +3123,20 @@ Completed review, findings disposition, current-head required checks, and clean 
 Fresh Copilot review `5584006093` on the published head reports no open issues.
 Current-head hosted verification remains in progress.
 
+#### Merge Receipt
+
+Every current-head hosted check subsequently passed.
+The final recheck found reviewed head `d3629b2ee0f78c862e7a4d8fb7558622c6f6591a`, clean mergeability, and no unresolved threads.
+PR #294 was squash-merged as `94c9c4caff5a74bb9b9d7de6b0c74b3d40665cc8` at 2026-10-20 11:31 UTC.
+No protection bypass, release, or project tag was used.
+The merged source exactly matches the validated documentation-only tree.
+
+The coordinator retained and verified all eleven generated evidence files outside the disposable worktree/cache.
+The evidence archive SHA-256 is `9d6c675d7bb93b0264478159d09abfaff6ace5186a21f7e2606673d0c334b0fa`.
+Only the owned generated `.iteration17-evidence` directory remains untracked in the completed prototype.
+Its removal, both clean worktrees, and the 3.9 GiB prototype cache await receipt preservation.
+The immutable remote prototype and review-only tail-model records remain retained.
+
 Evaluate Tokio-util only for framing and buffering.
 Keep packet semantics, session routing, delivery facts, obfuscation, and counters in their owning layers.
 Test oversized headers before allocation, fragmented reads, partial writes, cancellation, and contiguous packet behavior.
@@ -3134,7 +3148,7 @@ Reject the prototype if custom adapters reproduce the deleted machinery without 
 
 ### 18: Packaging Evaluation
 
-Status: bounded evaluation started through `GPT 6.1 Sol`.
+Status: non-adoption is proposed; Astra's direct decision and safety-scope review is in progress.
 Prototype: `/home/ubuntu/tacacs-rs-18-packaging-evaluation-prototype`, branch `refactor/general-prototypes/18-packaging-evaluation`.
 Integration: `/home/ubuntu/tacacs-rs-18-packaging-evaluation`, branch `refactor/general-iterations/18-packaging-evaluation`.
 Both start from reviewed predecessor `d3629b2ee0f78c862e7a4d8fb7558622c6f6591a` and use separate caches.
@@ -3143,6 +3157,52 @@ Only local planning/builds are permitted; hosting, publication, Git tags, genera
 Required artifact/provenance/platform failure or lack of concrete deletion ends evaluation early.
 Only accepted implementation or a reproducible documentation-only non-adoption decision can enter integration.
 Publication remains blocked until predecessor review findings and required checks clear.
+
+#### Evaluation Handoff
+
+`GPT 6.1 Sol` recommends non-adoption of cargo-dist 0.33.0.
+The decision took six minutes and 44 seconds.
+Final prototype source checks completed within twelve minutes and 52 seconds.
+The integration contains only `docs/cargo-dist-packaging-evaluation.md`.
+No tool, generated workflow, manifest, dependency, or production configuration enters integration.
+
+The verified official executable uses MIT/Apache-2.0 licensing and remains only in the prototype cache.
+The source declares Rust 1.74.
+Its release feature bypasses an effective-MSRV promise.
+The source-build minimum was not tested.
+The official build used Cargo 1.97.1.
+
+The archive is 6,420,632 bytes and the executable is 27,837,824 bytes.
+Its GLIBC 2.34 symbol requirement is an ABI observation, not complete portability evidence.
+Product Rust 1.88 and all existing native prerequisites remain unchanged.
+
+Registry-derived configuration correctly selects five product/target/payload tuples, including the `cdylib`.
+Explicit `publish = false` is a disposable fixture override, not a production-manifest claim.
+Only local planning ran, with no hosting, installers, source tarball, initialization, generation, or publication.
+Four singular plans accept the existing hydrated versions and simulated tag-argument spelling without creating actual tags.
+
+The tested built-in route plans no symbol artifacts, no JSON SBOMs, and no embedded provenance.
+Its four XML SBOM entries are global rather than JSON/XML pairs in every archive.
+Required built-in symbol/SBOM contracts fail, while native binaries, DLLs, ARMhf, and offline archive equivalence remain unverified.
+Custom artifact commands remain possible, but no complete production-script deletion was demonstrated.
+
+The original broad regression selection passed 327 cases but created 52 annotated tag refs in private pytest fixtures.
+This exceeded the experiment's stricter tag-free validation restriction.
+The coordinator verified every disclosed ref path and object in 37 standalone private Git common directories inside the owned cache.
+None points to project Git storage.
+That test selection created no project or remote tag.
+
+The disclosure inventory is retained outside disposable caches.
+Subsequent guarded, tag-free selectors passed 276 cases without skips or new fixture tags.
+Remaining local packaging replays must use the guard and exclude the tag-producing broad version selection.
+
+The exact two-file prototype is preserved remotely as `fc2226a7253b18ffa9c7aba7322d5762b60ef88a`.
+Generated fixtures, logs, binaries, upstream source, and private tags are excluded from that source commit.
+Prototype changed-source manifest: `cdace5a3c90d255344ee65430acb067342d25773f41635bbc8a784f1b94167e0`.
+Complete prototype patch: `5819a873c52b65db022f8dfb05b6220b3251cd2d07588034712ddb8819971f31`.
+Initial decision manifest: `9f58519c2a248520a94723ad63837e59b024bb8d88c8c0f782fb3943b4d8fbb7`.
+Complete initial decision patch: `33682e6f4c7ec2c0d23060bc780559a99d7c4d8312b0210093521f58a749abf5`.
+Both named decision reviews and final guarded document checks remain pending.
 
 Evaluate `dist` local planning/build artifacts only after registry and hydration decisions settle.
 Do not enable hosting, publication, tags, or generated release workflows during the experiment.
