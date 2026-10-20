@@ -3,7 +3,7 @@
 //! [`prepare_service`] turns parsed CLI arguments into a
 //! [`PreparedService`]. It selects the
 //! datastore, resolves the local service listeners, loads the optional runtime
-//! policy, builds credential providers, and constructs the waiting client
+//! policy, builds credential providers, and constructs the empty client
 //! service. The host then supervises the result.
 //!
 //! The helpers map CLI inputs into canonical configuration inputs. They do not
@@ -242,12 +242,10 @@ pub(crate) async fn prepare_service(cli: Cli) -> anyhow::Result<PreparedService>
         None => (RuntimePolicy::default(), None),
     };
     let health = RuntimeHealthPublisher::new(enabled_services);
-    let empty_tacacs_plus = tacacsrs_config::TacacsPlus::empty();
     let service = Arc::new(
-        TacacsClientService::waiting_for_configuration(
+        TacacsClientService::new(
             ServiceConfig {
                 local_services,
-                tacacs_plus: empty_tacacs_plus,
                 validation_options: datastore.validation_options(),
                 runtime_policy,
                 certificate_verification: if cli.insecure_disable_certificate_verification {

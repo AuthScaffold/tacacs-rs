@@ -1285,10 +1285,9 @@ fn supervisor(
 ) -> (ConfigSupervisor, RuntimeHealthPublisher, Arc<TacacsClientService>) {
     let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
     let service = Arc::new(
-        TacacsClientService::waiting_for_configuration(
+        TacacsClientService::new(
             ServiceConfig {
                 local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
-                tacacs_plus: TacacsPlus::empty(),
                 validation_options: datastore.validation_options(),
                 runtime_policy: crate::RuntimePolicy::new(
                     crate::FailoverStrategy::default(),
@@ -2481,13 +2480,36 @@ async fn initialization_and_updates_share_one_observation_until_cancellation() {
     let mut supervisor = ConfigSupervisor::new(
         source.clone(),
         service.clone(),
-        health,
+        health.clone(),
         Arc::new(NoopTacacsPlusFilter::default()),
     );
     supervisor
         .initialize_until(std::future::pending())
         .await
         .unwrap();
+    let initial = health.snapshot();
+    let initial_statistics = service.statistics();
+    let policy = tacacsrs_config::policy::parse_runtime_policy(
+        br#"{"tacacsrs:runtime-policy":{"shutdown-timeout-seconds":2}}"#,
+    )
+    .unwrap();
+    let original = policy.clone();
+    let crate::PolicyUpdate::Applied(policy_revision) =
+        service.apply_policy_candidate(Some(&policy)).await.unwrap()
+    else {
+        panic!("the canonical policy must apply");
+    };
+    let policy_health = health.snapshot();
+    assert_eq!(policy, original);
+    assert_eq!(policy_health.materialization_revision(), initial.materialization_revision());
+    assert_eq!(policy_health.source_recovery_revision(), initial.source_recovery_revision());
+    assert_eq!(policy_health.datastore(), initial.datastore());
+    assert_eq!(policy_health.upstream_availability(), initial.upstream_availability());
+    assert_eq!(
+        service.statistics().servers[0].counter_epoch,
+        initial_statistics.servers[0].counter_epoch
+    );
+    assert_eq!(service.shutdown_timeout(), Duration::from_secs(2));
     events.send(change(2)).await.unwrap();
     let cancellation = CancellationToken::new();
     let stop = cancellation.clone();
@@ -2499,11 +2521,36 @@ async fn initialization_and_updates_share_one_observation_until_cancellation() {
     })
     .await
     .unwrap();
+    let updated = health.snapshot();
+    assert_eq!(updated.applied_policy_revision(), Some(policy_revision));
+    assert_eq!(service.shutdown_timeout(), Duration::from_secs(2));
+    assert_eq!(updated.datastore(), DatastoreState::Current);
+    assert_eq!(
+        service.statistics().servers[0].counter_epoch,
+        initial_statistics.servers[0].counter_epoch
+    );
+    let before = initial.materialization_revision().unwrap();
+    let after = updated.materialization_revision().unwrap();
+    assert!(after.source().value() > before.source().value());
+    assert_eq!(after.credentials(), before.credentials());
+    assert!(matches!(
+        service.apply_policy_candidate(None).await.unwrap(),
+        crate::PolicyUpdate::Rejected(_)
+    ));
+    assert_eq!(health.snapshot().runtime_generation(), updated.runtime_generation());
+    assert_eq!(health.snapshot().materialization_revision(), Some(after));
     cancellation.cancel();
     task.await.unwrap().unwrap();
     assert_eq!(source.opens.load(Ordering::Relaxed), 1);
     assert!(dropped.load(Ordering::Acquire));
     assert!(events.is_closed());
+    service
+        .close_and_join(
+            tacacsrs_networking::RequestDeadline::after(Duration::from_secs(1)).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(service.apply_policy_candidate(Some(&policy)).await.is_err());
 }
 
 #[tokio::test]

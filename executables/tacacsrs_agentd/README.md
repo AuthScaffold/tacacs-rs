@@ -26,6 +26,13 @@ Either signal cancels startup or requests listener drain through the signal-free
 An unavailable bootstrap dependency does not prevent signal handling. Requested shutdown exits successfully after cleanup.
 Unexpected host or configuration task exit is fatal, but the daemon still requests service drain and joins its other tasks.
 
+Startup uses one `TacacsClientService::new` path with no upstream source in its startup controls.
+The private `PreparedService` owner creates one retained `ConfigSupervisor` for initial preparation and all later server updates.
+Fail-fast preparation completes before listeners bind. Cancellation before serving does not bind listeners.
+The independent `PolicySupervisor` submits canonical policy through `apply_policy_candidate`.
+Host integration, configuration supervision, and serving remain critical peers under one shutdown budget.
+The [agent embedding guide](../../libraries/tacacsrs_agent/README.md#embedding) documents the public contract and removed reload variants.
+
 Use `--runtime-policy <FILE>` to load live failover strategies and request
 limits. The daemon keeps the last-known-good policy after an invalid update.
 

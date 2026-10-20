@@ -430,6 +430,7 @@ impl PublicationController {
 /// controller in one health mutation.
 impl<Connector: EndpointConnector> UpstreamManager<Connector> {
     /// Captures the implicit proxy policy and its catalog identity from one snapshot.
+    #[cfg(test)]
     pub(crate) fn capture_upstream_reload(
         &self,
         servers: Vec<Arc<TacacsPlusServer>>,

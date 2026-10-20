@@ -16,6 +16,7 @@ mod policy_supervisor;
 mod proxy_loop_guard;
 mod request_tracker;
 mod revision;
+#[cfg(test)]
 mod server_catalog;
 mod shutdown;
 
@@ -37,6 +38,7 @@ pub use health::{
 
 #[cfg(test)]
 pub(crate) use server_catalog::REQUIRED_SERVER_TYPES;
+#[cfg(test)]
 pub(crate) use server_catalog::enumerate_supported_servers;
 pub(crate) use proxy_loop_guard::{ProxyLoopGuard, ProxyListenerBinding};
 pub(crate) use request_tracker::{RequestGuard, RequestTracker};
