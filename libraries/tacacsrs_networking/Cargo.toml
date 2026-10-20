@@ -22,7 +22,9 @@ tokio-openssl = "0.6.5"
 foreign-types = "0.3.2"
 
 [dev-dependencies]
+bytes = "=1.12.1"
 futures = "0.3"
+tokio-util = { version = "=0.7.19", features = ["codec"] }
 tokio = { version = "1.52.3", features = ["test-util"] }
 
 [lints]

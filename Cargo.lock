@@ -2147,6 +2147,7 @@ version = "0.0.0-dev"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bytes",
  "futures-util",
  "if-addrs",
  "log",
@@ -2342,6 +2343,7 @@ version = "0.0.0-dev"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bytes",
  "foreign-types",
  "futures",
  "log",
@@ -2353,6 +2355,7 @@ dependencies = [
  "tacacsrs-secrets",
  "tokio",
  "tokio-openssl",
+ "tokio-util",
 ]
 
 [[package]]

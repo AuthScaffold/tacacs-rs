@@ -11,6 +11,7 @@ readme = "README.md"
 [dependencies]
 anyhow = { version = "1.0.102", features = ["backtrace"] }
 async-trait = "0.1.89"
+bytes = "=1.12.1"
 futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 if-addrs = "0.15.0"
 log = "0.4.30"
@@ -22,7 +23,7 @@ tacacsrs-protocol = { path = "../tacacsrs_protocol" }
 tacacsrs-networking = { path = "../tacacsrs_networking" }
 tacacsrs-secrets = { path = "../tacacsrs_secrets" }
 tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "net", "parking_lot", "rt", "rt-multi-thread", "sync", "time"] }
-tokio-util = "0.7.18"
+tokio-util = { version = "=0.7.19", features = ["codec"] }
 
 # The agent runtime does not own the IPC transport. The IPC crate and its stream
 # and async helpers are development dependencies used only by the integration

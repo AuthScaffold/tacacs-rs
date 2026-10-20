@@ -7,5 +7,8 @@
 mod reader;
 mod writer;
 
+#[cfg(test)]
+mod evaluation;
+
 pub use reader::{PacketReadResult, PacketReader};
 pub use writer::{PacketWriteResult, PacketWriter};
