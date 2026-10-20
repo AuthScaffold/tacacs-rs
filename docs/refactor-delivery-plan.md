@@ -2532,7 +2532,8 @@ Checks: emulator/controller/daemon tests, IPC tests, audit and unused-dependency
 
 ### 14: Product Registry
 
-Status: both named reviews and final local delivery-tooling gates are complete; published as PR #291 against `main`.
+Status: published as PR #291; the quality repair has both named reviews and final local delivery gates.
+Fresh repaired-head hosted checks and merge remain pending.
 Scope: R12.
 Worktree: `/home/ubuntu/tacacs-rs-14-product-registry`; branch: `refactor/general-iterations/14-product-registry`.
 Predecessor: `6add7c19dd3dfdfe9143d167598bf3fc240e14dc`, the reviewed iteration 13 publication head.
@@ -2625,6 +2626,32 @@ Fresh Copilot review `5581411316` on the published head reports no open issues.
 It explicitly retains hosted workflow execution as a required gate.
 Current-head hosted verification remains in progress.
 
+Four later CodeQL quality comments identify mixed `import` and `from` forms for `products` in the new registry tests.
+The coordinator paused descendant review and assigned the smallest consistent-import repair to the original implementer.
+Registry, workflow, and product policy must remain unchanged.
+Both named reviews and current-head hosted verification will cover any resulting repair before merge.
+
+The implementer changed only `test_products.py` to one module import with consistently qualified references.
+Monkeypatch targets remain the same module attributes.
+Normalized AST comparison retains all 36 assertions and sixteen test functions.
+All 63 metadata tests and all 312 delivery tests passed without skips.
+The input file hash is `12312dc17f4b6a4a4abd784a2d1ad84917314aff3ef615e4b1aa059c98bd588c`.
+The repair output hash is `70cb2ce6227464e1e2889401be12179da4ed81d33d9ef8bdadfc1ceda991b66a`.
+Old-head hosted checks passed, but merge remains paused for repair reviews and fresh-head verification.
+
+Both named reviewers subsequently approved the unchanged import repair.
+Their independent AST checks retain all assertions, test/helper functions, parametrization, expected errors, and five monkeypatch targets.
+The final complete delivery suite passed 312 cases without skips.
+Exact repair patch: `cceb936b2579e3b780f07ca7e459db35950316cd6004ed41c2448e573d440a37`.
+The coordinator committed and pushed repair head `e025b0d2b7d40530c876bab8ff323918ba877815`.
+Complete repaired fourteen-path manifest: `4bc20606abd2fe5fecd31ef446855d692e5b6c859d351524c522feb5319520c1`.
+
+All four quality threads now contain repair evidence and are resolved.
+Fresh Copilot review `5581716726` on the repaired head reports no open issues.
+Required workflow `39383183825` and CodeQL workflow `39383178850` started on that head.
+Prior successful hosted checks do not substitute for the repaired head's required verification.
+Merge remains pending until its current-head gates pass.
+
 Introduce one explicit product registry independent of Cargo workspace enrollment.
 Compute caller/reusable workflow matrices through a job output or an equally direct single-source mechanism.
 Derive Linux rehearsal selection from the same registry.
@@ -2663,7 +2690,7 @@ Set a bounded prototype effort before coding. Stop when a required capability fa
 
 ### 15: TOML Editing
 
-Status: bounded evaluation started through `GPT 6.1 Sol`.
+Status: TOML Kit adoption is proposed; Astra's direct integration review is in progress.
 Prototype: `/home/ubuntu/tacacs-rs-15-toml-editing-prototype`, branch `refactor/general-prototypes/15-toml-editing`.
 Integration: `/home/ubuntu/tacacs-rs-15-toml-editing`, branch `refactor/general-iterations/15-toml-editing`.
 Both start from reviewed predecessor `4d1ce5321dd7f95ba2e9abf4f4e742c45637e419` and use separate caches.
@@ -2671,6 +2698,50 @@ Prototype analysis, implementation, and focused checks have a 45-minute budget.
 Evaluation stops earlier if a required capability fails or no concrete deletion remains.
 Only accepted source can enter integration; rejection or blocked adoption produces a reproducible documentation-only decision.
 Publication remains blocked until predecessor review findings and required checks clear.
+
+#### Evaluation Handoff
+
+`GPT 6.1 Sol` completed the prototype in nine minutes and three seconds and proposed adoption.
+TOML Kit 0.15.2 uses MIT licensing, requires Python 3.9 or later, and adds no transitive runtime dependencies.
+Version-specific PyPI, wheel, and source metadata agree; downloaded archive hashes match supplier metadata.
+The project's existing Python 3.11 minimum and Rust 1.88 MSRV remain unchanged.
+The Rust `toml_edit` route was not selected because the existing Rust tool owns API classification, not hydration.
+
+The proposed editor removes three parser regexes, `lock_package_name`, offset slicing, block reconstruction, and lock cursor assembly.
+`hydrate_versions.py` has sixteen fewer production lines, with no second parser or alternate member-discovery path.
+Cargo metadata remains authoritative for member discovery.
+Exact source-free lock references update by name and old version; source-qualified external identities remain unchanged.
+Comments, alternate valid formatting, unknown fields, line endings, idempotence, dependency association, and same-name external packages have comparison coverage.
+All seventeen real member manifests and the actual lockfile match predecessor semantic and unaffected-content expectations.
+Quote changes are allowed only for intentionally edited literals, not unrelated content.
+
+The prototype passed 138 focused cases and a fixture rehearsal.
+The integration candidate passed 333 delivery tests, nineteen bootstrap tests, pin contracts, fixture rehearsal, and workflow lint.
+Canonical Python requirements pin TOML Kit in the composite action, delivery tests, development image, and local instructions.
+Separate prototype/integration virtual environments contain the candidate dependency.
+An attempted global install lacked write permission; no successful global dependency change occurred.
+No Rust source, manifests, or lockfiles changed.
+The full development image and native release artifacts were not rebuilt.
+
+Integration content manifest: `707824871066e959cb99740565c1bc71c59e59c5499bc29582f83178b6ca854a`.
+Complete integration patch: `2f43a6f80c17f1df31db9d0fb7ac97d7d404f134033026a2d55fb32a09a5284c`.
+Prototype content manifest: `0d107a6e69b1079c3a44f04df0d3d68faec9dca6ffa8a00536ae932195929d35`.
+Complete prototype patch: `f4b0f4b37ea3d6119a5c32668a91f1e7dfa5e3d204632f3c8956a86a84b2de23`.
+Experimental-only patch: `8c5bfe1e9d418f41daa6dd70380cc59625f2628df8ac30989a1dd59d6a20e302`.
+Both named integration reviews and every publication gate remain pending.
+
+The coordinator preserved the complete measured prototype in local commit `40daab0`.
+That experimental branch is not an integration predecessor and must not be merged wholesale.
+The integration candidate remains a separate ten-file change.
+The structured handoff is retained outside the disposable caches for provenance.
+
+After both iteration 14 repair reviews passed, integration advanced to `e025b0d2b7d40530c876bab8ff323918ba877815`.
+Only the predecessor's test-import repair changed during that fast-forward.
+All ten TOML candidate file hashes and its complete patch remain unchanged.
+Canonical source-only integration manifest: `4db4a41f0628d10c36dce13e6b02d9c074f165e95f28c5f61f42234bae3910c4`.
+Canonical source-only prototype manifest: `45be3a371419dda67fa9f1b43d2652085747ba66bac0d55cb01180d38cde1683`.
+These differ from the earlier metadata-rich manifest digests by format, not source content.
+Both named integration reviews and final environment/tooling gates remain pending.
 
 Compare TOML Kit with the current hydration implementation.
 Evaluate `toml_edit` only if an existing Rust tool can own the work without another executable.
