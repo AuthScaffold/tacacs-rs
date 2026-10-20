@@ -1950,9 +1950,9 @@ Checks: unchanged coordinator/publication/supervisor regressions, connector proo
 
 ### 10: Prepared Publication
 
-Status: published as PR #287 against `main`; both named repair reviews and final local workspace gates are complete.
-Repair head `e90b0732b51cb1410c85fd5462da50f030806005` requires fresh completed hosted review, required CI, and merge.
-R14 remains open.
+Status: PR #287 merged as `782c73ecf91554703284f6be2b689722a3fd6e03` after both named reviews and all current-head gates passed.
+Reviewed repair head: `e90b0732b51cb1410c85fd5462da50f030806005`.
+R14's prepared-runtime phase is complete under the documented accounting and cancellation limits.
 Worktree: `/home/ubuntu/tacacs-rs-10-prepared-publication`; branch: `refactor/general-iterations/10-prepared-publication`.
 Scope: R7 and R14 prepared-runtime completion, built on iterations 05 and 09.
 
@@ -2127,6 +2127,26 @@ Pull-request workflow `39360179146` and CodeQL workflow `39360175760` started on
 Their completion and final merge remain pending.
 The current receipt is also recorded in [the PR discussion](https://github.com/AuthScaffold/tacacs-rs/pull/287#issuecomment-6282075479).
 
+Fresh Copilot review `5580191567` on the repaired head reports no open issues and confirms both defects resolved.
+All primary current-head CI checks subsequently passed, including Windows, ARMhf, container build, and both CI success gates.
+The CodeQL analysis workflow also passed, but its aggregate check reports a new alert, 207.
+This alert identifies test code at TLS builder line 348, not alert 206's earlier vector operation.
+Its disposition requires separate evidence and review.
+Merge remains paused until that investigation completes.
+
+The delegate traced alert 207 to a failure-only assertion inside a test.
+Its reported paths carry a static error, encoded length, or OpenSSL error stack rather than certificate bytes.
+The fixture contains one certificate and returns before those later paths.
+`GPT 6 Astra` independently confirmed the false-positive classification without source changes.
+Opus's independent disposition review remains pending.
+
+Opus independently confirmed alert 207 as false positive, including the other reachable error paths.
+The coordinator dismissed it with that rationale and without source suppression.
+Every current-head check then passed, mergeability was clean, and no unresolved review threads remained.
+PR #287 was squash-merged as `782c73ecf91554703284f6be2b689722a3fd6e03` at 2026-10-20 03:21 UTC.
+No protection bypass, release, or tag was used.
+The merged worktree and cache await the documented clean/idle ownership check and receipt preservation before cleanup.
+
 Carry source metadata, prepared endpoint identity, validity, budgets, and admitted revisions in one derived candidate.
 Move native preparation outside coordinator state and publication locks while keeping preparation concurrency explicitly bounded.
 Use at most one active preparation per coordinator initially, including cancelled-but-running blocking work.
@@ -2171,6 +2191,44 @@ Restoration merged fourteen paths and produced one engine conflict.
 The implementation delegate owns its resolution and must preserve both the embedding redesign and atomic parent snapshot fence.
 The stash remains retained; no restored work was discarded.
 Publication remains blocked until predecessor hosted review and required checks pass.
+
+#### WSL Implementation Handoff
+
+`GPT 6.1 Sol` resolved the engine source conflict while preserving the parent snapshot capture and publication fence.
+The original secret-rotation regression retains every assertion and fails when its fence is removed.
+The coordinator marked the resolved engine index entry without changing source content.
+Sixteen tracked paths now differ from parent `e90b0732b51cb1410c85fd5462da50f030806005`; no new source files are present.
+The additional publication-module change makes the obsolete implicit reload helper test-only.
+
+The public service now has one empty-runtime `new` constructor.
+Canonical configuration enters through `ConfigDatastore` and the retained `ConfigSupervisor`.
+Canonical policy updates enter through `apply_policy_candidate`.
+The populated/waiting constructor pair, `ServiceConfig::tacacs_plus`, and public direct reload variants are removed.
+Private test fixtures retain only the lower-level operations needed for regressions.
+No compatibility aliases or extra builders remain.
+The daemon retains its existing `PreparedService` ownership topology.
+
+Scoped checks passed 956 tests across 19 suites, with ten existing ignored cases.
+These include 251 agent, 72 daemon unit, 55 prepared-source, and nine process-lifecycle cases.
+The public embedding example compiles as a doctest.
+Nine independent peer executions cover eight distinct cases across all five fixture modes.
+Separate consumer profiles passed 92 protocol, 568 direct-toolkit, and 42 IPC cases.
+Architecture and metadata Python checks passed 52 cases; both platform metadata guards passed.
+Connector checks passed four MSRV cases and the generic fixture.
+The monomorphic fixture failed with the expected Send-generality diagnostic.
+Targeted strict nightly Clippy, private docs, build, MSRV, and nightly formatting passed.
+Focused coverage passed 251 instrumented agent tests and covers the facade, engine, supervisors, and publication owner.
+These file-level coverage results do not prove every concurrency interleaving.
+
+Complete 16-path content manifest: `d739bbe0521d861e5a5fff7fc2d1804f45bda59ccdfab1e29efe987b72be7de8`.
+Full-index parent-to-tree patch: `80c6a1de4a81e5d688034a2f5404e70de3b4dbfa592f99a05fd3b228a6026db9`.
+Both named reviews and final whole-workspace gates remain pending.
+
+`GPT 6 Astra` reviewed the complete staged and unstaged implementation and approved it without revisions.
+It independently passed 339 selected tests, including the public embedding doctest, daemon lifecycle, and five native expiry/revocation cases.
+Strict targeted nightly Clippy, nightly formatting, and whitespace checks passed.
+The input and output manifest and patch remain identical.
+Opus review and final whole-workspace gates remain pending.
 
 Local preflight confirms that daemon startup builds a waiting `TacacsClientService`; private `PreparedService::run` then composes configuration and policy supervisors.
 The public service also exposes populated/waiting constructors and several direct reload variants. The latter bypass supervised materialization bookkeeping by contract.
