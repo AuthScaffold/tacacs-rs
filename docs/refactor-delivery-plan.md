@@ -2408,7 +2408,7 @@ Do not claim a measured memory improvement without a measurement.
 
 ### 13: Emulator Cleanup
 
-Status: both named reviews and final local gates are complete; published as PR #290 against `main`.
+Status: PR #290 merged as `63e290190ae68ffb336a765420b57c54ddd58074` after both named reviews and all current-head gates passed.
 Scope: the emulator connector and compilation portions of R15.
 Worktree: `/home/ubuntu/tacacs-rs-13-emulator-cleanup`; branch: `refactor/general-iterations/13-emulator-cleanup`.
 Predecessor: `db09b0270954b8b7c9ed77de010a38d28cebd6d1`, the reviewed iteration 12 publication head.
@@ -2499,6 +2499,16 @@ Completed review, actionable findings disposition, successful current-head check
 Fresh Copilot review `5581082561` on the published head recommends approval and reports no open issues.
 Current-head hosted verification remains in progress.
 
+#### Merge Receipt
+
+Every current-head hosted check subsequently passed, including Windows, ARMhf, CodeQL, and container build.
+The final recheck found the expected reviewed head, clean mergeability, and no unresolved review threads.
+PR #290 was squash-merged as `63e290190ae68ffb336a765420b57c54ddd58074` at 2026-10-20 06:00 UTC.
+No protection bypass, release, or tag was used.
+The merged source tree exactly matches reviewed head `6add7c19dd3dfdfe9143d167598bf3fc240e14dc`.
+The clean worktree and its 21 GiB cache have no active directory users.
+Cleanup awaits preservation of this receipt.
+
 Use one narrow IPC endpoint connection method for controller and service clients.
 Remove connector-only dependencies that become unused.
 Separate source/data loading from explicit policy compilation and compile the completed startup policy once.
@@ -2518,11 +2528,52 @@ Checks: emulator/controller/daemon tests, IPC tests, audit and unused-dependency
 
 ### 14: Product Registry
 
-Status: implementation started through `GPT 6.1 Sol`. Scope: R12.
+Status: implementation is complete; named reviews and final delivery-tooling gates remain pending.
+Scope: R12.
 Worktree: `/home/ubuntu/tacacs-rs-14-product-registry`; branch: `refactor/general-iterations/14-product-registry`.
 Predecessor: `6add7c19dd3dfdfe9143d167598bf3fc240e14dc`, the reviewed iteration 13 publication head.
 Product/platform policy changes, releases, tags, and hosting remain outside this iteration.
 Publication remains blocked until predecessor review findings and required checks clear.
+
+#### Implementation Handoff
+
+`GPT 6.1 Sol` added `.github/products.json` as the canonical registry.
+The existing Cargo metadata tooling validates records, and a composite action supplies the reusable workflow's required registry job.
+Official build matrices and architecture checks consume that job's output.
+Both workflow callers no longer contain their own inventories or overrides.
+Linux rehearsal invokes the same validator from the exported revision before hydration.
+Four production inventories with nineteen record copies became one five-record registry.
+Independent literal policy goldens remain.
+
+The registry retains four Linux GNU products and Windows direct-mode `tacon`.
+Asset names, package roots, features, artifact kinds, packaging, SBOM modes, and platform behavior are unchanged.
+Default features remain enabled, and every explicit feature string remains empty.
+Semantic comparisons preserve existing build steps, publication conditions, ARMhf execution, and aggregate gates.
+Version computation, hydration, provenance, append-only release behavior, and tags remain unchanged.
+
+Validation rejects incomplete records, stale packages/paths, incorrect targets/kinds, unknown or missing required features, duplicates, unsupported packaging, and empty selections.
+Initial characterization/schema checks produced thirteen expected failures before implementation.
+All fourteen registry cases passed after implementation.
+The complete required delivery suites passed 311 tests without skips.
+The no-publish fixture rehearsal exercised real registry, hydration, staging, archive, provenance, checksum, and rollback paths.
+Compilation, SBOM generation, export, and native inspection in that rehearsal use fixtures.
+Actionlint 1.7.7 passed, and 39 workflow/action YAML documents parsed as mappings.
+Real Linux/Windows Cargo graphs produced the exact four/one policy selections without architecture errors.
+The action emitted exactly one JSON output line with five nine-field records matching the independent golden.
+
+No Rust source, interfaces, manifests, or dependencies changed.
+Unrelated Rust workspace and API-classifier rebuilds are not claimed.
+Complete fourteen-path content manifest: `2db52dc7fd3b6aa5708e0dc8cb21fdfdab453743e68b8d03f3e6dee166062e02`.
+Complete patch, including all four new files: `4522311930cfe40e6e567ff0ca45f4fbd3a6ffa0ebd417f7a88298c65a3ef1a9`.
+Both named reviews and final delivery-tooling gates remain pending.
+
+`GPT 6 Astra` reviewed all fourteen paths, including the four new files, and approved without revisions.
+It independently passed all 311 delivery tests after isolating legacy Cargo fixtures from the enclosing workspace.
+Actionlint, YAML mappings, exact action output, and both real platform architecture-consumer paths passed.
+Twenty-three Cargo-backed invalid-input probes rejected invalid registries without matrix output.
+Cross-revision selection passed, and missing, empty, or stale-platform registries stopped rehearsal before hydration or builds.
+The complete input and output hashes are unchanged.
+Opus review and final delivery-tooling gates remain pending.
 
 Introduce one explicit product registry independent of Cargo workspace enrollment.
 Compute caller/reusable workflow matrices through a job output or an equally direct single-source mechanism.
