@@ -1,0 +1,13 @@
+[package]
+name = "systemd-notification-probe"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+license = "MIT"
+
+[workspace]
+
+[dependencies]
+libsystemd = "=0.7.2"
+sd-notify = "=0.5.0"
