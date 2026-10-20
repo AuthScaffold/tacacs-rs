@@ -13,6 +13,7 @@ use crate::state::EmulatorState;
 use crate::{EmulatorPolicy, IpcEmulator, IpcRpc, MockControllerClient};
 
 mod connections;
+mod policy_loading;
 
 const ACCOUNTING_POLICY: &str = r#"
 package tacacs.emulator
@@ -279,7 +280,7 @@ async fn authorization_error_status_returns_response() {
 #[tokio::test]
 async fn policy_data_drives_authorization_denylist() {
     let policy = EmulatorPolicy::from_file("examples/policy.rego")
-        .expect("example policy must compile")
+        .expect("example policy must load")
         .with_data(
             serde_json::from_str(
                 &std::fs::read_to_string("examples/policy_data.json")

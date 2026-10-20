@@ -44,6 +44,11 @@ impl EmulatorState {
         self.captured_requests.clone()
     }
 
+    #[cfg(test)]
+    pub(crate) fn compile_count(&self) -> usize {
+        self.policy.compile_count.get()
+    }
+
     /// Replaces the active policy, recompiling its engine and clearing captured
     /// requests.
     pub(crate) fn replace_policy(&mut self, policy: EmulatorPolicy) -> anyhow::Result<()> {

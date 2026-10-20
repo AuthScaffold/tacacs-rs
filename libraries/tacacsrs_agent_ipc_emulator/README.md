@@ -15,6 +15,27 @@ The emulator compiles the Rego source and its fixed data document once at
 startup. It supplies each captured TACACS+ request as Rego `input` at
 evaluation time.
 
+## Policy loading and compilation
+
+`EmulatorPolicy` stores Rego source and fixed JSON data. It does not store a compiled engine.
+`from_file` and `from_file_async` read source without compilation.
+`from_files_async` also reads and decodes JSON data.
+Read errors and invalid JSON syntax fail during loading.
+
+`EmulatorPolicy::compile()` explicitly parses Rego source and loads the fixed data.
+Invalid Rego syntax and unsupported data shapes fail at this boundary.
+The data must be an object or `null`. An empty object or `null` supplies no fixed data.
+Evaluation errors that depend on request input remain RPC errors.
+
+All `IpcEmulator` constructors compile the completed policy once, before listener setup.
+Invalid startup source or data cannot replace a Unix endpoint path or start a listener.
+The standalone process follows the same boundary and prints no endpoint on startup error.
+Callers that need a running emulator pass the completed `EmulatorPolicy` to a constructor without a separate compilation step.
+
+The controller compiles each replacement before it swaps the active engine.
+Invalid JSON, invalid Rego syntax, or unsupported data shapes retain the active policy and captured requests.
+A successful replacement clears captured requests.
+
 ## Policy format
 
 For every request the emulator evaluates `data.tacacs.emulator.decision` and
@@ -64,6 +85,26 @@ input.command == "show"
 See [`examples/policy.rego`](examples/policy.rego) and its companion
 [`examples/policy_data.json`](examples/policy_data.json) for a fuller policy
 that drives an authorization denylist from fixed policy data.
+
+## Domain fidelity and fault simulation
+
+Ordinary policy responses use shared protocol response types and IPC conversions.
+Structured policy errors use shared failure facts. The emulator performs no upstream I/O, so their delivery state is `NotSent`.
+The policy's `retriable` field selects a failure category. The shared domain type derives retry advice.
+
+The emulator is not a substitute for production request validation.
+Accounting and Authorization project raw protobuf fields into policy input without domain validation.
+Raw generated clients can send invalid privileges or argument names for malformed-request scenarios.
+`ServiceClient` uses domain request types. Production validation tests must exercise the production IPC adapter or shared conversions.
+PAP requests use domain validation, then return a structured unsupported-operation error.
+
+The raw gRPC handlers also preserve deliberate fault simulation.
+Undefined Accounting decisions return `NotFound`. Malformed decision objects and unknown response statuses return `FailedPrecondition`.
+Evaluation errors return `Internal`. These statuses remain RPC errors, not structured domain errors.
+
+`ServiceClient` treats an in-flight status error as an unknown delivery outcome and never recommends automatic replay.
+Controller shutdown stops the listener for transport-loss scenarios.
+Arbitrary malformed reply envelopes require a separate raw gRPC test service, not a policy response.
 
 ## In-process tests
 

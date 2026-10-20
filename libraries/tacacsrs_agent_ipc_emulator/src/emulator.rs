@@ -68,6 +68,8 @@ impl IpcEmulator {
 
     /// Starts an emulator from a policy on the provided IPC endpoint.
     ///
+    /// Compiles the completed policy once before any listener setup.
+    ///
     /// # Errors
     ///
     /// Returns an error if the policy cannot be compiled or the endpoint cannot
@@ -76,9 +78,10 @@ impl IpcEmulator {
         policy: EmulatorPolicy,
         endpoint: IpcEndpoint,
     ) -> anyhow::Result<(Self, IpcEndpoint)> {
+        let (emulator, shutdown_rx) = Self::new_with_shutdown(policy)?;
         match endpoint {
-            IpcEndpoint::Tcp(address) => Self::serve_tcp(policy, address).await,
-            IpcEndpoint::Unix(path) => Self::serve_unix(policy, path).await,
+            IpcEndpoint::Tcp(address) => emulator.serve_tcp(address, shutdown_rx).await,
+            IpcEndpoint::Unix(path) => emulator.serve_unix(path, shutdown_rx).await,
         }
     }
 
@@ -110,8 +113,9 @@ impl IpcEmulator {
     }
 
     async fn serve_tcp(
-        policy: EmulatorPolicy,
+        mut self,
         address: SocketAddr,
+        shutdown_rx: oneshot::Receiver<()>,
     ) -> anyhow::Result<(Self, IpcEndpoint)> {
         if !address.ip().is_loopback() {
             bail!("TCP IPC emulator endpoint must use a loopback address: {address}");
@@ -123,15 +127,14 @@ impl IpcEmulator {
             .local_addr()
             .context("Failed to inspect the bound TCP IPC endpoint")?;
         let incoming = TcpListenerStream::new(listener);
-        let (mut emulator, shutdown_rx) = Self::new_with_shutdown(policy)?;
         let agent = AgentService {
-            state: Arc::clone(&emulator.state),
+            state: Arc::clone(&self.state),
         };
         let controller = ControllerService {
-            state: Arc::clone(&emulator.state),
-            shutdown_sender: Arc::clone(&emulator.shutdown_sender),
+            state: Arc::clone(&self.state),
+            shutdown_sender: Arc::clone(&self.shutdown_sender),
         };
-        emulator.server_task = Some(tokio::spawn(async move {
+        self.server_task = Some(tokio::spawn(async move {
             Server::builder()
                 .add_service(TacacsAgentServer::new(agent))
                 .add_service(TacacsAgentMockControllerServer::new(controller))
@@ -139,12 +142,13 @@ impl IpcEmulator {
                 .await
                 .context("TCP IPC emulator server failed")
         }));
-        Ok((emulator, IpcEndpoint::Tcp(local_addr)))
+        Ok((self, IpcEndpoint::Tcp(local_addr)))
     }
 
     async fn serve_unix(
-        policy: EmulatorPolicy,
+        mut self,
         path: PathBuf,
+        shutdown_rx: oneshot::Receiver<()>,
     ) -> anyhow::Result<(Self, IpcEndpoint)> {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await.with_context(|| {
@@ -174,15 +178,14 @@ impl IpcEmulator {
             })?;
         let incoming = UnixListenerStream::new(listener);
         let cleanup_path = path.clone();
-        let (mut emulator, shutdown_rx) = Self::new_with_shutdown(policy)?;
         let agent = AgentService {
-            state: Arc::clone(&emulator.state),
+            state: Arc::clone(&self.state),
         };
         let controller = ControllerService {
-            state: Arc::clone(&emulator.state),
-            shutdown_sender: Arc::clone(&emulator.shutdown_sender),
+            state: Arc::clone(&self.state),
+            shutdown_sender: Arc::clone(&self.shutdown_sender),
         };
-        emulator.server_task = Some(tokio::spawn(async move {
+        self.server_task = Some(tokio::spawn(async move {
             let result = Server::builder()
                 .add_service(TacacsAgentServer::new(agent))
                 .add_service(TacacsAgentMockControllerServer::new(controller))
@@ -192,7 +195,7 @@ impl IpcEmulator {
             remove_unix_socket(&cleanup_path).await?;
             result
         }));
-        Ok((emulator, IpcEndpoint::Unix(path)))
+        Ok((self, IpcEndpoint::Unix(path)))
     }
 
     fn new_with_shutdown(policy: EmulatorPolicy) -> anyhow::Result<(Self, oneshot::Receiver<()>)> {
@@ -217,5 +220,55 @@ async fn remove_unix_socket(path: &Path) -> anyhow::Result<()> {
         Err(error) => Err(error).with_context(|| {
             format!("Failed to remove emulator Unix domain socket {}", path.display())
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const POLICY: &str = "package tacacs.emulator";
+
+    #[tokio::test]
+    async fn completed_startup_policy_compiles_once() {
+        let directory = tempfile::tempdir_in(".").unwrap();
+        let source = directory.path().join("policy.rego");
+        let data = directory.path().join("data.json");
+        std::fs::write(&source, POLICY).unwrap();
+        std::fs::write(&data, r#"{"fixed": true}"#).unwrap();
+        let mut counts = Vec::new();
+        for with_data in [false, true] {
+            let policy = if with_data {
+                EmulatorPolicy::from_files_async(&source, &data)
+                    .await
+                    .unwrap()
+            } else {
+                EmulatorPolicy::from_file_async(&source).await.unwrap()
+            };
+            let (emulator, _) = IpcEmulator::from_policy(policy).await.unwrap();
+            counts.push(emulator.state.lock().await.compile_count());
+            emulator.shutdown().await;
+        }
+        assert_eq!(counts, [1, 1], "startup without and with fixed data");
+    }
+
+    #[tokio::test]
+    async fn file_startup_compiles_once() {
+        let directory = tempfile::tempdir_in(".").unwrap();
+        let source = directory.path().join("policy.rego");
+        std::fs::write(&source, POLICY).unwrap();
+        let (emulator, _) = IpcEmulator::from_file(&source).await.unwrap();
+        let tcp_count = emulator.state.lock().await.compile_count();
+        emulator.shutdown().await;
+
+        let (emulator, _) = IpcEmulator::from_file_at_endpoint(
+            &source,
+            IpcEndpoint::Unix(directory.path().join("emulator.sock")),
+        )
+        .await
+        .unwrap();
+        let unix_count = emulator.state.lock().await.compile_count();
+        emulator.shutdown().await;
+        assert_eq!([tcp_count, unix_count], [1, 1]);
     }
 }
