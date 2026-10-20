@@ -2394,6 +2394,10 @@ The merged source tree exactly matches reviewed head `db09b0270954b8b7c9ed77de01
 The clean worktree and its 17 GiB cache have no active directory users.
 Their cleanup awaits preservation of this receipt.
 
+Tracking commit `b80eaa4` preserved the receipt before cleanup.
+The coordinator removed the clean merged worktree without force, its exact 17 GiB cache, and its path-specific Rust override.
+Branch history, recovery backups, and the active emulator worktree remain intact.
+
 Remove the workload-sized Boolean result vector and duplicate success recount.
 Drain in-flight work and derive completion from the existing counter.
 Do not add per-request history merely to replace deleted state.
@@ -2404,7 +2408,7 @@ Do not claim a measured memory improvement without a measurement.
 
 ### 13: Emulator Cleanup
 
-Status: implementation is complete in two coherent local commits; named reviews and final common gates remain pending.
+Status: both named reviews and final local gates are complete; published as PR #290 against `main`.
 Scope: the emulator connector and compilation portions of R15.
 Worktree: `/home/ubuntu/tacacs-rs-13-emulator-cleanup`; branch: `refactor/general-iterations/13-emulator-cleanup`.
 Predecessor: `db09b0270954b8b7c9ed77de010a38d28cebd6d1`, the reviewed iteration 12 publication head.
@@ -2452,6 +2456,49 @@ Its cached audit excluded yanked checks; the earlier online audit and freshness 
 Input and output hashes are unchanged.
 Opus review and final common workspace gates remain pending.
 
+`Claude Opus 5.5` approved the production design and repaired two material test-evidence gaps.
+The per-value compilation counter missed compilation of a separate policy copy.
+A test-only thread-local compiler counter now observes that boundary without changing the policy type's test-build equality or synchronization traits.
+The separate-copy mutant now fails with counts 2/2; predecessor loaders reproduce counts 2/3 and 2/2.
+The replacement regression now proves both failure retention and successful capture clearing.
+Removing successful capture clearing makes that regression fail.
+All changes affect test code only.
+
+Opus passed 71 focused cases, five emulator/daemon repetitions, and public-future Send probes.
+Formatting, targeted strict Clippy, private docs, build, and MSRV checks passed.
+Earlier production and dependency-check evidence remains applicable, but the instrumentation requires Astra's explicit follow-up.
+`state.rs` now matches the predecessor, so the complete iteration diff has nineteen paths.
+Final nineteen-path manifest: `56f9663d3e065d151cbb3698c02d1e262b32fdc5c5265473eccc11b56b4d2c3e`.
+Full-index predecessor patch: `0e37f95d4a6ff6a48859628c66e7d63f4429797f38cc2c105a376146bbcec544`.
+Astra's final-tree confirmation and all final common workspace gates remain pending.
+
+`GPT 6 Astra` independently reviewed the repaired instrumentation and replacement regression and retained approval.
+The three-package suite passed 71 cases before and after isolated mutation replay.
+The combined extra-copy and missing-clear mutants produced the expected three failures.
+The restored isolated emulator suite passed all 26 cases.
+Targeted formatting, strict Clippy, private docs, build, MSRV, and whitespace checks passed.
+Both reviewers now cover the final nineteen-path manifest and predecessor patch above.
+The thread-local counter measures the current synchronous compilation path, not hypothetical off-thread work.
+Final common workspace and audit gates are in progress.
+
+#### Publication Receipt
+
+All final common workspace and audit gates passed on 2026-10-20.
+Stable all-feature tests passed 1,342 cases across 47 suites, with ten existing ignored cases.
+Nightly formatting, strict nightly Clippy, private docs/build, Rust 1.88 checks, and both metadata architecture guards passed.
+Review-test commit `44f13fd` preserves the strengthened compiler and replacement evidence after the two implementation commits.
+
+The iteration 12 squash tree equals predecessor `db09b0270954b8b7c9ed77de010a38d28cebd6d1`.
+Integration commit `6add7c19dd3dfdfe9143d167598bf3fc240e14dc` preserves exact tested tree `d688acdf01aa36f0ee71e1b20e8eefef9a55ee6d`.
+All 71 focused cases passed again after integration.
+[PR #290](https://github.com/AuthScaffold/tacacs-rs/pull/290) targets `main`, contains nineteen paths, and has `skip-release`.
+Fresh Copilot review was requested.
+Required workflow `39374579452` and CodeQL workflow `39374577383` started on its published head.
+Completed review, actionable findings disposition, successful current-head checks, and clean mergeability remain necessary before merge.
+
+Fresh Copilot review `5581082561` on the published head recommends approval and reports no open issues.
+Current-head hosted verification remains in progress.
+
 Use one narrow IPC endpoint connection method for controller and service clients.
 Remove connector-only dependencies that become unused.
 Separate source/data loading from explicit policy compilation and compile the completed startup policy once.
@@ -2471,7 +2518,11 @@ Checks: emulator/controller/daemon tests, IPC tests, audit and unused-dependency
 
 ### 14: Product Registry
 
-Status: planned. Scope: R12.
+Status: implementation started through `GPT 6.1 Sol`. Scope: R12.
+Worktree: `/home/ubuntu/tacacs-rs-14-product-registry`; branch: `refactor/general-iterations/14-product-registry`.
+Predecessor: `6add7c19dd3dfdfe9143d167598bf3fc240e14dc`, the reviewed iteration 13 publication head.
+Product/platform policy changes, releases, tags, and hosting remain outside this iteration.
+Publication remains blocked until predecessor review findings and required checks clear.
 
 Introduce one explicit product registry independent of Cargo workspace enrollment.
 Compute caller/reusable workflow matrices through a job output or an equally direct single-source mechanism.
