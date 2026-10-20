@@ -2147,6 +2147,13 @@ PR #287 was squash-merged as `782c73ecf91554703284f6be2b689722a3fd6e03` at 2026-
 No protection bypass, release, or tag was used.
 The merged worktree and cache await the documented clean/idle ownership check and receipt preservation before cleanup.
 
+The reviewed repair tree exactly matches the squash-merged source tree.
+Tracking commit `b4f01b7` preserved the receipts before cleanup.
+The clean merged worktree had no active process using its directory.
+The coordinator removed it without force and removed its exact 26 GiB cache.
+Branch history, recovery archives, the restored conversation, and iteration 11's recovery stash remain retained.
+The active tracking and iteration 11 worktrees remain intact.
+
 Carry source metadata, prepared endpoint identity, validity, budgets, and admitted revisions in one derived candidate.
 Move native preparation outside coordinator state and publication locks while keeping preparation concurrency explicitly bounded.
 Use at most one active preparation per coordinator initially, including cancelled-but-running blocking work.
@@ -2182,7 +2189,7 @@ Checks: deterministic interleaving tests, native prepared-source/retirement case
 
 ### 11: Embedding API
 
-Status: restored implementation resumed under `GPT 6.1 Sol`; named reviews and final gates remain pending.
+Status: implementation, both named reviews, and final local gates are complete; published as PR #288 against `main`.
 Scope: R9.
 
 The original 15-file work remains preserved in the recovery patch and stash `b2b4f0e9dc638d8fce9c1fd70f5e58b541412d82`.
@@ -2230,6 +2237,47 @@ Strict targeted nightly Clippy, nightly formatting, and whitespace checks passed
 The input and output manifest and patch remain identical.
 Opus review and final whole-workspace gates remain pending.
 
+`Claude Opus 5.5` approved the API redesign with four narrow revisions.
+The public example now derives the filter from service listener controls and validation options from the datastore.
+It also joins the service after initialization failure.
+This example change prevents the default filter from replacing a configured downstream secret with unobfuscated mode.
+Related constructor rustdoc states the same ownership contracts.
+A redundant test-only attribute was removed without changing compiled production behavior.
+Stable and MSRV doctests, 251 agent tests, strict targeted Clippy, private docs, MSRV checks, and formatting passed.
+The secret-rotation regression again failed with the parent fence removed and passed after restoration.
+
+The existing API still requires the host to retain one supervisor and pass the service's health publisher.
+These are documented caller obligations, not new enforced uniqueness or identity guarantees.
+Astra's final-tree follow-up will assess the revised example and these residual contracts.
+The 16-path output manifest is `36f4dd7ae0570d296253702deeec86b5f66395d922a268902fd2b84eef872566`.
+The full-index output patch is `dab6c7cc7d703fbc6bea1aaa649eeaf49df993bec56d1e4033ca7968e15e97a8`.
+Final whole-workspace gates remain pending.
+
+`GPT 6 Astra` reviewed the final example and rustdoc revisions and retained approval without further edits.
+The public doctest, nightly formatting, and whitespace checks passed.
+Both named reviews now cover the final manifest and patch above.
+The documented supervisor, health-publisher, and filter-input obligations are not new regressions or R9 blockers.
+Final common workspace gates are in progress.
+
+#### Publication And Parent Integration
+
+Final whole-workspace formatting, strict nightly Clippy, private docs, stable build, and stable all-feature tests passed.
+The tests passed 1,321 cases across 46 suites, with ten existing ignored cases.
+Rust 1.88 all-target/all-feature checks and both platform metadata architecture guards passed.
+The exact reviewed tree was committed as `c76262c`.
+
+The merged parent tree exactly equals predecessor `e90b0732b51cb1410c85fd5462da50f030806005`.
+Integrating its squash history produced six conflicts despite that source equivalence.
+The coordinator resolved those paths to the exact tested implementation commit, without inventing source changes.
+Integration commit `7cd8321ad43023ec2ccbe0f3e77ee53011dc8b5f` retains tested tree `ef740f7fdf25e8f2deb90e2856e35389ed81c704`.
+All 251 agent, 72 daemon, 55 prepared-source, nine lifecycle, and one public doctest cases passed again afterward.
+Eight opt-in interoperability cases remain ignored in that selection; independent peer evidence is recorded above.
+
+[PR #288](https://github.com/AuthScaffold/tacacs-rs/pull/288) targets `main` and contains exactly the 16 implementation paths.
+It has `skip-release`, no tracking documents, and a fresh Copilot review request.
+Required workflow `39365582578` and CodeQL workflow `39365579900` started on its published head.
+Completed hosted review, actionable findings disposition, current-head checks, and clean mergeability remain necessary before merge.
+
 Local preflight confirms that daemon startup builds a waiting `TacacsClientService`; private `PreparedService::run` then composes configuration and policy supervisors.
 The public service also exposes populated/waiting constructors and several direct reload variants. The latter bypass supervised materialization bookkeeping by contract.
 Prefer reusing the existing supervisor and prepared-service ownership rather than adding another builder layer.
@@ -2255,7 +2303,10 @@ Checks: public facade/example compilation, daemon lifecycle and host cancellatio
 
 ### 12: Load Scheduler
 
-Status: planned. Scope: the scheduler portion of R15.
+Status: implementation started through `GPT 6.1 Sol`. Scope: the scheduler portion of R15.
+Worktree: `/home/ubuntu/tacacs-rs-12-load-scheduler`; branch: `refactor/general-iterations/12-load-scheduler`.
+Predecessor: `7cd8321ad43023ec2ccbe0f3e77ee53011dc8b5f`, the reviewed iteration 11 publication head.
+Publication remains blocked until predecessor review findings and required checks clear.
 
 Remove the workload-sized Boolean result vector and duplicate success recount.
 Drain in-flight work and derive completion from the existing counter.
