@@ -3148,7 +3148,7 @@ Reject the prototype if custom adapters reproduce the deleted machinery without 
 
 ### 18: Packaging Evaluation
 
-Status: non-adoption is proposed; Astra's direct decision and safety-scope review is in progress.
+Status: Astra supports non-adoption after document revisions; Opus's direct decision and safety-scope review is in progress.
 Prototype: `/home/ubuntu/tacacs-rs-18-packaging-evaluation-prototype`, branch `refactor/general-prototypes/18-packaging-evaluation`.
 Integration: `/home/ubuntu/tacacs-rs-18-packaging-evaluation`, branch `refactor/general-iterations/18-packaging-evaluation`.
 Both start from reviewed predecessor `d3629b2ee0f78c862e7a4d8fb7558622c6f6591a` and use separate caches.
@@ -3203,6 +3203,26 @@ Complete prototype patch: `5819a873c52b65db022f8dfb05b6220b3251cd2d07588034712dd
 Initial decision manifest: `9f58519c2a248520a94723ad63837e59b024bb8d88c8c0f782fb3943b4d8fbb7`.
 Complete initial decision patch: `33682e6f4c7ec2c0d23060bc780559a99d7c4d8312b0210093521f58a749abf5`.
 Both named decision reviews and final guarded document checks remain pending.
+
+#### First Decision And Safety-Scope Review
+
+Astra independently supports documentation-only non-adoption and does not approve native artifact equivalence.
+It replayed the configured plan and four singular plans and passed all 276 guarded tests without skips or new tags.
+All original 52 ref paths, objects, and 37 private Git common directories were independently verified and left unchanged.
+Nineteen new fixture Git directories stayed inside the fresh test root and contained no tags.
+Source heads, indexes, baseline files, and frozen prototype remained unchanged.
+Only authorized coordinator tracking-ref updates explained the full-ref digest difference.
+
+Astra added exact remote prototype provenance, conditional recovery, `$HOME` paths, and self-contained guarded replay.
+The safe-test instructions no longer depend on an uncommitted private guard.
+It corrected the frozen runner's execution order: `--version` precedes its internal hash check.
+The decision now requires an external checksum check before any tool execution.
+It also clarified that cargo-cyclonedx 0.5.9 is a project pin, not verified host installation, and corrected the checksum-order claim.
+
+Current 358-line document hash: `4c3a88bcecd11b0aff9aa02036b80ceb8340cffc60610aa4f69ae736205870b8`.
+Canonical changed-source manifest: `ca281174a99c6880f5fa288d862f316def6c21ff4ad9d13f19f9419848543e8b`.
+Complete new-file patch: `308d7ad020ed47510e2c98529d16a65de2026424b82a5399f8aeca11bdd4d226`.
+Opus review and final guarded document checks remain pending.
 
 Evaluate `dist` local planning/build artifacts only after registry and hydration decisions settle.
 Do not enable hosting, publication, tags, or generated release workflows during the experiment.
