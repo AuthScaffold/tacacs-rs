@@ -2532,8 +2532,7 @@ Checks: emulator/controller/daemon tests, IPC tests, audit and unused-dependency
 
 ### 14: Product Registry
 
-Status: published as PR #291; the quality repair has both named reviews and final local delivery gates.
-Fresh repaired-head hosted checks and merge remain pending.
+Status: PR #291 merged as `a6942e2011c1f8b6647774ebb192e5b38accdd83` after both named reviews and every repaired-head gate passed.
 Scope: R12.
 Worktree: `/home/ubuntu/tacacs-rs-14-product-registry`; branch: `refactor/general-iterations/14-product-registry`.
 Predecessor: `6add7c19dd3dfdfe9143d167598bf3fc240e14dc`, the reviewed iteration 13 publication head.
@@ -2652,6 +2651,17 @@ Required workflow `39383183825` and CodeQL workflow `39383178850` started on tha
 Prior successful hosted checks do not substitute for the repaired head's required verification.
 Merge remains pending until its current-head gates pass.
 
+#### Repaired-Head Merge Receipt
+
+Every hosted check on `e025b0d2b7d40530c876bab8ff323918ba877815` subsequently passed.
+This includes actual registry-job output, all five product/platform builds, Windows/ARMhf execution, CodeQL, and aggregate CI.
+The final recheck found the expected reviewed head, clean mergeability, and no unresolved threads.
+PR #291 was squash-merged as `a6942e2011c1f8b6647774ebb192e5b38accdd83` at 2026-10-20 07:31 UTC.
+No protection bypass, release, or tag was used.
+The merged source tree exactly matches the reviewed repair head.
+The clean worktree and its dedicated cache have no active directory users.
+Cleanup awaits preservation of this receipt.
+
 Introduce one explicit product registry independent of Cargo workspace enrollment.
 Compute caller/reusable workflow matrices through a job output or an equally direct single-source mechanism.
 Derive Linux rehearsal selection from the same registry.
@@ -2708,7 +2718,8 @@ The project's existing Python 3.11 minimum and Rust 1.88 MSRV remain unchanged.
 The Rust `toml_edit` route was not selected because the existing Rust tool owns API classification, not hydration.
 
 The proposed editor removes three parser regexes, `lock_package_name`, offset slicing, block reconstruction, and lock cursor assembly.
-`hydrate_versions.py` has sixteen fewer production lines, with no second parser or alternate member-discovery path.
+The initial candidate had sixteen fewer production lines before later review repairs.
+It introduced no second parser or alternate member-discovery path.
 Cargo metadata remains authoritative for member discovery.
 Exact source-free lock references update by name and old version; source-qualified external identities remain unchanged.
 Comments, alternate valid formatting, unknown fields, line endings, idempotence, dependency association, and same-name external packages have comparison coverage.
@@ -2742,6 +2753,33 @@ Canonical source-only integration manifest: `4db4a41f0628d10c36dce13e6b02d9c074f
 Canonical source-only prototype manifest: `45be3a371419dda67fa9f1b43d2652085747ba66bac0d55cb01180d38cde1683`.
 These differ from the earlier metadata-rich manifest digests by format, not source content.
 Both named integration reviews and final environment/tooling gates remain pending.
+
+#### First Direct Review And Identity Repairs
+
+`GPT 6 Astra` recommends adoption after two direct correctness repairs.
+A changed source-free version can collide with a same-name registry or Git package version.
+The initial candidate then produced ambiguous version-qualified references and failed real offline Cargo resolution.
+The repair adds an external source qualifier only when the changed local identity creates that ambiguity.
+Existing source-qualified and unqualified references remain unchanged otherwise.
+Exact registry/Git cases and four real offline Cargo transitions cover the repaired behavior.
+
+Malformed package names, sources, and dependency-array fields now produce contextual `HydrationError` diagnostics rather than incidental type errors or acceptance.
+Rejected lockfiles retain their input bytes.
+Nine new regressions failed before the repairs.
+The final combined delivery/bootstrap suite passed 368 cases without skips.
+Fixture and pin checks passed five additional selected cases.
+All seventeen actual manifests and the actual lockfile still match predecessor goldens in semantics and complete bytes.
+
+The final production delta is now 67 additions and 62 deletions, not a net line reduction.
+The custom section/block parser, offset slicing, reconstruction, and lock cursor machinery remain removed.
+Cargo metadata remains the only workspace-member authority.
+Canonical ten-path review output manifest: `25fdbc6d2f613550928e38d528a281f46d6be92fe43eeec0f6d288e23720155e`.
+Complete output patch: `188624c65990eeaf1b7fce79c0e3a361e97ae5a7ea6e6040088869ad9c3b0eac`.
+Opus review and final environment/tooling gates remain pending.
+
+The coordinator queried OSV and GitHub advisories for pinned PyPI package `tomlkit 0.15.2`.
+Neither source returned a published advisory at the time of the check.
+This result, supplier hashes, and `pip check` do not establish absence of vulnerabilities.
 
 Compare TOML Kit with the current hydration implementation.
 Evaluate `toml_edit` only if an existing Rust tool can own the work without another executable.
