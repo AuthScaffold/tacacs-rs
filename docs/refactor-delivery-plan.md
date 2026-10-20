@@ -2294,6 +2294,10 @@ The merged worktree is clean, with no active process using its directory or dedi
 Its 35 GiB cache and worktree await receipt preservation before removal.
 The original recovery archive, patch, and stash remain retained.
 
+Tracking commit `beb9a7b` preserved these receipts before cleanup.
+The coordinator removed the clean merged worktree without force, its exact cache, and its path-specific Rust override.
+The active scheduler worktree and original recovery stash remain intact.
+
 Local preflight confirms that daemon startup builds a waiting `TacacsClientService`; private `PreparedService::run` then composes configuration and policy supervisors.
 The public service also exposes populated/waiting constructors and several direct reload variants. The latter bypass supervised materialization bookkeeping by contract.
 Prefer reusing the existing supervisor and prepared-service ownership rather than adding another builder layer.
@@ -2319,7 +2323,7 @@ Checks: public facade/example compilation, daemon lifecycle and host cancellatio
 
 ### 12: Load Scheduler
 
-Status: implementation and both named reviews are complete; final whole-workspace gates are in progress.
+Status: both named reviews and final local gates are complete; published as PR #289 against `main`.
 Scope: the scheduler portion of R15.
 Worktree: `/home/ubuntu/tacacs-rs-12-load-scheduler`; branch: `refactor/general-iterations/12-load-scheduler`.
 Predecessor: `7cd8321ad43023ec2ccbe0f3e77ee53011dc8b5f`, the reviewed iteration 11 publication head.
@@ -2362,6 +2366,24 @@ Both review manifests and patches remain identical to the implementation handoff
 The existing cancelled-run progress-task lifetime remains unchanged and outside this iteration.
 Final common workspace gates are in progress.
 
+#### Publication Receipt
+
+All final common workspace gates passed on 2026-10-20.
+Stable all-feature tests passed 1,326 cases across 46 suites, with ten existing ignored cases.
+Nightly formatting, strict nightly Clippy, stable private docs/build, Rust 1.88 checks, and both metadata architecture guards passed.
+Implementation commit `fbef6d9` contains the exact reviewed two-file change.
+
+The iteration 11 squash tree exactly matches the recorded predecessor tree.
+Integration commit `db09b0270954b8b7c9ed77de010a38d28cebd6d1` preserves tested tree `11fc3192316c86e6dc70979b3fc28108a4314b53`.
+All 71 tacon cases passed again after integration.
+[PR #289](https://github.com/AuthScaffold/tacacs-rs/pull/289) targets `main` with exactly two paths and `skip-release`.
+Fresh Copilot review was requested on that head.
+Required workflow `39368894279` and CodeQL workflow `39368891229` started.
+Completed review, findings disposition, current-head required checks, and clean mergeability remain necessary before merge.
+
+Fresh Copilot review `5580724669` on the published head recommends approval and reports no open issues.
+Current-head hosted verification remains in progress.
+
 Remove the workload-sized Boolean result vector and duplicate success recount.
 Drain in-flight work and derive completion from the existing counter.
 Do not add per-request history merely to replace deleted state.
@@ -2372,7 +2394,13 @@ Do not claim a measured memory improvement without a measurement.
 
 ### 13: Emulator Cleanup
 
-Status: planned. Scope: the emulator connector and compilation portions of R15.
+Status: implementation started through `GPT 6.1 Sol`.
+Scope: the emulator connector and compilation portions of R15.
+Worktree: `/home/ubuntu/tacacs-rs-13-emulator-cleanup`; branch: `refactor/general-iterations/13-emulator-cleanup`.
+Predecessor: `db09b0270954b8b7c9ed77de010a38d28cebd6d1`, the reviewed iteration 12 publication head.
+The implementation delegate can create the two required coherent local commits after focused checks, but cannot publish or rewrite history.
+Both named reviews will cover the complete predecessor-to-final change.
+Publication remains blocked until predecessor review findings and required checks clear.
 
 Use one narrow IPC endpoint connection method for controller and service clients.
 Remove connector-only dependencies that become unused.
