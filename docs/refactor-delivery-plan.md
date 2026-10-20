@@ -2189,7 +2189,7 @@ Checks: deterministic interleaving tests, native prepared-source/retirement case
 
 ### 11: Embedding API
 
-Status: implementation, both named reviews, and final local gates are complete; published as PR #288 against `main`.
+Status: PR #288 merged as `9cf3109a756381c6bd4fc5031e28e3201bdcda00` after both named reviews and all current-head gates passed.
 Scope: R9.
 
 The original 15-file work remains preserved in the recovery patch and stash `b2b4f0e9dc638d8fce9c1fd70f5e58b541412d82`.
@@ -2278,6 +2278,22 @@ It has `skip-release`, no tracking documents, and a fresh Copilot review request
 Required workflow `39365582578` and CodeQL workflow `39365579900` started on its published head.
 Completed hosted review, actionable findings disposition, current-head checks, and clean mergeability remain necessary before merge.
 
+Fresh Copilot review `5580516988` on `7cd8321ad43023ec2ccbe0f3e77ee53011dc8b5f` reports no open issues.
+No unresolved review threads remain.
+Current-head hosted verification is still in progress; merge remains gated on its completion.
+
+#### Merge Receipt
+
+Every current-head hosted check subsequently passed, including Windows, ARMhf, CodeQL, and container build.
+The final recheck found clean mergeability, the expected reviewed head, and no unresolved threads.
+PR #288 was squash-merged as `9cf3109a756381c6bd4fc5031e28e3201bdcda00` at 2026-10-20 04:14 UTC.
+No protection bypass, release, or tag was used.
+The merged source tree exactly matches reviewed integration head `7cd8321ad43023ec2ccbe0f3e77ee53011dc8b5f`.
+
+The merged worktree is clean, with no active process using its directory or dedicated cache.
+Its 35 GiB cache and worktree await receipt preservation before removal.
+The original recovery archive, patch, and stash remain retained.
+
 Local preflight confirms that daemon startup builds a waiting `TacacsClientService`; private `PreparedService::run` then composes configuration and policy supervisors.
 The public service also exposes populated/waiting constructors and several direct reload variants. The latter bypass supervised materialization bookkeeping by contract.
 Prefer reusing the existing supervisor and prepared-service ownership rather than adding another builder layer.
@@ -2303,10 +2319,48 @@ Checks: public facade/example compilation, daemon lifecycle and host cancellatio
 
 ### 12: Load Scheduler
 
-Status: implementation started through `GPT 6.1 Sol`. Scope: the scheduler portion of R15.
+Status: implementation and both named reviews are complete; final whole-workspace gates are in progress.
+Scope: the scheduler portion of R15.
 Worktree: `/home/ubuntu/tacacs-rs-12-load-scheduler`; branch: `refactor/general-iterations/12-load-scheduler`.
 Predecessor: `7cd8321ad43023ec2ccbe0f3e77ee53011dc8b5f`, the reviewed iteration 11 publication head.
 Publication remains blocked until predecessor review findings and required checks clear.
+
+#### Implementation Handoff
+
+`GPT 6.1 Sol` removed the workload-sized Boolean vector and duplicate success recount.
+The bounded stream drains through `for_each`, and the result builder uses the existing `completed_count()`.
+No replacement history, compatibility alias, dependency, or unsafe code was added.
+The only changed paths are the tacon README and `batch/executor/common.rs`.
+
+Eleven deterministic characterization tests passed before and after the production change.
+They cover bounded success waves, concurrent failures, successful in-flight completion after failure, and cancellation disposal.
+The concurrency-one failure case also has stronger assertions.
+All 71 tacon tests passed, without failures or ignored cases.
+Targeted build, strict nightly Clippy, private docs, Rust 1.88 checks, nightly formatting, and whitespace checks passed.
+Eleven instrumented scheduler tests passed.
+Focused file coverage includes unrelated lines and does not establish complete branch coverage.
+No measured memory improvement is claimed.
+
+Complete two-path content manifest: `e262fe71a9e9fe7cd04a92cf654718f93a019b9832aba2d51c525d009e5d9ce5`.
+Full-index parent-to-tree patch: `3bf2c651a59457dfc441db938e4045da18d4f2046b47dca6ff3443f1ad508228`.
+Both named reviews and final common gates remain pending.
+
+`GPT 6 Astra` approved the complete two-file change without revisions.
+It independently passed all eleven scheduler cases with four test threads.
+Bounded polling, first-failure retention, cancellation, and complete in-flight draining remain unchanged.
+The input and output content hashes remain identical.
+Opus review and final common gates remain pending.
+
+`Claude Opus 5.5` approved the unchanged implementation.
+It passed all 71 tacon tests, fourteen load-test selections, and thirty focused repetitions.
+The unchanged predecessor scheduler also passed the eleven characterization cases.
+Five deliberate mutations failed their expected tests: excess concurrency, last-failure replacement, missed later successes, queued work after failure, and early draining termination.
+Targeted strict nightly Clippy, private docs, MSRV checks, formatting, and whitespace checks passed.
+Restoring preserved timestamps briefly reused a mutant build artifact; a forced rebuild then passed.
+Final validation uses the restored source content and refreshed artifacts.
+Both review manifests and patches remain identical to the implementation handoff.
+The existing cancelled-run progress-task lifetime remains unchanged and outside this iteration.
+Final common workspace gates are in progress.
 
 Remove the workload-sized Boolean result vector and duplicate success recount.
 Drain in-flight work and derive completion from the existing counter.
