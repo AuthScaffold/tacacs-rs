@@ -100,8 +100,9 @@ It recursively repairs ownership in the Cargo cache because Docker copies root-o
 This setting also prevents an unnecessary generated UID image and its `BASE_IMAGE` warning.
 
 The image includes ripgrep, jq, ShellCheck, GitHub CLI, and Python venv support.
-The `/opt/tacacs-python` environment supplies `pyang` 2.7.1, `pytest` 8.4.2, and PyYAML 6.0.3 on `PATH`.
+The `/opt/tacacs-python` environment supplies `pyang` 2.7.1, `pytest` 8.4.2, PyYAML 6.0.3, and TOML Kit 0.15.2 on `PATH`.
 It keeps Python packages separate from Debian's managed Python environment.
+The TOML Kit version matches the [hydration requirements](../.github/steps/inject-versions/requirements.txt).
 Native dependencies include the C/C++ toolchain, Perl, OpenSSL, libseccomp, PCRE2, libcrypt, and zlib headers.
 Binutils supplies `objcopy`, `strip`, `nm`, and `readelf` for release checks.
 Redis server and client tools support private local test fixtures. Post-create setup does not start Redis or other test services.

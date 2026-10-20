@@ -6,7 +6,11 @@ import argparse
 import json
 import re
 import sys
+from collections import Counter
 from pathlib import Path
+
+import tomlkit
+from tomlkit.exceptions import TOMLKitError
 
 # The Cargo metadata helper lives in a sibling step directory.
 _CARGO_METADATA_DIR = Path(__file__).resolve().parent.parent / "cargo-metadata"
@@ -17,39 +21,35 @@ from workspace import inventory, load_metadata  # noqa: E402
 
 
 VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]*$")
-PACKAGE_SECTION_RE = re.compile(
-    r"(?ms)^\[package\]\r?\n(?P<body>.*?)(?=^\[|\Z)"
-)
-VERSION_LINE_RE = re.compile(r'(?m)^version\s*=\s*"[^"]*"\s*$')
-LOCK_PACKAGE_RE = re.compile(
-    r"(?ms)^\[\[package\]\]\r?\n(?P<body>.*?)(?=^\[\[package\]\]|\Z)"
-)
 
 
 class HydrationError(ValueError):
     """A release version cannot be applied safely."""
 
 
+def read_document(path: Path) -> tomlkit.TOMLDocument:
+    """Parse TOML without newline conversion."""
+    try:
+        with path.open(encoding="utf-8", newline="") as source:
+            return tomlkit.parse(source.read())
+    except TOMLKitError as error:
+        raise HydrationError(f"{path} contains invalid TOML: {error}") from error
+
+
+def write_document(path: Path, document: tomlkit.TOMLDocument) -> None:
+    """Write TOML without newline conversion."""
+    with path.open("w", encoding="utf-8", newline="") as destination:
+        destination.write(tomlkit.dumps(document))
+
+
 def replace_manifest_version(path: Path, package: str, version: str) -> None:
-    """Replace the package version in one Cargo manifest."""
-    text = path.read_text(encoding="utf-8")
-    section = PACKAGE_SECTION_RE.search(text)
-    if section is None:
-        raise HydrationError(f"{path} has no [package] section")
-
-    body = section.group("body")
-    matches = list(VERSION_LINE_RE.finditer(body))
-    if len(matches) != 1:
-        raise HydrationError(
-            f"{path} must contain one package version, found {len(matches)}"
-        )
-
-    match = matches[0]
-    new_body = body[: match.start()] + f'version = "{version}"' + body[match.end() :]
-    path.write_text(
-        text[: section.start("body")] + new_body + text[section.end("body") :],
-        encoding="utf-8",
-    )
+    """Replace only the package version and retain unrelated TOML content."""
+    document = read_document(path)
+    table = document.get("package")
+    if not isinstance(table, dict) or not isinstance(table.get("version"), str):
+        raise HydrationError(f"{path} must contain one package version")
+    table["version"] = version
+    write_document(path, document)
     print(f"  {package} -> {version} ({path})")
 
 
@@ -75,56 +75,91 @@ def manifest_packages(workspace: Path) -> dict[str, Path]:
     return packages
 
 
-def lock_package_name(body: str) -> str | None:
-    """Return the package name from a Cargo.lock package body."""
-    match = re.search(r'(?m)^name\s*=\s*"([^"]+)"\s*$', body)
-    return match.group(1) if match else None
+def lock_references(packages: list) -> list[tuple[str, set[str]]]:
+    """Return each package's minimal reference and Cargo-accepted spellings.
+
+    Cargo adds the version only when a name has more than one version. It adds
+    a non-path source without its Git revision only when the name and version
+    still identify more than one package. Explicit qualifiers remain valid.
+    """
+    identities = Counter((package["name"], package["version"]) for package in packages)
+    names = Counter(name for name, _ in identities)
+    references = []
+    for package in packages:
+        name, version = package["name"], package["version"]
+        versioned = f"{name} {version}"
+        spellings = set()
+        if identities[name, version] == 1 or "source" not in package:
+            spellings.add(versioned)
+            if names[name] == 1:
+                spellings.add(name)
+        if "source" in package:
+            qualified = f"{versioned} ({package['source'].split('#', 1)[0]})"
+            spellings.update((qualified, f"{versioned} ({package['source']})"))
+        if identities[name, version] == 1:
+            reference = name if names[name] == 1 else versioned
+        elif "source" in package:
+            reference = qualified
+        else:
+            reference = versioned
+        references.append((reference, spellings))
+    return references
 
 
 def replace_lock_versions(
     lock_path: Path,
     versions: dict[str, str],
 ) -> set[str]:
-    """Replace source-free workspace package versions in Cargo.lock."""
-    text = lock_path.read_text(encoding="utf-8")
-    hydrated: set[str] = set()
-    parts: list[str] = []
-    cursor = 0
-
-    for section in LOCK_PACKAGE_RE.finditer(text):
-        parts.append(text[cursor : section.start()])
-        block = section.group(0)
-        body = section.group("body")
-        name = lock_package_name(body)
-
-        if name in versions and not re.search(r"(?m)^source\s*=", body):
-            if name in hydrated:
+    """Update source-free packages and the lock references that identify them."""
+    document = read_document(lock_path)
+    packages = document.get("package", [])
+    if not isinstance(packages, list) or any(
+        not isinstance(package, dict) for package in packages
+    ):
+        raise HydrationError(f"{lock_path} must contain package tables")
+    selected: dict[str, dict] = {}
+    for package in packages:
+        name = package.get("name")
+        if name is not None and not isinstance(name, str):
+            raise HydrationError(f"{lock_path} package names must be strings")
+        if "source" in package and not isinstance(package["source"], str):
+            raise HydrationError(f"{lock_path} package {name!r} source must be a string")
+        if name in versions and not isinstance(package.get("version"), str):
+            raise HydrationError(f"{lock_path} package {name!r} must contain one version")
+        if name in versions and "source" not in package:
+            if name in selected:
                 raise HydrationError(
                     f"{lock_path} has more than one source-free entry for {name!r}"
                 )
-            matches = list(VERSION_LINE_RE.finditer(body))
-            if len(matches) != 1:
-                raise HydrationError(
-                    f"{lock_path} package {name!r} must contain one version"
-                )
-            match = matches[0]
-            new_body = (
-                body[: match.start()]
-                + f'version = "{versions[name]}"'
-                + body[match.end() :]
+            selected[name] = package
+    # Same-name packages decide which qualifiers each reference needs.
+    family = [package for package in packages if package.get("name") in selected]
+    old_references = lock_references(family)
+    old_versions = [package["version"] for package in family]
+    for name, package in selected.items():
+        package["version"] = versions[name]
+    references = {}
+    for package, old_version, (old_reference, spellings), (new_reference, _) in zip(
+        family, old_versions, old_references, lock_references(family)
+    ):
+        if old_version != package["version"] or old_reference != new_reference:
+            references.update(
+                (spelling, new_reference) for spelling in spellings
+                if spelling != new_reference
             )
-            block = (
-                block[: section.start("body") - section.start()]
-                + new_body
+    for package in packages:
+        dependencies = package.get("dependencies", [])
+        if not isinstance(dependencies, list) or any(
+            not isinstance(dependency, str) for dependency in dependencies
+        ):
+            raise HydrationError(
+                f"{lock_path} package {package.get('name')!r} dependencies must be strings in an array"
             )
-            hydrated.add(name)
-
-        parts.append(block)
-        cursor = section.end()
-
-    parts.append(text[cursor:])
-    lock_path.write_text("".join(parts), encoding="utf-8")
-    return hydrated
+        for index, dependency in enumerate(dependencies):
+            if dependency in references:
+                dependencies[index] = references[dependency]
+    write_document(lock_path, document)
+    return set(selected)
 
 
 def hydrate(workspace: Path, versions: dict[str, str]) -> None:
