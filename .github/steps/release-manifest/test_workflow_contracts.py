@@ -26,7 +26,14 @@ def test_no_release_computes_and_hydrates_without_publication():
 
 def test_delivery_gates_and_profiles_are_required():
     jobs = workflow("reusable-pipeline.yml")["jobs"]
-    assert {"automation-tests", "msrv", "consumer-profiles", "finalize-release-assets"} <= set(jobs["ci-success"]["needs"])
+    assert {"automation-tests", "msrv", "consumer-profiles", "finalize-release-assets", "product-registry"} <= set(jobs["ci-success"]["needs"])
+    registry = jobs["product-registry"]
+    assert "if" not in registry
+    assert registry.get("continue-on-error", "false") == "false"
+    required = next(step for step in jobs["ci-success"]["steps"]
+                    if step.get("name") == "Require the validated product matrix")
+    assert required["if"] == "needs.product-registry.result != 'success'"
+    assert required["run"] == "exit 1"
     profiles = jobs["consumer-profiles"]["strategy"]["matrix"]["config"]
     assert len(profiles) == 3
     steps = jobs["finalize-release-assets"]["steps"]
@@ -138,3 +145,20 @@ def test_ci_uses_shared_sbom_helper():
     assert '"$ACTION_PATH/stage_sbom.py"' in command
     assert "jq " not in command
     assert "sed " not in command
+
+
+def test_product_packaging_and_sbom_scripts_keep_the_supported_policy():
+    steps = workflow("reusable-pipeline.yml")["jobs"]["official-build"]["steps"]
+    by_name = {step.get("name"): step for step in steps}
+    for name in ("Collect OpenSSL runtime DLLs", "Create Windows archive"):
+        assert by_name[name]["if"] == "runner.os == 'Windows'"
+    assert by_name["Create Linux archive"]["if"] == "runner.os == 'Linux'"
+    action = yaml.load((ROOT / ".github/steps/package-sboms/action.yml").read_text(), Loader=yaml.BaseLoader)
+    formats = [step["with"]["output-format"] for step in action["runs"]["steps"]
+               if step.get("uses") == "./.github/steps/generate-sbom"]
+    assert formats == ["json", "xml"]
+    for step in action["runs"]["steps"]:
+        if step.get("uses") == "./.github/steps/generate-sbom":
+            assert step["with"]["target-in-filename"] == "true"
+    build = (ROOT / ".github/steps/build-binary/action.yml").read_text()
+    assert "--no-default-features" not in build

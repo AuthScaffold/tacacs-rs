@@ -236,6 +236,8 @@ def write_real_package(root, *, package_name, version, lib_name):
         [lib]
         name = "{lib_name}"
         crate-type = ["cdylib", "rlib"]
+
+        [workspace]
     """))
     (root / "src").mkdir(parents=True, exist_ok=True)
     (root / "src" / "lib.rs").write_text("// minimal\n")

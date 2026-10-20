@@ -1,0 +1,21 @@
+name: Product Registry
+description: Validate explicit release products against Cargo and emit the build matrix
+
+outputs:
+  products:
+    description: 'Validated JSON array of product matrix records'
+    value: ${{ steps.registry.outputs.products }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate product registry
+      id: registry
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        WORKSPACE: ${{ github.workspace }}
+      run: |
+        set -euo pipefail
+        python "$ACTION_PATH/../cargo-metadata/products.py" \
+          --workspace "$WORKSPACE" --github-output "$GITHUB_OUTPUT"

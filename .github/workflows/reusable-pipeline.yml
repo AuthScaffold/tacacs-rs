@@ -68,18 +68,6 @@ on:
         required: false
         default: true
         type: boolean
-      products:
-        description: 'JSON array of configuration objects for build products. Each object contains package, artifact, target, packaging, and feature metadata.'
-        required: false
-        default: |
-          [
-            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacon-linux-gnu-x86_64", "package_name": "tacon", "package_root": "executables/tacon", "artifact_name": "tacon", "artifact_kind": "bin", "features": "", "sbom_describe": "binaries"},
-            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacacsrs-agentd-linux-gnu-x86_64", "package_name": "tacacsrs-agentd", "package_root": "executables/tacacsrs_agentd", "artifact_name": "tacacsrs-agentd", "artifact_kind": "bin", "features": "", "sbom_describe": "binaries"},
-            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacacsrs-agent-health-linux-gnu-x86_64", "package_name": "tacacsrs-agent-health", "package_root": "executables/tacacsrs_agent_health", "artifact_name": "tacacsrs-agent-health", "artifact_kind": "bin", "features": "", "sbom_describe": "binaries"},
-            {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacacsrs-bash-plugin-linux-gnu-x86_64", "package_name": "tacacsrs-bash-plugin", "package_root": "libraries/tacacsrs_bash_plugin", "artifact_name": "tacacsrs_bash_plugin", "artifact_kind": "cdylib", "features": "", "sbom_describe": "all-cargo-targets"},
-            {"os": "windows-latest", "target": "x86_64-pc-windows-msvc", "asset_name": "tacon-windows-msvc-x86_64", "package_name": "tacon", "package_root": "executables/tacon", "artifact_name": "tacon", "artifact_kind": "bin", "features": "", "sbom_describe": "binaries"}
-          ]
-        type: string
       versions:
         description: 'JSON map of crate names to versions for Cargo.toml files. An empty map or {} causes no changes.'
         required: false
@@ -92,6 +80,17 @@ permissions:
   packages: read
 
 jobs:
+  product-registry:
+    name: Release Product Registry
+    runs-on: ubuntu-latest
+    outputs:
+      products: ${{ steps.registry.outputs.products }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Derive the validated product matrix
+        id: registry
+        uses: ./.github/steps/product-registry
+
   armhf:
     name: ARMhf Build and Tests
     runs-on: ubuntu-latest
@@ -322,7 +321,7 @@ jobs:
 
   testing:
     name: Testing (${{ matrix.config.name }})
-    needs: [pre-tests]
+    needs: [pre-tests, product-registry]
     if: ${{ !cancelled() && !failure() }}
     runs-on: ${{ matrix.config.os }}
     strategy:
@@ -369,7 +368,7 @@ jobs:
           target: ${{ matrix.config.target }}
           feature-args: ${{ matrix.config.feature_args }}
           build-release: ${{ inputs.build-release }}
-          products: ${{ inputs.products }}
+          products: ${{ needs.product-registry.outputs.products }}
 
       - name: Generate coverage
         if: matrix.config.coverage == 'true'
@@ -447,13 +446,13 @@ jobs:
 
   official-build:
     name: Official Build (${{ matrix.config.target }})
-    needs: [testing]
+    needs: [testing, product-registry]
     if: ${{ !cancelled() && !failure() }}
     runs-on: ${{ matrix.config.os }}
     strategy:
       fail-fast: false
       matrix:
-        config: ${{ fromJson(inputs.products) }}
+        config: ${{ fromJson(needs.product-registry.outputs.products) }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -615,6 +614,7 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     needs:
+      - product-registry
       - armhf
       - automation-tests
       - msrv
@@ -626,6 +626,9 @@ jobs:
       - container-build
       - finalize-release-assets
     steps:
+      - name: Require the validated product matrix
+        if: needs.product-registry.result != 'success'
+        run: exit 1
       - name: Require executed ARMhf coverage
         if: needs.armhf.result != 'success'
         run: exit 1

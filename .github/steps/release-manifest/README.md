@@ -121,6 +121,12 @@ generates and verifies SBOMs, validates each artifact, calls this manifest tool
 through its CLI, writes the checksums file, and rehearses an offline rollback.
 See `docs/release-rehearsal.md` for the full guide.
 
+The rehearsal selects products from `.github/products.json` in the exported
+revision. It invokes the same Cargo-backed validator that supplies the reusable
+workflow matrix. It validates all records before it selects the Linux target.
+There is no separate rehearsal inventory. A missing registry, invalid policy,
+or empty selection fails before hydration or builds.
+
 The rehearsal and CI share `stage-sbom-files/stage_sbom.py` and
 `build_provenance.py`. JSON and XML SBOMs are required. The output directory must
 be new or empty. Existing files are never deleted. The helpers require Python
