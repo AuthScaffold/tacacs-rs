@@ -4,7 +4,6 @@
 //! Linux egress selection binds one device. Its VRF supplies the routing table.
 //! Best-effort fallback applies only to unavailable local constraints.
 
-#[cfg(any(test, not(target_os = "linux")))]
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 
@@ -256,8 +255,39 @@ async fn attempt(destination: SocketAddr, binding: &LocalBinding) -> anyhow::Res
             io::Error::new(io::ErrorKind::Unsupported, "local binding requires Linux"),
         ));
     }
-    // TCP errors can originate at a remote router. They never prove local route absence.
-    socket.connect(destination).await.map_err(Into::into)
+    #[cfg(target_os = "linux")]
+    let evidence = if binding.constrained() {
+        match linux::ConnectEvidence::new(&socket) {
+            Ok(evidence) => Some(evidence),
+            Err(error) => {
+                log::warn!("Cannot retain TCP routing evidence. Local constraints remain mandatory: {error}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    match socket.connect(destination).await {
+        Ok(stream) => Ok(stream),
+        Err(error) => {
+            #[cfg(target_os = "linux")]
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NetworkUnreachable
+                    | io::ErrorKind::HostUnreachable
+                    | io::ErrorKind::NetworkDown
+            ) {
+                if let Some(evidence) = evidence {
+                    match evidence.no_segments_sent() {
+                        Ok(true) => return Err(unavailable(Scope::Route, error)),
+                        Ok(false) => {}
+                        Err(evidence_error) => log::warn!("Cannot classify TCP routing failure. Retaining local constraints: {evidence_error}"),
+                    }
+                }
+            }
+            Err(error.into())
+        }
+    }
 }
 
 #[cfg(test)]

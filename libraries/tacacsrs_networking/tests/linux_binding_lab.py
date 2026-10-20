@@ -142,6 +142,7 @@ def lab(executable):
         ip("link", "add", "unused0", "type", "dummy")
         ip("link", "set", "unused0", "master", "mgmt-vrf")
         ip("link", "set", "unused0", "up")
+        ip("-6", "address", "add", "2001:db8:7::1/64", "dev", "unused0", "nodad")
         for device, other, v4, v6 in [
             ("mgmt0", "mgmt-peer", "192.0.2.1/24", "2001:db8:1::1/64"),
             ("data0", "data-peer", "203.0.113.1/24", "2001:db8:2::1/64"),
@@ -167,13 +168,19 @@ def lab(executable):
             ip(family, "route", "add", server, "via", data, "dev", "data0", "metric", "10")
             standalone = "198.18.1.2" if family == "-4" else "2001:db8:4::2"
             ip(family, "route", "add", server, "via", standalone, "dev", "standalone0", "metric", "100")
-            # The ICMP fixture needs a valid pinned-source path. Its unbound
-            # alternative still uses the lower-metric main route through data0.
-            source = "198.18.1.1/32" if family == "-4" else "2001:db8:4::1/128"
-            ip(family, "route", "add", server, "via", standalone, "dev", "standalone0", "table", "200")
-            ip(family, "rule", "add", "priority", "50", "from", source, "lookup", "200")
         for name in ["all", "default", "mgmt0", "data0", "standalone0", "vrf-alt0", "unused0"]:
             Path(f"/proc/sys/net/ipv4/conf/{name}/rp_filter").write_text("0")
+        layout = os.environ.get("TACACSRS_NONPREFERRED_LAYOUT")
+        if layout:
+            assert layout in ("metric", "prefix")
+            ip("-6", "route", "del", "2001:db8:ffff::49/128", "dev", "data0", "metric", "10")
+            ip("-6", "route", "del", "2001:db8:ffff::49/128", "dev", "standalone0", "metric", "100")
+            ip("-6", "route", "del", "table", "100", "2001:db8:ffff::49/128")
+            preferred = "default" if layout == "metric" else "2001:db8:ffff::49/128"
+            ip("-6", "route", "add", preferred, "via", "2001:db8:2::2", "dev", "data0", "metric", "100")
+            ip("-6", "route", "add", "default", "via", "2001:db8:4::2", "dev", "standalone0", "metric", "1024")
+            ip("-6", "route", "add", preferred, "via", "2001:db8:6::2", "dev", "vrf-alt0", "table", "100", "metric", "100")
+            ip("-6", "route", "add", "default", "via", "2001:db8:1::2", "dev", "mgmt0", "table", "100", "metric", "1024")
         child.stdin.write("configure\n")
         child.stdin.flush()
         assert child.stdout.readline().strip() == "listening"
@@ -213,15 +220,27 @@ def main():
         executable = next(
             message["executable"] for message in messages if message.get("executable")
         )
-        subprocess.run(
-            ["unshare", "--user", "--map-root-user", "--net",
-             sys.executable, __file__, "--lab", executable], check=True, timeout=90,
-            env={
-                **os.environ,
-                "TACACSRS_BINDING_ORIGINAL_NETNS": str(os.stat("/proc/self/ns/net").st_ino),
-                "TACACSRS_BINDING_ORIGINAL_USERNS": str(os.stat("/proc/self/ns/user").st_ino),
-            },
-        )
+        cases = [{}] if (
+            os.environ.get("TACACSRS_NONPREFERRED_LAYOUT")
+            or os.environ.get("TACACSRS_TCP_POLICY_LAB")
+        ) else [
+            {},
+            {"TACACSRS_NONPREFERRED_LAYOUT": "metric"},
+            {"TACACSRS_NONPREFERRED_LAYOUT": "prefix"},
+            {"TACACSRS_TCP_POLICY_LAB": "1"},
+        ]
+        for case in cases:
+            print(f"Linux binding lab case: {case or 'baseline'}", flush=True)
+            subprocess.run(
+                ["unshare", "--user", "--map-root-user", "--net",
+                 sys.executable, __file__, "--lab", executable], check=True, timeout=90,
+                env={
+                    **os.environ,
+                    **case,
+                    "TACACSRS_BINDING_ORIGINAL_NETNS": str(os.stat("/proc/self/ns/net").st_ino),
+                    "TACACSRS_BINDING_ORIGINAL_USERNS": str(os.stat("/proc/self/ns/user").st_ino),
+                },
+            )
 
 
 if __name__ == "__main__":

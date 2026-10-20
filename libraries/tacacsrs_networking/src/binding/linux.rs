@@ -3,7 +3,7 @@
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 
-use anyhow::ensure;
+use anyhow::{ensure, Context};
 use futures_util::TryStreamExt;
 use rtnetlink::packet_route::address::{AddressAttribute, AddressFlags, AddressMessage};
 use rtnetlink::packet_route::link::{
@@ -14,6 +14,9 @@ use tokio::net::TcpSocket;
 use super::{unavailable, LocalBinding, Scope, SourceBinding};
 
 mod route;
+mod connect_evidence;
+
+pub(super) use connect_evidence::ConnectEvidence;
 
 pub(super) async fn apply(
     socket: &TcpSocket,
@@ -159,16 +162,60 @@ async fn discover(
                 )
             })?;
     }
-    let device = egress.as_ref().or(vrf.as_ref()).map(|link| {
-        if is_vrf(link) {
-            route::Device::Vrf(link.header.index)
-        } else {
-            route::Device::Interface(link.header.index)
+    let device = egress.as_ref().or(vrf.as_ref());
+    if device.is_some_and(|link| !is_vrf(link)) {
+        // The actual bound TCP socket performs the authoritative per-device
+        // lookup. IPv6 RTM_GETROUTE with a source does not model that lookup.
+        bind_source(socket, source, Scope::Source)?;
+        if source.is_none() {
+            let unspecified = if destination.is_ipv4() {
+                IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
+            } else {
+                IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED)
+            };
+            // Reserve the TCP port without replacing the kernel's source choice.
+            socket.bind(SocketAddr::new(unspecified, 0))?;
         }
-    });
-    let context = route::RoutingContext {
-        device,
-        vrf_table,
+        if let Some(vrf) = effective_vrf {
+            let table = vrf_table.context("VRF routing table metadata is unavailable")?;
+            let mut local = socket.local_addr()?;
+            if local.ip().is_unspecified() {
+                let selection = route::PolicyContext {
+                    vrf: Some(route::Vrf {
+                        index: device
+                            .context("egress device metadata is unavailable")?
+                            .header
+                            .index,
+                        table,
+                    }),
+                    source_scope: Scope::Source,
+                };
+                let port = local.port();
+                local = selection.select_source(handle, destination, port).await?;
+                local.set_port(port);
+            }
+            // Validate only the VRF table with the master device. The physical
+            // socket, not a source-bearing route query, enforces its egress.
+            let context = route::PolicyContext {
+                vrf: Some(route::Vrf {
+                    index: vrf.header.index,
+                    table,
+                }),
+                source_scope: Scope::Source,
+            };
+            context.verify(handle, destination, local).await?;
+        }
+        return Ok(());
+    }
+    let context = route::PolicyContext {
+        vrf: device
+            .map(|link| {
+                Ok::<_, anyhow::Error>(route::Vrf {
+                    index: link.header.index,
+                    table: vrf_table.context("VRF routing table metadata is unavailable")?,
+                })
+            })
+            .transpose()?,
         source_scope: if binding.source.is_some() {
             Scope::Source
         } else {
@@ -177,7 +224,7 @@ async fn discover(
     };
     let source = match source {
         Some(source) => source,
-        None => context.select_source(handle, destination).await?,
+        None => context.select_source(handle, destination, 0).await?,
     };
     // A concrete bind prevents TCP from choosing a source and repeating policy
     // routing with inputs that differ from the verified flow.
@@ -186,7 +233,7 @@ async fn discover(
     match context.verify(handle, destination, local).await {
         Ok(()) => Ok(()),
         Err(error) if error.downcast_ref::<super::Unavailable>().is_some() => Err(error),
-        Err(error) if device.is_none() => {
+        Err(error) if context.vrf.is_none() => {
             // The source binding remains enforceable without a route query.
             // An inconclusive query never permits route-based fallback.
             log::warn!("Local route inspection failed. Retaining the source binding without route fallback: {error}");

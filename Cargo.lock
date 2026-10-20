@@ -2428,6 +2428,7 @@ dependencies = [
  "foreign-types",
  "futures",
  "futures-util",
+ "libc",
  "log",
  "openssl",
  "openssl-sys",

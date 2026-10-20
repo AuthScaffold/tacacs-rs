@@ -9,6 +9,8 @@ use super::*;
 
 mod pinned;
 mod multipath;
+mod nonpreferred;
+mod transport_policy;
 
 struct LabLogger(Mutex<Vec<String>>);
 
@@ -144,6 +146,14 @@ async fn namespace_client() {
     }
     log::set_logger(&LAB_LOGGER).unwrap();
     log::set_max_level(log::LevelFilter::Warn);
+    if std::env::var_os("TACACSRS_TCP_POLICY_LAB").is_some() {
+        transport_policy::run().await;
+        return;
+    }
+    if std::env::var_os("TACACSRS_NONPREFERRED_LAYOUT").is_some() {
+        nonpreferred::run().await;
+        return;
+    }
     for destination in ["198.51.100.49:49490", "[2001:db8:ffff::49]:49490"] {
         let destination: SocketAddr = destination.parse().unwrap();
         let mgmt_source = if destination.is_ipv4() {

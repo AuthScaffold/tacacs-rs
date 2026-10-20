@@ -20,6 +20,8 @@ fn main_backend_routes(family: &str, add: bool) {
 }
 
 pub(super) async fn run() {
+    let range = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range").unwrap();
+    let ports = range.split_whitespace().collect::<Vec<_>>().join("-");
     for (family, destination, source, source_prefix, data_source) in [
         ("-4", "198.51.100.49:49490", "192.0.2.1", "192.0.2.1/32", "203.0.113.1"),
         ("-6", "[2001:db8:ffff::49]:49490", "2001:db8:1::1", "2001:db8:1::1/128", "2001:db8:2::1"),
@@ -35,14 +37,33 @@ pub(super) async fn run() {
             "100",
             "from",
             source_prefix,
+            "ipproto",
+            "tcp",
+            "sport",
+            &ports,
+            "dport",
+            "49490",
             "lookup",
             "main",
         ]);
-        let binding =
-            LocalBinding::new(None, None, Some("mgmt-vrf"), BindingPolicy::Strict).unwrap();
         let warnings = warning_count();
-        let error = receive(destination, &binding).await.unwrap_err();
-        assert!(error.downcast_ref::<Unavailable>().is_some(), "{error:#}");
+        for choice in [
+            None,
+            Some(SourceBinding::Ip(source.parse().unwrap())),
+            Some(SourceBinding::Interface("mgmt0".to_owned())),
+        ] {
+            for egress in [None, Some("mgmt0")] {
+                let binding = LocalBinding::new(
+                    choice.clone(),
+                    egress,
+                    Some("mgmt-vrf"),
+                    BindingPolicy::Strict,
+                )
+                .unwrap();
+                let error = receive(destination, &binding).await.unwrap_err();
+                assert!(error.downcast_ref::<Unavailable>().is_some(), "{error:#}");
+            }
+        }
         assert_eq!(warning_count(), warnings);
         let binding =
             LocalBinding::new(None, None, Some("mgmt-vrf"), BindingPolicy::BestEffort).unwrap();
@@ -52,7 +73,9 @@ pub(super) async fn run() {
         );
         assert_eq!(warning_count() - warnings, 1);
         ip(&[family, "rule", "del", "priority", "100"]);
-        println!("PASS {family}: automatic source pinned before source-policy VRF validation");
+        println!(
+            "PASS {family}: all source choices and TCP tuple rules retain VRF table isolation"
+        );
 
         for main_present in [true, false] {
             if !main_present {
@@ -100,7 +123,6 @@ pub(super) async fn run() {
 
     let destination: SocketAddr = "[2001:db8:ffff::49]:49490".parse().unwrap();
     // A source-bearing IPv6 route query can return data0 despite RTA_OIF.
-    ip(&["-6", "rule", "del", "priority", "50"]);
     main_backend_routes("-6", false);
     ip(&[
         "-6",
@@ -139,17 +161,6 @@ pub(super) async fn run() {
     }
     ip(&["-6", "route", "del", "default", "dev", "data0"]);
     main_backend_routes("-6", true);
-    ip(&[
-        "-6",
-        "rule",
-        "add",
-        "priority",
-        "50",
-        "from",
-        "2001:db8:4::1/128",
-        "lookup",
-        "200",
-    ]);
     println!("PASS IPv6: explicit and interface-derived sources reject wrong physical output");
 
     // The VRF route is valid, but it uses a different member from the request.
