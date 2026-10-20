@@ -2914,7 +2914,7 @@ Checks: hydration/version/rehearsal Python suites, fixture-based no-publish rehe
 
 ### 16: Systemd Notifications
 
-Status: both named reviews and final document checks are complete; documentation-only decision published as PR #293 against `main`.
+Status: PR #293 merged as `3080e9de3974cde6c088caf72f4c0a932245521b` after both named reviews and all current-head gates passed.
 Prototype: `/home/ubuntu/tacacs-rs-16-systemd-notifications-prototype`, branch `refactor/general-prototypes/16-systemd-notifications`.
 Integration: `/home/ubuntu/tacacs-rs-16-systemd-notifications`, branch `refactor/general-iterations/16-systemd-notifications`.
 Both start from reviewed predecessor `680b6f3c8c813e6f3c803673975a4bd73208c433` and use separate caches.
@@ -3001,6 +3001,15 @@ Completed review, findings disposition, current-head required checks, and clean 
 Fresh Copilot review `5583141997` recommends approval and reports no open issues.
 Current-head hosted verification remains in progress.
 
+#### Merge Receipt
+
+Every current-head hosted check subsequently passed.
+The final recheck found reviewed head `0518d4753e24292da9866a3c4f71233f232353fb`, clean mergeability, and no unresolved threads.
+PR #293 was squash-merged as `3080e9de3974cde6c088caf72f4c0a932245521b` at 2026-10-20 09:52 UTC.
+No protection bypass, release, or tag was used.
+No rejected source or dependency entered `main`.
+Completed integration/prototype cleanup awaits receipt preservation and clean/idle ownership checks.
+
 Compare direct notification APIs with the subprocess owner.
 Test pathname and abstract sockets, sender attribution, auto/strict selection, retries, and one-shot ready/stopping behavior.
 Prove bounded behavior when the receiver does not drain its socket.
@@ -3012,7 +3021,7 @@ Checks: private Unix datagram tests, process lifecycle/timeout cases, dependency
 
 ### 17: Codec Evaluation
 
-Status: bounded evaluation started through `GPT 6.1 Sol`.
+Status: non-adoption is proposed; Astra's direct decision-document review is in progress.
 Prototype: `/home/ubuntu/tacacs-rs-17-codec-evaluation-prototype`, branch `refactor/general-prototypes/17-codec-evaluation`.
 Integration: `/home/ubuntu/tacacs-rs-17-codec-evaluation`, branch `refactor/general-iterations/17-codec-evaluation`.
 Both start from reviewed predecessor `0518d4753e24292da9866a3c4f71233f232353fb` and use separate caches.
@@ -3020,6 +3029,45 @@ The prototype has a 45-minute analysis/implementation/focused-check budget.
 Required capability failure or lack of concrete buffering deletion ends evaluation early.
 Only accepted implementation or a reproducible documentation-only decision can enter integration.
 Publication remains blocked until predecessor review findings and required checks clear.
+
+#### Evaluation Handoff
+
+`GPT 6.1 Sol` rejected the tested route after eleven minutes and 58 seconds.
+Final prototype checks completed within nineteen minutes and 27 seconds.
+The integration contains only `docs/tokio-util-framing-evaluation.md`.
+No rejected code, feature, or dependency edge enters integration.
+
+The evaluated Tokio-util 0.7.19 package already exists in the workspace and uses MIT licensing with declared Rust 1.71.
+Supplier archive/source checksums match the predecessor lockfile.
+The prototype adds three direct dependency edges but no package identities, versions, native prerequisites, or tools.
+Its initial proxy adapter removed eleven unformatted production lines but increased read-ahead and body-copy costs.
+A working small adapter restored cancellation state, deadlines, EOF/error context, coalesced packets, key ownership, and controlled read windows.
+The formatted proxy then grew from 231 to 252 production lines.
+It adds custom allocation handoff and tail-copy machinery, so no simplification is adopted.
+This result concerns the tested route, not every possible Tokio-util design.
+
+Fourteen networking probes and six new proxy probes characterize the evaluated APIs.
+The complete networking unit suite passed 279 cases with two existing manual benchmarks ignored.
+All 31 proxy cases passed, including the 25 pre-existing cases.
+Prototype formatting, strict Clippy, private docs, and Rust 1.88 checks passed.
+Existing unknown-lint messages remain documented.
+No interoperability, streaming-target fuzz, global allocation instrumentation, dependency audit, or unrelated integration Rust rebuild is claimed.
+
+The simple route read 65,548 bytes before the next invalid header instead of the existing 8,192-byte window.
+Shared frame ownership plus body conversion held 131,084 byte-owner capacity in the controlled large-frame case.
+The repair transferred the large allocation and retained an 8,192-byte read window.
+These are capacities and pointer-ownership observations, not allocator or RSS measurements.
+Cancellation at zero/five/sixteen written bytes retained sixteen/eleven/zero queued bytes.
+Completed writes and pending flushes differ, so successful sink futures do not preserve the existing `messages_sent` counter.
+No `NotSent` conversion or wire-byte counter is invented.
+
+The exact six-file prototype is preserved remotely as `4f60508ceea1c8789a2d9ab7acfc555e6bf7f282`.
+Generated `.iteration17-evidence` scratch is excluded from that commit.
+Prototype changed-source manifest: `e16abdee6cc55287601b88ce1594ae9543d0b4922c72d34fa2c71d98f625b793`.
+Complete prototype patch: `682c47e803f9aec2bbc22848712cb255a44c02267e9d8da11e55474223e15f40`.
+Initial decision manifest: `4bfd47472e100668794b44cd5d7617fd4831802e2b0da9488e5a08e467fc6e8b`.
+Complete initial decision patch: `2701bdf96c86dbf82060199ccaf0f63c7cc34c666cc31098912bee2acc12f422`.
+Both named decision reviews and final document gates remain pending.
 
 Evaluate Tokio-util only for framing and buffering.
 Keep packet semantics, session routing, delivery facts, obfuscation, and counters in their owning layers.
