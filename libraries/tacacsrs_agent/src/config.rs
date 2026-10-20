@@ -6,13 +6,10 @@
 //!
 //! # Configuration flow
 //!
-//! The executable, such as `tacacsrs_agentd`, parses CLI flags or a YANG JSON
-//! configuration file into a [`ServiceConfig`]. It passes the result to
-//! [`TacacsClientService::new`](crate::TacacsClientService::new) for
-//! validation. It then calls
-//! [`serve_until`](crate::TacacsClientService::serve_until) with a host stop future to start the runtime.
-
-use tacacsrs_config::TacacsPlus;
+//! The host supplies listener and execution controls through [`ServiceConfig`].
+//! [`TacacsClientService::new`](crate::TacacsClientService::new) validates these
+//! controls and starts with no upstream servers. [`ConfigSupervisor`](crate::runtime::ConfigSupervisor)
+//! observes the canonical datastore and owns every server publication.
 pub use tacacsrs_config::proxy_policy::PreparedProxyPolicy;
 
 pub use self::policy::{
@@ -78,31 +75,18 @@ impl EnabledServices {
 
 /// Configuration for the long-lived TACACS+ client service process.
 ///
-/// The service reads this configuration at startup. It validates related
-/// fields, such as credential references, in
-/// [`TacacsClientService::new`](crate::TacacsClientService::new).
-///
-/// # Required fields
-///
-/// - **`local_services`** — canonical listener configuration. At least one
-///   service must be enabled.
-/// - **`tacacs_plus`** — the YANG-modelled root configuration. The order of
-///   `tacacs_plus.server` sets the failover priority. Index 0 is preferred.
+/// These startup controls do not contain an upstream source. The canonical
+/// [`ConfigDatastore`](tacacsrs_config::source::ConfigDatastore) supplies servers
+/// through [`ConfigSupervisor`](crate::runtime::ConfigSupervisor).
+/// At least one local service must be enabled.
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
     /// Canonical startup listener controls. Preparation validates these before binding.
     pub local_services: tacacsrs_config::tacacsrs::LocalServices,
 
-    /// Root TACACS+ configuration that contains servers and shared
-    /// credential bundles.
+    /// Schema validation policy for every runtime generation.
     ///
-    /// The service resolves `client-credentials` / `server-credentials`
-    /// references at startup with [`tacacsrs_config::enumerate_servers`].
-    /// [`tacacsrs_config::TacacsPlusBuilder`] usually puts security material
-    /// directly in each server. In this case, the credential bundles are empty.
-    pub tacacs_plus: TacacsPlus,
-
-    /// Schema validation policy used by the source and every runtime generation.
+    /// Use the validation options of the supervised datastore.
     pub validation_options: tacacsrs_config::ValidationOptions,
 
     /// Live failover and request-admission policy.

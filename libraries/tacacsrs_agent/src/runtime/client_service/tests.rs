@@ -1,9 +1,8 @@
 #[tokio::test]
 async fn diagnostics_handle_does_not_retain_the_agent_runtime() {
-    let service = super::TacacsClientService::waiting_for_configuration(
+    let service = super::TacacsClientService::new(
         crate::ServiceConfig {
             local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
-            tacacs_plus: tacacsrs_config::TacacsPlus::empty(),
             validation_options: tacacsrs_config::ValidationOptions::default(),
             runtime_policy: crate::RuntimePolicy::default(),
             certificate_verification: tacacsrs_networking::CertificateVerification::Required,
@@ -60,10 +59,16 @@ fn test_server(address: &str) -> tacacsrs_config::TacacsPlusServer {
     }
 }
 
+#[derive(Clone)]
+pub(super) struct ServiceFixture {
+    pub(super) settings: ServiceConfig,
+    pub(super) source: tacacsrs_config::TacacsPlus,
+}
+
 fn service_config(
     endpoint: IpcEndpoint,
     servers: Vec<tacacsrs_config::TacacsPlusServer>,
-) -> ServiceConfig {
+) -> ServiceFixture {
     let tacacs_plus = servers
         .into_iter()
         .fold(
@@ -72,29 +77,31 @@ fn service_config(
         )
         .build()
         .expect("the test configuration must be valid");
-    ServiceConfig {
-        local_services: tacacsrs_config::tacacsrs::LocalServices {
-            client_api_endpoint: match endpoint {
-                IpcEndpoint::Unix(path) => path.to_str().unwrap().to_owned(),
-                IpcEndpoint::Tcp(address) => address.to_string(),
+    ServiceFixture {
+        source: tacacs_plus,
+        settings: ServiceConfig {
+            local_services: tacacsrs_config::tacacsrs::LocalServices {
+                client_api_endpoint: match endpoint {
+                    IpcEndpoint::Unix(path) => path.to_str().unwrap().to_owned(),
+                    IpcEndpoint::Tcp(address) => address.to_string(),
+                },
+                ..Default::default()
             },
-            ..Default::default()
+            validation_options: tacacsrs_config::ValidationOptions::default(),
+            runtime_policy: RuntimePolicy::new(
+                FailoverStrategy::default(),
+                FailoverStrategy::default(),
+                OperationPolicies::default(),
+                Duration::from_millis(50),
+            )
+            .expect("test runtime policy"),
+            certificate_verification: tacacsrs_networking::CertificateVerification::Required,
         },
-        tacacs_plus,
-        validation_options: tacacsrs_config::ValidationOptions::default(),
-        runtime_policy: RuntimePolicy::new(
-            FailoverStrategy::default(),
-            FailoverStrategy::default(),
-            OperationPolicies::default(),
-            Duration::from_millis(50),
-        )
-        .expect("test runtime policy"),
-        certificate_verification: tacacsrs_networking::CertificateVerification::Required,
     }
 }
 
-fn test_service(config: ServiceConfig) -> anyhow::Result<TacacsClientService> {
-    let health = RuntimeHealthPublisher::new(config.enabled_services());
+fn test_service(config: ServiceFixture) -> anyhow::Result<TacacsClientService> {
+    let health = RuntimeHealthPublisher::new(config.settings.enabled_services());
     TacacsClientService::new(config, health)
 }
 
@@ -104,10 +111,9 @@ async fn cancelled_service_publication_keeps_capacity_through_payload_drop() {
         CancellationBoundary, cancel_publication, publication_candidate,
     };
 
-    let service = super::TacacsClientService::waiting_for_configuration(
+    let service = super::TacacsClientService::new(
         ServiceConfig {
             local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
-            tacacs_plus: tacacsrs_config::TacacsPlus::empty(),
             validation_options: tacacsrs_config::ValidationOptions::default(),
             runtime_policy: RuntimePolicy::default(),
             certificate_verification: tacacsrs_networking::CertificateVerification::Required,
@@ -135,10 +141,10 @@ async fn cancelled_service_publication_keeps_capacity_through_payload_drop() {
 fn conflicting_listener_endpoints_fail_before_binding() {
     let endpoint = test_endpoint("conflicting-listeners");
     let mut config = service_config(endpoint, vec![test_server("primary:49")]);
-    config.local_services.client_api_enabled = true;
-    config.local_services.tacacs_proxy_enabled = true;
-    config.local_services.tacacs_proxy_endpoint =
-        Some(config.local_services.client_api_endpoint.clone());
+    config.settings.local_services.client_api_enabled = true;
+    config.settings.local_services.tacacs_proxy_enabled = true;
+    config.settings.local_services.tacacs_proxy_endpoint =
+        Some(config.settings.local_services.client_api_endpoint.clone());
     assert!(test_service(config).is_err());
 }
 
@@ -148,7 +154,7 @@ async fn runtime_health_generation_tracks_catalog_and_policy_publication() {
 
     let config =
         service_config(test_endpoint("publication-health"), vec![test_server("primary:49")]);
-    let mut source = config.tacacs_plus.clone();
+    let mut source = config.source.clone();
     let service = test_service(config).unwrap();
     assert_eq!(service.health.snapshot().runtime_generation(), Some(RuntimeGeneration::new(0)));
     service
@@ -209,20 +215,44 @@ async fn already_stopped_host_does_not_attempt_listener_binding() {
         .await
         .unwrap();
     let config = service_config(endpoint.clone(), vec![test_server("primary:49")]);
-    let service = test_service(config).unwrap();
+    let health = RuntimeHealthPublisher::new(config.settings.enabled_services());
+    let service =
+        Arc::new(super::TacacsClientService::new(config.settings, health.clone()).unwrap());
+    let mut supervisor = crate::runtime::ConfigSupervisor::new(
+        Arc::new(tacacsrs_config::source::StaticDatastore::new(config.source)),
+        service.clone(),
+        health.clone(),
+        Arc::new(crate::runtime::NoopTacacsPlusFilter::default()),
+    );
+    assert_eq!(service.server_count(), 0);
+    assert!(!health.snapshot().has_applied_configuration());
+    supervisor
+        .initialize_until(std::future::ready(()))
+        .await
+        .unwrap();
+    assert_eq!(service.server_count(), 0);
+    assert!(!health.snapshot().has_applied_configuration());
     let result = service.serve_until_for_test(std::future::ready(())).await;
     assert_eq!(tokio::fs::read(path).await.unwrap(), b"unrelated existing file");
     tokio::fs::remove_file(path).await.unwrap();
     assert!(result.is_ok(), "a stopped host must not attempt to bind: {result:?}");
-    assert_eq!(service.health.snapshot().lifecycle(), RuntimeLifecycle::Stopped);
+    assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Stopped);
+    assert!(supervisor
+        .initialize_until(std::future::pending())
+        .await
+        .is_err());
+    assert!(service
+        .serve_until(std::future::ready(()), Vec::new())
+        .await
+        .is_err());
 }
 
 #[tokio::test]
 async fn waiting_policy_publication_does_not_claim_an_applied_configuration() {
     let mut config =
         service_config(test_endpoint("waiting-policy-generation"), vec![test_server("primary:49")]);
-    config.tacacs_plus = tacacsrs_config::TacacsPlus::empty();
-    let health = RuntimeHealthPublisher::new(config.enabled_services());
+    config.source = tacacsrs_config::TacacsPlus::empty();
+    let health = RuntimeHealthPublisher::new(config.settings.enabled_services());
     let service = TacacsClientService::waiting_for_configuration(config, health.clone()).unwrap();
     service
         .reload_runtime_policy(RuntimePolicy::default())
@@ -237,7 +267,7 @@ async fn waiting_policy_publication_does_not_claim_an_applied_configuration() {
 #[tokio::test]
 async fn unchanged_reload_preserves_observed_upstream_availability() {
     let config = service_config(test_endpoint("unchanged-health"), vec![test_server("primary:49")]);
-    let source = config.tacacs_plus.clone();
+    let source = config.source.clone();
     let service = test_service(config).unwrap();
     service
         .health
@@ -263,8 +293,23 @@ async fn public_facade_uses_concrete_native_connector_through_ipc_and_shutdown()
         let server = test_server(&address);
         let endpoint = test_endpoint("concrete-production");
         let config = service_config(endpoint.clone(), vec![server]);
-        let health = RuntimeHealthPublisher::new(config.enabled_services());
-        let service = Arc::new(super::TacacsClientService::new(config, health.clone()).unwrap());
+        let health = RuntimeHealthPublisher::new(config.settings.enabled_services());
+        let service =
+            Arc::new(super::TacacsClientService::new(config.settings, health.clone()).unwrap());
+        assert_eq!(service.server_count(), 0);
+        assert!(!health.snapshot().has_applied_configuration());
+        let mut supervisor = crate::runtime::ConfigSupervisor::new(
+            Arc::new(tacacsrs_config::source::StaticDatastore::new(config.source)),
+            service.clone(),
+            health.clone(),
+            Arc::new(crate::runtime::NoopTacacsPlusFilter::default()),
+        );
+        supervisor
+            .initialize_until(std::future::pending())
+            .await
+            .unwrap();
+        assert_eq!(service.server_count(), 1);
+        assert!(health.snapshot().has_applied_configuration());
         let _: &UpstreamManager<crate::upstream::NetworkUpstreamConnector> =
             &service.runtime.manager;
         let peer = tokio::spawn(async move {
@@ -296,21 +341,21 @@ async fn public_facade_uses_concrete_native_connector_through_ipc_and_shutdown()
                 PacketWriteResult::Success
             ));
         });
-        let (stop, stopping) = tokio::sync::oneshot::channel();
+        let stop = tokio_util::sync::CancellationToken::new();
+        let stopping = stop.clone();
         let running = service.clone();
         let task = tokio::spawn(async move {
-            running
-                .serve_until_for_test(async {
-                    let _signal = stopping.await;
-                })
-                .await
+            tokio::join!(
+                supervisor.run_until(stopping.cancelled()),
+                running.serve_until_for_test(stopping.cancelled()),
+            )
         });
         let mut updates = health.subscribe();
         updates
             .wait_for(|snapshot| snapshot.lifecycle() == RuntimeLifecycle::Serving)
             .await
             .unwrap();
-        let client = ServiceClient::connect(endpoint).await.unwrap();
+        let client = ServiceClient::connect(endpoint.clone()).await.unwrap();
         assert_eq!(
             client
                 .send_accounting(build_request())
@@ -319,10 +364,33 @@ async fn public_facade_uses_concrete_native_connector_through_ipc_and_shutdown()
                 .server,
             address
         );
-        stop.send(()).unwrap();
-        task.await.unwrap().unwrap();
+        stop.cancel();
+        let (supervised, served) = task.await.unwrap();
+        supervised.unwrap();
+        served.unwrap();
         peer.await.unwrap();
         assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Stopped);
+        assert!(service
+            .apply_policy_candidate(Some(&tacacsrs_config::tacacsrs::RuntimePolicy::default()))
+            .await
+            .is_err());
+        assert!(service
+            .serve_until(std::future::ready(()), Vec::new())
+            .await
+            .is_err());
+        service
+            .close_and_join(
+                tacacsrs_networking::RequestDeadline::after(Duration::from_secs(1)).unwrap(),
+            )
+            .await
+            .unwrap();
+        let IpcEndpoint::Unix(path) = endpoint else {
+            unreachable!()
+        };
+        assert!(!path.exists());
+        let rebound = tokio::net::UnixListener::bind(&path).unwrap();
+        drop(rebound);
+        std::fs::remove_file(path).unwrap();
     })
     .await
     .expect("concrete production path must complete");
@@ -426,12 +494,12 @@ async fn downstream_credential_preparation_and_publication_preserve_active_gener
     use tacacsrs_secrets::SecretString;
 
     let mut config = service_config(test_endpoint("proxy-policy"), vec![test_server("primary:49")]);
-    config.local_services.tacacs_proxy_enabled = true;
-    config.local_services.tacacs_proxy_endpoint = Some("127.0.0.1:9050".to_owned());
-    config.local_services.proxy_credential_source = ProxyCredentialSource::Inline;
-    config.local_services.proxy_shared_secret =
+    config.settings.local_services.tacacs_proxy_enabled = true;
+    config.settings.local_services.tacacs_proxy_endpoint = Some("127.0.0.1:9050".to_owned());
+    config.settings.local_services.proxy_credential_source = ProxyCredentialSource::Inline;
+    config.settings.local_services.proxy_shared_secret =
         Some(SecretString::new("old-downstream-key".to_owned()));
-    let source = config.local_services.clone();
+    let source = config.settings.local_services.clone();
     let service = test_service(config).unwrap();
     let old = service
         .manager
@@ -484,12 +552,12 @@ async fn downstream_credential_preparation_and_publication_preserve_active_gener
 fn waiting_proxy_cannot_treat_unresolved_row_credentials_as_plaintext() {
     let mut config =
         service_config(test_endpoint("pending-proxy"), vec![test_server("primary:49")]);
-    config.tacacs_plus = tacacsrs_config::TacacsPlus::empty();
-    config.local_services.tacacs_proxy_enabled = true;
-    config.local_services.tacacs_proxy_endpoint = Some("127.0.0.1:49".to_owned());
-    config.local_services.proxy_credential_source =
+    config.source = tacacsrs_config::TacacsPlus::empty();
+    config.settings.local_services.tacacs_proxy_enabled = true;
+    config.settings.local_services.tacacs_proxy_endpoint = Some("127.0.0.1:49".to_owned());
+    config.settings.local_services.proxy_credential_source =
         tacacsrs_config::tacacsrs::ProxyCredentialSource::LocalProxyRow;
-    let health = RuntimeHealthPublisher::new(config.enabled_services());
+    let health = RuntimeHealthPublisher::new(config.settings.enabled_services());
     let service = TacacsClientService::waiting_for_configuration(config, health).unwrap();
     assert!(service
         .manager
@@ -507,13 +575,13 @@ async fn upstream_only_reload_cannot_restore_a_rotated_proxy_secret() {
 
     let mut config =
         service_config(test_endpoint("proxy-secret-race"), vec![test_server("primary:49")]);
-    config.local_services.tacacs_proxy_enabled = true;
-    config.local_services.tacacs_proxy_endpoint = Some("127.0.0.1:9050".to_owned());
-    config.local_services.proxy_credential_source = ProxyCredentialSource::Inline;
-    config.local_services.proxy_shared_secret =
+    config.settings.local_services.tacacs_proxy_enabled = true;
+    config.settings.local_services.tacacs_proxy_endpoint = Some("127.0.0.1:9050".to_owned());
+    config.settings.local_services.proxy_credential_source = ProxyCredentialSource::Inline;
+    config.settings.local_services.proxy_shared_secret =
         Some(SecretString::new("old-downstream-key".to_owned()));
-    let source = config.tacacs_plus.clone();
-    let mut rotated = config.local_services.clone();
+    let source = config.source.clone();
+    let mut rotated = config.settings.local_services.clone();
     rotated.proxy_shared_secret = Some(SecretString::new("new-downstream-key".to_owned()));
     let rotated = prepare_proxy_policy(&rotated, None).unwrap();
     let service = test_service(config).unwrap();
@@ -573,9 +641,10 @@ async fn service_publication_preserves_explicit_source_validation_policy() {
         let mut config =
             service_config(test_endpoint("validation-policy"), vec![test_server("primary:49")]);
         if allow_plain {
-            config.validation_options = tacacsrs_config::ValidationOptions::new().with_relaxation(
-                tacacsrs_config::ValidationRelaxation::AllowPlainTcpWithoutSharedSecret,
-            );
+            config.settings.validation_options = tacacsrs_config::ValidationOptions::new()
+                .with_relaxation(
+                    tacacsrs_config::ValidationRelaxation::AllowPlainTcpWithoutSharedSecret,
+                );
         }
         let service = test_service(config.clone()).unwrap();
         let result = service
@@ -585,10 +654,10 @@ async fn service_publication_preserves_explicit_source_validation_policy() {
             )
             .await;
         assert_eq!(result.is_ok(), allow_plain);
-        config.tacacs_plus.server = vec![plain.clone()];
+        config.source.server = vec![plain.clone()];
         assert_eq!(
             service
-                .reload_tacacs_plus(config.tacacs_plus.clone())
+                .reload_tacacs_plus(config.source.clone())
                 .await
                 .is_ok(),
             allow_plain
@@ -598,10 +667,10 @@ async fn service_publication_preserves_explicit_source_validation_policy() {
 }
 
 fn test_service_with_connector(
-    config: ServiceConfig,
+    config: ServiceFixture,
     connector: Arc<crate::upstream::UpstreamConnector>,
 ) -> anyhow::Result<TacacsClientService> {
-    let health = RuntimeHealthPublisher::new(config.enabled_services());
+    let health = RuntimeHealthPublisher::new(config.settings.enabled_services());
     TacacsClientService::new_with_connector(config, connector, health)
 }
 
@@ -681,9 +750,9 @@ fn service_rejects_tcp_client_api_endpoint_on_unix() {
 fn service_accepts_tcp_proxy_endpoint_on_unix() {
     let endpoint = test_endpoint("tacacs-service-proxy-tcp-client-api");
     let mut config = service_config(endpoint, vec![test_server("primary:49")]);
-    config.local_services.client_api_enabled = true;
-    config.local_services.tacacs_proxy_enabled = true;
-    config.local_services.tacacs_proxy_endpoint = Some("127.0.0.1:0".to_owned());
+    config.settings.local_services.client_api_enabled = true;
+    config.settings.local_services.tacacs_proxy_enabled = true;
+    config.settings.local_services.tacacs_proxy_endpoint = Some("127.0.0.1:0".to_owned());
 
     let service =
         test_service(config).expect("the service must accept TCP proxy endpoints on Unix");
@@ -699,9 +768,9 @@ fn service_rejects_invalid_disabled_client_api_endpoint() {
             .expect("the test IPC endpoint must be valid"),
     );
     let mut config = service_config(endpoint, vec![test_server("primary:49")]);
-    config.local_services.client_api_enabled = false;
-    config.local_services.tacacs_proxy_enabled = true;
-    config.local_services.tacacs_proxy_endpoint = Some("127.0.0.1:1".to_owned());
+    config.settings.local_services.client_api_enabled = false;
+    config.settings.local_services.tacacs_proxy_enabled = true;
+    config.settings.local_services.tacacs_proxy_endpoint = Some("127.0.0.1:1".to_owned());
 
     assert!(test_service(config).is_err());
 }
@@ -710,8 +779,8 @@ fn service_rejects_invalid_disabled_client_api_endpoint() {
 fn service_rejects_no_enabled_runtime_services() {
     let endpoint = test_endpoint("tacacs-service-no-services");
     let mut config = service_config(endpoint, vec![test_server("primary:49")]);
-    config.local_services.client_api_enabled = false;
-    config.local_services.tacacs_proxy_enabled = false;
+    config.settings.local_services.client_api_enabled = false;
+    config.settings.local_services.tacacs_proxy_enabled = false;
 
     let Err(error) = test_service(config) else {
         panic!("the service must reject configuration with no enabled services");
@@ -726,8 +795,8 @@ fn service_rejects_no_enabled_runtime_services() {
 fn service_rejects_proxy_service_without_proxy_endpoint() {
     let endpoint = test_endpoint("tacacs-service-proxy-without-endpoint");
     let mut config = service_config(endpoint, vec![test_server("primary:49")]);
-    config.local_services.client_api_enabled = false;
-    config.local_services.tacacs_proxy_enabled = true;
+    config.settings.local_services.client_api_enabled = false;
+    config.settings.local_services.tacacs_proxy_enabled = true;
 
     let Err(error) = test_service(config) else {
         panic!("the service must reject proxy mode without an IPC endpoint");
@@ -873,10 +942,10 @@ async fn both_listeners_bind_with_wildcard_proxy_before_startup_serves_and_clean
         }
     };
     let mut config = service_config(endpoint, vec![test_server("primary:49")]);
-    config.local_services.client_api_enabled = true;
-    config.local_services.tacacs_proxy_enabled = true;
-    config.local_services.tacacs_proxy_endpoint = Some("0.0.0.0:0".to_owned());
-    config.local_services.unix_socket_mode = 0o600;
+    config.settings.local_services.client_api_enabled = true;
+    config.settings.local_services.tacacs_proxy_enabled = true;
+    config.settings.local_services.tacacs_proxy_endpoint = Some("0.0.0.0:0".to_owned());
+    config.settings.local_services.unix_socket_mode = 0o600;
     let health = RuntimeHealthPublisher::new(EnabledServices::BOTH);
     let upstream = Arc::new(FakeConnection {
         address: "primary:49".to_owned(),
@@ -983,7 +1052,7 @@ async fn embedded_shutdown_joins_retained_upstreams_and_prevents_restart() {
             .unwrap()
             .with_request_timeout(Duration::from_millis(50))
             .unwrap();
-        config.runtime_policy = RuntimePolicy::new(
+        config.settings.runtime_policy = RuntimePolicy::new(
             FailoverStrategy::default(),
             FailoverStrategy::default(),
             OperationPolicies::new(limits, limits, limits),
@@ -1042,10 +1111,10 @@ async fn ephemeral_proxy_binding_guards_production_clients_after_reload_and_shut
 
     let mut config =
         service_config(test_endpoint("ephemeral-guard"), vec![test_server("192.0.2.20:49")]);
-    config.local_services.client_api_enabled = false;
-    config.local_services.tacacs_proxy_enabled = true;
-    config.local_services.tacacs_proxy_endpoint = Some("127.0.0.1:0".to_owned());
-    let canonical = config.local_services.clone();
+    config.settings.local_services.client_api_enabled = false;
+    config.settings.local_services.tacacs_proxy_enabled = true;
+    config.settings.local_services.tacacs_proxy_endpoint = Some("127.0.0.1:0".to_owned());
+    let canonical = config.settings.local_services.clone();
     let service = Arc::new(test_service(config).unwrap());
     let shutdown = ShutdownCoordinator::new(service.health.clone());
     let task = {
@@ -1114,9 +1183,9 @@ async fn listener_bind_failure_aborts_sibling_without_publishing_readiness() {
         }
     };
     let mut config = service_config(endpoint, vec![test_server("primary:49")]);
-    config.local_services.client_api_enabled = true;
-    config.local_services.tacacs_proxy_enabled = true;
-    config.local_services.tacacs_proxy_endpoint = Some(occupied_address.to_string());
+    config.settings.local_services.client_api_enabled = true;
+    config.settings.local_services.tacacs_proxy_enabled = true;
+    config.settings.local_services.tacacs_proxy_endpoint = Some(occupied_address.to_string());
     let health = RuntimeHealthPublisher::new(EnabledServices::BOTH);
     let upstream = Arc::new(FakeConnection {
         address: "primary:49".to_owned(),

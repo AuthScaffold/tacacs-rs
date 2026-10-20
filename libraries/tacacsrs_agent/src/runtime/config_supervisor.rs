@@ -110,6 +110,11 @@ impl RetryBackoff for ExponentialBackoff {
 }
 
 /// Applies and continuously refreshes one runtime datastore.
+///
+/// Create one supervisor per service. Retain it from initialization through
+/// shutdown so source revisions, credential validity, and preparation ownership
+/// share one history. Server updates arrive through its datastore observation.
+/// The host drives this supervisor and the service as critical peers, then joins both.
 pub struct ConfigSupervisor {
     datastore: Arc<dyn ConfigDatastore>,
     service: Arc<TacacsClientService>,
@@ -124,6 +129,9 @@ pub struct ConfigSupervisor {
 
 impl ConfigSupervisor {
     /// Creates a supervisor with production retry timing.
+    ///
+    /// Pass the health publisher of `service`. A `config_filter` derives the
+    /// published downstream proxy policy, so build it from the service listener controls.
     #[must_use]
     pub fn new(
         datastore: Arc<dyn ConfigDatastore>,

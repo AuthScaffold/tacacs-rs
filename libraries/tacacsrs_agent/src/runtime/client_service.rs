@@ -10,17 +10,18 @@
 //!
 //! # Startup sequence
 //!
-//! 1. [`TacacsClientService::new`] resolves the current upstream server set.
-//! 2. [`TacacsClientService::serve_until`] warms connection state and binds
+//! 1. [`TacacsClientService::new`] validates startup controls and starts empty.
+//! 2. One retained [`ConfigSupervisor`](super::ConfigSupervisor) observes and prepares the canonical source.
+//! 3. [`TacacsClientService::serve_until`] warms connection state and binds
 //!    each injected listener.
-//! 3. The service accepts clients until the host requests shutdown.
+//! 4. The host drives supervision and serving until shutdown, then joins both.
 //!
 //! # Publication write path
 //!
 //! One reload travels through fixed owners in one direction:
 //!
-//! 1. The materialization coordinator or a direct reload calls one reload
-//!    method on [`TacacsClientService`].
+//! 1. The supervisor's materialization coordinator prepares a candidate and
+//!    calls the private publication method on [`TacacsClientService`].
 //! 2. The engine validates and prepares the complete catalog before publication locks.
 //!    Supervised work retains its registered preparation lease during native work.
 //! 3. The engine holds `reload_publication_lock`. The manager then holds
@@ -59,10 +60,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tacacsrs_config::TacacsPlus;
-
 use super::{RuntimeHealthPublisher, RuntimeListenerService};
-use crate::config::{PreparedProxyPolicy, RuntimePolicy, ServiceConfig};
+use crate::config::{RuntimePolicy, ServiceConfig};
+#[cfg(test)]
+use crate::config::PreparedProxyPolicy;
 use crate::services::client_api::{ClientApiHandle, UpstreamBridge};
 use crate::upstream::NetworkUpstreamConnector;
 
@@ -88,12 +89,13 @@ pub struct ListenerSettings {
 
 /// Long-lived local TACACS+ client service.
 ///
-/// [`TacacsClientService`] connects operator configuration to shared runtime
-/// state. Its constructor validates the configuration and creates the failover
-/// state machine. [`serve_until`](TacacsClientService::serve_until) starts the listeners with host cancellation.
+/// [`TacacsClientService`] owns shared runtime state. Its constructor validates
+/// startup controls and creates an empty failover state machine.
+/// [`ConfigSupervisor`](super::ConfigSupervisor) owns the upstream source and
+/// publication. [`serve_until`](TacacsClientService::serve_until) starts listeners with host cancellation.
 ///
 /// This type is not `Clone` because it owns the listener lifecycle. Share
-/// [`ServiceConfig`] before you create the service.
+/// the service through [`Arc`] when the host composes supervisors and listeners.
 ///
 /// # Service lifecycle
 ///
@@ -181,61 +183,24 @@ impl TacacsClientService {
         self.runtime.manager.native_preparation_counts()
     }
 
-    /// Builds a service with the concrete native connector.
+    /// Builds a native service with no applied upstream configuration.
+    ///
+    /// Use [`ConfigSupervisor`](super::ConfigSupervisor) for initial server
+    /// preparation and every later update. Retain that supervisor until shutdown.
+    /// Use [`Self::apply_policy_candidate`] for canonical policy updates.
     ///
     /// # Errors
-    /// Returns a configuration or native preparation error.
+    /// Returns an error for invalid listener controls or inconsistent health services.
     pub fn new(config: ServiceConfig, health: RuntimeHealthPublisher) -> anyhow::Result<Self> {
         Ok(Self {
             runtime: ServiceRuntime::from_config(
                 config,
                 health,
-                true,
-                NetworkUpstreamConnector::new,
-            )?,
-        })
-    }
-
-    /// Builds an empty service that waits for its first valid configuration.
-    ///
-    /// # Errors
-    /// Returns an error for nonempty upstreams or invalid listener configuration.
-    pub fn waiting_for_configuration(
-        config: ServiceConfig,
-        health: RuntimeHealthPublisher,
-    ) -> anyhow::Result<Self> {
-        anyhow::ensure!(
-            config.tacacs_plus.server.is_empty(),
-            "Configuration for a waiting service must contain no TACACS+ servers"
-        );
-        Ok(Self {
-            runtime: ServiceRuntime::from_config(
-                config,
-                health,
+                Vec::new(),
                 false,
                 NetworkUpstreamConnector::new,
             )?,
         })
-    }
-
-    /// Applies a complete validated upstream configuration.
-    ///
-    /// # Errors
-    /// Returns a validation or preparation error without publishing a partial update.
-    pub async fn reload_tacacs_plus(&self, source: TacacsPlus) -> anyhow::Result<()> {
-        self.runtime.reload_tacacs_plus(source).await
-    }
-
-    /// Applies a validated policy to new requests.
-    /// Returns `Superseded` when a newer policy was admitted before publication.
-    ///
-    /// # Errors
-    /// Returns an error if the runtime has closed.
-    pub async fn reload_runtime_policy(
-        &self,
-        policy: RuntimePolicy,
-    ) -> anyhow::Result<super::PolicyUpdate> {
-        self.runtime.reload_runtime_policy(policy).await
     }
 
     /// Applies an observed canonical policy or records a source rejection.
@@ -255,25 +220,12 @@ impl TacacsClientService {
         }
     }
 
-    /// Applies upstream configuration with its prepared downstream policy.
-    ///
-    /// # Errors
-    /// Returns an error if the complete update cannot be prepared and published.
-    pub async fn reload_tacacs_plus_with_proxy_downstream_obfuscation(
-        &self,
-        source: TacacsPlus,
-        policy: PreparedProxyPolicy,
-    ) -> anyhow::Result<()> {
-        self.runtime
-            .reload_tacacs_plus_with_proxy_downstream_obfuscation(source, policy)
-            .await
-    }
-
     /// Applies materialized upstreams with their prepared downstream policy.
     ///
     /// # Errors
     /// Returns an error if validation or native preparation fails.
-    pub async fn reload_materialized_servers_with_proxy_downstream_obfuscation(
+    #[cfg(test)]
+    pub(crate) async fn reload_materialized_servers_with_proxy_downstream_obfuscation(
         &self,
         servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
         policy: PreparedProxyPolicy,

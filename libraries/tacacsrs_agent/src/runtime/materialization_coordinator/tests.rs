@@ -183,10 +183,9 @@ fn service() -> TacacsClientService {
 }
 
 fn service_with_health(health: RuntimeHealthPublisher) -> TacacsClientService {
-    TacacsClientService::waiting_for_configuration(
+    TacacsClientService::new(
         ServiceConfig {
             local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
-            tacacs_plus: TacacsPlus::empty(),
             validation_options: ValidationOptions::default(),
             runtime_policy: crate::RuntimePolicy::new(
                 crate::FailoverStrategy::default(),
@@ -441,7 +440,7 @@ async fn validity_survives_partial_refresh_and_expiry_blocks_publication() {
     coordinator.publish(prepared, &service).await.unwrap();
     assert_eq!(health.snapshot().credential_lifetime(), Some(lifetime));
     service
-        .reload_runtime_policy(crate::RuntimePolicy::default())
+        .apply_policy_candidate(Some(&tacacsrs_config::tacacsrs::RuntimePolicy::default()))
         .await
         .unwrap();
     assert_eq!(health.snapshot().credential_lifetime(), Some(lifetime));
@@ -1067,7 +1066,7 @@ async fn native_client_setup_does_not_block_expiry_or_policy_publication() {
         .unwrap();
     tokio::time::timeout(Duration::from_secs(1), async {
         service
-            .reload_runtime_policy(crate::RuntimePolicy::default())
+            .apply_policy_candidate(Some(&tacacsrs_config::tacacsrs::RuntimePolicy::default()))
             .await
             .unwrap();
         coordinator.source_unavailable(&health, true).await;
@@ -1368,7 +1367,7 @@ async fn source_and_credential_revisions_are_independent_and_commit_with_health(
     coordinator.publish(prepared, &service).await.unwrap();
     assert_eq!(health.snapshot().materialization_revision(), Some(rotation.revision));
     service
-        .reload_runtime_policy(crate::RuntimePolicy::default())
+        .apply_policy_candidate(Some(&tacacsrs_config::tacacsrs::RuntimePolicy::default()))
         .await
         .unwrap();
     assert_eq!(health.snapshot().materialization_revision(), Some(rotation.revision));

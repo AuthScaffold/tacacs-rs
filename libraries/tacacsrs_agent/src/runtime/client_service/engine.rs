@@ -14,6 +14,7 @@
 use std::sync::Arc;
 
 use futures_util::FutureExt;
+#[cfg(test)]
 use tacacsrs_config::TacacsPlus;
 use tacacsrs_config::local_services::{prepare_local_services, PreparedLocalServices, ListenerEndpoint};
 use tokio::sync::Mutex;
@@ -22,8 +23,10 @@ use tokio::task::JoinSet;
 use crate::config::{PreparedProxyPolicy, RuntimePolicy, ServiceConfig};
 use crate::runtime::{
     RequestTracker, RuntimeHealthPublisher, RuntimeListenerService, ShutdownCoordinator,
-    enumerate_supported_servers, ProxyLoopGuard,
+    ProxyLoopGuard,
 };
+#[cfg(test)]
+use crate::runtime::enumerate_supported_servers;
 use crate::services::ListenerOptions;
 use crate::services::tacacs_proxy::TacacsProxyService;
 #[cfg(test)]
@@ -80,7 +83,7 @@ impl ServiceRuntime<ServiceConnector> {
     /// Returns an error if schema validation, credential-reference expansion,
     /// capability checks, or native transport preparation fails.
     pub(super) fn new(
-        config: ServiceConfig,
+        config: super::tests::ServiceFixture,
         health: RuntimeHealthPublisher,
     ) -> anyhow::Result<Self> {
         Self::build(config, health, true)
@@ -91,7 +94,7 @@ impl ServiceRuntime<ServiceConnector> {
     ///
     /// The placeholder configuration must contain no servers. A successful call
     /// to
-    /// [`Self::reload_tacacs_plus_with_proxy_downstream_obfuscation`]
+    /// [`Self::reload_tacacs_plus`]
     /// marks the first configuration as applied.
     ///
     /// # Errors
@@ -100,10 +103,10 @@ impl ServiceRuntime<ServiceConnector> {
     /// returns an error for invalid IPC endpoint configuration or a health
     /// publisher with a different service selection.
     pub(super) fn waiting_for_configuration(
-        config: ServiceConfig,
+        config: super::tests::ServiceFixture,
         health: RuntimeHealthPublisher,
     ) -> anyhow::Result<Self> {
-        if !config.tacacs_plus.server.is_empty() {
+        if !config.source.server.is_empty() {
             anyhow::bail!("Configuration for a waiting service must contain no TACACS+ servers");
         }
 
@@ -111,21 +114,35 @@ impl ServiceRuntime<ServiceConnector> {
     }
 
     fn build(
-        config: ServiceConfig,
+        config: super::tests::ServiceFixture,
         health: RuntimeHealthPublisher,
         configuration_applied: bool,
     ) -> anyhow::Result<Self> {
-        Self::from_config(config, health, configuration_applied, |guard| {
-            ServiceConnector(NetworkUpstreamConnector::new(guard).erased())
-        })
+        let servers =
+            enumerate_supported_servers(&config.source, &config.settings.validation_options)?;
+        Self::from_config(
+            config.settings,
+            health,
+            servers.into_iter().map(Arc::new).collect(),
+            configuration_applied,
+            |guard| ServiceConnector(NetworkUpstreamConnector::new(guard).erased()),
+        )
     }
 
     pub(super) fn new_with_connector(
-        config: ServiceConfig,
+        config: super::tests::ServiceFixture,
         connector: Arc<UpstreamConnector>,
         health: RuntimeHealthPublisher,
     ) -> anyhow::Result<Self> {
-        Self::from_config(config, health, true, |_| ServiceConnector(connector))
+        let servers =
+            enumerate_supported_servers(&config.source, &config.settings.validation_options)?;
+        Self::from_config(
+            config.settings,
+            health,
+            servers.into_iter().map(Arc::new).collect(),
+            true,
+            |_| ServiceConnector(connector),
+        )
     }
 }
 
@@ -136,6 +153,7 @@ where
     pub(super) fn from_config(
         config: ServiceConfig,
         health: RuntimeHealthPublisher,
+        servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
         configuration_applied: bool,
         factory: impl FnOnce(ProxyLoopGuard) -> Connector,
     ) -> anyhow::Result<Self> {
@@ -144,8 +162,6 @@ where
         if health.snapshot().enabled_services() != config.enabled_services() {
             anyhow::bail!("Runtime health and service configuration must enable the same services");
         }
-        let servers = enumerate_supported_servers(&config.tacacs_plus, &config.validation_options)?;
-
         let connector = factory(proxy_loop_guard.clone());
         let proxy_policy = if !configuration_applied
             && config.local_services.proxy_credential_source
@@ -156,7 +172,7 @@ where
             tacacsrs_config::proxy_policy::prepare_proxy_policy(&config.local_services, None)?
         };
         let manager = Arc::new(UpstreamManager::from_connector(
-            servers.into_iter().map(Arc::new).collect(),
+            servers,
             proxy_policy,
             config.runtime_policy.clone(),
             connector,
@@ -186,12 +202,12 @@ where
     ///
     /// Returns an error if validation, reference expansion, or native preparation
     /// fails. Failure leaves the active runtime generation unchanged.
+    #[cfg(test)]
     pub(super) async fn reload_tacacs_plus(&self, tacacs_plus: TacacsPlus) -> anyhow::Result<()> {
         let servers = enumerate_supported_servers(&tacacs_plus, &self.config.validation_options)?;
         let candidate = self
             .manager
             .capture_upstream_reload(servers.into_iter().map(Arc::new).collect());
-        #[cfg(test)]
         self.wait_for_implicit_reload_pause().await;
         self.publish_materialized_servers(candidate).await
     }
@@ -210,6 +226,7 @@ where
     ///
     /// # Errors
     /// Returns an error if the runtime has closed.
+    #[cfg(test)]
     pub(super) async fn reload_runtime_policy(
         &self,
         runtime_policy: RuntimePolicy,
@@ -227,12 +244,7 @@ where
         self.manager.publish_policy(revision, runtime_policy)
     }
 
-    /// Applies TACACS+ configuration and the downstream proxy obfuscation policy.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if validation, reference expansion, or native preparation
-    /// fails. Failure leaves the active runtime generation unchanged.
+    #[cfg(test)]
     pub(super) async fn reload_tacacs_plus_with_proxy_downstream_obfuscation(
         &self,
         tacacs_plus: TacacsPlus,
@@ -258,6 +270,7 @@ where
     ///
     /// Returns an error if the service cannot apply the materialized server set.
     /// If it fails, the previous runtime state stays active.
+    #[cfg(test)]
     pub(super) async fn reload_materialized_servers_with_proxy_downstream_obfuscation(
         &self,
         servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,

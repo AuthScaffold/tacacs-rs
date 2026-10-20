@@ -833,10 +833,9 @@ async fn inline_client_certificate_expiry_preserves_supervised_catalog() -> Resu
     let original = source.clone();
     let datastore = Arc::new(StaticDatastore::new(source));
     let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
-    let service = Arc::new(TacacsClientService::waiting_for_configuration(
+    let service = Arc::new(TacacsClientService::new(
         ServiceConfig {
             local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
-            tacacs_plus: TacacsPlus::empty(),
             validation_options: ValidationOptions::default(),
             runtime_policy: tacacsrs_agent::RuntimePolicy::default(),
             certificate_verification:
@@ -871,7 +870,7 @@ async fn inline_client_certificate_expiry_preserves_supervised_catalog() -> Resu
     tokio::time::sleep(remaining + Duration::from_secs(1)).await;
     assert!(futures_util::poll!(&mut monitor).is_pending());
     service
-        .reload_runtime_policy(tacacsrs_agent::RuntimePolicy::default())
+        .apply_policy_candidate(Some(&tacacsrs_config::tacacsrs::RuntimePolicy::default()))
         .await?;
     assert_eq!(service.server_count(), 1);
     assert_eq!(service.statistics().servers[0].counter_epoch, counter_epoch);
@@ -927,10 +926,9 @@ async fn unchanged_provider_refresh_after_certificate_expiry_reuses_catalog_and_
     });
     let datastore = Arc::new(StaticDatastore::new(source));
     let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
-    let service = Arc::new(TacacsClientService::waiting_for_configuration(
+    let service = Arc::new(TacacsClientService::new(
         ServiceConfig {
             local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
-            tacacs_plus: TacacsPlus::empty(),
             validation_options: ValidationOptions::default(),
             runtime_policy: tacacsrs_agent::RuntimePolicy::default(),
             certificate_verification:

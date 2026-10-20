@@ -22,6 +22,80 @@ use tacacsrs_networking::{RequestDeadline, TacacsClient};
 
 use super::ocsp_peer::{Directory, fixtures};
 
+struct ObservedSource(tokio::sync::watch::Sender<std::sync::Arc<TacacsPlus>>);
+
+struct SourceObservation {
+    snapshots: tokio::sync::watch::Receiver<std::sync::Arc<TacacsPlus>>,
+    previous: Option<std::sync::Arc<TacacsPlus>>,
+}
+
+#[async_trait::async_trait]
+impl tacacsrs_config::source::ConfigObservation for SourceObservation {
+    async fn next(&mut self) -> Result<Option<tacacsrs_config::source::ConfigChangeEvent>> {
+        use tacacsrs_config::source::{ConfigChange, ConfigChangeEvent, ConfigDelta};
+        if self.previous.is_some() {
+            self.snapshots.changed().await?;
+        }
+        let config = self.snapshots.borrow_and_update().clone();
+        let delta = ConfigDelta::diff(self.previous.as_deref(), &config);
+        self.previous = Some(config.clone());
+        Ok(Some(ConfigChangeEvent::Changed(ConfigChange { config, delta })))
+    }
+}
+
+#[async_trait::async_trait]
+impl tacacsrs_config::source::ConfigDatastore for ObservedSource {
+    async fn observe(&self) -> Result<Box<dyn tacacsrs_config::source::ConfigObservation>> {
+        Ok(Box::new(SourceObservation {
+            snapshots: self.0.subscribe(),
+            previous: None,
+        }))
+    }
+
+    async fn load(&self) -> Result<TacacsPlus> {
+        Ok(self.0.borrow().as_ref().clone())
+    }
+
+    fn runtime_policy(&self) -> tacacsrs_config::source::DatastoreRuntimePolicy {
+        use tacacsrs_config::source::{
+            ChangeNotificationMode, DatastoreRuntimePolicy, InitialLoadPolicy,
+        };
+        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::Continuous)
+    }
+
+    fn label(&self) -> &'static str {
+        "native-crl-test"
+    }
+}
+
+impl ObservedSource {
+    async fn update(
+        &self,
+        source: TacacsPlus,
+        health: &tacacsrs_agent::RuntimeHealthPublisher,
+        accepted: bool,
+    ) -> Result<()> {
+        let previous = health.snapshot().runtime_generation();
+        let mut changes = health.subscribe();
+        self.0.send_replace(std::sync::Arc::new(source));
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            changes.wait_for(|snapshot| {
+                if accepted {
+                    snapshot.runtime_generation() != previous
+                        && snapshot.datastore() == tacacsrs_agent::DatastoreState::Current
+                } else {
+                    snapshot.degradation_reasons().contains(
+                        &tacacsrs_agent::DegradationReason::CandidateConfigurationRejected,
+                    )
+                }
+            }),
+        )
+        .await??;
+        Ok(())
+    }
+}
+
 struct RefreshingCrlResolver {
     crl: Vec<u8>,
     validity: std::sync::Mutex<CredentialValidity>,
@@ -73,10 +147,9 @@ async fn provider_crl_validity_refreshes_before_expiry_without_notifications() -
         calls: std::sync::atomic::AtomicUsize::new(0),
     });
     let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
-    let service = Arc::new(TacacsClientService::waiting_for_configuration(
+    let service = Arc::new(TacacsClientService::new(
         ServiceConfig {
             local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
-            tacacs_plus: TacacsPlus::empty(),
             validation_options: ValidationOptions::default(),
             runtime_policy: tacacsrs_agent::RuntimePolicy::default(),
             certificate_verification: tacacsrs_networking::CertificateVerification::Required,
@@ -1230,10 +1303,9 @@ async fn crl_expiry_withdraws_supervised_catalog_without_source_failure() -> Res
     let original = source.clone();
     let datastore = Arc::new(StaticDatastore::new(source));
     let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
-    let service = Arc::new(TacacsClientService::waiting_for_configuration(
+    let service = Arc::new(TacacsClientService::new(
         ServiceConfig {
             local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
-            tacacs_plus: TacacsPlus::empty(),
             validation_options: ValidationOptions::default(),
             runtime_policy: tacacsrs_agent::RuntimePolicy::default(),
             certificate_verification: tacacsrs_networking::CertificateVerification::Required,
@@ -1319,17 +1391,28 @@ async fn committed_crl_refresh_interrupts_active_peer_without_waiting_for_reques
             client_api_endpoint: path.display().to_string(),
             ..Default::default()
         },
-        tacacs_plus: source.clone(),
         validation_options: ValidationOptions::default(),
         runtime_policy: tacacsrs_agent::RuntimePolicy::default(),
         certificate_verification: tacacsrs_networking::CertificateVerification::Required,
     };
     let health = RuntimeHealthPublisher::new(config.enabled_services());
     let service = Arc::new(TacacsClientService::new(config, health.clone())?);
+    let datastore =
+        Arc::new(ObservedSource(tokio::sync::watch::channel(Arc::new(source.clone())).0));
+    let mut supervisor = tacacsrs_agent::runtime::ConfigSupervisor::new(
+        datastore.clone(),
+        service.clone(),
+        health.clone(),
+        Arc::new(tacacsrs_agent::runtime::NoopTacacsPlusFilter::default()),
+    );
+    supervisor.initialize_until(std::future::pending()).await?;
     let (received, observed) = tokio::sync::oneshot::channel();
     let (closed, mut closure) = tokio::sync::oneshot::channel();
     let peer = tokio::spawn(stalled_accounting_peer(listener, context, received, closed));
     let stop = tokio_util::sync::CancellationToken::new();
+    let supervising_stop = stop.clone();
+    let supervising =
+        tokio::spawn(async move { supervisor.run_until(supervising_stop.cancelled()).await });
     let running = service.clone();
     let shutdown = stop.clone();
     let listeners = crate::client_api::client_api_listeners(&service);
@@ -1354,10 +1437,10 @@ async fn committed_crl_refresh_interrupts_active_peer_without_waiting_for_reques
     tokio::time::timeout(Duration::from_secs(5), async {
         tokio::select! { result = &mut request => panic!("request ended before peer received it: {result:?}"), result = observed => result.unwrap() }
     }).await?;
-    service.reload_tacacs_plus(source.clone()).await?;
+    datastore.update(source.clone(), &health, true).await?;
     let mut ordinary = source.clone();
     ordinary.server[0].timeout += 1;
-    service.reload_tacacs_plus(ordinary).await?;
+    datastore.update(ordinary, &health, true).await?;
     let before_rejection = health.snapshot().runtime_generation();
     let mut invalid = source.clone();
     invalid.server[0]
@@ -1368,7 +1451,7 @@ async fn committed_crl_refresh_interrupts_active_peer_without_waiting_for_reques
         .as_mut()
         .unwrap()
         .crl = Some(vec![b"invalid-crl".to_vec()]);
-    assert!(service.reload_tacacs_plus(invalid).await.is_err());
+    datastore.update(invalid, &health, false).await?;
     assert_eq!(health.snapshot().runtime_generation(), before_rejection);
     assert!(
         tokio::time::timeout(Duration::from_millis(25), &mut closure)
@@ -1385,12 +1468,13 @@ async fn committed_crl_refresh_interrupts_active_peer_without_waiting_for_reques
         .as_mut()
         .unwrap()
         .crl = Some(vec![revoked]);
-    service.reload_tacacs_plus(updated).await?;
+    datastore.update(updated, &health, true).await?;
     let closed_promptly = tokio::time::timeout(Duration::from_secs(1), closure).await;
     stop.cancel();
     let result = tokio::time::timeout(Duration::from_secs(5), request).await?;
     assert!(result.is_err());
     tokio::time::timeout(Duration::from_secs(5), serving).await???;
+    tokio::time::timeout(Duration::from_secs(5), supervising).await???;
     tokio::time::timeout(Duration::from_secs(5), peer).await???;
     assert!(
         closed_promptly.is_ok(),

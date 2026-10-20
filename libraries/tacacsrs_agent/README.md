@@ -10,6 +10,122 @@ The daemon composes the agent with the client and server transport from
 [`tacacsrs-ipc`](../tacacsrs_ipc/), which owns the protobuf contract.
 The agent has no production dependency on IPC bindings or tonic.
 
+## Embedding
+
+`TacacsClientService::new` validates startup controls and creates an empty runtime.
+`ServiceConfig` contains no upstream source. The canonical `ConfigDatastore` owns that source.
+Create one `ConfigSupervisor` per service. Retain it from initialization through shutdown.
+Do not create another supervisor for each update. That discards source history and preparation ownership.
+The agent exposes no unmanaged construction or server-update mode.
+
+Give the supervisor the health publisher of the service.
+Take `ServiceConfig::validation_options` from the datastore.
+Give `NoopTacacsPlusFilter::new` the `LocalServices` value of the service.
+`NoopTacacsPlusFilter::default()` derives an unobfuscated downstream proxy policy, which replaces a configured proxy secret at publication.
+
+Server updates use the retained datastore observation and supervisor.
+`apply_policy_candidate` is the only public policy-update method. It accepts canonical YANG policy, not prepared values.
+`PolicySupervisor` uses that same method for an independent policy observation.
+Server updates preserve applied policy. Policy updates preserve the server catalog, counter epochs, and materialization metadata.
+
+The public construction and update surface changed as follows:
+
+| Before | After |
+| --- | --- |
+| `new(ServiceConfig, health)` immediately prepares supplied servers | `new(ServiceConfig, health)` starts empty; the supervisor prepares the source |
+| `waiting_for_configuration(ServiceConfig, health)` | Removed |
+| `ServiceConfig::tacacs_plus` | Removed; supply the canonical source through a datastore |
+| `reload_tacacs_plus` | Removed; update the observed source |
+| `reload_tacacs_plus_with_proxy_downstream_obfuscation` | Removed; the host filter derives proxy policy within supervised preparation |
+| `reload_materialized_servers_with_proxy_downstream_obfuscation` | Removed; materialization and publication remain private |
+| `reload_runtime_policy` | Removed; submit canonical policy to `apply_policy_candidate` |
+| `apply_policy_candidate` | Retained; admission fences validation and publication |
+
+No compatibility aliases remain. Diagnostic handles, domain operations, listener settings, `serve_until`, and `close_and_join` remain public.
+The host owns signals, listener adapters, and task supervision. A stopped runtime cannot restart.
+This example uses the built-in raw proxy. A client API host injects its `RuntimeListenerService` adapters instead.
+
+```rust,no_run
+use std::sync::Arc;
+
+use anyhow::Context;
+use tokio_util::sync::CancellationToken;
+
+use tacacsrs_agent::{RuntimeHealthPublisher, RuntimePolicy, ServiceConfig, TacacsClientService};
+use tacacsrs_agent::runtime::{ConfigSupervisor, NoopTacacsPlusFilter};
+use tacacsrs_config::TacacsPlus;
+use tacacsrs_config::source::{ConfigDatastore, StaticDatastore};
+use tacacsrs_config::tacacsrs::LocalServices;
+use tacacsrs_networking::{CertificateVerification, RequestDeadline};
+
+async fn run(source: TacacsPlus, stop: CancellationToken) -> anyhow::Result<()> {
+  let datastore = Arc::new(StaticDatastore::new(source));
+  let local_services = LocalServices {
+    client_api_enabled: false,
+    tacacs_proxy_enabled: true,
+    tacacs_proxy_endpoint: Some("127.0.0.1:0".to_owned()),
+    ..Default::default()
+  };
+  let config = ServiceConfig {
+    local_services: local_services.clone(),
+    validation_options: datastore.validation_options(),
+    runtime_policy: RuntimePolicy::default(),
+    certificate_verification: CertificateVerification::Required,
+  };
+  let health = RuntimeHealthPublisher::new(config.enabled_services());
+  let service = Arc::new(TacacsClientService::new(config, health.clone())?);
+  let mut supervisor = ConfigSupervisor::new(
+    datastore,
+    service.clone(),
+    health,
+    Arc::new(NoopTacacsPlusFilter::new(local_services)),
+  );
+  let initialized = supervisor.initialize_until(stop.cancelled()).await;
+  if initialized.is_err() || stop.is_cancelled() {
+    let deadline = RequestDeadline::after(service.shutdown_timeout())?;
+    return initialized.and(service.close_and_join(deadline).await);
+  }
+  let peers = async {
+    tokio::join!(
+      async {
+        let result = supervisor.run_until(stop.cancelled()).await;
+        let requested = stop.is_cancelled();
+        stop.cancel();
+        if requested { result } else {
+          result.and(Err(anyhow::anyhow!("Configuration supervisor stopped unexpectedly")))
+        }
+      },
+      async {
+        let result = service.serve_until(stop.cancelled(), Vec::new()).await;
+        stop.cancel();
+        result
+      },
+    )
+  };
+  tokio::pin!(peers);
+  let completed = tokio::select! {
+    biased;
+    () = stop.cancelled() => None,
+    result = &mut peers => Some(result),
+  };
+  stop.cancel();
+  let deadline = RequestDeadline::after(service.shutdown_timeout())?;
+  let (source_result, service_result) = match completed {
+    Some(result) => result,
+    None => tokio::time::timeout_at(deadline.expires_at(), peers)
+      .await.context("Shutdown deadline elapsed")?,
+  };
+  let cleanup = service.close_and_join(deadline).await;
+  source_result.and(service_result).and(cleanup)
+}
+```
+
+The host cancels `stop` when it receives its terminal shutdown request.
+Initialization completes before listeners bind. An already-cancelled host or failed initialization never binds listeners.
+Peer failure also cancels the shared stop token. Cleanup uses one captured shutdown budget.
+Deadline expiry cancels owned futures and returns an error. Native work cannot be forcibly interrupted.
+Use a continuously observed datastore for live server updates. `StaticDatastore` supplies one immutable baseline.
+
 ## Design goals
 
 - Expose domain operations independently of the local RPC transport.
@@ -117,8 +233,8 @@ The agent exchange interface remains because it owns protocol-to-service error c
 Catalog replacement, applied-configuration status, eligible-server count, and availability reset now commit under the same publication lock.
 Health readers cannot observe a partially updated publication. Policy-only updates advance the runtime generation without resetting availability or replacing global admission.
 An unchanged catalog reload preserves observed upstream availability. A rejected replacement leaves the published generation and applied-health metadata unchanged.
-An upstream-only reload captures the current proxy policy and preparation base from one runtime snapshot.
-A concurrent catalog or proxy-policy replacement rejects that reload at publication. A retry captures the replacement policy.
+Publication fences each prepared candidate against its captured catalog identity.
+A concurrent catalog or proxy-policy replacement rejects a stale candidate before publication.
 
 Materialized updates also commit the coordinator's active-server set and active source generation inside the runtime publication boundary.
 Cancellation before publication leaves the prior runtime and active material unchanged.
@@ -129,7 +245,7 @@ The coordinator releases its state lock at commit, before asynchronous retiremen
 The source counter advances at admission before asynchronous host filtering, including repeated candidates and source rejection notifications.
 The credential counter advances independently when an invalidation schedules materialization.
 These counters belong to one controller instance. They are not content hashes, provider versions, or globally comparable identifiers.
-Policy-only updates preserve the applied pair. Direct server reloads clear it because they bypass coordinated materialization.
+Policy-only updates preserve the applied pair. Every public server update uses coordinated materialization.
 
 Successful materialization clears credential-resolution failure in the publication commit.
 Failure reporting checks the attempt revision under the coordinator lock, so an old result cannot change health for newer work.
@@ -181,8 +297,7 @@ Source, credential, and policy decisions use revision checks and the shared gene
 
 `TacacsClientService::apply_policy_candidate` accepts a borrowed canonical policy, or `None` for a rejected source observation.
 It assigns `PolicyRevision` before validation or publication waits. The canonical value remains unchanged.
-Both this method and `reload_runtime_policy` return `PolicyUpdate`: `Applied(revision)`, `Rejected(revision)`, or `Superseded`.
-Prepared-policy reloads cannot return `Rejected`; their validation has already completed.
+This method returns `PolicyUpdate`: `Applied(revision)`, `Rejected(revision)`, or `Superseded`.
 Runtime closure remains an error. A superseded candidate cannot change policy, global admission, or health.
 
 `RuntimeHealthSnapshot::applied_policy_revision()` records the last committed policy update, or `None` before the first update.
@@ -280,10 +395,10 @@ Permanently stuck registered work keeps the slot. Expiry and host stop do not wa
 Native OpenSSL and OS calls cannot be forcibly cancelled. A permanently stuck worker can prevent Tokio runtime or process exit.
 Service withdrawal and cooperative host-stop completion do not promise termination of that native worker.
 Unobservable OS, SDK, and filter DNS internals are not a hard-cancellation guarantee.
-Unmanaged direct reload and configuration helpers do not acquire this supervisor-owned budget.
+Direct configuration helpers do not acquire this supervisor-owned budget. The public agent API does not expose unmanaged reloads.
 
 `ServiceConfig::validation_options` carries the schema policy selected by the configuration source.
-Construction and both reload APIs apply the shared configuration checks with that policy.
+Supervised preparation applies the shared configuration checks with that policy.
 The daemon obtains the policy from `ConfigDatastore::validation_options`, including explicit migration relaxations.
 
 The service prepares native transport contexts before publishing changed server slots.

@@ -279,7 +279,7 @@ The runtime type has private state and no serialization. Its unavailable state r
 
 The agent no longer accepts an independent `ServiceConfig::proxy_downstream_obfuscation` field or the old mutable credential enum.
 Startup derives inline or unobfuscated policy directly from the canonical source.
-Row-derived startup uses `waiting_for_configuration`, followed by publication of the adapter's prepared policy and upstream set.
+`TacacsClientService::new` starts empty. Its retained `ConfigSupervisor` publishes the adapter's derived policy with the upstream set.
 Publication rejects unavailable policy and retains the previous generation on failure.
 This contract uses existing inline and source-row material. It does not add a new central credential provider or change upstream EPSK resolution.
 

@@ -72,7 +72,6 @@ mod tests {
 
     use async_trait::async_trait;
     use tokio::sync::{mpsc, oneshot};
-    use tacacsrs_config::TacacsPlus;
     use tacacsrs_networking::RequestDeadline;
 
     use crate::{
@@ -105,10 +104,9 @@ mod tests {
 
     fn service(health: RuntimeHealthPublisher) -> Arc<TacacsClientService> {
         Arc::new(
-            TacacsClientService::waiting_for_configuration(
+            TacacsClientService::new(
                 ServiceConfig {
                     local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
-                    tacacs_plus: TacacsPlus::empty(),
                     validation_options: tacacsrs_config::ValidationOptions::default(),
                     runtime_policy: RuntimePolicy::default(),
                     certificate_verification:
@@ -198,11 +196,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn newer_valid_policy_supersedes_prepared_update_waiting_for_publication() {
+    async fn newer_valid_policy_supersedes_canonical_update_waiting_for_publication() {
         let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
         let service = service(health.clone());
         let held = service.hold_publication().await;
-        let older = service.reload_runtime_policy(RuntimePolicy::default());
+        let older_source = tacacsrs_config::tacacsrs::RuntimePolicy::default();
+        let older = service.apply_policy_candidate(Some(&older_source));
         tokio::pin!(older);
         assert!(futures_util::poll!(&mut older).is_pending());
         let source = tacacsrs_config::policy::parse_runtime_policy(
