@@ -2509,6 +2509,10 @@ The merged source tree exactly matches reviewed head `6add7c19dd3dfdfe9143d16759
 The clean worktree and its 21 GiB cache have no active directory users.
 Cleanup awaits preservation of this receipt.
 
+Tracking commit `1ec8f57` preserved the receipt before cleanup.
+The coordinator removed the clean merged emulator worktree without force, its exact 21 GiB cache, and its path-specific Rust override.
+Branch history, recovery backups, and the active registry worktree remain intact.
+
 Use one narrow IPC endpoint connection method for controller and service clients.
 Remove connector-only dependencies that become unused.
 Separate source/data loading from explicit policy compilation and compile the completed startup policy once.
@@ -2528,7 +2532,7 @@ Checks: emulator/controller/daemon tests, IPC tests, audit and unused-dependency
 
 ### 14: Product Registry
 
-Status: implementation is complete; named reviews and final delivery-tooling gates remain pending.
+Status: both named reviews and final local delivery-tooling gates are complete; published as PR #291 against `main`.
 Scope: R12.
 Worktree: `/home/ubuntu/tacacs-rs-14-product-registry`; branch: `refactor/general-iterations/14-product-registry`.
 Predecessor: `6add7c19dd3dfdfe9143d167598bf3fc240e14dc`, the reviewed iteration 13 publication head.
@@ -2557,7 +2561,7 @@ All fourteen registry cases passed after implementation.
 The complete required delivery suites passed 311 tests without skips.
 The no-publish fixture rehearsal exercised real registry, hydration, staging, archive, provenance, checksum, and rollback paths.
 Compilation, SBOM generation, export, and native inspection in that rehearsal use fixtures.
-Actionlint 1.7.7 passed, and 39 workflow/action YAML documents parsed as mappings.
+Actionlint 1.7.7 passed, and 39 GitHub YAML documents parsed as mappings.
 Real Linux/Windows Cargo graphs produced the exact four/one policy selections without architecture errors.
 The action emitted exactly one JSON output line with five nine-field records matching the independent golden.
 
@@ -2574,6 +2578,52 @@ Twenty-three Cargo-backed invalid-input probes rejected invalid registries witho
 Cross-revision selection passed, and missing, empty, or stale-platform registries stopped rehearsal before hydration or builds.
 The complete input and output hashes are unchanged.
 Opus review and final delivery-tooling gates remain pending.
+
+`Claude Opus 5.5` approved the registry and workflow design with three narrow revisions.
+Rehearsal now reports the exact missing exported registry-tool path, consistent with other exported tools.
+The invalid-output test no longer confuses missing-tool and returned-output errors.
+A new missing-tool regression fails before that repair and passes afterward.
+The Cargo metadata README now runs its complete test directory and identifies the independent policy goldens.
+
+The full delivery suite passed 311 cases before these revisions and 312 afterward, without skips.
+Focused rehearsal, fixture rehearsal, README tests, Actionlint, YAML parsing, and real Cargo output checks passed.
+Cargo 1.88, 1.91, and 1.96 produced the same registry output.
+All nineteen removed record copies and all unchanged workflow conditions/gates match their predecessor semantics.
+No current product uses dependency-feature syntax; the validator does not claim support for it.
+Pre-registry revisions remain explicitly unsupported by the documented rehearsal contract.
+
+Opus's fourteen-path output manifest is `47b5a2ef057e07a1435b429fcded2f1eb0b098dcc19a1542230438da0beccca3`.
+Its complete patch, including new files, is `d82bf298353dc5a0dfd6e05099301f9b38a1743952babe7bb3d2f2cb3b574995`.
+Astra's final-tree follow-up includes a scope check of unrelated example-output path changes.
+Final delivery-tooling and hosted gates remain pending.
+
+#### Final Reviews And Publication
+
+Astra approved Opus's three revisions and restored only the two unrelated example output paths.
+The registry documentation remains intact.
+Opus confirmed those documentation restorations and retained final approval without further edits.
+Both named reviews cover manifest `b317b5f5ded3a0804afcf73723832adabcef35b567d9598121a5926c4ceb2e76`.
+The complete pre-staging patch is `5fa24ffd8bfa2cd9c2feb67c6d13a5934b462ceff096716ef9c12ac15dac8473`.
+
+Final delivery validation passed all 312 tests without skips.
+Actionlint passed the three changed workflows.
+Exact real-Cargo checks retained five total products, four Linux products, one Windows product, nine fields, and one GitHub output line.
+All 39 GitHub YAML documents parsed as mappings: 38 workflows/actions and Dependabot configuration.
+Fixture scratch stayed outside the source tree and was removed after validation.
+No unrelated Rust checks are claimed for this tooling-only change.
+
+Implementation commit `00b015f` contains the exact reviewed fourteen-file change, including all four new files.
+The parent squash tree equals predecessor `6add7c19dd3dfdfe9143d167598bf3fc240e14dc`.
+Integration commit `4d1ce5321dd7f95ba2e9abf4f4e742c45637e419` preserves tested tree `58fa427383588a5c0cf803938e12fe969c55011c`.
+Post-integration metadata/rehearsal tests passed 115 cases, and workflow lint passed again.
+[PR #291](https://github.com/AuthScaffold/tacacs-rs/pull/291) targets `main`, contains fourteen paths, and has `skip-release`.
+Fresh Copilot review was requested.
+Required workflow `39379187536` and CodeQL workflow `39379185235` started on its published head.
+Completed review, findings disposition, current-head hosted checks, and clean mergeability remain necessary before merge.
+
+Fresh Copilot review `5581411316` on the published head reports no open issues.
+It explicitly retains hosted workflow execution as a required gate.
+Current-head hosted verification remains in progress.
 
 Introduce one explicit product registry independent of Cargo workspace enrollment.
 Compute caller/reusable workflow matrices through a job output or an equally direct single-source mechanism.
@@ -2612,6 +2662,15 @@ Do not add dependencies or replace libraries just to close an evaluation checkbo
 Set a bounded prototype effort before coding. Stop when a required capability fails or no concrete deletion remains.
 
 ### 15: TOML Editing
+
+Status: bounded evaluation started through `GPT 6.1 Sol`.
+Prototype: `/home/ubuntu/tacacs-rs-15-toml-editing-prototype`, branch `refactor/general-prototypes/15-toml-editing`.
+Integration: `/home/ubuntu/tacacs-rs-15-toml-editing`, branch `refactor/general-iterations/15-toml-editing`.
+Both start from reviewed predecessor `4d1ce5321dd7f95ba2e9abf4f4e742c45637e419` and use separate caches.
+Prototype analysis, implementation, and focused checks have a 45-minute budget.
+Evaluation stops earlier if a required capability fails or no concrete deletion remains.
+Only accepted source can enter integration; rejection or blocked adoption produces a reproducible documentation-only decision.
+Publication remains blocked until predecessor review findings and required checks clear.
 
 Compare TOML Kit with the current hydration implementation.
 Evaluate `toml_edit` only if an existing Rust tool can own the work without another executable.
