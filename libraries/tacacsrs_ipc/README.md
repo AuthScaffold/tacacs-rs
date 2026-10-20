@@ -40,7 +40,7 @@ Provider errors use fixed public status messages. Hosts without a provider retur
 ```text
 tacacsrs_ipc
 ├── client      - ServiceClient wrapper
-├── endpoint    - IpcEndpoint parsing
+├── endpoint    - IpcEndpoint parsing and reusable channel setup
 ├── convert     - private conversions to shared protocol operations
 ├── health      - standard health client
 ├── server      - domain handler, bounded Unix listener, and health publication
@@ -76,6 +76,11 @@ tacacsrs_ipc
 ```
 
 ## IPC endpoint resolution
+
+`IpcEndpoint::connect_channel()` owns Unix and TCP connection setup.
+Service, emulator controller, health, and diagnostics clients use this method.
+Each client retains its channel for later RPCs. Channel clones share the connection.
+Connection errors include the socket path or address.
 
 ```text
 Endpoint string

@@ -11,8 +11,6 @@ build = "build.rs"
 
 [dependencies]
 anyhow = { version = "1.0.102", features = ["backtrace"] }
-http = "1.4.1"
-hyper-util = "0.1.20"
 log = "0.4"
 prost = "0.14.3"
 regorus = { version = "0.12.0", default-features = false, features = ["arc", "regex"] }
@@ -24,7 +22,6 @@ tokio = { version = "1.52.2", features = ["full"] }
 tokio-stream = { version = "0.1.18", features = ["net"] }
 tonic = "0.14.6"
 tonic-prost = "0.14.6"
-tower = { version = "0.5.3", features = ["util"] }
 
 [build-dependencies]
 protoc-bin-vendored = "3.2.0"

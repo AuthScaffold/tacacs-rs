@@ -1,3 +1,10 @@
+//! Policy input projection and shared domain response conversion.
+//!
+//! Accounting and Authorization project raw protobuf fields without domain
+//! request validation. This boundary supports malformed-request scenarios.
+//! Policy responses use shared domain types. Raw handlers retain gRPC status
+//! errors for deliberate fault simulation instead of structured domain errors.
+
 use std::collections::BTreeMap;
 
 use serde_json::{json, Value};

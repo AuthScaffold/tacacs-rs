@@ -1,15 +1,10 @@
 use anyhow::Context;
-use http::Uri;
-use hyper_util::rt::TokioIo;
 use tacacsrs_ipc::IpcEndpoint;
-use tonic::transport::{Channel, Endpoint};
-use tower::service_fn;
+use tonic::transport::Channel;
 
 use crate::controller;
 use crate::controller::tacacs_agent_mock_controller_client::TacacsAgentMockControllerClient as GeneratedControllerClient;
 use crate::policy::{CapturedIpcRequest, EmulatorPolicy};
-
-const UDS_GRPC_CONNECT_URI: &str = "http://[::]:50051";
 
 /// Client for the emulator mock-controller service.
 pub struct MockControllerClient {
@@ -24,7 +19,7 @@ impl MockControllerClient {
     /// Returns an error if the gRPC channel cannot be established.
     pub async fn connect(endpoint: IpcEndpoint) -> anyhow::Result<Self> {
         Ok(Self {
-            inner: GeneratedControllerClient::new(connect_channel(endpoint).await?),
+            inner: GeneratedControllerClient::new(endpoint.connect_channel().await?),
         })
     }
 
@@ -103,37 +98,5 @@ impl MockControllerClient {
             .await
             .context("Failed to shut down IPC emulator")?;
         Ok(())
-    }
-}
-
-async fn connect_channel(endpoint: IpcEndpoint) -> anyhow::Result<Channel> {
-    match endpoint {
-        IpcEndpoint::Unix(path) => {
-            let connect_path = path.clone();
-            Endpoint::try_from(UDS_GRPC_CONNECT_URI)
-                .context("Failed to build the emulator controller Unix domain socket endpoint")?
-                .connect_with_connector(service_fn(move |_: Uri| {
-                    let path = connect_path.clone();
-                    async move {
-                        tokio::net::UnixStream::connect(path)
-                            .await
-                            .map(TokioIo::new)
-                    }
-                }))
-                .await
-                .with_context(|| {
-                    format!(
-                        "Failed to connect to emulator controller Unix domain socket {}",
-                        path.display()
-                    )
-                })
-        }
-        IpcEndpoint::Tcp(address) => Endpoint::from_shared(format!("http://{address}"))
-            .context("Failed to build the emulator controller TCP IPC endpoint")?
-            .connect()
-            .await
-            .with_context(|| {
-                format!("Failed to connect to emulator controller IPC endpoint {address}")
-            }),
     }
 }

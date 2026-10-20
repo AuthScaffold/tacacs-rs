@@ -1,4 +1,4 @@
-//! Shared endpoint parsing for the local TACACS+ service IPC client/server.
+//! Shared endpoint parsing and connection setup for local TACACS+ IPC.
 //!
 //! Both the [`ServiceClient`](crate::ServiceClient) and the service-side
 //! listener use [`IpcEndpoint`] to describe the local communication channel.
@@ -70,6 +70,42 @@ impl IpcEndpoint {
     pub fn default_local() -> Self {
         Self::Unix(PathBuf::from("/run/tacacs/tacacs.sock"))
     }
+
+    /// Establishes a reusable gRPC channel to this local IPC endpoint.
+    ///
+    /// Service, controller, health, and diagnostics clients use the same
+    /// Unix or TCP connection setup. Channel clones share the connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the gRPC endpoint is invalid or the socket is
+    /// unreachable. Connection errors include the socket path or address.
+    pub async fn connect_channel(&self) -> anyhow::Result<Channel> {
+        match self {
+            Self::Unix(path) => {
+                let connect_path = path.clone();
+                Endpoint::try_from(UDS_GRPC_CONNECT_URI)
+                    .context("Failed to build the Unix domain socket gRPC endpoint")?
+                    .connect_with_connector(service_fn(move |_: Uri| {
+                        let path = connect_path.clone();
+                        async move {
+                            tokio::net::UnixStream::connect(path)
+                                .await
+                                .map(TokioIo::new)
+                        }
+                    }))
+                    .await
+                    .with_context(|| {
+                        format!("Failed to connect to IPC Unix domain socket {}", path.display())
+                    })
+            }
+            Self::Tcp(address) => Endpoint::from_shared(format!("http://{address}"))
+                .context("Failed to build the TCP IPC gRPC endpoint")?
+                .connect()
+                .await
+                .with_context(|| format!("Failed to connect to IPC endpoint {address}")),
+        }
+    }
 }
 
 impl FromStr for IpcEndpoint {
@@ -96,40 +132,6 @@ impl FromStr for IpcEndpoint {
             .parse::<SocketAddr>()
             .with_context(|| format!("Invalid IPC endpoint: {value}"))?;
         Ok(Self::Tcp(socket_addr))
-    }
-}
-
-/// Establishes a reusable gRPC channel to a local IPC endpoint.
-///
-/// # Errors
-///
-/// Returns an error when the endpoint cannot be represented as a gRPC
-/// transport or the local socket cannot be reached.
-pub(crate) async fn connect_channel(endpoint: &IpcEndpoint) -> anyhow::Result<Channel> {
-    match endpoint {
-        IpcEndpoint::Unix(path) => {
-            let path = path.clone();
-            let connect_path = path.clone();
-            Endpoint::try_from(UDS_GRPC_CONNECT_URI)
-                .context("Failed to build the Unix domain socket gRPC endpoint")?
-                .connect_with_connector(service_fn(move |_: Uri| {
-                    let path = connect_path.clone();
-                    async move {
-                        tokio::net::UnixStream::connect(path)
-                            .await
-                            .map(TokioIo::new)
-                    }
-                }))
-                .await
-                .with_context(|| {
-                    format!("Failed to connect to service Unix domain socket {}", path.display())
-                })
-        }
-        IpcEndpoint::Tcp(address) => Endpoint::from_shared(format!("http://{address}"))
-            .context("Failed to build the TCP IPC gRPC endpoint")?
-            .connect()
-            .await
-            .with_context(|| format!("Failed to connect to service IPC endpoint {address}")),
     }
 }
 

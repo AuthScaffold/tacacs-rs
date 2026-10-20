@@ -30,7 +30,7 @@ impl DiagnosticsClient {
     /// Returns an error if the local channel cannot be established.
     pub async fn connect(endpoint: IpcEndpoint) -> anyhow::Result<Self> {
         Ok(Self {
-            channel: crate::endpoint::connect_channel(&endpoint).await?,
+            channel: endpoint.connect_channel().await?,
         })
     }
 

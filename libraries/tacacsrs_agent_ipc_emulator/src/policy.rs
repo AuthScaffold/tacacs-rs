@@ -17,9 +17,9 @@ pub const DECISION_QUERY: &str = "data.tacacs.emulator.decision";
 
 /// An Open Policy Agent policy that drives the emulator.
 ///
-/// The policy contains Rego source and a fixed JSON data document. Compilation
-/// loads the data once. Each evaluation supplies the captured TACACS+ request
-/// as Rego `input`.
+/// This value contains source and data, not a compiled engine. File loaders
+/// read source and decode JSON without compilation. Emulator startup compiles
+/// the completed policy once before it binds the endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmulatorPolicy {
     /// Rego policy source.
@@ -27,6 +27,20 @@ pub struct EmulatorPolicy {
     /// Fixed policy data document. Defaults to an empty object.
     #[serde(default = "empty_object")]
     pub data: Value,
+}
+
+#[cfg(test)]
+thread_local! {
+    static COMPILATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Returns the number of [`EmulatorPolicy::compile`] calls on this thread.
+///
+/// The count includes every policy value, including clones. Tests await
+/// startup on the test thread, so parallel tests do not share counts.
+#[cfg(test)]
+pub(crate) fn compilations_on_current_thread() -> usize {
+    COMPILATIONS.with(std::cell::Cell::get)
 }
 
 fn empty_object() -> Value {
@@ -54,39 +68,35 @@ impl EmulatorPolicy {
     ///
     /// # Errors
     ///
-    /// Returns an error if the file cannot be read or the policy cannot be
-    /// compiled.
+    /// Returns an error if the file cannot be read. [`Self::compile`] validates
+    /// the Rego source and data after loading.
     pub fn from_file(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = path.as_ref();
         let rego = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read IPC emulator policy {}", path.display()))?;
-        let policy = Self::new(rego);
-        policy.compile()?;
-        Ok(policy)
+        Ok(Self::new(rego))
     }
 
     /// Reads a Rego policy file without blocking the async runtime.
     ///
     /// # Errors
     ///
-    /// Returns an error if the file cannot be read or the policy cannot be
-    /// compiled.
+    /// Returns an error if the file cannot be read. [`Self::compile`] validates
+    /// the Rego source and data after loading.
     pub async fn from_file_async(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = path.as_ref().to_path_buf();
         let rego = tokio::fs::read_to_string(&path)
             .await
             .with_context(|| format!("Failed to read IPC emulator policy {}", path.display()))?;
-        let policy = Self::new(rego);
-        policy.compile()?;
-        Ok(policy)
+        Ok(Self::new(rego))
     }
 
     /// Reads a Rego policy file together with a JSON data document file.
     ///
     /// # Errors
     ///
-    /// Returns an error if either file cannot be read or parsed, or if the
-    /// policy cannot be compiled.
+    /// Returns an error if either file cannot be read or the JSON is invalid.
+    /// [`Self::compile`] validates the Rego source and data shape after loading.
     pub async fn from_files_async(
         policy_path: impl AsRef<Path>,
         data_path: impl AsRef<Path>,
@@ -101,21 +111,23 @@ impl EmulatorPolicy {
         let data: Value = serde_json::from_str(&data).with_context(|| {
             format!("Failed to parse IPC emulator policy data {}", data_path.display())
         })?;
-        let policy = policy.with_data(data);
-        policy.compile()?;
-        Ok(policy)
+        Ok(policy.with_data(data))
     }
 
     /// Compiles the policy into a ready-to-evaluate [`Engine`].
     ///
-    /// The Rego source and fixed data are loaded once; only `input` changes
-    /// between evaluations.
+    /// This method parses the Rego source and loads the fixed data.
+    /// File loaders do not call this method. Startup and policy replacement
+    /// call it once for each completed policy. Only `input` changes between
+    /// evaluations.
     ///
     /// # Errors
     ///
     /// Returns an error if the Rego source cannot be parsed or the data cannot
     /// be loaded.
     pub fn compile(&self) -> anyhow::Result<Engine> {
+        #[cfg(test)]
+        COMPILATIONS.with(|count| count.set(count.get() + 1));
         let mut engine = Engine::new();
         engine
             .add_policy("policy.rego".to_owned(), self.rego.clone())
