@@ -2323,7 +2323,7 @@ Checks: public facade/example compilation, daemon lifecycle and host cancellatio
 
 ### 12: Load Scheduler
 
-Status: both named reviews and final local gates are complete; published as PR #289 against `main`.
+Status: PR #289 merged as `724d7f11227dc4610af514cd95e3806f8b7451dd` after both named reviews and all current-head gates passed.
 Scope: the scheduler portion of R15.
 Worktree: `/home/ubuntu/tacacs-rs-12-load-scheduler`; branch: `refactor/general-iterations/12-load-scheduler`.
 Predecessor: `7cd8321ad43023ec2ccbe0f3e77ee53011dc8b5f`, the reviewed iteration 11 publication head.
@@ -2384,6 +2384,16 @@ Completed review, findings disposition, current-head required checks, and clean 
 Fresh Copilot review `5580724669` on the published head recommends approval and reports no open issues.
 Current-head hosted verification remains in progress.
 
+#### Merge Receipt
+
+Every current-head hosted check subsequently passed, including supported platform builds and execution.
+The final recheck found the expected reviewed head, clean mergeability, and no unresolved review threads.
+PR #289 was squash-merged as `724d7f11227dc4610af514cd95e3806f8b7451dd` at 2026-10-20 04:54 UTC.
+No protection bypass, release, or tag was used.
+The merged source tree exactly matches reviewed head `db09b0270954b8b7c9ed77de010a38d28cebd6d1`.
+The clean worktree and its 17 GiB cache have no active directory users.
+Their cleanup awaits preservation of this receipt.
+
 Remove the workload-sized Boolean result vector and duplicate success recount.
 Drain in-flight work and derive completion from the existing counter.
 Do not add per-request history merely to replace deleted state.
@@ -2394,13 +2404,53 @@ Do not claim a measured memory improvement without a measurement.
 
 ### 13: Emulator Cleanup
 
-Status: implementation started through `GPT 6.1 Sol`.
+Status: implementation is complete in two coherent local commits; named reviews and final common gates remain pending.
 Scope: the emulator connector and compilation portions of R15.
 Worktree: `/home/ubuntu/tacacs-rs-13-emulator-cleanup`; branch: `refactor/general-iterations/13-emulator-cleanup`.
 Predecessor: `db09b0270954b8b7c9ed77de010a38d28cebd6d1`, the reviewed iteration 12 publication head.
 The implementation delegate can create the two required coherent local commits after focused checks, but cannot publish or rewrite history.
 Both named reviews will cover the complete predecessor-to-final change.
 Publication remains blocked until predecessor review findings and required checks clear.
+
+#### Implementation Handoff
+
+`GPT 6.1 Sol` created connector commit `cda07f3c3947a97497ef4250f89007f2e2bf198a` and compilation commit `b80ea680d5336ff02b52e888cdf64193091424b0`.
+Both contain the required co-author trailer; the worktree is clean.
+The complete change covers twenty paths, including six new test and fixture files.
+
+`IpcEndpoint::connect_channel()` now owns shared Unix/TCP setup for service, controller, health, and diagnostics clients.
+Repeated client/controller calls and service clones use two accepted reusable connections in the regression.
+Endpoint identity and underlying error causes remain visible.
+The emulator no longer directly depends on `http`, `hyper-util`, or `tower`.
+The lockfile removes only those three edges, without package version or transitive package changes.
+
+File loading now reads source and decodes JSON separately from compilation.
+Startup compiles the completed policy before listener setup.
+Per-policy test instrumentation measured startup counts changing from 2/3 to 1/1 without/with data.
+File-based TCP/Unix startup counts changed from 2/2 to 1/1.
+Corrected pre-change regression cases reproduced those extra compilations before the production repair.
+Failed replacements retain the active engine and captures; successful replacements still clear captures.
+Raw status errors, malformed-request projection, and shutdown-based transport faults remain available.
+Documentation separates normal domain fidelity from production request validation and deliberate faults.
+
+Focused tests passed 71 cases without ignored tests, including emulator, IPC, and daemon process coverage.
+Strict targeted nightly Clippy, private docs, stable build, MSRV checks, formatting, and whitespace checks passed.
+Architecture tests passed 35 cases, and Linux/Windows metadata guards passed.
+The isolated IPC consumer passed 42 cases.
+Audit passed with the configured yanked `chacha20 0.10.1` warning.
+Selected unused-dependency checks passed with the action's `--cfg tokio_unstable` flag.
+The reporting-only freshness check completed and reported available updates.
+
+Complete twenty-path content manifest: `7e8e94d391ef89b029a4e8937979e2d62d014ece06293a11706e95dea22b3f34`.
+Full-index predecessor-to-tree patch: `ff09d71edc832a05373ba0af506f19774f1096367e724e612bdda6522959628f`.
+Both named reviews and final common workspace gates remain pending.
+
+`GPT 6 Astra` reviewed all twenty paths, including every new fixture, and approved without revisions.
+It independently passed 71 focused tests, 42 isolated IPC cases, and 35 architecture tests.
+Targeted formatting, Clippy, docs, build, MSRV, unused-dependency checks, and both metadata guards passed.
+Its cached audit excluded yanked checks; the earlier online audit and freshness evidence remain applicable.
+Input and output hashes are unchanged.
+Opus review and final common workspace gates remain pending.
 
 Use one narrow IPC endpoint connection method for controller and service clients.
 Remove connector-only dependencies that become unused.
