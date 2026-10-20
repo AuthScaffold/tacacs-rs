@@ -37,7 +37,7 @@ RUN rustup toolchain install 1.88.0 --profile minimal --component clippy --compo
 
 RUN python3 -m venv /opt/tacacs-python \
     && /opt/tacacs-python/bin/python -m pip install --no-cache-dir \
-        pyang==2.7.1 pytest==8.4.2 PyYAML==6.0.3
+        pyang==2.7.1 pytest==8.4.2 PyYAML==6.0.3 tomlkit==0.15.2
 
 RUN cargo +stable install --locked --root /opt/tacacs-tools \
         cargo-audit cargo-fuzz cargo-llvm-cov cargo-outdated cargo-udeps mdbook

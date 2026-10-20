@@ -164,6 +164,16 @@ or the exported source, staging, packaged, release, or rollback directories.
 The tool does not delete the cache. A shared cache does not permit existing
 release output.
 
+The local Python environment requires the pinned
+[hydration dependency](../.github/steps/inject-versions/README.md#requirements).
+Install this dependency before the rehearsal:
+
+```bash
+python3 -m pip install -r .github/steps/inject-versions/requirements.txt
+```
+
+The rehearsal never installs missing tools.
+
 ```bash
 python3 .github/steps/release-manifest/rehearse_linux.py \
   --source . \

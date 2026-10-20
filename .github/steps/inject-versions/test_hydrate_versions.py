@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import textwrap
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -160,3 +161,21 @@ def test_excludes_non_member_manifests(tmp_path: Path) -> None:
 
     with pytest.raises(HydrationError, match="no Cargo.toml exists"):
         hydrate(tmp_path, {"demo-fuzz": "1.0.0"})
+
+
+@pytest.mark.parametrize("manifest", [
+    '[ "package" ] # table comment\nname="demo"\nversion="0.0.0-dev" # keep\nedition="2021"\n',
+    "package.name='demo'\npackage.version='0.0.0-dev'\npackage.edition='2021'\n",
+    "package = { name = 'demo', version = '0.0.0-dev', edition = '2021' }\n",
+])
+def test_hydrates_cargo_valid_alternate_formatting(tmp_path: Path, manifest: str) -> None:
+    write_workspace(tmp_path)
+    path = tmp_path / "crates/demo/Cargo.toml"
+    path.write_text(manifest)
+
+    assert set(manifest_packages(tmp_path)) == {"demo"}
+    hydrate(tmp_path, {"demo": "1.2.3"})
+    first = path.read_bytes()
+    assert tomllib.loads(first.decode())["package"]["version"] == "1.2.3"
+    hydrate(tmp_path, {"demo": "1.2.3"})
+    assert path.read_bytes() == first
