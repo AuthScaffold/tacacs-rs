@@ -2662,6 +2662,10 @@ The merged source tree exactly matches the reviewed repair head.
 The clean worktree and its dedicated cache have no active directory users.
 Cleanup awaits preservation of this receipt.
 
+Tracking commit `4181ae7` preserved the receipt before cleanup.
+The coordinator removed the clean merged registry worktree without force, its exact cache, and its path-specific Rust override.
+Global Actionlint remains installed, and both TOML worktrees remain intact.
+
 Introduce one explicit product registry independent of Cargo workspace enrollment.
 Compute caller/reusable workflow matrices through a job output or an equally direct single-source mechanism.
 Derive Linux rehearsal selection from the same registry.
@@ -2700,7 +2704,7 @@ Set a bounded prototype effort before coding. Stop when a required capability fa
 
 ### 15: TOML Editing
 
-Status: TOML Kit adoption is proposed; Astra's direct integration review is in progress.
+Status: both final reviews and accepted-environment gates are complete; published as PR #292 against `main`.
 Prototype: `/home/ubuntu/tacacs-rs-15-toml-editing-prototype`, branch `refactor/general-prototypes/15-toml-editing`.
 Integration: `/home/ubuntu/tacacs-rs-15-toml-editing`, branch `refactor/general-iterations/15-toml-editing`.
 Both start from reviewed predecessor `4d1ce5321dd7f95ba2e9abf4f4e742c45637e419` and use separate caches.
@@ -2770,7 +2774,7 @@ The final combined delivery/bootstrap suite passed 368 cases without skips.
 Fixture and pin checks passed five additional selected cases.
 All seventeen actual manifests and the actual lockfile still match predecessor goldens in semantics and complete bytes.
 
-The final production delta is now 67 additions and 62 deletions, not a net line reduction.
+Astra's reviewed production delta was 67 additions and 62 deletions, not a net line reduction.
 The custom section/block parser, offset slicing, reconstruction, and lock cursor machinery remain removed.
 Cargo metadata remains the only workspace-member authority.
 Canonical ten-path review output manifest: `25fdbc6d2f613550928e38d528a281f46d6be92fe43eeec0f6d288e23720155e`.
@@ -2780,6 +2784,102 @@ Opus review and final environment/tooling gates remain pending.
 The coordinator queried OSV and GitHub advisories for pinned PyPI package `tomlkit 0.15.2`.
 Neither source returned a published advisory at the time of the check.
 This result, supplier hashes, and `pip check` do not establish absence of vulnerabilities.
+
+#### Second Direct Review And Canonical Cargo References
+
+`Claude Opus 5.5` recommends adoption after two material reference corrections and a related guide update.
+Git qualifiers must omit the precise revision; the official unlocked build otherwise rewrites the hydrated reference.
+Reverse collisions must also remove an external qualifier when the changed local version no longer needs it.
+The new `lock_references` helper computes minimal Cargo references before and after mutation and replaces only changed references.
+Version qualification distinguishes multiple versions; source qualification distinguishes remaining identical name/version identities.
+Selected external entries without a version now raise `HydrationError`.
+The development-container guide now lists the new Python dependency.
+
+Thirteen real Cargo transitions cover registry, Git, mixed sources, and both change directions.
+Six added regressions fail the prior review input.
+The revised output matches canonical reference bytes in eleven transitions.
+Two remaining differences concern package/dependency ordering, a documented predecessor limitation.
+No universal Cargo-byte-canonical claim is made for arbitrary same-name package graphs.
+All eighteen real project outputs still match predecessor bytes and TOML values and remain idempotent.
+
+The combined final delivery/bootstrap selection passed 373 cases without skips.
+Focused hydration/version tests passed 147 cases, and fixture/pin selections passed five.
+Workflow lint, dependency consistency, local links, whitespace, and reverse-patch checks passed.
+Opus's reviewed production delta was 82 additions and 66 deletions, with no line-reduction claim.
+The structural benefit remains removal of the custom parser plus explicit Cargo identity handling and validation.
+The accepted diff now contains eleven paths, including `docs/dev-container.md`.
+
+Opus's output manifest: `07a21822d2ba680f18a06ce613e3e7aa1c7b83fc6522b63b2645d2ec2f48549d`.
+Complete output patch: `69c2b208586f25b252d98977e7c71b18a7c70ff0896ab83a1c59cb898533244a`.
+Astra's explicit final-tree review and global pin provisioning remain pending.
+The coordinator validated the image's actual base and apt/Python provisioning blocks.
+The resulting Python 3.11.2 environment imported the exact four image package pins, including TOML Kit 0.15.2, and passed dependency checks.
+The smoke container ran read-only without a network, and its temporary image was removed.
+This limited check does not rebuild the unchanged Rust/Cargo/TACACS image layers.
+
+#### Accepted Reference Forms And Unaffected Text
+
+Astra's final-tree follow-up found two remaining defects and repaired them.
+Cargo accepts explicit qualifiers and some unqualified local references beyond its minimal serialized spellings.
+The previous map could leave a qualified local reference at its old version or retain an unnecessary Git revision.
+The repair generates accepted spellings from structured package identities and maps only affected references to their new minimal form.
+Five new real Cargo cases validate accepted inputs before hydration and resolution afterward.
+
+The previous map also rewrote unchanged dependency literals and changed their quotes.
+Unchanged identities and reference strings are now excluded from replacements, preserving their exact text.
+Six new regressions failed the prior output before the fixes.
+Focused tests passed 155 cases, and the combined delivery/bootstrap suite passed 381 without skips.
+Fixture and pin selections passed five cases.
+The thirteen-transition identity probe still preserves semantics in every case and retains the documented two ordering-only differences.
+
+The current production delta is 100 additions and 65 deletions, not a line reduction.
+The custom parser remains removed; the additional code handles Cargo identities, accepted reference forms, and validation.
+Astra recommends adoption of this revised tree, subject to Opus confirmation.
+Current eleven-path manifest: `7293d5599b7d71f79cb8e9f7d3c6ed7ee067b5bd736c50552ee17dea4c77991b`.
+Complete current patch: `c1bc56a650af41e53a0c8e5ab5ab12cade1e8c5eae7b7721fedac667b5255233`.
+Global provisioning and final local/hosted gates remain pending.
+
+#### Final Runtime Approval And Global Validation
+
+Opus approved Astra's revised runtime without edits.
+Seven layouts produced 42 reference-spelling trials: 25 accepted by Cargo and seventeen rejected.
+The generated accepted-spelling sets matched Cargo without differences.
+All 25 accepted spellings passed hydration to both target versions, giving fifty successful checks and idempotent output.
+The prior Opus hydrator failed six final regressions, confirming the defects and repaired coverage.
+Both named reviewers approve the same runtime code.
+
+The coordinator installed TOML Kit 0.15.2 into `/opt/tacacs-python` from the unchanged canonical requirements.
+Global dependency checks and an import/parse smoke check passed.
+The final global-environment delivery/bootstrap suite passed 381 tests without skips.
+`RUSTUP_TOOLCHAIN=1.88.0` explicitly selected Cargo 1.88 for child processes.
+An additional private-Cargo-home spelling probe passed 42 trials and fifty hydrations with zero mismatches or failures.
+Python 3.11 grammar, all 39 GitHub YAML mappings, workflow lint, whitespace, and protected-file checks passed.
+
+Opus clarified the README's Cargo-home and offline/no-dependency distinctions without changing runtime code, tests, or pins.
+Registry/Git resolution fixtures use private homes and local sources; unique-local commands use the active home offline.
+Member discovery uses `cargo metadata --no-deps`, not an `--offline` claim.
+The documentation-only output manifest is `5ea03e184f5052db3255e1c97ec85c08ee9ea8a3733fdd7b5ee5c785bdfda2f6`.
+Its complete patch is `4ea17e6b2b25cf2b2b024e288176266c46425bf996becd9695c6c4106eb421be`.
+Astra's narrow final documentation confirmation remains pending.
+
+#### Final Confirmation And Publication
+
+Astra confirmed the documentation-only output and retained adoption approval without further edits.
+Both named reviewers cover final eleven-path manifest `5ea03e184f5052db3255e1c97ec85c08ee9ea8a3733fdd7b5ee5c785bdfda2f6`.
+The complete pre-staging patch is `4ea17e6b2b25cf2b2b024e288176266c46425bf996becd9695c6c4106eb421be`.
+Implementation commit `6d03694` contains exactly those eleven paths, including the four new files.
+
+The iteration 14 squash tree equals predecessor `e025b0d2b7d40530c876bab8ff323918ba877815`.
+Integration commit `680b6f3c8c813e6f3c803673975a4bd73208c433` preserves exact validated tree `22a71317133784a89a5e71d12259fedd430352ff`.
+All 381 global-environment tests and workflow lint passed again after integration.
+[PR #292](https://github.com/AuthScaffold/tacacs-rs/pull/292) targets `main`, contains no experimental files, and has `skip-release`.
+Fresh Copilot review was requested.
+Required workflow `39391294960` and CodeQL workflow `39391292213` started on its published head.
+Completed review, actionable findings disposition, current-head hosted checks, and clean mergeability remain necessary before merge.
+
+Fresh Copilot review `5582436859` on the published head reports no open issues.
+It retains current-head hosted platform execution as a required release-tooling gate.
+Hosted verification remains in progress.
 
 Compare TOML Kit with the current hydration implementation.
 Evaluate `toml_edit` only if an existing Rust tool can own the work without another executable.
@@ -2794,6 +2894,16 @@ Do not require byte identity where the intended structural edit legitimately cha
 Checks: hydration/version/rehearsal Python suites, fixture-based no-publish rehearsal, dependency/tool installation checks, and review of all environment changes.
 
 ### 16: Systemd Notifications
+
+Status: bounded evaluation started through `GPT 6.1 Sol`.
+Prototype: `/home/ubuntu/tacacs-rs-16-systemd-notifications-prototype`, branch `refactor/general-prototypes/16-systemd-notifications`.
+Integration: `/home/ubuntu/tacacs-rs-16-systemd-notifications`, branch `refactor/general-iterations/16-systemd-notifications`.
+Both start from reviewed predecessor `680b6f3c8c813e6f3c803673975a4bd73208c433` and use separate caches.
+Prototype analysis, implementation, and focused checks have a 45-minute budget, with at most two credible library candidates.
+Required capability failure or lack of concrete deletion ends the prototype early.
+Only private sockets and owned processes are permitted; real host service notifications and configuration changes are excluded.
+Rejected or blocked adoption produces a reproducible documentation-only integration decision.
+Publication remains blocked until predecessor review findings and required checks clear.
 
 Compare direct notification APIs with the subprocess owner.
 Test pathname and abstract sockets, sender attribution, auto/strict selection, retries, and one-shot ready/stopping behavior.
