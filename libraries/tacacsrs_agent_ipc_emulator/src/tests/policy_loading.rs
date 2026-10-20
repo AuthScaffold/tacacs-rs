@@ -70,7 +70,7 @@ async fn invalid_startup_policy_does_not_touch_the_endpoint() {
 }
 
 #[tokio::test]
-async fn rejected_replacements_retain_policy_and_captured_requests() {
+async fn replacements_retain_state_until_compilation_succeeds() {
     let (emulator, endpoint) = IpcEmulator::from_policy(EmulatorPolicy::new(ACCOUNTING_POLICY))
         .await
         .unwrap();
@@ -104,6 +104,12 @@ async fn rejected_replacements_retain_policy_and_captured_requests() {
         assert_eq!(response.server, "primary");
     }
     assert_eq!(emulator.captured_requests().await.len(), 4);
+
+    controller
+        .load_policy(&EmulatorPolicy::new(ACCOUNTING_POLICY))
+        .await
+        .unwrap();
+    assert!(emulator.captured_requests().await.is_empty());
     drop(controller);
     drop(client);
     emulator.shutdown().await;

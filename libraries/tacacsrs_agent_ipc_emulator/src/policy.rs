@@ -27,9 +27,20 @@ pub struct EmulatorPolicy {
     /// Fixed policy data document. Defaults to an empty object.
     #[serde(default = "empty_object")]
     pub data: Value,
-    #[cfg(test)]
-    #[serde(skip)]
-    pub(crate) compile_count: std::cell::Cell<usize>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static COMPILATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Returns the number of [`EmulatorPolicy::compile`] calls on this thread.
+///
+/// The count includes every policy value, including clones. Tests await
+/// startup on the test thread, so parallel tests do not share counts.
+#[cfg(test)]
+pub(crate) fn compilations_on_current_thread() -> usize {
+    COMPILATIONS.with(std::cell::Cell::get)
 }
 
 fn empty_object() -> Value {
@@ -43,8 +54,6 @@ impl EmulatorPolicy {
         Self {
             rego: rego.into(),
             data: empty_object(),
-            #[cfg(test)]
-            compile_count: std::cell::Cell::new(0),
         }
     }
 
@@ -118,7 +127,7 @@ impl EmulatorPolicy {
     /// be loaded.
     pub fn compile(&self) -> anyhow::Result<Engine> {
         #[cfg(test)]
-        self.compile_count.set(self.compile_count.get() + 1);
+        COMPILATIONS.with(|count| count.set(count.get() + 1));
         let mut engine = Engine::new();
         engine
             .add_policy("policy.rego".to_owned(), self.rego.clone())

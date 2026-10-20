@@ -225,9 +225,23 @@ async fn remove_unix_socket(path: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+
     use super::*;
+    use crate::policy::compilations_on_current_thread;
 
     const POLICY: &str = "package tacacs.emulator";
+
+    /// Counts policy compilations while loading and starting one emulator.
+    async fn startup_compilations(
+        start: impl Future<Output = anyhow::Result<(IpcEmulator, IpcEndpoint)>>,
+    ) -> usize {
+        let before = compilations_on_current_thread();
+        let (emulator, _) = start.await.unwrap();
+        let count = compilations_on_current_thread() - before;
+        emulator.shutdown().await;
+        count
+    }
 
     #[tokio::test]
     async fn completed_startup_policy_compiles_once() {
@@ -236,20 +250,15 @@ mod tests {
         let data = directory.path().join("data.json");
         std::fs::write(&source, POLICY).unwrap();
         std::fs::write(&data, r#"{"fixed": true}"#).unwrap();
-        let mut counts = Vec::new();
-        for with_data in [false, true] {
-            let policy = if with_data {
-                EmulatorPolicy::from_files_async(&source, &data)
-                    .await
-                    .unwrap()
-            } else {
-                EmulatorPolicy::from_file_async(&source).await.unwrap()
-            };
-            let (emulator, _) = IpcEmulator::from_policy(policy).await.unwrap();
-            counts.push(emulator.state.lock().await.compile_count());
-            emulator.shutdown().await;
-        }
-        assert_eq!(counts, [1, 1], "startup without and with fixed data");
+        let without_data = startup_compilations(async {
+            IpcEmulator::from_policy(EmulatorPolicy::from_file_async(&source).await?).await
+        })
+        .await;
+        let with_data = startup_compilations(async {
+            IpcEmulator::from_policy(EmulatorPolicy::from_files_async(&source, &data).await?).await
+        })
+        .await;
+        assert_eq!([without_data, with_data], [1, 1], "startup without and with fixed data");
     }
 
     #[tokio::test]
@@ -257,18 +266,12 @@ mod tests {
         let directory = tempfile::tempdir_in(".").unwrap();
         let source = directory.path().join("policy.rego");
         std::fs::write(&source, POLICY).unwrap();
-        let (emulator, _) = IpcEmulator::from_file(&source).await.unwrap();
-        let tcp_count = emulator.state.lock().await.compile_count();
-        emulator.shutdown().await;
-
-        let (emulator, _) = IpcEmulator::from_file_at_endpoint(
+        let tcp_count = startup_compilations(IpcEmulator::from_file(&source)).await;
+        let unix_count = startup_compilations(IpcEmulator::from_file_at_endpoint(
             &source,
             IpcEndpoint::Unix(directory.path().join("emulator.sock")),
-        )
-        .await
-        .unwrap();
-        let unix_count = emulator.state.lock().await.compile_count();
-        emulator.shutdown().await;
+        ))
+        .await;
         assert_eq!([tcp_count, unix_count], [1, 1]);
     }
 }
