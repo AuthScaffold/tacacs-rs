@@ -500,6 +500,72 @@ fn waiting_proxy_cannot_treat_unresolved_row_credentials_as_plaintext() {
 }
 
 #[tokio::test]
+async fn upstream_only_reload_cannot_restore_a_rotated_proxy_secret() {
+    use tacacsrs_config::proxy_policy::prepare_proxy_policy;
+    use tacacsrs_config::tacacsrs::ProxyCredentialSource;
+    use tacacsrs_secrets::SecretString;
+
+    let mut config =
+        service_config(test_endpoint("proxy-secret-race"), vec![test_server("primary:49")]);
+    config.local_services.tacacs_proxy_enabled = true;
+    config.local_services.tacacs_proxy_endpoint = Some("127.0.0.1:9050".to_owned());
+    config.local_services.proxy_credential_source = ProxyCredentialSource::Inline;
+    config.local_services.proxy_shared_secret =
+        Some(SecretString::new("old-downstream-key".to_owned()));
+    let source = config.tacacs_plus.clone();
+    let mut rotated = config.local_services.clone();
+    rotated.proxy_shared_secret = Some(SecretString::new("new-downstream-key".to_owned()));
+    let rotated = prepare_proxy_policy(&rotated, None).unwrap();
+    let service = test_service(config).unwrap();
+
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    *service.implicit_reload_pause.lock().unwrap() = Some((entered.clone(), release.clone()));
+    let upstream_reload = service.reload_tacacs_plus(source.clone());
+    tokio::pin!(upstream_reload);
+    tokio::select! {
+        biased;
+        () = entered.notified() => {}
+        result = &mut upstream_reload => panic!("reload did not pause: {result:?}"),
+    }
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        service
+            .reload_tacacs_plus_with_proxy_downstream_obfuscation(source.clone(), rotated.clone()),
+    )
+    .await
+    .expect("secret rotation must not wait for the paused upstream reload")
+    .unwrap();
+    let committed = service.health.snapshot();
+    release.notify_one();
+    let result = upstream_reload.await;
+    assert!(result.is_err(), "the stale implicit proxy policy must not publish");
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("catalog changed during preparation"),
+        "the original catalog identity must fence publication"
+    );
+    assert_eq!(service.health.snapshot(), committed);
+    assert_eq!(
+        service
+            .manager
+            .proxy_transport_settings()
+            .downstream_obfuscation(),
+        &rotated
+    );
+    service.reload_tacacs_plus(source).await.unwrap();
+    assert_eq!(
+        service
+            .manager
+            .proxy_transport_settings()
+            .downstream_obfuscation(),
+        &rotated
+    );
+}
+
+#[tokio::test]
 async fn service_publication_preserves_explicit_source_validation_policy() {
     let mut plain = test_server("primary:49");
     plain.shared_secret = None;

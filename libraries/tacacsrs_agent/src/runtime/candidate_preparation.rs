@@ -56,10 +56,10 @@ impl CandidateAdmission {
         let (control, scope) = WorkScope::new(permit);
         Ok(Arc::new(Preparation {
             admission: self,
-            ledger: Mutex::new(ConfigurationMaterialBudget::new(
+            ledger: Arc::new(Mutex::new(ConfigurationMaterialBudget::new(
                 self.limits.material_bytes,
                 self.limits.requests,
-            )),
+            ))),
             scope,
             control,
             #[cfg(test)]
@@ -71,7 +71,7 @@ impl CandidateAdmission {
 #[derive(Debug)]
 pub(crate) struct Preparation {
     pub(crate) admission: CandidateAdmission,
-    pub(crate) ledger: Mutex<ConfigurationMaterialBudget>,
+    pub(crate) ledger: Arc<Mutex<ConfigurationMaterialBudget>>,
     pub(crate) scope: WorkScope,
     control: WorkScopeControl,
     #[cfg(test)]
@@ -98,6 +98,9 @@ impl Drop for ReleaseProbe {
 }
 
 impl Preparation {
+    pub(crate) fn payload_ledger(&self) -> Arc<dyn tacacsrs_networking::PreparationPayloadLedger> {
+        Arc::new(PreparedPayloadLedger(Arc::clone(&self.ledger)))
+    }
     pub(crate) fn with_ledger<Output>(
         &self,
         update: impl FnOnce(&mut ConfigurationMaterialBudget) -> anyhow::Result<Output>,
@@ -118,6 +121,25 @@ impl Preparation {
             .ok_or_else(|| anyhow::anyhow!("candidate deadline exceeds the clock range"))?;
         anyhow::ensure!(Instant::now() < effective, "candidate preparation deadline exceeded");
         self.with_ledger(|ledger| ledger.check(current.material_bytes, current.requests))
+    }
+}
+
+#[derive(Debug)]
+struct PreparedPayloadLedger(Arc<Mutex<ConfigurationMaterialBudget>>);
+
+impl tacacsrs_networking::PreparationPayloadLedger for PreparedPayloadLedger {
+    fn reserve(&self, bytes: u64) -> anyhow::Result<()> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .reserve_extra(bytes)
+    }
+
+    fn release(&self, bytes: u64) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .release_extra(bytes);
     }
 }
 
@@ -179,8 +201,13 @@ pub(crate) mod test_support {
         }
     }
 
-    pub(crate) async fn publication_candidate() -> (
-        PublicationCandidate<impl FnOnce() -> Option<crate::runtime::MaterializationCommit> + Send>,
+    pub(crate) async fn publication_candidate<
+        Connector: tacacsrs_networking::routed::EndpointConnector,
+    >() -> (
+        PublicationCandidate<
+            impl FnOnce() -> Option<crate::runtime::MaterializationCommit> + Send,
+            Connector,
+        >,
         DisposalObservation,
     ) {
         let slot = Arc::new(Semaphore::new(1));

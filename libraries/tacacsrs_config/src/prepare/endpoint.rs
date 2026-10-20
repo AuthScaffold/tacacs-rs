@@ -24,13 +24,23 @@ use crate::crypto_types::{PrivateKeyFormat, PublicKeyFormat};
 ///
 /// let options = PrepareOptions::default().with_timeout(Duration::from_secs(1));
 /// ```
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct PrepareOptions {
     certificate_verification: CertificateVerification,
     preflight: ConnectPreflight,
+    payload_ledger: Option<std::sync::Arc<dyn tacacsrs_networking::PreparationPayloadLedger>>,
 }
 
 impl PrepareOptions {
+    /// Uses one candidate ledger for Rust-owned endpoint preparation payload.
+    #[must_use]
+    pub fn with_payload_ledger(
+        mut self,
+        ledger: std::sync::Arc<dyn tacacsrs_networking::PreparationPayloadLedger>,
+    ) -> Self {
+        self.payload_ledger = Some(ledger);
+        self
+    }
     /// Selects the certificate verification policy.
     ///
     /// CAUTION: `DisabledForDevelopment` permits server impersonation. Do not use it in production.
@@ -94,6 +104,18 @@ pub fn prepare_endpoint(
             "A TLS client identity cannot select both certificate and PSK authentication"
         );
     }
+    let payload = options
+        .payload_ledger
+        .map(tacacsrs_networking::PreparationPayload::new)
+        .unwrap_or_default();
+    if server.address.parse::<std::net::IpAddr>().is_err() {
+        payload.retain(server.address.len())?;
+    }
+    if let Some(secret) = &server.shared_secret {
+        payload.retain(secret.expose_secret().len())?;
+    }
+    payload.retain(server.name.len())?;
+    payload.retain(server.name.len())?;
     let address = ServerAddress::new(&server.address, server.port)?;
     let finalize = |transport| {
         PreparedEndpoint::new(
@@ -105,6 +127,7 @@ pub fn prepare_endpoint(
                 .with_timeout(server.timeout_duration())
                 .with_preflight(options.preflight),
         )
+        .with_preparation_payload(payload.clone())
     };
     if let Some(epsk) = server
         .client_identity
@@ -126,12 +149,13 @@ pub fn prepare_endpoint(
             .copied()
             .map(psk_group)
             .collect::<Vec<_>>();
-        return Ok(finalize(PreparedTransport::Psk(PskClientConfig::prepare(
+        return Ok(finalize(PreparedTransport::Psk(PskClientConfig::prepare_with_payload(
             &epsk.external_identity,
             key.expose_secret(),
             hash,
             &groups,
             tls_sni_name(server)?,
+            payload.clone(),
         )?)));
     }
     if !server.is_tls() {
@@ -175,12 +199,13 @@ pub fn prepare_endpoint(
         .flat_map(|inline| inline.intermediate_certificate.iter().map(Vec::as_slice))
         .collect::<Vec<_>>();
     let identity = certificate_identity(server, &intermediates)?;
-    let config = TlsClientConfig::prepare(
+    let config = TlsClientConfig::prepare_with_payload(
         certificate_peer_identity(server),
         tls_sni_name(server)?,
         trust,
         identity,
         options.certificate_verification,
+        payload.clone(),
     )?
     .with_revocation_policy(certificate_revocation(server)?)?;
     Ok(finalize(PreparedTransport::Tls(apply_crl_evidence(config, server)?)))
@@ -339,6 +364,69 @@ mod tests {
             PrepareOptions::default().certificate_verification,
             CertificateVerification::Required
         );
+    }
+
+    #[test]
+    fn combined_configuration_and_certificate_payload_obey_exact_high_water_limit() {
+        #[derive(Debug)]
+        struct Ledger(std::sync::Mutex<super::super::ConfigurationMaterialBudget>);
+        impl tacacsrs_networking::PreparationPayloadLedger for Ledger {
+            fn reserve(&self, bytes: u64) -> anyhow::Result<()> {
+                self.0.lock().unwrap().reserve_extra(bytes)
+            }
+            fn release(&self, bytes: u64) {
+                self.0.lock().unwrap().release_extra(bytes);
+            }
+        }
+
+        let (certificate, key) = fixture_certificate("client");
+        let mut server = builder()
+            .with_tls_client_certificate(
+                Some(certificate.to_der().unwrap()),
+                Some(key.private_key_to_pkcs8().unwrap()),
+            )
+            .build();
+        server.server_authentication = Some(crate::TlsClientServerAuthentication {
+            ca_certs: Some(crate::ServerAuthenticationCaCerts {
+                inline_definition: Some(crate::truststore::CertsInlineDefinition {
+                    certificate: vec![crate::truststore::CertsCertificate {
+                        name: "fixture".to_owned(),
+                        cert_data: certificate.to_der().unwrap(),
+                    }],
+                }),
+                central_truststore_reference: None,
+            }),
+            ..Default::default()
+        });
+        let logical = super::super::server_payload_bytes(&server).unwrap();
+        let measure = |limit| {
+            let mut budget = super::super::ConfigurationMaterialBudget::new(limit, 1);
+            budget.reserve_logical(logical).unwrap();
+            let ledger = Arc::new(Ledger(std::sync::Mutex::new(budget)));
+            let endpoint = prepare_endpoint(
+                &server,
+                PrepareOptions::default().with_payload_ledger(ledger.clone()),
+            );
+            (endpoint, ledger)
+        };
+        let (endpoint, ledger) = measure(u64::MAX);
+        let endpoint = endpoint.unwrap();
+        let (_, extra, exact) = ledger.0.lock().unwrap().charges();
+        assert!(extra > 0);
+        assert!(
+            exact > logical + extra,
+            "temporary certificate comparison must contribute to high water"
+        );
+        assert_eq!(endpoint.retained_payload_bytes(), extra);
+        drop(endpoint);
+        assert_eq!(ledger.0.lock().unwrap().charges().1, 0);
+        let (endpoint, ledger) = measure(exact);
+        assert!(endpoint.is_ok());
+        drop(endpoint);
+        assert_eq!(ledger.0.lock().unwrap().charges().1, 0);
+        let (endpoint, ledger) = measure(exact - 1);
+        assert!(endpoint.is_err());
+        assert_eq!(ledger.0.lock().unwrap().charges().1, 0);
     }
 
     #[test]

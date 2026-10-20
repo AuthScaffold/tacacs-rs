@@ -94,6 +94,12 @@ They supply a nonblocking admission check before each typed installation.
 `ConfigurationMaterialBudget` supplies checked request counts, logical payload, retained-copy charges, and high-water checks without Tokio.
 Borrowed payload sizing covers decoded secrets, keys, certificates, intermediates, trust bags, CRLs, and OCSP responses.
 Names, opaque references, metadata, and allocator slack are excluded.
+This configuration-only sizing does not exempt Rust payload created by endpoint preparation.
+`PrepareOptions::with_payload_ledger` supplies the same candidate ledger to networking through `PreparationPayloadLedger`.
+`PrepareOptions` is cloneable, not `Copy`. Each endpoint shares its payload owner without copying its reservation.
+Known copies require admission before allocation. Native encoding outputs also pass a byte check before further retention.
+The ledger includes temporary comparison buffers and retains its high-water mark after those buffers drop.
+Direct helpers remain unmanaged unless their caller supplies this ledger. They do not acquire a supervisor work lease.
 
 Central references are opaque in both generic crates. They can contain spaces, slashes, traversal-like text, or provider-defined syntax.
 
@@ -111,6 +117,11 @@ The source snapshot must first pass schema validation with its selected validati
 Configuration maps the YANG transport choice, certificate encodings, PSK hash, ordered groups, expected peer identity, and optional SNI into networking inputs.
 Networking validates borrowed DER and PSK material and constructs private reusable TLS contexts.
 The resulting `PreparedEndpoint` contains no generated model or source reference.
+
+Unchecked builders, validated canonical roots, materialized server values, and prepared endpoints are distinct stages.
+Schema validation checks the source contract. Runtime readiness checks supported combinations. Native preparation validates transport material.
+The agent carries prepared endpoint identities with source metadata in a complete derived catalog before the atomic publication fence.
+That catalog is not another configuration model.
 
 Preparation derives the TCP connection timeout from the canonical server's `timeout` leaf, in seconds.
 `PrepareOptions` has no timeout override. It selects preflight and a typed certificate verification policy.

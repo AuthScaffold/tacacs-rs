@@ -20,7 +20,7 @@ impl PreparedServer {
     ) -> anyhow::Result<Self> {
         let prepared = tacacsrs_config::prepare::prepare_endpoint(&server, options)?;
         let counters = prepared.counters();
-        let evidence_lifetime = match prepared.revocation_evidence_validity() {
+        let mut evidence_lifetime = match prepared.revocation_evidence_validity() {
             Some(validity) => crate::runtime::CredentialLifetime::new(
                 tacacsrs_credential_resolution::CredentialValidity::new(
                     Some(validity.valid_from()),
@@ -29,6 +29,13 @@ impl PreparedServer {
             )?,
             None => crate::runtime::CredentialLifetime::unbounded(),
         };
+        if let Some(deadline) = prepared.revocation_evidence_deadline() {
+            evidence_lifetime.deadline = Some(
+                evidence_lifetime
+                    .deadline
+                    .map_or(deadline, |previous| previous.min(deadline)),
+            );
+        }
         let operations = [
             (OperationKind::Authentication, TacacsPlusServerType::AUTHENTICATION),
             (OperationKind::Authorization, TacacsPlusServerType::AUTHORIZATION),

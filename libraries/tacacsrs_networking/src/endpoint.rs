@@ -45,6 +45,7 @@ pub struct PreparedEndpoint {
     pub(crate) options: ConnectOptions,
     pub(crate) connection_guard: Option<Arc<dyn ConnectionGuard>>,
     pub(crate) counters: crate::ServerCounters,
+    pub(crate) preparation_payload: crate::PreparationPayload,
 }
 
 impl PreparedEndpoint {
@@ -108,7 +109,21 @@ impl PreparedEndpoint {
             options,
             connection_guard: None,
             counters: crate::ServerCounters::default(),
+            preparation_payload: crate::PreparationPayload::default(),
         }
+    }
+
+    /// Retains accounting for endpoint strings, keys, and native callback payload.
+    #[must_use]
+    pub fn with_preparation_payload(mut self, payload: crate::PreparationPayload) -> Self {
+        self.preparation_payload = payload;
+        self
+    }
+
+    /// Returns retained Rust preparation payload, excluding native allocations.
+    #[must_use]
+    pub fn retained_payload_bytes(&self) -> u64 {
+        self.preparation_payload.retained_bytes()
     }
 
     /// Attaches execution-time host checks without changing the source configuration.
@@ -151,6 +166,13 @@ impl PreparedEndpoint {
             }
             _ => None,
         }
+    }
+
+    /// Returns the original monotonic cutoff for prepared evidence.
+    #[must_use]
+    pub fn revocation_evidence_deadline(&self) -> Option<tokio::time::Instant> {
+        self.revocation_evidence_lifetime()
+            .map(|lifetime| lifetime.deadline.expires_at())
     }
 
     pub(crate) fn validate_client_certificate_dates(&self) -> anyhow::Result<()> {

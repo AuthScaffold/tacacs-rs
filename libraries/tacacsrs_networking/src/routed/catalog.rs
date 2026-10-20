@@ -17,8 +17,12 @@
 //! circuit. The catalog does not own transport lifetime directly; the
 //! [`lifecycle`](super::lifecycle) module owns setup and retirement, and the
 //! [`connection`](crate::connection) runtimes own packet I/O.
+//!
+//! The final shared slot unregisters its unused lifecycle. Its weak runtime
+//! reference creates no ownership cycle. Slot payload fields drop before the
+//! lifecycle, whose name drops before its shared payload accounting guard.
 
-use std::sync::{Arc, Mutex as StateMutex};
+use std::sync::{Arc, Mutex as StateMutex, Weak};
 use std::sync::atomic::AtomicU64;
 
 use tokio::sync::Mutex;
@@ -27,7 +31,7 @@ use crate::PreparedEndpoint;
 
 use super::OperationKind;
 use super::EndpointConnector;
-use super::lifecycle::EndpointLifecycle;
+use super::lifecycle::{EndpointLifecycle, RoutingRuntime};
 use super::circuit::OperationCircuit;
 
 /// Prepared endpoint identity and explicit operation eligibility.
@@ -40,6 +44,7 @@ pub struct Endpoint {
 }
 
 struct EndpointInputs {
+    identity: Arc<()>,
     name: String,
     prepared: PreparedEndpoint,
     operations: [bool; 3],
@@ -58,6 +63,7 @@ impl Endpoint {
         }
         Self {
             inputs: Arc::new(EndpointInputs {
+                identity: Arc::new(()),
                 name: name.into(),
                 prepared,
                 operations: eligible,
@@ -83,7 +89,13 @@ impl Endpoint {
         self.inputs.operations[operation.index()]
     }
 
-    pub(super) fn same_identity(&self, other: &Self) -> bool {
+    pub(super) fn identity(&self) -> Arc<()> {
+        Arc::clone(&self.inputs.identity)
+    }
+
+    /// Reports whether both endpoints share one prepared routing identity.
+    #[must_use]
+    pub fn same_identity(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inputs, &other.inputs)
     }
 }
@@ -119,14 +131,20 @@ pub(super) struct EndpointSlot<Connector: EndpointConnector> {
     pub(super) endpoint: Endpoint,
     pub(super) operations: [OperationSlot<Connector::Connection>; 3],
     pub(super) lifecycle: Arc<EndpointLifecycle<Connector>>,
+    runtime: Weak<RoutingRuntime<Connector>>,
 }
 
 impl<Connector: EndpointConnector> EndpointSlot<Connector> {
-    pub(super) fn new(endpoint: Endpoint, lifecycle: Arc<EndpointLifecycle<Connector>>) -> Self {
+    pub(super) fn new(
+        endpoint: Endpoint,
+        lifecycle: Arc<EndpointLifecycle<Connector>>,
+        runtime: Weak<RoutingRuntime<Connector>>,
+    ) -> Self {
         Self {
             endpoint,
             lifecycle,
             operations: std::array::from_fn(|_| OperationSlot::default()),
+            runtime,
         }
     }
 
@@ -135,6 +153,14 @@ impl<Connector: EndpointConnector> EndpointSlot<Connector> {
         operation: OperationKind,
     ) -> &OperationSlot<Connector::Connection> {
         &self.operations[operation.index()]
+    }
+}
+
+impl<Connector: EndpointConnector> Drop for EndpointSlot<Connector> {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.runtime.upgrade() {
+            runtime.discard_idle(&self.lifecycle);
+        }
     }
 }
 

@@ -271,7 +271,7 @@ impl<Connector: EndpointConnector> ServerSet<Connector> {
     }
 }
 
-fn revocation_changed(
+pub(super) fn revocation_changed(
     old: &tacacsrs_config::TacacsPlusServer,
     new: &tacacsrs_config::TacacsPlusServer,
 ) -> bool {

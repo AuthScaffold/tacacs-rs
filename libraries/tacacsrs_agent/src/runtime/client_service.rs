@@ -21,11 +21,11 @@
 //!
 //! 1. The materialization coordinator or a direct reload calls one reload
 //!    method on [`TacacsClientService`].
-//! 2. The [`ServiceRuntime`] engine holds `reload_publication_lock`, so only
-//!    one publication runs end to end. It validates and prepares the catalog.
-//! 3. [`UpstreamManager`](crate::upstream::manager::UpstreamManager) holds
-//!    `catalog_reload_lock`, prepares the new server set, and swaps the active
-//!    snapshot.
+//! 2. The engine validates and prepares the complete catalog before publication locks.
+//!    Supervised work retains its registered preparation lease during native work.
+//! 3. The engine holds `reload_publication_lock`. The manager then holds
+//!    `catalog_reload_lock`, checks current catalog identity and final limits,
+//!    and swaps the active snapshot.
 //! 4. The publication controller commits the generation, server count, and
 //!    health in one health mutation. That commit also swaps the snapshot and
 //!    runs coordinator bookkeeping. The commit does not await.
@@ -33,15 +33,16 @@
 //! # Lock order
 //!
 //! Acquire locks only in this order:
-//! `reload_publication_lock` (service) -> `catalog_reload_lock` (manager) ->
+//! coordinator state (supervised commit only) -> `reload_publication_lock`
+//! (service) -> `catalog_reload_lock` (manager) ->
 //! active snapshot write lock -> publication observation lock -> health watch.
 //! Upstream retirement awaits only after the snapshot write lock is released.
 //!
 //! # Cancellation and stale completion
 //!
 //! The host drives shutdown through [`serve_until`](TacacsClientService::serve_until).
-//! Publication is the last step, so a dropped reload future leaves the previous
-//! generation active. A late availability observation for a replaced generation
+//! Cancellation before commit leaves the previous generation active. Cancellation
+//! after commit cannot undo the published generation. A late availability observation for a replaced generation
 //! is ignored. Source and credential expiry and recovery are documented in
 //! [`crate::runtime`] configuration supervision.
 //!
@@ -156,9 +157,28 @@ impl TacacsClientService {
         self.runtime.manager.pause_native_preparation()
     }
 
+    pub(crate) async fn prepare_materialized_servers<Commit: Send>(
+        &self,
+        candidate: crate::upstream::manager::PublicationCandidate<Commit>,
+    ) -> anyhow::Result<crate::upstream::manager::PublicationCandidate<Commit>> {
+        self.runtime.prepare_materialized_servers(candidate).await
+    }
+
     #[cfg(test)]
     pub(crate) async fn hold_publication(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.runtime.reload_publication_lock.lock().await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_client_preparation(
+        &self,
+    ) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+        self.runtime.manager.pause_client_preparation()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn native_preparation_counts(&self) -> (usize, usize) {
+        self.runtime.manager.native_preparation_counts()
     }
 
     /// Builds a service with the concrete native connector.

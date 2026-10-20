@@ -117,6 +117,8 @@ The agent exchange interface remains because it owns protocol-to-service error c
 Catalog replacement, applied-configuration status, eligible-server count, and availability reset now commit under the same publication lock.
 Health readers cannot observe a partially updated publication. Policy-only updates advance the runtime generation without resetting availability or replacing global admission.
 An unchanged catalog reload preserves observed upstream availability. A rejected replacement leaves the published generation and applied-health metadata unchanged.
+An upstream-only reload captures the current proxy policy and preparation base from one runtime snapshot.
+A concurrent catalog or proxy-policy replacement rejects that reload at publication. A retry captures the replacement policy.
 
 Materialized updates also commit the coordinator's active-server set and active source generation inside the runtime publication boundary.
 Cancellation before publication leaves the prior runtime and active material unchanged.
@@ -213,7 +215,10 @@ Successful atomic publication releases the lease before asynchronous retirement.
 
 The decoded payload charge is `L + E`.
 `L` includes every logical destination, repeated bundle installations, retained servers during partial refresh, and the downstream proxy secret.
-`E` includes additional owned configuration payload, including retained filtered projections.
+`E` includes additional owned configuration payload, retained filtered projections, and newly prepared Rust payload.
+Prepared payload includes DNS address text, routed names, peer identity, SNI, packet keys, PSK callback identity and keys, and group text.
+It also includes trust callback DER, fetched OCSP bytes, certificate comparison buffers, and CRL scope and delta metadata buffers.
+Reused prepared endpoints contribute their retained payload to `L`. Reuse does not remove a destination from the candidate charge.
 Known copies are reserved before cloning. Moves transfer charges, and shared allocation owners add no duplicate allocation charge.
 All selected plans pass request admission before the first provider call, in canonical server and plan order.
 Repeated references count separately. Each provider return passes byte admission before result buffering or the next call.
@@ -221,13 +226,59 @@ Resolver slots are not HTTP URL requests. Provider response and fan-out limits r
 
 The raw datastore snapshot, opaque producer internals, existing active and retiring catalogs, allocator overhead, and RSS are outside this measure.
 An opaque result can already own a large allocation at handoff. Rejection prevents retention and further candidate copies, not that earlier allocation.
-Prepared-runtime Rust payload copies are not yet charged. Iteration 10 extends the same ledger and limit to those owners.
-Synchronous native preparation is not preemptible. The fence checks the deadline after it returns.
-The existing coordinator and native publication lock coupling remains. Iteration 10 must remove it before R14 is complete.
+Native allocator internals are excluded, but Rust payload owned by a native callback is included.
+CRL metadata encodings reserve the enclosing DER size before allocation. Their live charge then contracts to the returned size.
+The high-water check includes these conservative reservations. It measures admitted payload, not process memory.
+
+### Rust Payload Owners
+
+All byte totals use checked `u64` arithmetic. String costs use their UTF-8 byte lengths, without allocator capacity or terminators.
+The following costs describe supervised preparation, not unmanaged direct helpers.
+
+| Owner | Candidate charge and allocation boundary |
+| --- | --- |
+| Materialized configuration | `L` counts each destination's secret, key, certificate, intermediate, trust, CRL, and OCSP bytes. Partial refresh includes unchanged destinations. |
+| Proxy policy | `L` includes its downstream secret. Policy clones share the secret allocation. |
+| Filtered projection and provider staging | `E` includes retained decoded copies. Known copies reserve before cloning; unknown producer results pass admission at handoff. |
+| Prepared address and names | `E` reserves DNS address bytes, one routed name, and one lifecycle name before construction. IP addresses use fixed-layout storage. |
+| Packet obfuscation key | `E` reserves the copied key length before constructing `SecretBytes`. The source key remains in `L`. |
+| PSK context | `E` reserves callback identity bytes, callback key bytes, optional SNI bytes, and the colon-separated native group string before allocation. |
+| Certificate TLS context | `E` reserves peer identity and optional SNI. Private keys and decoded certificates live in native objects; their canonical DER remains in `L`. |
+| Trust callbacks | Accounted DER owners reserve each authority and exact-peer certificate length before copying. Callback captures retain those owners. |
+| Fetched OCSP | `E` reserves the encoded response before constructing its shared byte owner. Config and connection clones share that allocation. |
+| Certificate comparisons | Temporary reservations cover DER round trips, explicit public-key comparisons, and all simultaneously retained chain deduplication buffers. Verified input lengths supply the forecasts. |
+| CRL comparisons and metadata | Temporary reservations cover DER round trips, scope identities, delta metadata, authority extensions, and integer bytes. Enclosing DER lengths bound native extension encodings. |
+| Reused prepared endpoints | Their retained byte cost contributes to the new candidate's `L`. Endpoint identities, contexts, callback DER, and keys share existing allocations rather than creating another `E` copy. |
+| Native input, partial output, and queued result | One worker moves or shares these owners. It retains the shared ledger and registered work lease until input, result, and callback payload disposal. |
+| Committed historical endpoints | History shares endpoint and source owners until networking reports completed retirement. The next publication prunes completed entries. This ownership belongs to the committed catalog, not unpublished candidate work. |
+
+Temporary byte buffers drop before their reservation guards. Endpoint and native callback owners share one `PreparationPayload` owner.
+Lifecycle names retain that same accounting owner through their disposal.
+Discarding the final unpublished catalog unregisters its idle, unshared lifecycle entries before candidate capacity returns.
+The final shared owner releases retained reservations. Temporary release reduces live bytes but never reduces the candidate high-water mark.
+Known conservative forecasts can reject a candidate before its eventual retained size reaches the limit.
+Collection headers, fixed-layout metadata, reference counts, native allocator internals, connection execution, raw ingestion, opaque SDK internals, filter DNS, and RSS remain excluded.
+Rust bytes inside native callback captures are not excluded. Secret owners retain their existing redaction and disposal behavior; this accounting adds no universal zeroization claim.
+
+Native preparation runs outside coordinator state, service publication, catalog reload, and snapshot-write locks.
+One registered blocking worker owns its input, partial output, and queued result before its work lease.
+The worker shares the ledger without retaining `Preparation`. Cancellation therefore seals registration promptly.
+Client catalog setup also runs before publication locks. The coordinator stages a complete catalog from an immutable applied snapshot.
+Final publication retains the existing coordinator, service, catalog, snapshot, and health lock order.
+These short commit waits are not lock-free.
+
+The final fence checks source and credential revisions, source expiry, closure, both validity clocks, current limits, and catalog identity.
+A changed committed catalog rejects a prepared reuse hint. It cannot revive an earlier identity or counter epoch.
+An unchanged catalog can reuse an established connection after its authentication certificate expires.
+Provider and evidence validity still restrict publication. Their earlier monotonic cutoffs cannot renew through wall-clock changes.
+All fallible checks precede retirement cutoffs, snapshot replacement, health, and coordinator bookkeeping.
+The commit does not await. Later retirement cannot undo it.
 
 Providers receive one `WorkScope`. They must register owned work before queueing it and retain the lease through unconsumed results.
 Cancellation seals the scope and drops cooperative work. Registered blocking work keeps capacity until its last lease drops.
 Permanently stuck registered work keeps the slot. Expiry and host stop do not wait for that slot or for provider quiet.
+Native OpenSSL and OS calls cannot be forcibly cancelled. A permanently stuck worker can prevent Tokio runtime or process exit.
+Service withdrawal and cooperative host-stop completion do not promise termination of that native worker.
 Unobservable OS, SDK, and filter DNS internals are not a hard-cancellation guarantee.
 Unmanaged direct reload and configuration helpers do not acquire this supervisor-owned budget.
 

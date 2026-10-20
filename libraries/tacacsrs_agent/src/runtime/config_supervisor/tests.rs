@@ -1509,7 +1509,13 @@ async fn scheduled_refresh_failure_expires_and_recovers_without_notifications() 
     assert!(futures_util::poll!(&mut expiry).is_pending());
     assert_eq!(service.server_count(), 0);
     *resolver.rejected_server.lock().unwrap() = None;
-    assert!(futures_util::poll!(&mut refresh).is_pending());
+    let mut updates = health.subscribe();
+    while service.server_count() == 0 {
+        tokio::select! {
+            result = &mut refresh => panic!("refresh stopped before recovery: {result:?}"),
+            changed = updates.changed() => changed.unwrap(),
+        }
+    }
     let recovered = health.snapshot();
     assert_eq!(service.server_count(), 1);
     assert_eq!(recovered.materialization_revision().unwrap().source(), original.source());

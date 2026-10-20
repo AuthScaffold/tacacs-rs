@@ -258,6 +258,125 @@ fn inline_shared_secret_change_prevents_runtime_server_reuse() {
 }
 
 #[tokio::test]
+async fn historical_identity_does_not_coalesce_recreated_shared_source_owner() {
+    let server = Arc::new(test_server("192.0.2.70:49"));
+    let state = UpstreamManager::new_shared(
+        vec![server.clone()],
+        Arc::new(FakeConnector::new(HashMap::new())),
+        Duration::from_secs(1),
+        test_health(),
+    );
+    let first = state.current_server_set().servers[0].endpoint.clone();
+    state.reload_shared_servers(Vec::new()).await.unwrap();
+    state
+        .reload_shared_servers(vec![server.clone()])
+        .await
+        .unwrap();
+    let second = state.current_server_set().servers[0].endpoint.clone();
+    assert!(!first.same_identity(&second));
+    let history = state.prepared_history.lock().unwrap();
+    assert!(history.iter().any(|(endpoint, owner)| {
+        endpoint.same_identity(&second) && Arc::ptr_eq(owner, &server)
+    }));
+}
+
+#[tokio::test]
+async fn revocation_change_retires_history_after_prepared_server_owner_drops() {
+    struct GracefulConnector(Arc<FakeConnection>);
+
+    #[async_trait]
+    impl tacacsrs_networking::routed::EndpointConnector for GracefulConnector {
+        type Connection = dyn crate::upstream::UpstreamConnection;
+
+        async fn connect(
+            &self,
+            _: tacacsrs_networking::PreparedEndpoint,
+            _: OperationKind,
+        ) -> anyhow::Result<Arc<Self::Connection>> {
+            Ok(self.0.clone())
+        }
+
+        async fn retire(&self, _: &Self::Connection) {}
+
+        fn close(&self, connection: &Self::Connection) {
+            connection.close();
+        }
+
+        async fn close_and_join(
+            &self,
+            connection: &Self::Connection,
+            deadline: tacacsrs_networking::RequestDeadline,
+        ) -> anyhow::Result<()> {
+            connection.close_and_join(deadline).await
+        }
+    }
+
+    let mut server = tacacsrs_config::TacacsPlusServerBuilder::new(
+        "historical-revocation",
+        REQUIRED_SERVER_TYPES,
+        "192.0.2.70",
+        449,
+    )
+    .with_tls_server_authentication()
+    .build();
+    server
+        .server_authentication
+        .as_mut()
+        .unwrap()
+        .require_stapled_ocsp = Some(tacacsrs_config::tacacsrs::RequireStapledOcsp {
+        max_response_age_seconds: 300,
+    });
+    let connection = Arc::new(FakeConnection {
+        address: "192.0.2.70:449".to_owned(),
+        usable: AtomicBool::new(true),
+        fail_next_request: AtomicBool::new(false),
+    });
+    let state = UpstreamManager::from_connector(
+        vec![Arc::new(server.clone())],
+        PreparedProxyPolicy::unobfuscated(),
+        RuntimePolicy::default(),
+        GracefulConnector(connection.clone()),
+        test_health(),
+        tacacsrs_config::prepare::PrepareOptions::default(),
+    )
+    .unwrap();
+    let bound = state.bind_server_for_new_session().await.unwrap();
+    let old = Arc::downgrade(&state.current_server_set().servers[0]);
+    let historical_endpoint = state.current_server_set().servers[0].endpoint.clone();
+    let historical_metadata = Arc::downgrade(&bound.server);
+    state.reload_servers(Vec::new()).await.unwrap();
+    assert!(old.upgrade().is_none());
+    assert!(connection.usable.load(Ordering::Acquire));
+    server
+        .server_authentication
+        .as_mut()
+        .unwrap()
+        .require_stapled_ocsp = None;
+    state.reload_servers(vec![server]).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while connection.usable.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("changed revocation must close historical connections before their grace cutoff");
+    drop(bound);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while state
+            .current_server_set()
+            .client
+            .retains_endpoint(&historical_endpoint)
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    state.reload_servers(Vec::new()).await.unwrap();
+    assert!(historical_metadata.upgrade().is_none());
+}
+
+#[tokio::test]
 async fn resolved_rotation_replaces_new_bindings_and_preserves_existing_snapshots() {
     let first = Arc::new(materialized_server(b"first-secret-material"));
     let second = Arc::new(materialized_server(b"second-secret-material"));
