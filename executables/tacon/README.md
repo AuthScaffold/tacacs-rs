@@ -260,6 +260,17 @@ Batch files use JSON format to define multiple TACACS+ requests:
 | `description` | Optional description of the batch |
 | `parallel` | Run requests in parallel (`true`) or sequentially (`false`) |
 
+### Load Test Scheduling
+
+The optional `metadata.load_test` object sets `repetitions` and `max_parallel`.
+The scheduler repeats the request list and runs no more than `max_parallel` requests at the same time.
+
+After the first failure, pending requests do not start. In-flight requests finish, and their successes count toward the result.
+The summary reports one failure and keeps the first failure message, even when multiple in-flight requests fail.
+An empty request list or zero repetitions succeeds without sending requests.
+
+The scheduler uses the progress counter for the final success count. It does not keep per-request results.
+
 ### Request Fields
 
 All supported requests use these fields:

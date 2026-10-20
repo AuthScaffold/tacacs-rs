@@ -119,8 +119,9 @@ pub(super) async fn run_requests(
 
 /// Runs a load test against the backend with controlled concurrency.
 ///
-/// The test repeats every request `repetitions` times and stops after the first
-/// failure. It reuses one backend for the whole run.
+/// The test repeats every request `repetitions` times and reuses one backend.
+/// After the first failure, pending requests do not start. In-flight requests
+/// finish, and their successes count toward the result.
 pub(super) async fn run_batch_load_test(
     backend: &Backend,
     requests: &[BatchRequest],
@@ -194,6 +195,9 @@ pub(super) fn load_test_iterations(
 }
 
 /// Runs load test iterations with controlled concurrency.
+///
+/// Drains in-flight requests before reading the completion count. The scheduler
+/// retains no per-request results. Cancellation drops in-flight request futures.
 pub(super) async fn run_load_test<'a, I, F, Fut>(
     total_requests: usize,
     iterations: I,
@@ -211,7 +215,7 @@ where
         ..Default::default()
     });
 
-    let results = stream::iter(iterations)
+    stream::iter(iterations)
         .map(|(rep, idx, request)| {
             let completed = tracker.completed.clone();
             let failed = tracker.failed.clone();
@@ -220,41 +224,39 @@ where
 
             async move {
                 if failed.load(Ordering::Relaxed) {
-                    return false;
+                    return;
                 }
 
                 match execution.await {
                     Ok(()) => {
                         completed.fetch_add(1, Ordering::Relaxed);
-                        true
                     }
                     Err(error) => {
                         if !failed.swap(true, Ordering::Relaxed) {
                             let mut failure = first_failure.lock().await;
                             *failure = Some(error);
                         }
-                        false
                     }
                 }
             }
         })
         .buffer_unordered(max_parallel.get())
-        .collect::<Vec<_>>()
+        .for_each(|()| async {})
         .await;
 
+    let successful_requests = tracker.completed_count();
     let failure_msg = tracker.finish().await;
-    build_load_test_result(start_time, total_requests, &results, failure_msg)
+    build_load_test_result(start_time, total_requests, successful_requests, failure_msg)
 }
 
 /// Builds the final load test result from run data.
 fn build_load_test_result(
     start_time: Instant,
     total_requests: usize,
-    results: &[bool],
+    successful_requests: usize,
     failure_msg: Option<String>,
 ) -> LoadTestResult {
     let duration = start_time.elapsed();
-    let successful_requests = results.iter().filter(|&&result| result).count();
     let failed_requests = usize::from(failure_msg.is_some());
     #[allow(clippy::cast_precision_loss)]
     let requests_per_second = if duration.as_secs_f64() > 0.0 {
@@ -404,8 +406,14 @@ mod tests {
 
 #[cfg(test)]
 mod load_test_tests {
+    use std::future::pending;
     use std::num::NonZeroUsize;
-    use std::time::Instant;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use tokio::sync::{Barrier, Notify, Semaphore};
+    use tokio::time::timeout;
 
     use crate::batch::types::{AccountingRequest, BatchRequest};
 
@@ -441,7 +449,7 @@ mod load_test_tests {
 
     #[test]
     fn build_load_test_result_reports_success_without_failures() {
-        let result = build_load_test_result(Instant::now(), 4, &[true, true, true, true], None);
+        let result = build_load_test_result(Instant::now(), 4, 4, None);
         assert!(result.is_success());
         assert_eq!(result.successful_requests, 4);
         assert_eq!(result.failed_requests, 0);
@@ -449,12 +457,7 @@ mod load_test_tests {
 
     #[test]
     fn build_load_test_result_counts_a_single_failure() {
-        let result = build_load_test_result(
-            Instant::now(),
-            4,
-            &[true, false, true],
-            Some("boom".to_owned()),
-        );
+        let result = build_load_test_result(Instant::now(), 4, 2, Some("boom".to_owned()));
         assert!(!result.is_success());
         assert_eq!(result.successful_requests, 2);
         assert_eq!(result.failed_requests, 1);
@@ -480,21 +483,219 @@ mod load_test_tests {
     #[tokio::test]
     async fn load_test_stops_after_first_failure() {
         let requests = vec![accounting_request("a")];
-        let result = run_load_test(
-            5,
-            load_test_iterations(&requests, 5),
-            NonZeroUsize::MIN,
-            |rep, _, _| async move {
-                if rep == 2 {
-                    Err(format!("boom at rep {}", rep + 1))
-                } else {
-                    Ok(())
+        let started = AtomicUsize::new(0);
+        let result =
+            run_load_test(5, load_test_iterations(&requests, 5), NonZeroUsize::MIN, |rep, _, _| {
+                let started = &started;
+                async move {
+                    started.fetch_add(1, Ordering::Relaxed);
+                    if rep == 2 {
+                        Err(format!("boom at rep {}", rep + 1))
+                    } else {
+                        Ok(())
+                    }
                 }
-            },
-        )
-        .await;
+            })
+            .await;
         assert!(!result.is_success());
+        assert_eq!(result.total_requests, 5);
+        assert_eq!(result.successful_requests, 2);
         assert_eq!(result.failed_requests, 1);
         assert_eq!(result.first_failure.as_deref(), Some("boom at rep 3"));
+        assert_eq!(started.load(Ordering::Relaxed), 3);
+    }
+
+    #[tokio::test]
+    async fn load_test_with_zero_requests_never_sends() {
+        for (requests, repetitions) in [(Vec::new(), 3), (vec![accounting_request("a")], 0)] {
+            let result = timeout(
+                Duration::from_secs(5),
+                run_load_test(
+                    0,
+                    load_test_iterations(&requests, repetitions),
+                    NonZeroUsize::MIN,
+                    |_, _, _| async {
+                        panic!("A zero-request load test must not send a request");
+                    },
+                ),
+            )
+            .await
+            .expect("The zero-request load test must finish");
+
+            assert!(result.is_success());
+            assert_eq!(result.total_requests, 0);
+            assert_eq!(result.successful_requests, 0);
+            assert_eq!(result.failed_requests, 0);
+            assert_eq!(result.requests_per_second, 0.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn load_test_bounds_concurrency_and_completes_every_request() {
+        let requests = vec![accounting_request("a")];
+        let started = AtomicUsize::new(0);
+        let entered = Barrier::new(4);
+        let release = Semaphore::new(0);
+        let run = run_load_test(
+            6,
+            load_test_iterations(&requests, 6),
+            NonZeroUsize::new(3).unwrap(),
+            |_, _, _| async {
+                started.fetch_add(1, Ordering::Relaxed);
+                entered.wait().await;
+                release.acquire().await.unwrap().forget();
+                Ok(())
+            },
+        );
+        let control = async {
+            for expected in [3, 6] {
+                entered.wait().await;
+                assert_eq!(started.load(Ordering::Relaxed), expected);
+                release.add_permits(3);
+            }
+        };
+        let (result, ()) = timeout(Duration::from_secs(5), async { tokio::join!(run, control) })
+            .await
+            .expect("Both waves of load requests must finish");
+
+        assert!(result.is_success());
+        assert_eq!(result.total_requests, 6);
+        assert_eq!(result.successful_requests, 6);
+        assert_eq!(result.failed_requests, 0);
+    }
+
+    #[tokio::test]
+    async fn load_test_keeps_the_first_of_concurrent_failures() {
+        let requests = vec![accounting_request("a")];
+        let started = AtomicUsize::new(0);
+        let finished = AtomicUsize::new(0);
+        let entered = Barrier::new(4);
+        let first_failure = Notify::new();
+        let later_failures = Semaphore::new(0);
+        let run = run_load_test(
+            9,
+            load_test_iterations(&requests, 9),
+            NonZeroUsize::new(3).unwrap(),
+            |rep, _, _| {
+                let started = &started;
+                let finished = &finished;
+                let entered = &entered;
+                let first_failure = &first_failure;
+                let later_failures = &later_failures;
+                async move {
+                    started.fetch_add(1, Ordering::Relaxed);
+                    entered.wait().await;
+                    if rep == 2 {
+                        first_failure.notify_one();
+                    } else {
+                        later_failures.acquire().await.unwrap().forget();
+                    }
+                    finished.fetch_add(1, Ordering::Relaxed);
+                    Err(format!("boom at rep {}", rep + 1))
+                }
+            },
+        );
+        let control = async {
+            entered.wait().await;
+            first_failure.notified().await;
+            later_failures.add_permits(2);
+        };
+        let (result, ()) = timeout(Duration::from_secs(5), async { tokio::join!(run, control) })
+            .await
+            .expect("All in-flight failures must finish");
+
+        assert!(!result.is_success());
+        assert_eq!(result.total_requests, 9);
+        assert_eq!(result.successful_requests, 0);
+        assert_eq!(result.failed_requests, 1);
+        assert_eq!(result.first_failure.as_deref(), Some("boom at rep 3"));
+        assert_eq!(started.load(Ordering::Relaxed), 3);
+        assert_eq!(finished.load(Ordering::Relaxed), 3);
+    }
+
+    #[tokio::test]
+    async fn load_test_counts_in_flight_successes_after_a_failure() {
+        let requests = vec![accounting_request("a")];
+        let started = AtomicUsize::new(0);
+        let entered = Barrier::new(4);
+        let first_failure = Notify::new();
+        let later_successes = Semaphore::new(0);
+        let run = run_load_test(
+            9,
+            load_test_iterations(&requests, 9),
+            NonZeroUsize::new(3).unwrap(),
+            |rep, _, _| {
+                let started = &started;
+                let entered = &entered;
+                let first_failure = &first_failure;
+                let later_successes = &later_successes;
+                async move {
+                    started.fetch_add(1, Ordering::Relaxed);
+                    entered.wait().await;
+                    if rep == 1 {
+                        first_failure.notify_one();
+                        Err("boom".to_owned())
+                    } else {
+                        later_successes.acquire().await.unwrap().forget();
+                        Ok(())
+                    }
+                }
+            },
+        );
+        let control = async {
+            entered.wait().await;
+            first_failure.notified().await;
+            later_successes.add_permits(2);
+        };
+        let (result, ()) = timeout(Duration::from_secs(5), async { tokio::join!(run, control) })
+            .await
+            .expect("Successful in-flight requests must finish after a failure");
+
+        assert!(!result.is_success());
+        assert_eq!(result.total_requests, 9);
+        assert_eq!(result.successful_requests, 2);
+        assert_eq!(result.failed_requests, 1);
+        assert_eq!(result.first_failure.as_deref(), Some("boom"));
+        assert_eq!(started.load(Ordering::Relaxed), 3);
+    }
+
+    #[tokio::test]
+    async fn load_test_cancellation_drops_in_flight_requests() {
+        let requests = vec![accounting_request("a")];
+        let started = AtomicUsize::new(0);
+        let entered = Barrier::new(4);
+        let in_flight = Arc::new(());
+        let mut run = Box::pin(run_load_test(
+            9,
+            load_test_iterations(&requests, 9),
+            NonZeroUsize::new(3).unwrap(),
+            |_, _, _| {
+                let in_flight = Arc::clone(&in_flight);
+                let started = &started;
+                let entered = &entered;
+                async move {
+                    let _in_flight = in_flight;
+                    started.fetch_add(1, Ordering::Relaxed);
+                    entered.wait().await;
+                    pending::<Result<(), String>>().await
+                }
+            },
+        ));
+
+        timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                result = &mut run => panic!("Pending load requests must not finish: {result:?}"),
+                _ = entered.wait() => {}
+            }
+        })
+        .await
+        .expect("All in-flight requests must start before cancellation");
+        assert_eq!(started.load(Ordering::Relaxed), 3);
+        assert_eq!(Arc::strong_count(&in_flight), 4);
+
+        drop(run);
+
+        assert_eq!(Arc::strong_count(&in_flight), 1);
+        assert_eq!(started.load(Ordering::Relaxed), 3);
     }
 }
