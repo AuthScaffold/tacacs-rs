@@ -3148,7 +3148,7 @@ Reject the prototype if custom adapters reproduce the deleted machinery without 
 
 ### 18: Packaging Evaluation
 
-Status: Astra supports non-adoption after document revisions; Opus's direct decision and safety-scope review is in progress.
+Status: both final reviews and document gates are complete; documentation-only decision published as PR #295 against `main`.
 Prototype: `/home/ubuntu/tacacs-rs-18-packaging-evaluation-prototype`, branch `refactor/general-prototypes/18-packaging-evaluation`.
 Integration: `/home/ubuntu/tacacs-rs-18-packaging-evaluation`, branch `refactor/general-iterations/18-packaging-evaluation`.
 Both start from reviewed predecessor `d3629b2ee0f78c862e7a4d8fb7558622c6f6591a` and use separate caches.
@@ -3223,6 +3223,47 @@ Current 358-line document hash: `4c3a88bcecd11b0aff9aa02036b80ceb8340cffc60610aa
 Canonical changed-source manifest: `ca281174a99c6880f5fa288d862f316def6c21ff4ad9d13f19f9419848543e8b`.
 Complete new-file patch: `308d7ad020ed47510e2c98529d16a65de2026424b82a5399f8aeca11bdd4d226`.
 Opus review and final guarded document checks remain pending.
+
+#### Final Evidence Scope, Guard Review, And Publication
+
+Opus independently supports documentation-only non-adoption and replayed the guarded plans and 276 selected tests without skips.
+The nineteen new fixture repositories had no tags or reftable stores.
+All original 52 annotated refs in 37 private repositories remained unchanged.
+Source heads, indexes, status, and the frozen prototype remained unchanged.
+Only authorized coordinator tracking-ref updates occurred during review.
+
+Opus narrowed the singular-tag claim to match the actual release policy.
+Only `tacon` has the executable CalVer tag; agentd and health inherit its version without separate executable tags.
+Two planning arguments were therefore synthetic, not existing pipeline tags.
+The tested `tacon` tag selected only `tacon`; no tested route selected all three executables from that existing tag.
+Native release-policy equivalence remains unverified.
+
+The finalizer records schema identities rather than verifying them.
+Host target observations distinguish installed Windows GNU from uninstalled MSVC/ARMhf targets at review time.
+The guard's positional-path, Git-directory, work-tree, and environment limits are explicit.
+The revised inspection fails closed for reftable stores, and replay uses one noninteractive shell.
+The guard remains a limited accidental-CLI control for pinned selectors, not a sandbox.
+Package-only/experimental configuration and disabled DWP versus existing debug-link requirements are also distinguished.
+
+Astra confirmed the final material precision edits without further writes or replay.
+Final 392-line document hash: `ad56d5367df9572d23ec4d27472f58bbc4ba00cf92468b14008cb4399e206b6a`.
+Canonical changed-source manifest: `f4594a94027b5729efb3b4347afb296004950f90704fc20c38383396c083144a`.
+Complete 24,972-byte new-file patch: `ea0a31cc8d70fae8c3949ef9f5ebcadf80dbc6f4a3bafcbba4143f1806052b20`.
+The coordinator verified exact identities, four local links, all three Bash blocks, unchanged baseline files, and the remote prototype ref.
+
+Decision commit `bc06ed5` contains only the evaluation document.
+The iteration 17 squash source equals predecessor `d3629b2ee0f78c862e7a4d8fb7558622c6f6591a`.
+Integration commit `bf346dc7744234ffb06cd9acd7bd5be5366e3188` preserves exact validated tree `dc0c1ff4c974754970bbe076c4fc7965b9de82fb`.
+[PR #295](https://github.com/AuthScaffold/tacacs-rs/pull/295) targets `main`, contains one file, and has `skip-release`.
+
+Fresh Copilot review was requested.
+Required workflow `39421797885` and CodeQL workflow `39421795358` started.
+Completed review, findings disposition, current-head required checks, and clean mergeability remain necessary before final merge.
+
+Fresh Copilot review `5584943312` recommends approval and reports no open issues.
+The coordinator retained and verified the disclosed private fixture corpus outside disposable caches.
+That archive contains 2,951 regular files and has SHA-256 `af85812f9dd9f8f660b51e593a771d8ace4b45778dd37c3af35d3e85e3b2e982`.
+Current-head hosted verification remains in progress.
 
 Evaluate `dist` local planning/build artifacts only after registry and hydration decisions settle.
 Do not enable hosting, publication, tags, or generated release workflows during the experiment.
