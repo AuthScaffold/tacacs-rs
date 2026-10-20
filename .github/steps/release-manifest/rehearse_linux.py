@@ -15,6 +15,8 @@ runs, rather than reimplementing it:
 * It exports the committed source with ``git archive`` into an owned temporary
   tree, so only tracked files at the revision take part. Uncommitted or
   untracked files in the working tree are never built or packaged.
+* It selects the Linux products with the committed product registry validator
+  from the export. A missing or invalid registry fails before hydration.
 * It hydrates the computed versions into the exported tree with the committed
   ``inject-versions`` tool, after ``cargo metadata`` is available there.
 * It builds the four supported Linux products with ``--locked`` and ``--target``.
@@ -60,49 +62,6 @@ from typing import Callable, Iterable, Sequence
 # The default Linux GNU target. The rehearsal is Linux-only.
 DEFAULT_TARGET = "x86_64-unknown-linux-gnu"
 
-# The supported Linux release products, as an explicit list. This mirrors the
-# Linux entries of the CI product matrix. It is intentionally not derived from
-# cargo metadata, so adding a workspace member never silently enrolls it into a
-# release.
-PRODUCTS: tuple[dict[str, str], ...] = (
-    {
-        "asset_name": "tacon-linux-gnu-x86_64",
-        "package_name": "tacon",
-        "package_root": "executables/tacon",
-        "artifact_name": "tacon",
-        "artifact_kind": "bin",
-        "sbom_describe": "binaries",
-        "features": "",
-    },
-    {
-        "asset_name": "tacacsrs-agentd-linux-gnu-x86_64",
-        "package_name": "tacacsrs-agentd",
-        "package_root": "executables/tacacsrs_agentd",
-        "artifact_name": "tacacsrs-agentd",
-        "artifact_kind": "bin",
-        "sbom_describe": "binaries",
-        "features": "",
-    },
-    {
-        "asset_name": "tacacsrs-agent-health-linux-gnu-x86_64",
-        "package_name": "tacacsrs-agent-health",
-        "package_root": "executables/tacacsrs_agent_health",
-        "artifact_name": "tacacsrs-agent-health",
-        "artifact_kind": "bin",
-        "sbom_describe": "binaries",
-        "features": "",
-    },
-    {
-        "asset_name": "tacacsrs-bash-plugin-linux-gnu-x86_64",
-        "package_name": "tacacsrs-bash-plugin",
-        "package_root": "libraries/tacacsrs_bash_plugin",
-        "artifact_name": "tacacsrs_bash_plugin",
-        "artifact_kind": "cdylib",
-        "sbom_describe": "all-cargo-targets",
-        "features": "",
-    },
-)
-
 # The Bash plugin shared object must export these ABI entry points. A stripped
 # cdylib keeps its dynamic symbol table, so ``nm -D`` still lists them.
 BASH_PLUGIN_EXPORTS: tuple[str, ...] = (
@@ -132,6 +91,7 @@ HYDRATE_TOOL_RELPATH = ".github/steps/inject-versions/hydrate_versions.py"
 MANIFEST_TOOL_RELPATH = ".github/steps/release-manifest/release_manifest.py"
 PROVENANCE_TOOL_RELPATH = ".github/steps/release-manifest/build_provenance.py"
 SBOM_STAGE_TOOL_RELPATH = ".github/steps/stage-sbom-files/stage_sbom.py"
+PRODUCT_TOOL_RELPATH = ".github/steps/cargo-metadata/products.py"
 
 # One mebibyte read window keeps hashing memory bounded for large archives.
 _HASH_CHUNK_BYTES = 1024 * 1024
@@ -776,6 +736,36 @@ def build_directory(source: Path, output: Path, cache: str | None) -> Path:
     return candidate
 
 
+def rehearsal_products(
+    export_dir: Path, target: str, *, python: str, env: dict[str, str]
+) -> list[dict[str, str]]:
+    """Read the Linux matrix through the exported revision's registry tool."""
+    tool = Path(export_dir) / PRODUCT_TOOL_RELPATH
+    if not tool.is_file():
+        raise RehearsalError(f"product registry tool is missing in the export: {tool}")
+    result = _run(
+        [python, str(tool),
+         "--workspace", str(export_dir), "--target", target, "--linux"],
+        cwd=export_dir, env=env, capture=True,
+    )
+    try:
+        products = json.loads(result.stdout)
+    except (ValueError, TypeError) as error:
+        raise RehearsalError("the product registry tool returned invalid JSON") from error
+    if not isinstance(products, list) or not products or any(
+        not isinstance(product, dict)
+        or product.get("target") != target
+        or product.get("os") != "ubuntu-latest"
+        or any(not isinstance(product.get(field), str) for field in (
+            "asset_name", "package_name", "package_root", "artifact_name",
+            "artifact_kind", "features", "sbom_describe",
+        ))
+        for product in products
+    ):
+        raise RehearsalError("the product registry tool returned no valid Linux matrix")
+    return products
+
+
 def rehearse(
     *,
     source: str,
@@ -822,10 +812,11 @@ def rehearse(
 
     print(f"Rehearsing commit {commit} for target {target} ({profile}).")
     export_source(source_path, commit, export_dir)
+    products = rehearsal_products(export_dir, target, python=python, env=base_env)
     hydrate_versions(export_dir, versions, python=python, env=base_env)
 
     archives: list[str] = []
-    for product in PRODUCTS:
+    for product in products:
         collected = process_product(
             product,
             export_dir=export_dir,
@@ -850,7 +841,7 @@ def rehearse(
     if errors:
         raise RehearsalError("manifest verification failed: " + "; ".join(errors))
 
-    rehearse_rollback(release_dir, PRODUCTS[0], install_dir, versions)
+    rehearse_rollback(release_dir, products[0], install_dir, versions)
 
     return {
         "commit": commit,

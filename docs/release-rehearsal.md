@@ -4,6 +4,13 @@ The no-release CI path is the release rehearsal. It runs the full build,
 hydrates versions, and records release evidence. It does not publish anything.
 There is no second release pipeline.
 
+The CI matrix and the local Linux rehearsal use
+[`.github/products.json`](../.github/products.json). The
+[registry validator](../.github/steps/cargo-metadata/README.md#release-product-registry)
+checks each product against Cargo metadata and the supported packaging policy.
+Workspace membership alone does not enroll a release product. Independent
+golden tests preserve the supported product and platform records.
+
 This guide explains how the rehearsal runs, what evidence it produces, and how to
 read that evidence. It does not change how a real release publishes.
 
@@ -174,6 +181,9 @@ The tool does the following:
 2. It exports the committed revision with `git archive` into `<output>/source`.
    Only tracked files take part. The working tree is never changed, and an
    uncommitted file is never built.
+   The exported registry tool validates all product records, then selects the
+   Linux records for the requested target. Missing or invalid records fail
+   before hydration or builds.
 3. It hydrates the computed versions into the exported tree with the committed
    `inject-versions` tool. The source workspace `Cargo.lock` is never written.
 4. It builds the four supported Linux products with `--locked` and `--target`:
@@ -219,6 +229,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider .github/steps/re
 The tests use fixture archives and mocked build tools. They cover provenance
 binding, path sanitization, required formats, helper arguments, and stale output
 rejection. The existing source-export test uses a temporary Git repository.
+The fixture rehearsal also runs the registry, hydration, packaging, SBOM staging,
+provenance, manifest, checksum, and rollback paths without publication.
 
 ### Scope
 

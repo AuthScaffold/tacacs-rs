@@ -12,12 +12,22 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tarfile
 from pathlib import Path
 
 import pytest
 
 import build_provenance
 import rehearse_linux
+
+
+# Independent product fixtures for packaging and provenance tests.
+PRODUCTS = (
+    {"asset_name": "tacon-linux-gnu-x86_64", "package_name": "tacon", "package_root": "executables/tacon", "artifact_name": "tacon", "artifact_kind": "bin", "sbom_describe": "binaries", "features": ""},
+    {"asset_name": "tacacsrs-agentd-linux-gnu-x86_64", "package_name": "tacacsrs-agentd", "package_root": "executables/tacacsrs_agentd", "artifact_name": "tacacsrs-agentd", "artifact_kind": "bin", "sbom_describe": "binaries", "features": ""},
+    {"asset_name": "tacacsrs-agent-health-linux-gnu-x86_64", "package_name": "tacacsrs-agent-health", "package_root": "executables/tacacsrs_agent_health", "artifact_name": "tacacsrs-agent-health", "artifact_kind": "bin", "sbom_describe": "binaries", "features": ""},
+    {"asset_name": "tacacsrs-bash-plugin-linux-gnu-x86_64", "package_name": "tacacsrs-bash-plugin", "package_root": "libraries/tacacsrs_bash_plugin", "artifact_name": "tacacsrs_bash_plugin", "artifact_kind": "cdylib", "sbom_describe": "all-cargo-targets", "features": ""},
+)
 
 
 def _write(path: Path, content: str) -> Path:
@@ -31,18 +41,48 @@ def _write(path: Path, content: str) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def test_products_are_the_four_supported_linux_products() -> None:
-    names = [product["asset_name"] for product in rehearse_linux.PRODUCTS]
-    assert names == [
-        "tacon-linux-gnu-x86_64",
-        "tacacsrs-agentd-linux-gnu-x86_64",
-        "tacacsrs-agent-health-linux-gnu-x86_64",
-        "tacacsrs-bash-plugin-linux-gnu-x86_64",
+def test_rehearsal_reads_products_from_the_committed_export(tmp_path, monkeypatch):
+    products = [
+        dict(product, os="ubuntu-latest", target=rehearse_linux.DEFAULT_TARGET)
+        for product in PRODUCTS
     ]
-    # Exactly one cdylib (the Bash plugin); the rest are executables.
-    kinds = [product["artifact_kind"] for product in rehearse_linux.PRODUCTS]
-    assert kinds.count("cdylib") == 1
-    assert kinds.count("bin") == 3
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(products).encode())
+
+    monkeypatch.setattr(rehearse_linux, "_run", run)
+    export = tmp_path / "source"
+    _write(export / rehearse_linux.PRODUCT_TOOL_RELPATH, "")
+    assert rehearse_linux.rehearsal_products(
+        export, rehearse_linux.DEFAULT_TARGET, python="python-fixture", env={"CARGO_TARGET_DIR": "owned"}
+    ) == products
+    assert calls == [(
+        ["python-fixture", str(export / ".github/steps/cargo-metadata/products.py"),
+         "--workspace", str(export), "--target", "x86_64-unknown-linux-gnu", "--linux"],
+        {"cwd": export, "env": {"CARGO_TARGET_DIR": "owned"}, "capture": True},
+    )]
+
+
+@pytest.mark.parametrize("output", [
+    "", "not-json", "null", "[]", "{}", '[{"os":"windows-latest"}]',
+    '[{"os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu"}]',
+])
+def test_rehearsal_rejects_missing_or_invalid_product_outputs(tmp_path, monkeypatch, output):
+    _write(tmp_path / rehearse_linux.PRODUCT_TOOL_RELPATH, "")
+    monkeypatch.setattr(rehearse_linux, "_run", lambda *args, **kwargs: subprocess.CompletedProcess([], 0, stdout=output))
+    with pytest.raises(rehearse_linux.RehearsalError, match="registry tool returned"):
+        rehearse_linux.rehearsal_products(tmp_path, rehearse_linux.DEFAULT_TARGET, python="python", env={})
+
+
+def test_rehearsal_requires_the_exported_registry_tool(tmp_path, monkeypatch):
+    def run(*args, **kwargs):
+        raise AssertionError("a revision without the registry tool must not run a command")
+
+    monkeypatch.setattr(rehearse_linux, "_run", run)
+    with pytest.raises(rehearse_linux.RehearsalError, match="product registry tool is missing in the export"):
+        rehearse_linux.rehearsal_products(tmp_path, rehearse_linux.DEFAULT_TARGET, python="python", env={})
 
 
 def test_linux_artifact_names_bin() -> None:
@@ -185,7 +225,7 @@ def test_output_rejects_file_and_symlink(tmp_path):
 
 def test_build_product_command_bin_release() -> None:
     command = rehearse_linux.build_product_command(
-        rehearse_linux.PRODUCTS[0], rehearse_linux.DEFAULT_TARGET, ["--release"]
+        PRODUCTS[0], rehearse_linux.DEFAULT_TARGET, ["--release"]
     )
     assert command == [
         "cargo",
@@ -202,7 +242,7 @@ def test_build_product_command_bin_release() -> None:
 
 def test_build_product_command_cdylib_debug() -> None:
     command = rehearse_linux.build_product_command(
-        rehearse_linux.PRODUCTS[3], rehearse_linux.DEFAULT_TARGET, []
+        PRODUCTS[3], rehearse_linux.DEFAULT_TARGET, []
     )
     assert command == [
         "cargo",
@@ -217,7 +257,7 @@ def test_build_product_command_cdylib_debug() -> None:
 
 
 def test_build_product_command_adds_features() -> None:
-    product = dict(rehearse_linux.PRODUCTS[0], features="extra feature")
+    product = dict(PRODUCTS[0], features="extra feature")
     command = rehearse_linux.build_product_command(
         product, rehearse_linux.DEFAULT_TARGET, ["--release"]
     )
@@ -453,7 +493,7 @@ def test_validate_artifact_rejects_every_ldd_failure(tmp_path, monkeypatch, outp
         match="native dependency inspection failed",
     ):
         rehearse_linux.validate_artifact(
-            rehearse_linux.PRODUCTS[0],
+            PRODUCTS[0],
             staging_dir=tmp_path,
             artifact_filename="tacon",
             versions={},
@@ -462,10 +502,10 @@ def test_validate_artifact_rejects_every_ldd_failure(tmp_path, monkeypatch, outp
 
 def test_local_sbom_generates_both_formats_then_delegates_to_shared_helper(tmp_path, monkeypatch):
     export = tmp_path / "source"
-    package_root = export / rehearse_linux.PRODUCTS[0]["package_root"]
+    package_root = export / PRODUCTS[0]["package_root"]
     package_root.mkdir(parents=True)
     commands = []
-    product = dict(rehearse_linux.PRODUCTS[0], features="feature-a")
+    product = dict(PRODUCTS[0], features="feature-a")
 
     monkeypatch.setattr(rehearse_linux, "_run", lambda command, **kwargs: commands.append(command))
     staged = rehearse_linux.generate_and_stage_sbom(
@@ -502,7 +542,7 @@ def test_local_product_uses_capture_cli_before_archive(tmp_path, monkeypatch):
     output = tmp_path / "output"
     release = output / "release"
     release.mkdir(parents=True)
-    product = rehearse_linux.PRODUCTS[0]
+    product = PRODUCTS[0]
     _write(export / product["package_root"] / "Cargo.toml", '[package]\nname="tacon"\nversion="1.2.3"\n')
     _write(export / "Cargo.lock", "hydrated lock")
     commands = []
@@ -558,3 +598,101 @@ def test_local_manifest_cli_receives_staged_records(tmp_path, monkeypatch):
     command = commands[0]
     assert command[command.index("--provenance-dir") + 1] == str(release)
     assert command[command.index("--source") + 1] == "source-commit"
+
+
+def test_fixture_rehearsal_preserves_registry_hydration_and_offline_evidence(tmp_path, monkeypatch):
+    """Run real packaging CLIs with fixture binaries and fixture SBOM generation."""
+    root = Path(__file__).resolve().parents[3]
+    source = tmp_path / "checkout"
+    (source / ".git").mkdir(parents=True)
+    version = "2026.1020.1"
+    versions = {product["package_name"]: version for product in PRODUCTS}
+    versions_path = _write(tmp_path / "versions.json", json.dumps(versions))
+    commit = "a" * 40
+    exports = []
+    commands = []
+    real_run = rehearse_linux._run
+
+    def export(_source, revision, destination):
+        assert _source == source and revision == commit
+        exports.append(destination)
+        scripts = (
+            rehearse_linux.STAGE_SCRIPT_RELPATH, rehearse_linux.SYMBOLS_SCRIPT_RELPATH,
+            rehearse_linux.ARCHIVE_SCRIPT_RELPATH, rehearse_linux.HYDRATE_TOOL_RELPATH,
+            rehearse_linux.MANIFEST_TOOL_RELPATH, rehearse_linux.PROVENANCE_TOOL_RELPATH,
+            rehearse_linux.SBOM_STAGE_TOOL_RELPATH, rehearse_linux.PRODUCT_TOOL_RELPATH,
+            ".github/steps/cargo-metadata/workspace.py", ".github/products.json",
+            "libraries/tacacsrs_config/yang/generation-manifest.json",
+            "libraries/tacacsrs_ipc/proto/tacacsrs_agent.proto",
+        )
+        for relative in scripts:
+            _write(destination / relative, (root / relative).read_text())
+        directories = [product["package_root"] for product in PRODUCTS]
+        _write(destination / "Cargo.toml", f'[workspace]\nresolver="2"\nmembers={json.dumps(directories)}\n')
+        lock = "version = 3\n"
+        for product in PRODUCTS:
+            package = product["package_name"]
+            manifest = f'[package]\nname = "{package}"\nversion = "0.0.0-dev"\nedition = "2021"\n'
+            directory = destination / product["package_root"]
+            if product["artifact_kind"] == "cdylib":
+                manifest += f'[lib]\nname="{product["artifact_name"]}"\ncrate-type=["cdylib", "rlib"]\n'
+                _write(directory / "src/lib.rs", "")
+            else:
+                _write(directory / "src/main.rs", "fn main() {}")
+            _write(directory / "Cargo.toml", manifest)
+            lock += f'\n[[package]]\nname = "{package}"\nversion = "0.0.0-dev"\n'
+        _write(destination / "Cargo.lock", lock)
+        # The mutable source registry must not control the exported revision.
+        _write(source / ".github/products.json", '{"products":[]}')
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[:2] == ["cargo", "build"]:
+            package = command[command.index("--package") + 1]
+            product = next(product for product in PRODUCTS if product["package_name"] == package)
+            filename, _ = rehearse_linux.linux_artifact_names(product["artifact_name"], product["artifact_kind"])
+            binary = Path(kwargs["env"]["CARGO_TARGET_DIR"]) / rehearse_linux.DEFAULT_TARGET / "debug" / filename
+            _write(binary, f"#!/bin/sh\nprintf '%s\\n' '{package} {version}'\n").chmod(0o755)
+            return subprocess.CompletedProcess(command, 0)
+        if command[:2] == ["cargo", "cyclonedx"]:
+            manifest = Path(command[command.index("--manifest-path") + 1])
+            product = next(product for product in PRODUCTS if manifest.parent.name == Path(product["package_root"]).name)
+            fmt = command[command.index("--format") + 1]
+            if fmt == "json":
+                content = json.dumps({"metadata": {"component": {"name": product["package_name"], "version": version}}})
+            else:
+                content = f'<bom xmlns="http://cyclonedx.org/schema/bom/1.5"><metadata><component><name>{product["package_name"]}</name><version>{version}</version></component></metadata></bom>'
+            _write(manifest.parent / f"fixture.cdx.{fmt}", content)
+            return subprocess.CompletedProcess(command, 0)
+        if command[:2] == ["nm", "-D"]:
+            return subprocess.CompletedProcess(command, 0, stdout="\n".join(f"000 T {symbol}" for symbol in rehearse_linux.BASH_PLUGIN_EXPORTS))
+        assert command[0] in ("bash", "tar", rehearse_linux.sys.executable) or "--version" in command
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(rehearse_linux, "preflight_tools", lambda tools: [])
+    monkeypatch.setattr(rehearse_linux, "resolve_commit", lambda *args: commit)
+    monkeypatch.setattr(rehearse_linux, "export_source", export)
+    monkeypatch.setattr(rehearse_linux, "_run", run)
+    monkeypatch.setattr(rehearse_linux, "_capture_lenient", lambda *args: (0, "libssl.so => /system/libssl.so\n"))
+    summary = rehearse_linux.rehearse(
+        source=str(source), revision="HEAD", versions_path=str(versions_path),
+        output=str(tmp_path / "rehearsal"), profile="debug",
+    )
+    assert summary["archives"] == [
+        "tacon-linux-gnu-x86_64.tar.gz", "tacacsrs-agentd-linux-gnu-x86_64.tar.gz",
+        "tacacsrs-agent-health-linux-gnu-x86_64.tar.gz", "tacacsrs-bash-plugin-linux-gnu-x86_64.tar.gz",
+    ]
+    assert exports == [tmp_path / "rehearsal/source"]
+    assert (source / ".github/products.json").read_text() == '{"products":[]}'
+    manifest = json.loads(Path(summary["manifest"]).read_text())
+    assert manifest["source"]["commit"] == commit
+    assert manifest["versions"] == versions
+    assert set(manifest["buildProvenance"]) == set(summary["archives"])
+    assert rehearse_linux.verify_recorded_digests(Path(summary["manifest"]), Path(summary["release_dir"])) == []
+    for archive in summary["archives"]:
+        with tarfile.open(Path(summary["release_dir"]) / archive) as stream:
+            names = stream.getnames()
+            assert any(name.endswith("/build-provenance.json") for name in names)
+            assert any(name.endswith("/sbom-linux-gnu-x86_64.json") for name in names)
+            assert any(name.endswith("/sbom-linux-gnu-x86_64.xml") for name in names)
+    assert all(not any(word in command for word in ("push", "tag", "deploy", "publish")) for command in commands)
