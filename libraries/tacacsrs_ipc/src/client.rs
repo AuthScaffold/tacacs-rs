@@ -25,7 +25,6 @@ use tacacsrs_protocol::operations::{
     AccountingOperation, AccountingOperationResponse, AuthorizationOperation,
     AuthorizationOperationResponse, PapAuthenticationOperation, PapAuthenticationOperationResponse,
 };
-use crate::endpoint::connect_channel;
 use crate::IpcEndpoint;
 
 /// Convenience wrapper for making local IPC calls to the central service.
@@ -89,15 +88,13 @@ impl ServiceClient {
     ///
     /// The returned [`ServiceClient`] reuses the channel for all requests.
     ///
-    /// This connects over a Unix domain socket using `tonic`'s
-    /// `connect_with_connector` to bridge `tokio::net::UnixStream` into the
-    /// HTTP/2 transport. On other platforms it connects over loopback TCP.
+    /// The endpoint selects a Unix domain socket or loopback TCP connection.
     ///
     /// # Errors
     ///
     /// Returns an error if the client cannot establish the IPC connection.
     pub async fn connect(endpoint: IpcEndpoint) -> anyhow::Result<Self> {
-        let channel = connect_channel(&endpoint).await?;
+        let channel = endpoint.connect_channel().await?;
         Ok(Self { channel })
     }
 

@@ -2184,8 +2184,6 @@ name = "tacacsrs-agent-ipc-emulator"
 version = "0.0.0-dev"
 dependencies = [
  "anyhow",
- "http",
- "hyper-util",
  "log",
  "prost",
  "protoc-bin-vendored",
@@ -2200,7 +2198,6 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
- "tower",
 ]
 
 [[package]]

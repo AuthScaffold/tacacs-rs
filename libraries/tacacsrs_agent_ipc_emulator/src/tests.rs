@@ -12,6 +12,8 @@ use crate::policy::EmulatorResponse;
 use crate::state::EmulatorState;
 use crate::{EmulatorPolicy, IpcEmulator, IpcRpc, MockControllerClient};
 
+mod connections;
+
 const ACCOUNTING_POLICY: &str = r#"
 package tacacs.emulator
 import rego.v1

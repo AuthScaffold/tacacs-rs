@@ -4,7 +4,6 @@ use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::health_check_response::ServingStatus;
 use tonic_health::pb::health_client::HealthClient as GrpcHealthClient;
 
-use crate::endpoint::connect_channel;
 use crate::IpcEndpoint;
 
 /// Overall health service name.
@@ -37,7 +36,7 @@ impl HealthClient {
     ///
     /// Returns an error when the local endpoint cannot be reached.
     pub async fn connect(endpoint: &IpcEndpoint) -> anyhow::Result<Self> {
-        let channel = connect_channel(endpoint).await?;
+        let channel = endpoint.connect_channel().await?;
         Ok(Self {
             client: GrpcHealthClient::new(channel),
         })
