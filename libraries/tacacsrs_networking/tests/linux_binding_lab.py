@@ -41,6 +41,7 @@ def peer():
         ("mgmt-peer", "192.0.2.2/24", "2001:db8:1::2/64"),
         ("data-peer", "203.0.113.2/24", "2001:db8:2::2/64"),
         ("stand-peer", "198.18.1.2/24", "2001:db8:4::2/64"),
+        ("vrf-peer", "192.0.5.2/24", "2001:db8:6::2/64"),
     ]:
         ip("link", "set", device, "up")
         ip("address", "add", v4, "dev", device)
@@ -50,7 +51,7 @@ def peer():
     ip("route", "add", "198.18.0.1/32", "via", "203.0.113.1")
     ip("-6", "route", "add", "2001:db8:3::1/128", "via", "2001:db8:2::1")
     # Accept asymmetric source/egress tests without changing host sysctls.
-    for name in ["all", "default", "mgmt-peer", "data-peer", "stand-peer"]:
+    for name in ["all", "default", "mgmt-peer", "data-peer", "stand-peer", "vrf-peer"]:
         Path(f"/proc/sys/net/ipv4/conf/{name}/rp_filter").write_text("0")
     # These rejects come from the remote peer. The client's FIB remains valid.
     subprocess.run(["nft", "-f", "-"], input="""
@@ -67,7 +68,7 @@ table inet tacacs_binding_lab {
     observed = {}
     lock = threading.Lock()
     captures = []
-    for device in ["mgmt-peer", "data-peer", "stand-peer"]:
+    for device in ["mgmt-peer", "data-peer", "stand-peer", "vrf-peer"]:
         capture = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
         capture.bind((device, 0))
         captures.append(capture)
@@ -138,14 +139,18 @@ def lab(executable):
         ip("link", "set", "mgmt-vrf", "up")
         ip("link", "add", "down0", "type", "dummy")
         ip("link", "set", "down0", "master", "mgmt-vrf")
+        ip("link", "add", "unused0", "type", "dummy")
+        ip("link", "set", "unused0", "master", "mgmt-vrf")
+        ip("link", "set", "unused0", "up")
         for device, other, v4, v6 in [
             ("mgmt0", "mgmt-peer", "192.0.2.1/24", "2001:db8:1::1/64"),
             ("data0", "data-peer", "203.0.113.1/24", "2001:db8:2::1/64"),
             ("standalone0", "stand-peer", "198.18.1.1/24", "2001:db8:4::1/64"),
+            ("vrf-alt0", "vrf-peer", "192.0.5.1/24", "2001:db8:6::1/64"),
         ]:
             ip("link", "add", device, "type", "veth", "peer", "name", other)
             ip("link", "set", other, "netns", str(child.pid))
-            if device == "mgmt0":
+            if device in ("mgmt0", "vrf-alt0"):
                 ip("link", "set", device, "master", "mgmt-vrf")
             ip("link", "set", device, "up")
             ip("address", "add", v4, "dev", device)
@@ -162,7 +167,12 @@ def lab(executable):
             ip(family, "route", "add", server, "via", data, "dev", "data0", "metric", "10")
             standalone = "198.18.1.2" if family == "-4" else "2001:db8:4::2"
             ip(family, "route", "add", server, "via", standalone, "dev", "standalone0", "metric", "100")
-        for name in ["all", "default", "mgmt0", "data0", "standalone0"]:
+            # The ICMP fixture needs a valid pinned-source path. Its unbound
+            # alternative still uses the lower-metric main route through data0.
+            source = "198.18.1.1/32" if family == "-4" else "2001:db8:4::1/128"
+            ip(family, "route", "add", server, "via", standalone, "dev", "standalone0", "table", "200")
+            ip(family, "rule", "add", "priority", "50", "from", source, "lookup", "200")
+        for name in ["all", "default", "mgmt0", "data0", "standalone0", "vrf-alt0", "unused0"]:
             Path(f"/proc/sys/net/ipv4/conf/{name}/rp_filter").write_text("0")
         child.stdin.write("configure\n")
         child.stdin.flush()
@@ -190,13 +200,18 @@ def main():
     elif sys.argv[1:2] == ["--lab"]:
         lab(sys.argv[2])
     else:
-        output = subprocess.check_output(
+        build = subprocess.run(
             ["cargo", "test", "-p", "tacacsrs-networking", "--lib", "--no-run", "--message-format=json"],
-            text=True,
+            text=True, stdout=subprocess.PIPE,
         )
+        messages = [json.loads(line) for line in build.stdout.splitlines()]
+        if build.returncode:
+            for message in messages:
+                if message.get("reason") == "compiler-message":
+                    print(message["message"].get("rendered", ""), file=sys.stderr, end="")
+            raise subprocess.CalledProcessError(build.returncode, build.args)
         executable = next(
-            message["executable"] for line in output.splitlines()
-            if (message := json.loads(line)).get("executable")
+            message["executable"] for message in messages if message.get("executable")
         )
         subprocess.run(
             ["unshare", "--user", "--map-root-user", "--net",

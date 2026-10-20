@@ -109,16 +109,25 @@ For mandatory isolation, select `strict`.
 - An unavailable VRF removes the VRF and egress requests together.
   It also removes an interface-derived source that depends on explicit VRF membership.
   An independent explicit source IP remains.
-- Verified local route absence removes the routing constraints first.
+- Verified local route absence removes the egress constraint first.
+  A retained explicit VRF receives its own route check on the next attempt.
+  The VRF is removed only if that independent check also fails.
   An independent explicit source IP remains until a separate availability check fails.
   With only a source choice left, verified route absence permits a retry without that source.
 - TCP connection errors never authorize fallback.
   This includes remote ICMP host-unreachable or network-unreachable errors, connection refusal, connection reset, and generic timeouts.
   DNS errors, host-guard errors, TLS errors, and authentication errors do not permit fallback.
 
-The client uses no-send route-netlink FIB queries before TCP connect.
-The queries include the selected device, TCP protocol, destination port, and bound source tuple.
+The client uses no-send, resolved route-netlink queries before TCP connect.
+For automatic source selection, the first query obtains the source address from the kernel.
+The client binds that concrete address and reserves the TCP source port.
+The final query uses the actual bound source tuple, destination, TCP protocol, and device.
+This prevents a later source-based policy lookup from changing a previously verified VRF path.
 For explicit or interface-derived VRFs, the selected table must match the VRF table.
+For physical egress devices, the returned output interface must match the bound device.
+Local delivery has no physical egress, but it still requires the requested VRF table.
+An unresolved multipath reply is accepted only when every non-dead hop uses the requested interface.
+Mixed-device or missing-output metadata fails closed. One eligible hop does not prove the selected TCP egress.
 This check prevents main-table fall-through even when the VRF has no unreachable default.
 The application does not require the operator to install an unreachable default.
 An inconclusive route query never permits route-based fallback.
@@ -156,9 +165,14 @@ The lab requires Python 3, `iproute2`, `nft`, `unshare`, `setpriv`, and permissi
 The lab captures peer-side SYN packets to verify actual source addresses and egress for IPv4 and IPv6.
 It also covers membership, source changes, local-route fallback, missing devices, and connection refusal.
 Regression cases cover VRFs without unreachable defaults, independent egress failures, remote ICMP errors, and deadline expiry.
+They also cover source-policy rerouting, UP unused VRF members, IPv6 output mismatches, and ordinary local-address paths.
 The peer uses nftables to generate remote ICMP errors while the client retains a valid local route.
 The lab repeats read-only connection cases without effective capabilities.
 It does not change host interfaces or routes.
+
+Validation ran on Linux 6.18.33 under WSL2. SONiC 5.10 was not tested.
+The implementation requires route replies with the selected source, table, and output metadata, plus TCP protocol and port lookup support.
+Unsupported or inconclusive routing metadata does not authorize route-based fallback.
 
 ## Parsing API
 

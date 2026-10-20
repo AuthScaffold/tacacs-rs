@@ -142,7 +142,9 @@ impl LocalBinding {
             }
             #[cfg(target_os = "linux")]
             Scope::Route => {
-                if self.egress_interface.is_some() || self.vrf.is_some() {
+                if self.egress_interface.is_some() {
+                    self.relax(Scope::Egress);
+                } else if self.vrf.is_some() {
                     self.relax(Scope::Vrf);
                 } else {
                     self.source = None;

@@ -39,7 +39,7 @@ pub(super) async fn apply(
                     Some(SourceBinding::Ip(ip)) => Some(SocketAddr::new(ip, 0)),
                     _ => None,
                 };
-                return bind_source(socket, source);
+                return bind_source(socket, source, Scope::Source);
             }
         },
     };
@@ -159,22 +159,31 @@ async fn discover(
                 )
             })?;
     }
-    bind_source(socket, source)?;
-    if source.is_none() {
-        // Reserve the TCP port so the FIB query and connect use the same port rules.
-        let unspecified = if destination.is_ipv4() {
-            IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
+    let device = egress.as_ref().or(vrf.as_ref()).map(|link| {
+        if is_vrf(link) {
+            route::Device::Vrf(link.header.index)
         } else {
-            IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED)
-        };
-        socket.bind(SocketAddr::new(unspecified, 0))?;
-    }
-    let device = egress
-        .as_ref()
-        .or(vrf.as_ref())
-        .map(|link| link.header.index);
+            route::Device::Interface(link.header.index)
+        }
+    });
+    let context = route::RoutingContext {
+        device,
+        vrf_table,
+        source_scope: if binding.source.is_some() {
+            Scope::Source
+        } else {
+            Scope::Route
+        },
+    };
+    let source = match source {
+        Some(source) => source,
+        None => context.select_source(handle, destination).await?,
+    };
+    // A concrete bind prevents TCP from choosing a source and repeating policy
+    // routing with inputs that differ from the verified flow.
+    bind_source(socket, Some(source), context.source_scope)?;
     let local = socket.local_addr()?;
-    match route::verify(handle, destination, local, device, vrf_table).await {
+    match context.verify(handle, destination, local).await {
         Ok(()) => Ok(()),
         Err(error) if error.downcast_ref::<super::Unavailable>().is_some() => Err(error),
         Err(error) if device.is_none() => {
@@ -187,14 +196,14 @@ async fn discover(
     }
 }
 
-fn bind_source(socket: &TcpSocket, source: Option<SocketAddr>) -> anyhow::Result<()> {
+fn bind_source(socket: &TcpSocket, source: Option<SocketAddr>, scope: Scope) -> anyhow::Result<()> {
     if let Some(source) = source {
         socket.bind(source).map_err(|error| {
             if matches!(
                 error.kind(),
                 io::ErrorKind::AddrNotAvailable | io::ErrorKind::PermissionDenied
             ) {
-                unavailable(Scope::Source, error)
+                unavailable(scope, error)
             } else {
                 error.into()
             }

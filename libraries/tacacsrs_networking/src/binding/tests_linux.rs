@@ -7,6 +7,9 @@ use tokio::io::AsyncReadExt;
 
 use super::*;
 
+mod pinned;
+mod multipath;
+
 struct LabLogger(Mutex<Vec<String>>);
 
 static LAB_LOGGER: LabLogger = LabLogger(Mutex::new(Vec::new()));
@@ -285,6 +288,7 @@ async fn namespace_client() {
     if std::env::var_os("TACACSRS_BINDING_LAB_READONLY").is_some() {
         return;
     }
+    pinned::run().await;
 
     // The usable VRF must survive an independent missing or down egress request.
     for (family, destination, prefix, gateway, source) in [
