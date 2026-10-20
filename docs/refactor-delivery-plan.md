@@ -2895,6 +2895,11 @@ Their dedicated caches occupy approximately 58 MiB and 39 MiB.
 Cleanup awaits preservation of this receipt.
 The accepted global TOML Kit pin and isolated remote prototype history remain retained.
 
+Tracking commit `55bdd59` preserved the receipt before cleanup.
+The coordinator removed both clean completed TOML worktrees without force, their exact caches, and both path-specific Rust overrides.
+Retained review receipts, replay probes, logs, backups, remote prototype history, and global tooling remain available.
+Active and unrelated worktrees were left untouched.
+
 Compare TOML Kit with the current hydration implementation.
 Evaluate `toml_edit` only if an existing Rust tool can own the work without another executable.
 Keep Cargo metadata authoritative for member discovery.
@@ -2909,7 +2914,7 @@ Checks: hydration/version/rehearsal Python suites, fixture-based no-publish rehe
 
 ### 16: Systemd Notifications
 
-Status: Astra supports non-adoption; Opus's direct decision-document review is in progress.
+Status: both named reviews and final document checks are complete; documentation-only decision published as PR #293 against `main`.
 Prototype: `/home/ubuntu/tacacs-rs-16-systemd-notifications-prototype`, branch `refactor/general-prototypes/16-systemd-notifications`.
 Integration: `/home/ubuntu/tacacs-rs-16-systemd-notifications`, branch `refactor/general-iterations/16-systemd-notifications`.
 Both start from reviewed predecessor `680b6f3c8c813e6f3c803673975a4bd73208c433` and use separate caches.
@@ -2970,6 +2975,32 @@ Canonical changed-source manifest: `b4a210312e235b04f2cdc0c0da2b3ead74b0fd2d002d
 Complete one-document patch: `5d091f889792391097a122205509c69bce31aa548982b8d2dcfbf88b2aa9dcff`.
 Opus review and final document gates remain pending.
 
+#### Final Decision Reviews And Publication
+
+Opus independently supported rejection and reproduced every normal, abstract-address, pressure, and unchanged-owner result.
+Its precision edits clarified the timing, disabled feature name, normal/build closure counts, queue-fill distribution, retry semantics, and replay commands.
+Two filler sockets queued 278 plus 235 datagrams; the third fresh sender returned `EAGAIN`.
+No implementation, dependency, or rejection decision changed.
+Nine links, four Bash blocks, prose, and table checks passed.
+Astra read the final 191-line document and retained approval without further edits.
+
+Final document hash: `04fe2ebd282d076fda25c0bb18c82c973d4eeb360a03fb89c5387e80d8ccd73f`.
+Canonical changed-source manifest: `52e9a5e22707a63bc634e89f9f1facbb586b5284fb60faad04a47cc05d6a0301`.
+Complete new-file patch: `b55b78716e2bc8e7f5c68b861e431024dd225136964e85199b5fe2b3b19400a0`.
+The coordinator validated those identities, all local links, all four Bash blocks, and the exact remote prototype ref.
+All 935 baseline files remain unchanged.
+
+Decision commit `d94d63a` contains only the new document.
+The iteration 15 squash tree equals predecessor `680b6f3c8c813e6f3c803673975a4bd73208c433`.
+Integration commit `0518d4753e24292da9866a3c4f71233f232353fb` preserves exact validated tree `c7b910f5e382ac5f46bfd7649fa753218348a149`.
+[PR #293](https://github.com/AuthScaffold/tacacs-rs/pull/293) targets `main`, contains only the decision, and has `skip-release`.
+Fresh Copilot review was requested.
+Required workflow `39398669418` and CodeQL workflow `39398667218` started.
+Completed review, findings disposition, current-head required checks, and clean mergeability remain necessary before merge.
+
+Fresh Copilot review `5583141997` recommends approval and reports no open issues.
+Current-head hosted verification remains in progress.
+
 Compare direct notification APIs with the subprocess owner.
 Test pathname and abstract sockets, sender attribution, auto/strict selection, retries, and one-shot ready/stopping behavior.
 Prove bounded behavior when the receiver does not drain its socket.
@@ -2980,6 +3011,15 @@ Keep process-manager integration daemon-owned.
 Checks: private Unix datagram tests, process lifecycle/timeout cases, dependency/MSRV/audit checks, and hosted platform builds.
 
 ### 17: Codec Evaluation
+
+Status: bounded evaluation started through `GPT 6.1 Sol`.
+Prototype: `/home/ubuntu/tacacs-rs-17-codec-evaluation-prototype`, branch `refactor/general-prototypes/17-codec-evaluation`.
+Integration: `/home/ubuntu/tacacs-rs-17-codec-evaluation`, branch `refactor/general-iterations/17-codec-evaluation`.
+Both start from reviewed predecessor `0518d4753e24292da9866a3c4f71233f232353fb` and use separate caches.
+The prototype has a 45-minute analysis/implementation/focused-check budget.
+Required capability failure or lack of concrete buffering deletion ends evaluation early.
+Only accepted implementation or a reproducible documentation-only decision can enter integration.
+Publication remains blocked until predecessor review findings and required checks clear.
 
 Evaluate Tokio-util only for framing and buffering.
 Keep packet semantics, session routing, delivery facts, obfuscation, and counters in their owning layers.
