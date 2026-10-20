@@ -3010,6 +3010,10 @@ No protection bypass, release, or tag was used.
 No rejected source or dependency entered `main`.
 Completed integration/prototype cleanup awaits receipt preservation and clean/idle ownership checks.
 
+Tracking commit `3fbd39f` preserved the receipt before cleanup.
+The coordinator removed both clean completed notification worktrees without force, their exact caches, and both path-specific Rust overrides.
+The remote prototype, retained handoff, accepted global tooling, active codec worktrees, and unrelated worktrees remain intact.
+
 Compare direct notification APIs with the subprocess owner.
 Test pathname and abstract sockets, sender attribution, auto/strict selection, retries, and one-shot ready/stopping behavior.
 Prove bounded behavior when the receiver does not drain its socket.
@@ -3021,7 +3025,7 @@ Checks: private Unix datagram tests, process lifecycle/timeout cases, dependency
 
 ### 17: Codec Evaluation
 
-Status: non-adoption is proposed; Astra's direct decision-document review is in progress.
+Status: both final reviews and document gates are complete; documentation-only decision published as PR #294 against `main`.
 Prototype: `/home/ubuntu/tacacs-rs-17-codec-evaluation-prototype`, branch `refactor/general-prototypes/17-codec-evaluation`.
 Integration: `/home/ubuntu/tacacs-rs-17-codec-evaluation`, branch `refactor/general-iterations/17-codec-evaluation`.
 Both start from reviewed predecessor `0518d4753e24292da9866a3c4f71233f232353fb` and use separate caches.
@@ -3069,6 +3073,56 @@ Initial decision manifest: `4bfd47472e100668794b44cd5d7617fd4831802e2b0da9488e5a
 Complete initial decision patch: `2701bdf96c86dbf82060199ccaf0f63c7cc34c666cc31098912bee2acc12f422`.
 Both named decision reviews and final document gates remain pending.
 
+Astra independently supports the documentation-only rejection and found no prototype proof blocker.
+It clarified that bespoke buffering policies remain split across three adapters.
+The 21-line increase supports that structural assessment but does not define it.
+It also corrected the allocation interpretation: reused allocation ownership does not mean zero body-byte copying.
+`Vec::from(BytesMut)` still shifts body bytes with `ptr::copy`.
+
+All seven prototype validation commands passed again.
+Fourteen networking probes, 279 networking cases, and 31 proxy cases passed; two existing manual benchmarks remain ignored.
+Formatting, strict Clippy, private docs, and Rust 1.88 checks passed.
+Astra added exact remote prototype provenance, conditional detached recovery, `$HOME` replay paths, and self-contained source checks.
+Five local links, two Bash blocks, tables, and prose checks passed.
+The six frozen prototype source hashes and all 936 baseline integration files remain unchanged.
+
+Current document hash: `0e630a26500442b34c7a032d263f5b8a6d65130fecb33db2383004c373c18f2d`.
+Canonical changed-source manifest: `374bf534763b9f8889780260da55693d3809c7388d7489a3cabb1d41c844821f`.
+Complete 220-line new-document patch: `db1be12d41c2ac23ba3f7852d0c83033acc85d32f97b5e0c92d6326462483526`.
+Opus review and final document gates remain pending.
+
+#### Final Decision Reviews And Publication
+
+Opus supports rejecting the bounded route on structural grounds.
+It independently replayed every command both in the cached prototype and in a clean archive with a separate full rebuild.
+All observed counts reproduced without the generated evidence directory.
+Networking probes passed fourteen cases; networking passed 279 with two existing manual benchmarks ignored; proxy passed 31.
+Formatting, strict Clippy, private docs, and Rust 1.88 checks passed.
+
+Opus corrected the dependency scope: the agent `bytes` edge is production, while the networking additions are test-only.
+It also documented that the committed large-frame coalescing test leaves zero tail bytes.
+The committed probe therefore does not exercise its non-empty-tail copy branch.
+A separate review-only model produced 784 non-empty tails, but does not establish committed-prototype conformance.
+Those coverage limits remain explicit and no rejected code is integrated.
+Astra confirmed the final precision edits without further changes.
+
+Final 233-line document hash: `5d80daf516fe2329c378cf3a5b54c0904b3822bebbcf89b51a8e09e1eb47d957`.
+Canonical changed-source manifest: `11c35733422a989d3cc8df0a85e17780ee709217ea9b321fbf334ad907a64d6b`.
+Complete new-file patch: `9b3bddc83853a536f828c78952d98d1ee81fb0f5705da43d0bc9a5816415f71d`.
+The coordinator validated exact identities, five local links, both Bash blocks, and the durable remote prototype ref.
+All 936 baseline integration files remain unchanged.
+
+Decision commit `d11f6ed` contains only the evaluation document.
+The iteration 16 squash source equals predecessor `0518d4753e24292da9866a3c4f71233f232353fb`.
+Integration commit `d3629b2ee0f78c862e7a4d8fb7558622c6f6591a` preserves exact validated tree `0fd0de2e57287b1611a1889b2354eae5e735f900`.
+[PR #294](https://github.com/AuthScaffold/tacacs-rs/pull/294) targets `main`, contains one file, and has `skip-release`.
+Fresh Copilot review was requested.
+Required workflow `39409754281` and CodeQL workflow `39409751847` started.
+Completed review, findings disposition, current-head required checks, and clean mergeability remain necessary before merge.
+
+Fresh Copilot review `5584006093` on the published head reports no open issues.
+Current-head hosted verification remains in progress.
+
 Evaluate Tokio-util only for framing and buffering.
 Keep packet semantics, session routing, delivery facts, obfuscation, and counters in their owning layers.
 Test oversized headers before allocation, fragmented reads, partial writes, cancellation, and contiguous packet behavior.
@@ -3079,6 +3133,16 @@ Checks: networking/proxy native tests, relevant fuzz and allocation-bound checks
 Reject the prototype if custom adapters reproduce the deleted machinery without a clear reduction.
 
 ### 18: Packaging Evaluation
+
+Status: bounded evaluation started through `GPT 6.1 Sol`.
+Prototype: `/home/ubuntu/tacacs-rs-18-packaging-evaluation-prototype`, branch `refactor/general-prototypes/18-packaging-evaluation`.
+Integration: `/home/ubuntu/tacacs-rs-18-packaging-evaluation`, branch `refactor/general-iterations/18-packaging-evaluation`.
+Both start from reviewed predecessor `d3629b2ee0f78c862e7a4d8fb7558622c6f6591a` and use separate caches.
+The prototype has a 45-minute analysis/configuration/implementation/focused-check budget.
+Only local planning/builds are permitted; hosting, publication, Git tags, generated release workflows, deployment, and policy changes are excluded.
+Required artifact/provenance/platform failure or lack of concrete deletion ends evaluation early.
+Only accepted implementation or a reproducible documentation-only non-adoption decision can enter integration.
+Publication remains blocked until predecessor review findings and required checks clear.
 
 Evaluate `dist` local planning/build artifacts only after registry and hydration decisions settle.
 Do not enable hosting, publication, tags, or generated release workflows during the experiment.
