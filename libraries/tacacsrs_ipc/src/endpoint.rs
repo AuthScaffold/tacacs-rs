@@ -1,0 +1,165 @@
+//! Shared endpoint parsing and connection setup for local TACACS+ IPC.
+//!
+//! Both the [`ServiceClient`](crate::ServiceClient) and the service-side
+//! listener use [`IpcEndpoint`] to describe the local communication channel.
+//! Shared parsing makes sure that the client and server interpret endpoint
+//! strings in the same way.
+//!
+//! # Endpoint formats
+//!
+//! | Input | Platform | Result |
+//! |-------|----------|--------|
+//! | `/run/tacacs/tacacs.sock` | Unix | `IpcEndpoint::Unix(PathBuf)` |
+//! | `127.0.0.1:9049` | Linux emulator | `IpcEndpoint::Tcp(SocketAddr)` |
+//! | *(empty string)* | Linux | Error |
+
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::str::FromStr;
+
+use anyhow::{Context, bail};
+use http::Uri;
+use hyper_util::rt::TokioIo;
+use tonic::transport::{Channel, Endpoint};
+use tower::service_fn;
+
+const UDS_GRPC_CONNECT_URI: &str = "http://[::]:50051";
+
+/// Local IPC endpoint used between local consumers and the central service.
+///
+/// The production transport is a Unix domain socket. File permissions control
+/// access, and this transport has no TCP overhead. The Linux IPC emulator also
+/// accepts a loopback TCP socket.
+///
+/// # Parsing
+///
+/// `IpcEndpoint` implements [`FromStr`] so it can be used directly with
+/// command-line argument parsers. Any value containing `/` is treated
+/// as a socket path; otherwise the value is parsed as a `SocketAddr`.
+///
+/// ```
+/// # use tacacsrs_ipc::IpcEndpoint;
+/// let tcp: IpcEndpoint = "127.0.0.1:9049".parse().unwrap();
+/// assert!(matches!(tcp, IpcEndpoint::Tcp(_)));
+/// ```
+///
+/// The parser rejects an empty string. This behavior reports configuration
+/// errors instead of silently using a default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IpcEndpoint {
+    /// Unix domain socket endpoint used for Linux-style local IPC.
+    ///
+    /// Preferred on production Linux deployments because filesystem permissions
+    /// control access and there is no TCP overhead.
+    Unix(PathBuf),
+
+    /// Loopback TCP endpoint used by Linux emulator workflows.
+    ///
+    /// At bind time, the service makes sure that this address is loopback-only.
+    /// This restriction prevents exposure on a network interface.
+    Tcp(SocketAddr),
+}
+
+impl IpcEndpoint {
+    /// Returns the default local IPC endpoint.
+    ///
+    /// The default is `/run/tacacs/tacacs.sock`.
+    ///
+    /// [`FromStr`] does not use this default. An empty string remains an error.
+    #[must_use]
+    pub fn default_local() -> Self {
+        Self::Unix(PathBuf::from("/run/tacacs/tacacs.sock"))
+    }
+
+    /// Establishes a reusable gRPC channel to this local IPC endpoint.
+    ///
+    /// Service, controller, health, and diagnostics clients use the same
+    /// Unix or TCP connection setup. Channel clones share the connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the gRPC endpoint is invalid or the socket is
+    /// unreachable. Connection errors include the socket path or address.
+    pub async fn connect_channel(&self) -> anyhow::Result<Channel> {
+        match self {
+            Self::Unix(path) => {
+                let connect_path = path.clone();
+                Endpoint::try_from(UDS_GRPC_CONNECT_URI)
+                    .context("Failed to build the Unix domain socket gRPC endpoint")?
+                    .connect_with_connector(service_fn(move |_: Uri| {
+                        let path = connect_path.clone();
+                        async move {
+                            tokio::net::UnixStream::connect(path)
+                                .await
+                                .map(TokioIo::new)
+                        }
+                    }))
+                    .await
+                    .with_context(|| {
+                        format!("Failed to connect to IPC Unix domain socket {}", path.display())
+                    })
+            }
+            Self::Tcp(address) => Endpoint::from_shared(format!("http://{address}"))
+                .context("Failed to build the TCP IPC gRPC endpoint")?
+                .connect()
+                .await
+                .with_context(|| format!("Failed to connect to IPC endpoint {address}")),
+        }
+    }
+}
+
+impl FromStr for IpcEndpoint {
+    type Err = anyhow::Error;
+
+    /// Parses an IPC endpoint string.
+    ///
+    /// The parser treats a value that contains `/` as a Unix domain
+    /// socket path. It parses all other values as `host:port` TCP socket
+    /// addresses. It rejects empty strings.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let value = value.trim();
+        if value.is_empty() {
+            bail!(
+                "IPC endpoint cannot be empty; expected a Unix domain socket path or loopback host:port"
+            );
+        }
+
+        if value.contains('/') {
+            return Ok(Self::Unix(PathBuf::from(value)));
+        }
+
+        let socket_addr = value
+            .parse::<SocketAddr>()
+            .with_context(|| format!("Invalid IPC endpoint: {value}"))?;
+        Ok(Self::Tcp(socket_addr))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IpcEndpoint;
+
+    #[test]
+    fn test_empty_endpoint_string_is_rejected() {
+        let error = ""
+            .parse::<IpcEndpoint>()
+            .expect_err("empty endpoint must fail");
+        assert!(error.to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn test_tcp_endpoint_string_parses() {
+        let endpoint = "127.0.0.1:9049"
+            .parse::<IpcEndpoint>()
+            .expect("TCP IPC endpoint must parse");
+        assert!(matches!(endpoint, IpcEndpoint::Tcp(_)));
+    }
+
+    #[test]
+    fn test_unix_endpoint_string_parses() {
+        let endpoint = "/run/tacacs/tacacs.sock"
+            .parse::<IpcEndpoint>()
+            .expect("Unix domain socket IPC endpoint must parse");
+        assert!(matches!(endpoint, IpcEndpoint::Unix(_)));
+    }
+}

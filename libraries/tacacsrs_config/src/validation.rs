@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use crate::generated::keystore::{EndEntityCertWithKeyInlineDefinition, SymmetricKeyInlineDefinition};
 use crate::generated::tacacs_plus::{
     ClientCredentials, ClientIdentityCertificate, ServerAuthenticationCaCerts, ServerCredentials,
     TacacsPlus, TacacsPlusServer, Tls13Epsk, TlsClientClientIdentity,
@@ -127,10 +128,7 @@ pub fn validate_config_with_options(
         anyhow::bail!("server list must contain at least one entry");
     }
 
-    let mut seen_endpoints = HashSet::new();
-    for server in &config.server {
-        validate_server(server, &mut seen_endpoints, options)?;
-    }
+    validate_server_set(config.server.iter(), options)?;
 
     validate_unique_ids(
         config.client_credentials.iter().map(|c| c.id.as_str()),
@@ -151,8 +149,27 @@ pub fn validate_config_with_options(
 
     crate::enumeration::validate_credential_references(config)?;
 
-    validate_key_formats(config)?;
+    for cred in &config.client_credentials {
+        let context = format!("client-credentials '{}'", cred.id);
+        validate_client_credential_key_formats(cred, &context)?;
+    }
 
+    Ok(())
+}
+
+pub(crate) fn validate_server_set<'a>(
+    servers: impl IntoIterator<Item = &'a TacacsPlusServer>,
+    options: &ValidationOptions,
+) -> anyhow::Result<()> {
+    let mut seen_endpoints = HashSet::new();
+    let mut seen_names = HashSet::new();
+    for server in servers {
+        if !seen_names.insert(&server.name) {
+            anyhow::bail!("server list contains duplicate names");
+        }
+        validate_server(server, &mut seen_endpoints, options)?;
+        validate_server_key_formats(server)?;
+    }
     Ok(())
 }
 
@@ -161,6 +178,7 @@ fn validate_server(
     seen_endpoints: &mut HashSet<(String, u16)>,
     options: &ValidationOptions,
 ) -> anyhow::Result<()> {
+    prepare_local_binding(server)?;
     validate_choice(
         &server.name,
         "source-type",
@@ -190,6 +208,44 @@ fn validate_server(
     }
 
     Ok(())
+}
+
+pub(crate) fn prepare_local_binding(
+    server: &TacacsPlusServer,
+) -> anyhow::Result<tacacsrs_networking::LocalBinding> {
+    use tacacsrs_networking::{BindingPolicy, LocalBinding, SourceBinding};
+
+    anyhow::ensure!(
+        server.source_ip.is_none() || server.source_interface.is_none(),
+        "source-type allows only one of [source-ip, source-interface]"
+    );
+    let source = if let Some(ip) = &server.source_ip {
+        let ip: std::net::IpAddr = ip
+            .parse()
+            .map_err(|_| anyhow::anyhow!("source-ip must be an IP address"))?;
+        let ip = ip.to_canonical();
+        if let Ok(destination) = server.address.parse::<std::net::IpAddr>() {
+            anyhow::ensure!(
+                ip.is_ipv4() == destination.to_canonical().is_ipv4(),
+                "source-ip and server address must use the same address family"
+            );
+        }
+        Some(SourceBinding::Ip(ip))
+    } else {
+        server
+            .source_interface
+            .clone()
+            .map(SourceBinding::Interface)
+    };
+    LocalBinding::new(
+        source,
+        server.egress_interface.as_deref(),
+        server.vrf_instance.as_deref(),
+        match server.binding_policy {
+            crate::tacacsrs::BindingPolicy::BestEffort => BindingPolicy::BestEffort,
+            crate::tacacsrs::BindingPolicy::Strict => BindingPolicy::Strict,
+        },
+    )
 }
 
 fn validate_security_choice(
@@ -240,6 +296,23 @@ fn validate_client_identity(
         ],
     )?;
 
+    validate_activated_choice(
+        &server.name,
+        "client-identity/auth-type",
+        TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT_EXPLICIT_AUTH_TYPE,
+        TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT_EXPLICIT_AUTH_TYPE_MANDATORY,
+        TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT_EXPLICIT_AUTH_TYPE_ACTIVATION,
+        &[(
+            TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT_PATH,
+            TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT,
+        )],
+        &[
+            ("credentials-reference", client_identity.credentials_reference.is_some()),
+            ("certificate", client_identity.certificate.is_some()),
+            ("tls13-epsk", client_identity.tls13_epsk.is_some()),
+        ],
+    )?;
+
     if let Some(ref certificate) = client_identity.certificate {
         validate_certificate_choice(&server.name, "client-identity/certificate", certificate)?;
     }
@@ -267,6 +340,9 @@ fn validate_server_authentication(
             server_authentication.credentials_reference.is_some(),
             server_authentication.ca_certs.is_some()
                 || server_authentication.ee_certs.is_some()
+                || server_authentication.require_stapled_ocsp.is_some()
+                || server_authentication.require_crls.is_some()
+                || server_authentication.require_ocsp.is_some()
                 || server_authentication.tls13_epsks.is_some(),
         ],
     )?;
@@ -278,6 +354,19 @@ fn validate_server_authentication(
     if let Some(ref ee_certs) = server_authentication.ee_certs {
         validate_trust_choice(&server.name, "server-authentication/ee-certs", ee_certs)?;
     }
+    validate_crl_policy(
+        server_authentication.require_crls.as_ref(),
+        server_authentication.ee_certs.is_some(),
+        server_authentication.tls13_epsks.is_some(),
+    )?;
+    validate_fetched_ocsp(
+        server_authentication.require_ocsp.as_ref(),
+        server_authentication.tls13_epsks.is_some(),
+    )?;
+    validate_ocsp_policy(
+        server_authentication.require_stapled_ocsp.as_ref(),
+        server_authentication.tls13_epsks.is_some(),
+    )?;
 
     Ok(())
 }
@@ -323,11 +412,99 @@ fn validate_client_credentials(credentials: &ClientCredentials) -> anyhow::Resul
 }
 
 fn validate_server_credentials(credentials: &ServerCredentials) -> anyhow::Result<()> {
+    validate_fetched_ocsp(credentials.require_ocsp.as_ref(), credentials.tls13_epsks.is_some())?;
+    validate_crl_policy(
+        credentials.require_crls.as_ref(),
+        credentials.ee_certs.is_some(),
+        credentials.tls13_epsks.is_some(),
+    )?;
+    validate_ocsp_policy(
+        credentials.require_stapled_ocsp.as_ref(),
+        credentials.tls13_epsks.is_some(),
+    )?;
     if let Some(ref ca_certs) = credentials.ca_certs {
         validate_trust_choice(&credentials.id, "server-credentials/ca-certs", ca_certs)?;
     }
     if let Some(ref ee_certs) = credentials.ee_certs {
         validate_trust_choice(&credentials.id, "server-credentials/ee-certs", ee_certs)?;
+    }
+    Ok(())
+}
+
+fn validate_fetched_ocsp(
+    policy: Option<&crate::tacacsrs::RequireOcsp>,
+    epsk: bool,
+) -> anyhow::Result<()> {
+    if let Some(policy) = policy {
+        anyhow::ensure!(
+            !epsk && policy.max_response_age_seconds > 0,
+            "Fetched OCSP requires certificate TLS and a positive maximum age"
+        );
+        anyhow::ensure!(
+            policy.response.is_some() != policy.evidence_reference.is_some(),
+            "OCSP requires exactly one evidence source"
+        );
+        anyhow::ensure!(
+            policy
+                .response
+                .as_ref()
+                .is_none_or(|value| !value.is_empty() && value.len() <= 65536),
+            "Invalid OCSP response size"
+        );
+        anyhow::ensure!(
+            policy
+                .evidence_reference
+                .as_ref()
+                .is_none_or(|value| !value.is_empty()),
+            "OCSP evidence reference must not be empty"
+        );
+    }
+    Ok(())
+}
+
+fn validate_crl_policy(
+    policy: Option<&crate::tacacsrs::RequireCrls>,
+    pins: bool,
+    epsk: bool,
+) -> anyhow::Result<()> {
+    let Some(policy) = policy else {
+        return Ok(());
+    };
+    anyhow::ensure!(policy.max_age_seconds > 0, "CRL maximum age must be positive");
+    anyhow::ensure!(!pins && !epsk, "CRL mode cannot be combined with exact pins or PSK");
+    anyhow::ensure!(
+        policy.crl.is_some() != policy.evidence_reference.is_some(),
+        "CRL policy requires exactly one inline or provider evidence source"
+    );
+    if let Some(reference) = &policy.evidence_reference {
+        anyhow::ensure!(!reference.is_empty(), "CRL evidence reference must not be empty");
+    }
+    if let Some(lists) = &policy.crl {
+        anyhow::ensure!(!lists.is_empty(), "Required CRL set is empty");
+        let mut seen = std::collections::BTreeSet::new();
+        for crl in lists {
+            anyhow::ensure!(
+                !crl.is_empty() && seen.insert(crl.as_slice()),
+                "CRL entries must be nonempty and unique"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_ocsp_policy(
+    policy: Option<&crate::tacacsrs::RequireStapledOcsp>,
+    epsk: bool,
+) -> anyhow::Result<()> {
+    if let Some(policy) = policy {
+        anyhow::ensure!(
+            policy.max_response_age_seconds > 0,
+            "OCSP maximum response age must be positive"
+        );
+        anyhow::ensure!(
+            !epsk,
+            "Required OCSP evidence cannot be combined with PSK server authentication"
+        );
     }
     Ok(())
 }
@@ -346,7 +523,17 @@ fn validate_certificate_choice(
             certificate.inline_definition.is_some(),
             certificate.central_keystore_reference.is_some(),
         ],
-    )
+    )?;
+    if let Some(inline) = &certificate.inline_definition {
+        validate_choice(
+            context,
+            &format!("{field_path}/inline-definition/private-key-type"),
+            EndEntityCertWithKeyInlineDefinition::CHOICE_PRIVATE_KEY_TYPE,
+            EndEntityCertWithKeyInlineDefinition::CHOICE_PRIVATE_KEY_TYPE_MANDATORY,
+            &[inline.cleartext_private_key.is_some()],
+        )?;
+    }
+    Ok(())
 }
 
 fn validate_epsk_choice(context: &str, field_path: &str, epsk: &Tls13Epsk) -> anyhow::Result<()> {
@@ -359,7 +546,17 @@ fn validate_epsk_choice(context: &str, field_path: &str, epsk: &Tls13Epsk) -> an
             epsk.inline_definition.is_some(),
             epsk.central_keystore_reference.is_some(),
         ],
-    )
+    )?;
+    if let Some(inline) = &epsk.inline_definition {
+        validate_choice(
+            context,
+            &format!("{field_path}/inline-definition/key-type"),
+            SymmetricKeyInlineDefinition::CHOICE_KEY_TYPE,
+            SymmetricKeyInlineDefinition::CHOICE_KEY_TYPE_MANDATORY,
+            &[inline.cleartext_symmetric_key.is_some()],
+        )?;
+    }
+    Ok(())
 }
 
 fn validate_trust_choice(
@@ -377,6 +574,42 @@ fn validate_trust_choice(
             certificates.central_truststore_reference.is_some(),
         ],
     )
+}
+
+type ChoiceCases<'a> = &'a [(&'a str, &'a [&'a str])];
+
+fn validate_activated_choice(
+    context: &str,
+    field_path: &str,
+    choice_cases: ChoiceCases<'_>,
+    mandatory: bool,
+    activation: &[(&str, &str)],
+    ancestors: &[(&str, ChoiceCases<'_>)],
+    field_presence: &[(&str, bool)],
+) -> anyhow::Result<()> {
+    let fields_present = |fields: &[&str]| {
+        fields.iter().any(|field| {
+            field_presence
+                .iter()
+                .any(|(name, present)| name == field && *present)
+        })
+    };
+    let active = activation.iter().all(|(path, case)| {
+        ancestors.iter().any(|(ancestor_path, cases)| {
+            ancestor_path == path
+                && cases
+                    .iter()
+                    .any(|(name, fields)| name == case && fields_present(fields))
+        })
+    });
+    if !active {
+        return Ok(());
+    }
+    let case_presence: Vec<_> = choice_cases
+        .iter()
+        .map(|(_, fields)| fields_present(fields))
+        .collect();
+    validate_choice(context, field_path, choice_cases, mandatory, &case_presence)
 }
 
 fn validate_choice(
@@ -440,7 +673,10 @@ fn reject_unsupported_credentials_features(
     Ok(())
 }
 
-fn reject_unsupported_epsk_derivation(context: &str, epsk: &Tls13Epsk) -> anyhow::Result<()> {
+pub(crate) fn reject_unsupported_epsk_derivation(
+    context: &str,
+    epsk: &Tls13Epsk,
+) -> anyhow::Result<()> {
     if epsk.context.is_some() {
         anyhow::bail!(
             "'{context}': tls13-epsk 'context' for additional key derivation is not yet supported"
@@ -463,24 +699,14 @@ fn reject_unsupported_epsk_derivation(context: &str, epsk: &Tls13Epsk) -> anyhow
 // Inline key material validation
 // ---------------------------------------------------------------------------
 
-/// Make sure that all inline definitions contain valid key material.
-pub(crate) fn validate_key_formats(config: &TacacsPlus) -> anyhow::Result<()> {
-    for server in &config.server {
-        let ctx = format!("server '{}'", server.name);
-
-        if let Some(ref ci) = server.client_identity {
-            validate_client_identity_key_formats(ci, &ctx)?;
-        }
-        if let Some(ref sa) = server.server_authentication {
-            validate_server_auth_key_formats(sa, &ctx)?;
-        }
+fn validate_server_key_formats(server: &TacacsPlusServer) -> anyhow::Result<()> {
+    let context = format!("server '{}'", server.name);
+    if let Some(ref ci) = server.client_identity {
+        validate_client_identity_key_formats(ci, &context)?;
     }
-
-    for cred in &config.client_credentials {
-        let ctx = format!("client-credentials '{}'", cred.id);
-        validate_client_credential_key_formats(cred, &ctx)?;
+    if let Some(ref sa) = server.server_authentication {
+        validate_server_auth_key_formats(sa, &context)?;
     }
-
     Ok(())
 }
 
@@ -498,6 +724,7 @@ fn validate_client_identity_key_formats(
                     .as_ref()
                     .map(tacacsrs_secrets::SecretBytes::expose_secret),
                 inline.cert_data.as_deref(),
+                &inline.intermediate_certificate,
                 &path,
             )?;
         }
@@ -557,6 +784,7 @@ fn validate_client_credential_key_formats(
                     .as_ref()
                     .map(tacacsrs_secrets::SecretBytes::expose_secret),
                 inline.cert_data.as_deref(),
+                &inline.intermediate_certificate,
                 &path,
             )?;
         }
@@ -588,6 +816,7 @@ fn validate_inline_asymmetric_key_material(
     public_key: Option<&[u8]>,
     cleartext_private_key: Option<&[u8]>,
     cert_data: Option<&[u8]>,
+    intermediates: &[Vec<u8>],
     context: &str,
 ) -> anyhow::Result<()> {
     if let Some(pk) = public_key {
@@ -599,5 +828,86 @@ fn validate_inline_asymmetric_key_material(
     if let Some(cert) = cert_data {
         validate_binary_data(cert, context, "cert-data")?;
     }
+    let mut seen = std::collections::BTreeSet::new();
+    for intermediate in intermediates {
+        validate_binary_data(intermediate, context, "tacacsrs:intermediate-certificate")?;
+        anyhow::ensure!(
+            seen.insert(intermediate.as_slice()),
+            "{context}: intermediate certificates must be unique"
+        );
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_activated_choice, ChoiceCases};
+
+    const SOURCE: ChoiceCases<'_> = &[
+        ("reference", &["reference"]),
+        ("explicit", &["label", "certificate", "tls13-epsk", "private-key"]),
+    ];
+    const AUTH_TYPE: ChoiceCases<'_> = &[
+        ("cert", &["certificate", "private-key"]),
+        ("epsk", &["tls13-epsk"]),
+    ];
+
+    #[test]
+    fn nested_mandatory_choice_requires_an_active_parent_case() {
+        for (reference, label, certificate, epsk, valid) in [
+            (false, false, false, false, true),
+            (true, false, false, false, true),
+            (false, true, false, false, false),
+            (false, true, true, false, true),
+            (false, false, true, false, true),
+            (false, false, false, true, true),
+            (false, false, true, true, false),
+        ] {
+            let result = validate_activated_choice(
+                "identity",
+                "auth-type",
+                AUTH_TYPE,
+                true,
+                &[("source", "explicit")],
+                &[("source", SOURCE)],
+                &[
+                    ("reference", reference),
+                    ("label", label),
+                    ("certificate", certificate),
+                    ("tls13-epsk", epsk),
+                ],
+            );
+            assert_eq!(result.is_ok(), valid, "{result:?}");
+        }
+    }
+
+    #[test]
+    fn nested_mandatory_choice_requires_every_ancestor_case() {
+        for (label, certificate, epsk, private_key, valid) in [
+            (true, false, false, false, true),
+            (false, false, true, false, true),
+            (false, true, false, false, false),
+            (false, true, false, true, true),
+            (false, false, false, true, true),
+        ] {
+            let result = validate_activated_choice(
+                "identity",
+                "key-type",
+                &[("private", &["private-key"])],
+                true,
+                &[
+                    ("source", "explicit"),
+                    ("source/explicit/auth-type", "cert"),
+                ],
+                &[("source", SOURCE), ("source/explicit/auth-type", AUTH_TYPE)],
+                &[
+                    ("label", label),
+                    ("certificate", certificate),
+                    ("tls13-epsk", epsk),
+                    ("private-key", private_key),
+                ],
+            );
+            assert_eq!(result.is_ok(), valid, "{result:?}");
+        }
+    }
 }

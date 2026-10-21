@@ -1,0 +1,37 @@
+[package]
+name = "tacacsrs-ipc"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "TACACS+ IPC schema, reusable channel client, and bounded server adapter."
+readme = "README.md"
+build = "build.rs"
+
+[dependencies]
+anyhow = { version = "1.0.102", features = ["backtrace"] }
+async-trait = "0.1.89"
+http = "1.4.1"
+hyper-util = "0.1.20"
+log = "0.4.30"
+prost = "0.14.3"
+tacacsrs-unix-socket = { path = "../tacacsrs_unix_socket" }
+tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "net", "parking_lot", "rt", "rt-multi-thread", "sync", "time"] }
+tokio-stream = { version = "0.1.18", features = ["net"] }
+tonic = "0.14.6"
+tonic-health = "0.14.6"
+tonic-prost = "0.14.6"
+tower = { version = "0.5.3", features = ["util"] }
+tacacsrs-secrets = { path = "../tacacsrs_secrets" }
+tacacsrs-protocol = { path = "../tacacsrs_protocol" }
+
+[build-dependencies]
+protoc-bin-vendored = "3.2.0"
+tonic-prost-build = "0.14.6"
+
+[dev-dependencies]
+tokio = { version = "1.52.3", features = ["test-util"] }
+
+[lints]
+workspace = true

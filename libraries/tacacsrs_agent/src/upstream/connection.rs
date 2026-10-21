@@ -1,16 +1,12 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
-use tacacsrs_config::TacacsPlusServer;
-use tacacsrs_messages::accounting::reply::AccountingReply;
-use tacacsrs_messages::authentication::reply::AuthenticationReply;
-use tacacsrs_messages::accounting::request::AccountingRequest;
-use tacacsrs_messages::authorization::reply::AuthorizationReply;
-use tacacsrs_messages::authorization::request::AuthorizationRequest;
+use tacacsrs_protocol::accounting::reply::AccountingReply;
+use tacacsrs_protocol::authentication::reply::AuthenticationReply;
+use tacacsrs_protocol::authorization::reply::AuthorizationReply;
+use tacacsrs_protocol::exchange::accounting::AccountingExchange;
+use tacacsrs_protocol::exchange::authorization::AuthorizationExchange;
 use tacacsrs_networking::ClientConversation;
-use tacacsrs_flows::authentication::PapAuthenticationExchange;
+use tacacsrs_protocol::exchange::authentication::PapAuthenticationExchange;
 
-use super::OperationKind;
 use super::UpstreamRequestError;
 
 #[async_trait]
@@ -28,6 +24,13 @@ pub(crate) trait UpstreamConnection: Send + Sync {
     /// Existing sessions can finish through the networking runtime. The service
     /// calls this method when a datastore reload removes or replaces a server.
     async fn stop_accepting_new_sessions(&self);
+
+    fn close(&self);
+
+    async fn close_and_join(
+        &self,
+        deadline: tacacsrs_networking::RequestDeadline,
+    ) -> anyhow::Result<()>;
 
     /// Creates a raw TACACS+ packet session against this upstream server.
     ///
@@ -47,13 +50,15 @@ pub(crate) trait UpstreamConnection: Send + Sync {
     /// exchange fails at the TACACS+ protocol level.
     async fn send_accounting(
         &self,
-        request: AccountingRequest,
+        exchange: &AccountingExchange,
+        deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AccountingReply, UpstreamRequestError>;
 
     /// Runs one fixed PAP authentication exchange.
     async fn authenticate_pap(
         &self,
-        exchange: PapAuthenticationExchange,
+        exchange: &PapAuthenticationExchange,
+        deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthenticationReply, UpstreamRequestError>;
 
     /// Sends one authorization request and returns the server's reply.
@@ -64,26 +69,11 @@ pub(crate) trait UpstreamConnection: Send + Sync {
     /// exchange fails at the TACACS+ protocol level.
     async fn send_authorization(
         &self,
-        request: AuthorizationRequest,
+        exchange: &AuthorizationExchange,
+        deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthorizationReply, UpstreamRequestError>;
 }
 
-#[async_trait]
-/// Creates connections to a configured TACACS+ server.
-///
-/// [`UpstreamManager`](crate::upstream::manager::UpstreamManager) calls the
-/// connector when it needs a new connection. This occurs during startup warm-up
-/// or after an operation fails.
-pub(crate) trait UpstreamConnector: Send + Sync {
-    /// Opens a new connection to the specified TACACS+ server.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the TCP connection, TLS handshake, or TACACS+
-    /// connection setup fails.
-    async fn connect(
-        &self,
-        server: Arc<TacacsPlusServer>,
-        operation: OperationKind,
-    ) -> anyhow::Result<Arc<dyn UpstreamConnection>>;
-}
+#[cfg(test)]
+pub(crate) type UpstreamConnector =
+    dyn tacacsrs_networking::routed::EndpointConnector<Connection = dyn UpstreamConnection>;

@@ -152,7 +152,7 @@ pub mod tacacs_plus {
     }
 
     /// Specifies the client identity using a certificate.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
     #[serde(rename_all = "kebab-case")]
     pub struct ClientIdentityCertificate {
         /// A container to hold the local key definition.
@@ -178,6 +178,8 @@ pub mod tacacs_plus {
             ("central-keystore", &["central-keystore-reference"]),
         ];
         pub const CHOICE_INLINE_OR_KEYSTORE_MANDATORY: bool = true;
+        pub const CHOICE_INLINE_OR_KEYSTORE_PATH: &str = "inline-or-keystore";
+        pub const CHOICE_INLINE_OR_KEYSTORE_ACTIVATION: &[(&str, &str)] = &[];
     }
 
     fn default_tls13_epsk_hash() -> EpskSupportedHash { EpskSupportedHash::Sha256 }
@@ -241,6 +243,8 @@ pub mod tacacs_plus {
             ("central-keystore", &["central-keystore-reference"]),
         ];
         pub const CHOICE_INLINE_OR_KEYSTORE_MANDATORY: bool = true;
+        pub const CHOICE_INLINE_OR_KEYSTORE_PATH: &str = "inline-or-keystore";
+        pub const CHOICE_INLINE_OR_KEYSTORE_ACTIVATION: &[(&str, &str)] = &[];
     }
 
     /// Identity credentials that a TLS client may present
@@ -274,13 +278,15 @@ pub mod tacacs_plus {
             ("tls13-epsk", &["tls13-epsk"]),
         ];
         pub const CHOICE_AUTH_TYPE_MANDATORY: bool = false;
+        pub const CHOICE_AUTH_TYPE_PATH: &str = "auth-type";
+        pub const CHOICE_AUTH_TYPE_ACTIVATION: &[(&str, &str)] = &[];
     }
 
     /// A set of CA certificates used by the TLS client to
     /// authenticate TLS server certificates.
     /// A server certificate is authenticated if it has a valid
     /// chain of trust to a configured CA certificate.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
     #[serde(rename_all = "kebab-case")]
     pub struct ServerAuthenticationCaCerts {
         /// A container for locally configured trust anchor
@@ -307,6 +313,8 @@ pub mod tacacs_plus {
             ("central-truststore", &["central-truststore-reference"]),
         ];
         pub const CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY: bool = true;
+        pub const CHOICE_INLINE_OR_TRUSTSTORE_PATH: &str = "inline-or-truststore";
+        pub const CHOICE_INLINE_OR_TRUSTSTORE_ACTIVATION: &[(&str, &str)] = &[];
     }
 
     /// Identity credentials that a TLS client may use
@@ -337,14 +345,47 @@ pub mod tacacs_plus {
         /// Indicates that a TLS client can authenticate TLS servers
         /// using configured EPSKs.
         #[serde(rename = "tls13-epsks")]
+        #[serde(deserialize_with = "crate::serde_helpers::deserialize_present_empty")]
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
-        pub tls13_epsks: Option<bool>,
+        pub tls13_epsks: Option<crate::YangEmpty>,
+        /// Require complete CRL evidence for the verified server certificate path.
+        /// An unpartitioned base can advertise one explicitly supplied delta.
+        /// Both lists must be fresh and match issuer, scope, and authority key
+        /// identifier. CRL numbers must identify a compatible increasing update.
+        /// Direct CRLs can restrict certificate type and distribution-point scope.
+        /// Multiple scopes for one issuer must cover disjoint certificate types.
+        /// Within each scope, reason partitions must be disjoint.
+        /// At most 128 lists and 4 MiB are accepted.
+        /// Native verification requires complete reason and path coverage.
+        /// Exact peer pins and PSK authentication are not supported in this mode.
+        /// Unavailable, invalid, stale, or incomplete evidence fails closed.
+        #[serde(rename = "tacacsrs:require-crls")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub require_crls: Option<tacacsrs::RequireCrls>,
+        /// Requires a fetched or inline response independently of any mandatory staple.
+        /// The actual peer, signer, status, and signed freshness are verified before client authentication.
+        #[serde(rename = "tacacsrs:require-ocsp")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub require_ocsp: Option<tacacsrs::RequireOcsp>,
+        /// Request a stapled OCSP response and fail closed if evidence is
+        /// unavailable, invalid, stale, unknown, or revoked. Responses must
+        /// be signed by the issuer or a responder issued directly by it.
+        /// Delegated responders require OCSP signing usage and either a valid
+        /// noncritical No Check extension or verified configured CRL evidence.
+        /// This requirement can be combined with require-crls. Both checks
+        /// must pass. OCSP covers the peer leaf; CRLs cover the CA path.
+        #[serde(rename = "tacacsrs:require-stapled-ocsp")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub require_stapled_ocsp: Option<tacacsrs::RequireStapledOcsp>,
     }
 
     /// Identity credentials that a TLS client may present when
     /// establishing a connection to a TLS server.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
     #[serde(rename_all = "kebab-case")]
     pub struct TlsClientClientIdentity {
         /// Specifies the client credentials reference.
@@ -370,13 +411,25 @@ pub mod tacacs_plus {
         /// Each inner slice is one case; at most one case may have fields set.
         pub const CHOICE_REF_OR_EXPLICIT: &[(&str, &[&str])] = &[
             ("ref", &["credentials-reference"]),
-            ("explicit/auth-type", &["certificate", "tls13-epsk"]),
+            ("explicit", &["certificate", "tls13-epsk"]),
         ];
         pub const CHOICE_REF_OR_EXPLICIT_MANDATORY: bool = false;
+        pub const CHOICE_REF_OR_EXPLICIT_PATH: &str = "ref-or-explicit";
+        pub const CHOICE_REF_OR_EXPLICIT_ACTIVATION: &[(&str, &str)] = &[];
+        /// YANG choice `auth-type` (optional).
+        ///
+        /// Each inner slice is one case; at most one case may have fields set.
+        pub const CHOICE_REF_OR_EXPLICIT_EXPLICIT_AUTH_TYPE: &[(&str, &[&str])] = &[
+            ("certificate", &["certificate"]),
+            ("tls13-epsk", &["tls13-epsk"]),
+        ];
+        pub const CHOICE_REF_OR_EXPLICIT_EXPLICIT_AUTH_TYPE_MANDATORY: bool = false;
+        pub const CHOICE_REF_OR_EXPLICIT_EXPLICIT_AUTH_TYPE_PATH: &str = "ref-or-explicit/explicit/auth-type";
+        pub const CHOICE_REF_OR_EXPLICIT_EXPLICIT_AUTH_TYPE_ACTIVATION: &[(&str, &str)] = &[("ref-or-explicit", "explicit")];
     }
 
     /// Specifies how a TLS client can authenticate TLS servers.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
     #[serde(rename_all = "kebab-case")]
     pub struct TlsClientServerAuthentication {
         /// Specifies the server credentials reference.
@@ -404,9 +457,42 @@ pub mod tacacs_plus {
         /// Indicates that a TLS client can authenticate TLS servers
         /// using configured EPSKs.
         #[serde(rename = "tls13-epsks")]
+        #[serde(deserialize_with = "crate::serde_helpers::deserialize_present_empty")]
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
-        pub tls13_epsks: Option<bool>,
+        pub tls13_epsks: Option<crate::YangEmpty>,
+        /// Require complete CRL evidence for the verified server certificate path.
+        /// An unpartitioned base can advertise one explicitly supplied delta.
+        /// Both lists must be fresh and match issuer, scope, and authority key
+        /// identifier. CRL numbers must identify a compatible increasing update.
+        /// Direct CRLs can restrict certificate type and distribution-point scope.
+        /// Multiple scopes for one issuer must cover disjoint certificate types.
+        /// Within each scope, reason partitions must be disjoint.
+        /// At most 128 lists and 4 MiB are accepted.
+        /// Native verification requires complete reason and path coverage.
+        /// Exact peer pins and PSK authentication are not supported in this mode.
+        /// Unavailable, invalid, stale, or incomplete evidence fails closed.
+        #[serde(rename = "tacacsrs:require-crls")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub require_crls: Option<tacacsrs::RequireCrls>,
+        /// Requires a fetched or inline response independently of any mandatory staple.
+        /// The actual peer, signer, status, and signed freshness are verified before client authentication.
+        #[serde(rename = "tacacsrs:require-ocsp")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub require_ocsp: Option<tacacsrs::RequireOcsp>,
+        /// Request a stapled OCSP response and fail closed if evidence is
+        /// unavailable, invalid, stale, unknown, or revoked. Responses must
+        /// be signed by the issuer or a responder issued directly by it.
+        /// Delegated responders require OCSP signing usage and either a valid
+        /// noncritical No Check extension or verified configured CRL evidence.
+        /// This requirement can be combined with require-crls. Both checks
+        /// must pass. OCSP covers the peer leaf; CRLs cover the CA path.
+        #[serde(rename = "tacacsrs:require-stapled-ocsp")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub require_stapled_ocsp: Option<tacacsrs::RequireStapledOcsp>,
     }
 
     /// Choice constraints for [`TlsClientServerAuthentication`].
@@ -416,12 +502,15 @@ pub mod tacacs_plus {
         /// Each inner slice is one case; at most one case may have fields set.
         pub const CHOICE_REF_OR_EXPLICIT: &[(&str, &[&str])] = &[
             ("ref", &["credentials-reference"]),
-            ("explicit", &["ca-certs", "ee-certs", "tls13-epsks"]),
+            ("explicit", &["ca-certs", "ee-certs", "tls13-epsks", "require-crls", "require-ocsp", "require-stapled-ocsp"]),
         ];
         pub const CHOICE_REF_OR_EXPLICIT_MANDATORY: bool = false;
+        pub const CHOICE_REF_OR_EXPLICIT_PATH: &str = "ref-or-explicit";
+        pub const CHOICE_REF_OR_EXPLICIT_ACTIVATION: &[(&str, &str)] = &[];
     }
 
     fn default_tacacs_plus_server_timeout() -> u16 { 5 }
+    fn default_tacacs_plus_server_binding_policy() -> tacacsrs::BindingPolicy { tacacsrs::BindingPolicy::BestEffort }
 
     /// List of TACACS+ servers used by the device.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -518,6 +607,18 @@ pub mod tacacs_plus {
         /// different server.
         #[serde(default = "default_tacacs_plus_server_timeout")]
         pub timeout: u16,
+        /// Linux interface name that forces packet egress through SO_BINDTODEVICE.
+        /// The kernel selects the source address unless source-ip or source-interface
+        /// supplies one. Unlike RFC 9950 source-interface, this leaf restricts egress.
+        /// When vrf-instance is also present, this interface must belong to that VRF.
+        #[serde(rename = "tacacsrs:egress-interface")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub egress_interface: Option<String>,
+        /// Failure policy for source, egress, and VRF constraints.
+        #[serde(rename = "tacacsrs:binding-policy")]
+        #[serde(default = "default_tacacs_plus_server_binding_policy")]
+        pub binding_policy: tacacsrs::BindingPolicy,
     }
 
     /// Choice constraints for [`TacacsPlusServer`].
@@ -530,6 +631,8 @@ pub mod tacacs_plus {
             ("obfuscation", &["shared-secret"]),
         ];
         pub const CHOICE_SECURITY_MANDATORY: bool = true;
+        pub const CHOICE_SECURITY_PATH: &str = "security";
+        pub const CHOICE_SECURITY_ACTIVATION: &[(&str, &str)] = &[];
         /// YANG choice `source-type` (optional).
         ///
         /// Each inner slice is one case; at most one case may have fields set.
@@ -538,10 +641,12 @@ pub mod tacacs_plus {
             ("source-interface", &["source-interface"]),
         ];
         pub const CHOICE_SOURCE_TYPE_MANDATORY: bool = false;
+        pub const CHOICE_SOURCE_TYPE_PATH: &str = "source-type";
+        pub const CHOICE_SOURCE_TYPE_ACTIVATION: &[(&str, &str)] = &[];
     }
 
     /// Container for TACACS+ configurations and operations.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
     #[serde(rename_all = "kebab-case")]
     pub struct TacacsPlus {
         /// Identity credentials that a TLS client may present
@@ -572,7 +677,7 @@ pub mod keystore {
     use super::crypto_types;
 
     /// A container to hold the local key definition.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
     #[serde(rename_all = "kebab-case")]
     pub struct EndEntityCertWithKeyInlineDefinition {
         /// Identifies the public key's format.  Implementations SHOULD
@@ -612,6 +717,14 @@ pub mod keystore {
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
         pub cert_data: Option<Vec<u8>>,
+        /// DER-encoded intermediate certificates in issuer order, starting
+        /// with the issuer of cert-data. Each entry contains one X.509
+        /// certificate. Do not include the leaf or a self-signed root.
+        #[serde(rename = "tacacsrs:intermediate-certificate")]
+        #[serde(with = "crate::serde_helpers::base64_binary::vec_bytes")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        pub intermediate_certificate: Vec<Vec<u8>>,
     }
 
     /// Choice constraints for [`EndEntityCertWithKeyInlineDefinition`].
@@ -623,11 +736,13 @@ pub mod keystore {
             ("cleartext-private-key", &["cleartext-private-key"]),
         ];
         pub const CHOICE_PRIVATE_KEY_TYPE_MANDATORY: bool = true;
+        pub const CHOICE_PRIVATE_KEY_TYPE_PATH: &str = "private-key-type";
+        pub const CHOICE_PRIVATE_KEY_TYPE_ACTIVATION: &[(&str, &str)] = &[];
     }
 
     /// A reference to a specific certificate associated with
     /// an asymmetric key stored in the central keystore.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
     #[serde(rename_all = "kebab-case")]
     pub struct EndEntityCertWithKeyCentralKeystoreReference {
         /// A reference to an asymmetric key in the keystore.
@@ -643,7 +758,7 @@ pub mod keystore {
     }
 
     /// A container to hold the local key definition.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
     #[serde(rename_all = "kebab-case")]
     pub struct SymmetricKeyInlineDefinition {
         /// Identifies the symmetric key's format.  Implementations
@@ -674,6 +789,8 @@ pub mod keystore {
             ("cleartext-symmetric-key", &["cleartext-symmetric-key"]),
         ];
         pub const CHOICE_KEY_TYPE_MANDATORY: bool = true;
+        pub const CHOICE_KEY_TYPE_PATH: &str = "key-type";
+        pub const CHOICE_KEY_TYPE_ACTIVATION: &[(&str, &str)] = &[];
     }
 
 }
@@ -932,6 +1049,8 @@ pub mod crypto_types {
 
 /// Types from `tacacsrs`.
 pub mod tacacsrs {
+    use serde::{Deserialize, Serialize};
+
     /// TLS 1.3 supported groups that tacacs-rs may use for
     /// psk_dhe_ke ClientHello key share generation.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1043,6 +1162,685 @@ pub mod tacacsrs {
         }
     }
 
+    /// Failure policy for source, egress, and VRF constraints.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum BindingPolicy {
+        /// Warn and retry without unavailable local constraints.
+        /// Only local resource, capability, and route errors permit fallback.
+        /// TLS verification and remote connection errors never permit fallback.
+        BestEffort,
+        /// Fail the connection when a requested local constraint is unavailable.
+        Strict,
+    }
+
+    impl BindingPolicy {
+        /// All valid values for this YANG enumeration.
+        pub const ALL: &[Self] = &[
+            Self::BestEffort,
+            Self::Strict,
+        ];
+
+        /// RFC 7951 JSON string values accepted for this YANG enumeration.
+        pub const ALLOWED_VALUES: &[&str] = &[
+            "best-effort",
+            "strict",
+        ];
+
+        /// Returns the RFC 7951 JSON string.
+        #[must_use]
+        pub fn as_rfc7951_str(&self) -> &'static str {
+            match self {
+                Self::BestEffort => "best-effort",
+                Self::Strict => "strict",
+            }
+        }
+
+        /// Parses an RFC 7951 string into this YANG enumeration.
+        #[must_use]
+        pub fn from_rfc7951_str(s: &str) -> Option<Self> {
+            match s {
+                "best-effort" => Some(Self::BestEffort),
+                "strict" => Some(Self::Strict),
+                _ => None,
+            }
+        }
+
+        /// Checks whether the given string is a valid RFC 7951 value.
+        #[must_use]
+        pub fn is_valid(s: &str) -> bool {
+            Self::from_rfc7951_str(s).is_some()
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for BindingPolicy {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+            Self::from_rfc7951_str(&s)
+                .ok_or_else(|| serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES))
+        }
+    }
+
+    impl serde::Serialize for BindingPolicy {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            serializer.serialize_str(self.as_rfc7951_str())
+        }
+    }
+
+    /// Failover behavior for a local TACACS+ service.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum FailoverStrategy {
+        /// Record a failed attempt and let the next request select the next server.
+        DeferredFailover,
+        /// Try the next eligible server during the current request when replay is safe.
+        OrderedSafeRetry,
+    }
+
+    impl FailoverStrategy {
+        /// All valid values for this YANG enumeration.
+        pub const ALL: &[Self] = &[
+            Self::DeferredFailover,
+            Self::OrderedSafeRetry,
+        ];
+
+        /// RFC 7951 JSON string values accepted for this YANG enumeration.
+        pub const ALLOWED_VALUES: &[&str] = &[
+            "deferred-failover",
+            "ordered-safe-retry",
+        ];
+
+        /// Returns the RFC 7951 JSON string.
+        #[must_use]
+        pub fn as_rfc7951_str(&self) -> &'static str {
+            match self {
+                Self::DeferredFailover => "deferred-failover",
+                Self::OrderedSafeRetry => "ordered-safe-retry",
+            }
+        }
+
+        /// Parses an RFC 7951 string into this YANG enumeration.
+        #[must_use]
+        pub fn from_rfc7951_str(s: &str) -> Option<Self> {
+            match s {
+                "deferred-failover" => Some(Self::DeferredFailover),
+                "ordered-safe-retry" => Some(Self::OrderedSafeRetry),
+                _ => None,
+            }
+        }
+
+        /// Checks whether the given string is a valid RFC 7951 value.
+        #[must_use]
+        pub fn is_valid(s: &str) -> bool {
+            Self::from_rfc7951_str(s).is_some()
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for FailoverStrategy {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+            Self::from_rfc7951_str(&s)
+                .ok_or_else(|| serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES))
+        }
+    }
+
+    impl serde::Serialize for FailoverStrategy {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            serializer.serialize_str(self.as_rfc7951_str())
+        }
+    }
+
+    /// Authoritative source of downstream proxy obfuscation credentials.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ProxyCredentialSource {
+        /// Require unobfuscated downstream packets.
+        Unobfuscated,
+        /// Use the configured proxy shared secret.
+        Inline,
+        /// Use the highest-priority upstream row matching the local proxy endpoint.
+        /// A missing row or missing secret rejects the candidate configuration.
+        LocalProxyRow,
+    }
+
+    impl ProxyCredentialSource {
+        /// All valid values for this YANG enumeration.
+        pub const ALL: &[Self] = &[
+            Self::Unobfuscated,
+            Self::Inline,
+            Self::LocalProxyRow,
+        ];
+
+        /// RFC 7951 JSON string values accepted for this YANG enumeration.
+        pub const ALLOWED_VALUES: &[&str] = &[
+            "unobfuscated",
+            "inline",
+            "local-proxy-row",
+        ];
+
+        /// Returns the RFC 7951 JSON string.
+        #[must_use]
+        pub fn as_rfc7951_str(&self) -> &'static str {
+            match self {
+                Self::Unobfuscated => "unobfuscated",
+                Self::Inline => "inline",
+                Self::LocalProxyRow => "local-proxy-row",
+            }
+        }
+
+        /// Parses an RFC 7951 string into this YANG enumeration.
+        #[must_use]
+        pub fn from_rfc7951_str(s: &str) -> Option<Self> {
+            match s {
+                "unobfuscated" => Some(Self::Unobfuscated),
+                "inline" => Some(Self::Inline),
+                "local-proxy-row" => Some(Self::LocalProxyRow),
+                _ => None,
+            }
+        }
+
+        /// Checks whether the given string is a valid RFC 7951 value.
+        #[must_use]
+        pub fn is_valid(s: &str) -> bool {
+            Self::from_rfc7951_str(s).is_some()
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for ProxyCredentialSource {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+            Self::from_rfc7951_str(&s)
+                .ok_or_else(|| serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES))
+        }
+    }
+
+    impl serde::Serialize for ProxyCredentialSource {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            serializer.serialize_str(self.as_rfc7951_str())
+        }
+    }
+
+    /// Failure policy for source, egress, and VRF constraints.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum BindingPolicy2 {
+        /// Warn and retry without unavailable local constraints.
+        /// Only local resource, capability, and route errors permit fallback.
+        /// TLS verification and remote connection errors never permit fallback.
+        BestEffort,
+        /// Fail the connection when a requested local constraint is unavailable.
+        Strict,
+    }
+
+    impl BindingPolicy2 {
+        /// All valid values for this YANG enumeration.
+        pub const ALL: &[Self] = &[
+            Self::BestEffort,
+            Self::Strict,
+        ];
+
+        /// RFC 7951 JSON string values accepted for this YANG enumeration.
+        pub const ALLOWED_VALUES: &[&str] = &[
+            "best-effort",
+            "strict",
+        ];
+
+        /// Returns the RFC 7951 JSON string.
+        #[must_use]
+        pub fn as_rfc7951_str(&self) -> &'static str {
+            match self {
+                Self::BestEffort => "best-effort",
+                Self::Strict => "strict",
+            }
+        }
+
+        /// Parses an RFC 7951 string into this YANG enumeration.
+        #[must_use]
+        pub fn from_rfc7951_str(s: &str) -> Option<Self> {
+            match s {
+                "best-effort" => Some(Self::BestEffort),
+                "strict" => Some(Self::Strict),
+                _ => None,
+            }
+        }
+
+        /// Checks whether the given string is a valid RFC 7951 value.
+        #[must_use]
+        pub fn is_valid(s: &str) -> bool {
+            Self::from_rfc7951_str(s).is_some()
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for BindingPolicy2 {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+            Self::from_rfc7951_str(&s)
+                .ok_or_else(|| serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES))
+        }
+    }
+
+    impl serde::Serialize for BindingPolicy2 {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            serializer.serialize_str(self.as_rfc7951_str())
+        }
+    }
+
+    fn default_require_crls_max_age_seconds() -> u32 { 300 }
+
+    /// Require complete CRL evidence for the verified server certificate path.
+    /// An unpartitioned base can advertise one explicitly supplied delta.
+    /// Both lists must be fresh and match issuer, scope, and authority key
+    /// identifier. CRL numbers must identify a compatible increasing update.
+    /// Direct CRLs can restrict certificate type and distribution-point scope.
+    /// Multiple scopes for one issuer must cover disjoint certificate types.
+    /// Within each scope, reason partitions must be disjoint.
+    /// At most 128 lists and 4 MiB are accepted.
+    /// Native verification requires complete reason and path coverage.
+    /// Exact peer pins and PSK authentication are not supported in this mode.
+    /// Unavailable, invalid, stale, or incomplete evidence fails closed.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct RequireCrls {
+        /// Maximum seconds since each CRL thisUpdate. The earlier of this
+        /// limit and nextUpdate bounds evidence use without stale grace.
+        #[serde(rename = "max-age-seconds")]
+        #[serde(default = "default_require_crls_max_age_seconds")]
+        pub max_age_seconds: u32,
+        /// One full or delta DER CRL per entry.
+        #[serde(with = "crate::serde_helpers::base64_binary::option_vec_bytes")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub crl: Option<Vec<Vec<u8>>>,
+        /// Opaque provider reference to a complete CRL set.
+        #[serde(rename = "evidence-reference")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub evidence_reference: Option<String>,
+    }
+
+    impl Default for RequireCrls {
+        fn default() -> Self {
+            Self {
+                max_age_seconds: default_require_crls_max_age_seconds(),
+                crl: None,
+                evidence_reference: None,
+            }
+        }
+    }
+
+    /// Choice constraints for [`RequireCrls`].
+    impl RequireCrls {
+        /// YANG choice `evidence` (mandatory).
+        ///
+        /// Each inner slice is one case; at most one case may have fields set.
+        pub const CHOICE_EVIDENCE: &[(&str, &[&str])] = &[
+            ("inline", &["crl"]),
+            ("provider", &["evidence-reference"]),
+        ];
+        pub const CHOICE_EVIDENCE_MANDATORY: bool = true;
+        pub const CHOICE_EVIDENCE_PATH: &str = "evidence";
+        pub const CHOICE_EVIDENCE_ACTIVATION: &[(&str, &str)] = &[];
+    }
+
+    fn default_require_ocsp_max_response_age_seconds() -> u32 { 300 }
+
+    /// Requires a fetched or inline response independently of any mandatory staple.
+    /// The actual peer, signer, status, and signed freshness are verified before client authentication.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct RequireOcsp {
+        #[serde(rename = "max-response-age-seconds")]
+        #[serde(default = "default_require_ocsp_max_response_age_seconds")]
+        pub max_response_age_seconds: u32,
+        #[serde(with = "crate::serde_helpers::base64_binary::option_bytes")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub response: Option<Vec<u8>>,
+        #[serde(rename = "evidence-reference")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub evidence_reference: Option<String>,
+    }
+
+    impl Default for RequireOcsp {
+        fn default() -> Self {
+            Self {
+                max_response_age_seconds: default_require_ocsp_max_response_age_seconds(),
+                response: None,
+                evidence_reference: None,
+            }
+        }
+    }
+
+    /// Choice constraints for [`RequireOcsp`].
+    impl RequireOcsp {
+        /// YANG choice `evidence` (mandatory).
+        ///
+        /// Each inner slice is one case; at most one case may have fields set.
+        pub const CHOICE_EVIDENCE: &[(&str, &[&str])] = &[
+            ("inline", &["response"]),
+            ("provider", &["evidence-reference"]),
+        ];
+        pub const CHOICE_EVIDENCE_MANDATORY: bool = true;
+        pub const CHOICE_EVIDENCE_PATH: &str = "evidence";
+        pub const CHOICE_EVIDENCE_ACTIVATION: &[(&str, &str)] = &[];
+    }
+
+    fn default_require_stapled_ocsp_max_response_age_seconds() -> u32 { 300 }
+
+    /// Request a stapled OCSP response and fail closed if evidence is
+    /// unavailable, invalid, stale, unknown, or revoked. Responses must
+    /// be signed by the issuer or a responder issued directly by it.
+    /// Delegated responders require OCSP signing usage and either a valid
+    /// noncritical No Check extension or verified configured CRL evidence.
+    /// This requirement can be combined with require-crls. Both checks
+    /// must pass. OCSP covers the peer leaf; CRLs cover the CA path.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct RequireStapledOcsp {
+        /// Maximum time since thisUpdate. Evidence expires at the earlier
+        /// of this limit and nextUpdate, when nextUpdate is present.
+        /// No clock-skew allowance or stale grace extends this interval.
+        #[serde(rename = "max-response-age-seconds")]
+        #[serde(default = "default_require_stapled_ocsp_max_response_age_seconds")]
+        pub max_response_age_seconds: u32,
+    }
+
+    impl Default for RequireStapledOcsp {
+        fn default() -> Self {
+            Self {
+                max_response_age_seconds: default_require_stapled_ocsp_max_response_age_seconds(),
+            }
+        }
+    }
+
+    fn default_local_services_max_connections() -> u16 { 64 }
+    fn default_local_services_max_client_api_streams() -> u16 { 64 }
+    fn default_local_services_connection_lifetime_seconds() -> u32 { 300 }
+    fn default_local_services_client_api_enabled() -> bool { true }
+    fn default_local_services_client_api_endpoint() -> String { "/run/tacacs/tacacs.sock".to_owned() }
+    fn default_local_services_unix_socket_mode() -> u16 { 432 }
+    fn default_local_services_proxy_credential_source() -> ProxyCredentialSource { ProxyCredentialSource::Unobfuscated }
+
+    /// Startup listener configuration. Changes require a service restart.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct LocalServices {
+        /// Maximum served connections per enabled listener.
+        #[serde(rename = "max-connections")]
+        #[serde(default = "default_local_services_max_connections")]
+        pub max_connections: u16,
+        /// Maximum concurrent HTTP/2 streams on one client API connection.
+        #[serde(rename = "max-client-api-streams")]
+        #[serde(default = "default_local_services_max_client_api_streams")]
+        pub max_client_api_streams: u16,
+        /// Maximum lifetime of a served local connection, including setup and reply delivery.
+        /// The listener closes the connection at expiry, even when requests remain active.
+        #[serde(rename = "connection-lifetime-seconds")]
+        #[serde(default = "default_local_services_connection_lifetime_seconds")]
+        pub connection_lifetime_seconds: u32,
+        /// Enables the local client API.
+        #[serde(rename = "client-api-enabled")]
+        #[serde(default = "default_local_services_client_api_enabled")]
+        pub client_api_enabled: bool,
+        /// Absolute Unix socket path for the client API.
+        #[serde(rename = "client-api-endpoint")]
+        #[serde(default = "default_local_services_client_api_endpoint")]
+        pub client_api_endpoint: String,
+        /// Enables the raw TACACS+ proxy.
+        #[serde(rename = "tacacs-proxy-enabled")]
+        #[serde(default)]
+        pub tacacs_proxy_enabled: bool,
+        /// Absolute Unix socket path or numeric IP socket address for the proxy.
+        /// IPv6 addresses use brackets. TCP port zero requests an ephemeral port.
+        #[serde(rename = "tacacs-proxy-endpoint")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub tacacs_proxy_endpoint: Option<String>,
+        /// Unix socket permission bits as a decimal integer. The default is octal 660.
+        #[serde(rename = "unix-socket-mode")]
+        #[serde(default = "default_local_services_unix_socket_mode")]
+        pub unix_socket_mode: u16,
+        /// Selects downstream credentials independently of loop prevention.
+        #[serde(rename = "proxy-credential-source")]
+        #[serde(default = "default_local_services_proxy_credential_source")]
+        pub proxy_credential_source: ProxyCredentialSource,
+        /// Downstream shared secret for the inline credential source.
+        #[serde(rename = "proxy-shared-secret")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub proxy_shared_secret: Option<tacacsrs_secrets::SecretString>,
+    }
+
+    impl Default for LocalServices {
+        fn default() -> Self {
+            Self {
+                max_connections: default_local_services_max_connections(),
+                max_client_api_streams: default_local_services_max_client_api_streams(),
+                connection_lifetime_seconds: default_local_services_connection_lifetime_seconds(),
+                client_api_enabled: default_local_services_client_api_enabled(),
+                client_api_endpoint: default_local_services_client_api_endpoint(),
+                tacacs_proxy_enabled: Default::default(),
+                tacacs_proxy_endpoint: None,
+                unix_socket_mode: default_local_services_unix_socket_mode(),
+                proxy_credential_source: default_local_services_proxy_credential_source(),
+                proxy_shared_secret: None,
+            }
+        }
+    }
+
+    fn default_candidate_preparation_timeout_seconds() -> u32 { 30 }
+    fn default_candidate_preparation_max_resolution_requests() -> u32 { 256 }
+    fn default_candidate_preparation_max_retained_material_bytes() -> u32 { 67108864 }
+
+    /// Limits one configuration preparation through publication commit.
+    /// These limits do not bound process memory or native allocator internals.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct CandidatePreparation {
+        /// Absolute preparation budget from admission to commit.
+        #[serde(rename = "timeout-seconds")]
+        #[serde(default = "default_candidate_preparation_timeout_seconds")]
+        pub timeout_seconds: u32,
+        /// Maximum resolver slot attempts without reference deduplication.
+        #[serde(rename = "max-resolution-requests")]
+        #[serde(default = "default_candidate_preparation_max_resolution_requests")]
+        pub max_resolution_requests: u32,
+        /// Maximum decoded candidate payload and additional retained payload copies.
+        #[serde(rename = "max-retained-material-bytes")]
+        #[serde(default = "default_candidate_preparation_max_retained_material_bytes")]
+        pub max_retained_material_bytes: u32,
+    }
+
+    impl Default for CandidatePreparation {
+        fn default() -> Self {
+            Self {
+                timeout_seconds: default_candidate_preparation_timeout_seconds(),
+                max_resolution_requests: default_candidate_preparation_max_resolution_requests(),
+                max_retained_material_bytes: default_candidate_preparation_max_retained_material_bytes(),
+            }
+        }
+    }
+
+    fn default_authentication_request_timeout_seconds() -> u32 { 30 }
+    fn default_authentication_max_body_length() -> u32 { 4096 }
+    fn default_authentication_max_concurrent_requests() -> u32 { 64 }
+
+    /// Shared authentication admission limits.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct Authentication {
+        /// Total request budget from capture before admission through completion.
+        /// Includes admission, connection setup, retries, and proxy continuations.
+        /// Server timeouts can shorten individual stages but cannot extend this budget.
+        /// Reload does not change the deadline of an existing request.
+        #[serde(rename = "request-timeout-seconds")]
+        #[serde(default = "default_authentication_request_timeout_seconds")]
+        pub request_timeout_seconds: u32,
+        /// Maximum encoded TACACS+ request body length.
+        #[serde(rename = "max-body-length")]
+        #[serde(default = "default_authentication_max_body_length")]
+        pub max_body_length: u32,
+        /// Maximum concurrent requests for one operation.
+        #[serde(rename = "max-concurrent-requests")]
+        #[serde(default = "default_authentication_max_concurrent_requests")]
+        pub max_concurrent_requests: u32,
+    }
+
+    impl Default for Authentication {
+        fn default() -> Self {
+            Self {
+                request_timeout_seconds: default_authentication_request_timeout_seconds(),
+                max_body_length: default_authentication_max_body_length(),
+                max_concurrent_requests: default_authentication_max_concurrent_requests(),
+            }
+        }
+    }
+
+    fn default_authorization_request_timeout_seconds() -> u32 { 30 }
+    fn default_authorization_max_body_length() -> u32 { 16384 }
+    fn default_authorization_max_concurrent_requests() -> u32 { 64 }
+
+    /// Shared authorization admission limits.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct Authorization {
+        /// Total request budget from capture before admission through completion.
+        /// Includes admission, connection setup, retries, and proxy continuations.
+        /// Server timeouts can shorten individual stages but cannot extend this budget.
+        /// Reload does not change the deadline of an existing request.
+        #[serde(rename = "request-timeout-seconds")]
+        #[serde(default = "default_authorization_request_timeout_seconds")]
+        pub request_timeout_seconds: u32,
+        /// Maximum encoded TACACS+ request body length.
+        #[serde(rename = "max-body-length")]
+        #[serde(default = "default_authorization_max_body_length")]
+        pub max_body_length: u32,
+        /// Maximum concurrent requests for one operation.
+        #[serde(rename = "max-concurrent-requests")]
+        #[serde(default = "default_authorization_max_concurrent_requests")]
+        pub max_concurrent_requests: u32,
+    }
+
+    impl Default for Authorization {
+        fn default() -> Self {
+            Self {
+                request_timeout_seconds: default_authorization_request_timeout_seconds(),
+                max_body_length: default_authorization_max_body_length(),
+                max_concurrent_requests: default_authorization_max_concurrent_requests(),
+            }
+        }
+    }
+
+    fn default_runtime_policy_shutdown_timeout_seconds() -> u32 { 30 }
+    fn default_runtime_policy_credential_stale_timeout_seconds() -> u32 { 300 }
+    fn default_runtime_policy_credential_refresh_interval_seconds() -> u32 { 60 }
+    fn default_runtime_policy_source_stale_timeout_seconds() -> u32 { 300 }
+    fn default_runtime_policy_failover_recovery_interval_seconds() -> u32 { 30 }
+    fn default_runtime_policy_client_api_failover_strategy() -> FailoverStrategy { FailoverStrategy::DeferredFailover }
+    fn default_runtime_policy_tacacs_proxy_failover_strategy() -> FailoverStrategy { FailoverStrategy::DeferredFailover }
+
+    /// Failover and admission controls for local client API and proxy services.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct RuntimePolicy {
+        /// Limits one configuration preparation through publication commit.
+        /// These limits do not bound process memory or native allocator internals.
+        #[serde(rename = "candidate-preparation")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub candidate_preparation: Option<CandidatePreparation>,
+        /// Graceful shutdown budget for runtime and host cleanup.
+        /// The host captures one deadline when shutdown starts.
+        /// At expiry, pending asynchronous work is cancelled.
+        /// Policy updates do not extend a shutdown already in progress.
+        #[serde(rename = "shutdown-timeout-seconds")]
+        #[serde(default = "default_runtime_policy_shutdown_timeout_seconds")]
+        pub shutdown_timeout_seconds: u32,
+        /// Grace interval for referenced credentials after invalidation or provider loss.
+        /// Retries and policy changes do not renew the interval.
+        /// At expiry, withdraw upstreams until complete credential revalidation succeeds.
+        #[serde(rename = "credential-stale-timeout-seconds")]
+        #[serde(default = "default_runtime_policy_credential_stale_timeout_seconds")]
+        pub credential_stale_timeout_seconds: u32,
+        /// Maximum scheduled delay between provider credential refresh attempts.
+        /// Start earlier when prepared material approaches expiry.
+        /// Refresh does not extend signed or provider validity and does not
+        /// mark valid material stale unless revalidation fails.
+        #[serde(rename = "credential-refresh-interval-seconds")]
+        #[serde(default = "default_runtime_policy_credential_refresh_interval_seconds")]
+        pub credential_refresh_interval_seconds: u32,
+        /// Maximum grace interval after applied source configuration becomes stale.
+        /// Capture the deadline at the first observed source failure or rejection.
+        /// Retries, credential refresh, and policy changes do not renew the interval.
+        /// At expiry, withdraw upstreams until a valid source is applied again.
+        #[serde(rename = "source-stale-timeout-seconds")]
+        #[serde(default = "default_runtime_policy_source_stale_timeout_seconds")]
+        pub source_stale_timeout_seconds: u32,
+        /// Interval before a failed route receives one recovery trial.
+        #[serde(rename = "failover-recovery-interval-seconds")]
+        #[serde(default = "default_runtime_policy_failover_recovery_interval_seconds")]
+        pub failover_recovery_interval_seconds: u32,
+        /// Failover policy for requests received through the local client API.
+        #[serde(rename = "client-api-failover-strategy")]
+        #[serde(default = "default_runtime_policy_client_api_failover_strategy")]
+        pub client_api_failover_strategy: FailoverStrategy,
+        /// Failover policy for initial requests received through the TACACS+ proxy.
+        #[serde(rename = "tacacs-proxy-failover-strategy")]
+        #[serde(default = "default_runtime_policy_tacacs_proxy_failover_strategy")]
+        pub tacacs_proxy_failover_strategy: FailoverStrategy,
+        /// Shared authentication admission limits.
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub authentication: Option<Authentication>,
+        /// Shared authorization admission limits.
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub authorization: Option<Authorization>,
+        /// Shared accounting admission limits.
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub accounting: Option<Authorization>,
+    }
+
+    impl Default for RuntimePolicy {
+        fn default() -> Self {
+            Self {
+                candidate_preparation: None,
+                shutdown_timeout_seconds: default_runtime_policy_shutdown_timeout_seconds(),
+                credential_stale_timeout_seconds: default_runtime_policy_credential_stale_timeout_seconds(),
+                credential_refresh_interval_seconds: default_runtime_policy_credential_refresh_interval_seconds(),
+                source_stale_timeout_seconds: default_runtime_policy_source_stale_timeout_seconds(),
+                failover_recovery_interval_seconds: default_runtime_policy_failover_recovery_interval_seconds(),
+                client_api_failover_strategy: default_runtime_policy_client_api_failover_strategy(),
+                tacacs_proxy_failover_strategy: default_runtime_policy_tacacs_proxy_failover_strategy(),
+                authentication: None,
+                authorization: None,
+                accounting: None,
+            }
+        }
+    }
+
 }
 
 /// Types from `ietf-truststore`.
@@ -1063,7 +1861,7 @@ pub mod truststore {
 
     /// A container for locally configured trust anchor
     /// certificates.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
     #[serde(rename_all = "kebab-case")]
     pub struct CertsInlineDefinition {
         /// A trust anchor certificate or chain of certificates.

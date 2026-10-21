@@ -1,8 +1,9 @@
 name: Compute Versions
 description: >
-  Compute all crate versions from Git tags. Libraries use SemVer.
-  cargo-semver-checks detects breaking changes. Dependency changes propagate
-  to dependent libraries. Executables use CalVer.
+  Compute all crate versions from Git tags. Libraries use SemVer. The
+  api-classifier tool detects breaking and additive public-API changes.
+  Dependency changes propagate to dependent libraries. Executables use CalVer.
+  Repository releases use tacacs-rs CalVer tags and retain historical tacon baselines.
 
 inputs:
   binary-name:
@@ -14,7 +15,7 @@ inputs:
     required: false
     default: ''
   skip-semver-checks:
-    description: 'Skip cargo-semver-checks. This option is faster but always increments the patch version.'
+    description: 'Skip the api-classifier public-API analysis. This option is faster but always increments the patch version.'
     required: false
     default: 'false'
   pre-release:
@@ -42,10 +43,21 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Install cargo-semver-checks
+    - name: Install api-classifier
       if: inputs.skip-semver-checks != 'true' && inputs.pre-release == ''
       shell: bash
-      run: cargo install cargo-semver-checks --locked
+      run: |
+        set -euo pipefail
+        # The additive (public-api) check renders rustdoc JSON with a pinned
+        # nightly whose format the pinned public-api understands.
+        rustup toolchain install nightly-2025-11-23 --profile minimal
+        rustup toolchain install 1.91.0 --profile minimal
+        # Build and install the standalone, CI-only classifier. It is its own
+        # workspace, so it never enters the product build or release set.
+        cargo +1.91.0 install \
+          --path "${{ github.action_path }}/../../tools/api-classifier" \
+          --locked \
+          --root "${{ runner.temp }}/api-classifier"
 
     - name: Compute versions
       id: compute
@@ -56,4 +68,7 @@ runs:
         INPUT_SKIP_SEMVER_CHECKS: ${{ inputs.skip-semver-checks }}
         INPUT_PRE_RELEASE: ${{ inputs.pre-release }}
         GITHUB_WORKSPACE: ${{ github.workspace }}
+        # Used only on the non-skip, non-pre-release path, where the step above
+        # installed the tool. Other modes never invoke it.
+        API_CLASSIFIER_BIN: ${{ runner.temp }}/api-classifier/bin/api-classifier
       run: python ${{ github.action_path }}/compute_versions.py

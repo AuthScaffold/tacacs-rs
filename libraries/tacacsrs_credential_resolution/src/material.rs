@@ -2,10 +2,38 @@
 
 use std::fmt;
 
-use tacacsrs_config::crypto_types::{PrivateKeyFormat, PublicKeyFormat, SymmetricKeyFormat};
 use tacacsrs_secrets::SecretBytes;
 
 use crate::CredentialKind;
+
+/// Encoding of a provider's private key bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrivateKeyFormat {
+    /// DER RSA private key defined by RFC 8017.
+    RsaPrivateKeyFormat,
+    /// DER EC private key defined by RFC 5915.
+    EcPrivateKeyFormat,
+    /// DER asymmetric key defined by RFC 5958.
+    OneAsymmetricKeyFormat,
+}
+
+/// Encoding of a provider's separate public key bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicKeyFormat {
+    /// SSH public key defined by RFC 4253.
+    SshPublicKeyFormat,
+    /// DER public key information defined by RFC 5280.
+    SubjectPublicKeyInfoFormat,
+}
+
+/// Encoding of a provider's symmetric key bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymmetricKeyFormat {
+    /// Raw key bytes.
+    OctetStringKeyFormat,
+    /// DER symmetric key defined by RFC 6031.
+    OneSymmetricKeyFormat,
+}
 
 /// Public certificate bytes with debug output that shows only the length.
 pub struct PublicBytes(Vec<u8>);
@@ -42,6 +70,8 @@ impl fmt::Debug for PublicBytes {
 /// Resolved certificate and corresponding private key.
 #[derive(Debug)]
 pub struct CertificateWithKeyMaterial {
+    /// Provider-supplied absolute validity, independent of certificate encoding.
+    pub validity: crate::CredentialValidity,
     /// Public key format when the provider returns separate public key data.
     pub public_key_format: Option<PublicKeyFormat>,
     /// Public key data when returned separately from the certificate.
@@ -50,6 +80,8 @@ pub struct CertificateWithKeyMaterial {
     pub private_key_format: PrivateKeyFormat,
     /// Public end-entity certificate.
     pub certificate: PublicBytes,
+    /// DER intermediate certificates in issuer order, excluding the leaf and root.
+    pub intermediates: Vec<PublicBytes>,
     /// Secret private key corresponding to the certificate.
     pub private_key: SecretBytes,
 }
@@ -66,13 +98,35 @@ pub struct NamedCertificateMaterial {
 /// Resolved public certificate bag.
 #[derive(Debug)]
 pub struct CertificateBagMaterial {
+    /// Provider-supplied validity for the complete bag.
+    pub validity: crate::CredentialValidity,
     /// Public certificates in the order from the provider.
     pub certificates: Vec<NamedCertificateMaterial>,
 }
 
-/// Resolved symmetric key and its YANG key format metadata.
+/// Provider-supplied DER certificate revocation lists and their absolute validity.
+#[derive(Debug)]
+pub struct CertificateRevocationListsMaterial {
+    /// Absolute provider validity, independent of signed CRL freshness.
+    pub validity: crate::CredentialValidity,
+    /// Complete DER CRLs. Each value contains exactly one list.
+    pub lists: Vec<PublicBytes>,
+}
+
+/// A fetched DER OCSP response with independent provider validity.
+#[derive(Debug)]
+pub struct OcspResponseMaterial {
+    /// Absolute provider validity, independently constrained by native signed freshness.
+    pub validity: crate::CredentialValidity,
+    /// One DER OCSP response.
+    pub response: PublicBytes,
+}
+
+/// Resolved symmetric key and its encoding metadata.
 #[derive(Debug)]
 pub struct SymmetricKeyMaterial {
+    /// Provider-supplied absolute validity for the key.
+    pub validity: crate::CredentialValidity,
     /// Symmetric key format, if the provider supplies it.
     pub key_format: Option<SymmetricKeyFormat>,
     /// Secret symmetric key bytes.
@@ -82,6 +136,8 @@ pub struct SymmetricKeyMaterial {
 /// Provider-neutral resolved credential variant.
 #[derive(Debug)]
 pub enum ResolvedCredential {
+    /// Fetched OCSP evidence, independently verified against the actual peer.
+    OcspResponse(OcspResponseMaterial),
     /// End-entity certificate and private key.
     CertificateWithKey(CertificateWithKeyMaterial),
     /// TLS 1.3 external pre-shared key.
@@ -90,13 +146,72 @@ pub enum ResolvedCredential {
     CaCertificateBag(CertificateBagMaterial),
     /// End-entity certificate bag.
     EeCertificateBag(CertificateBagMaterial),
+    /// Complete certificate revocation lists.
+    CertificateRevocationLists(CertificateRevocationListsMaterial),
 }
 
 impl ResolvedCredential {
+    /// Returns the checked decoded payload length, excluding names and metadata.
+    #[must_use]
+    pub fn payload_bytes(&self) -> Option<u64> {
+        let lengths: Vec<usize> = match self {
+            Self::OcspResponse(material) => vec![material.response.as_bytes().len()],
+            Self::SymmetricKey(material) => vec![material.key.expose_secret().len()],
+            Self::CertificateWithKey(material) => {
+                let mut lengths = vec![
+                    material.certificate.as_bytes().len(),
+                    material.private_key.expose_secret().len(),
+                ];
+                lengths.extend(
+                    material
+                        .public_key
+                        .iter()
+                        .map(|bytes| bytes.as_bytes().len()),
+                );
+                lengths.extend(
+                    material
+                        .intermediates
+                        .iter()
+                        .map(|bytes| bytes.as_bytes().len()),
+                );
+                lengths
+            }
+            Self::CaCertificateBag(material) | Self::EeCertificateBag(material) => material
+                .certificates
+                .iter()
+                .map(|certificate| certificate.certificate.as_bytes().len())
+                .collect(),
+            Self::CertificateRevocationLists(material) => material
+                .lists
+                .iter()
+                .map(|bytes| bytes.as_bytes().len())
+                .collect(),
+        };
+        lengths
+            .into_iter()
+            .try_fold(0_u64, |total, bytes| total.checked_add(u64::try_from(bytes).ok()?))
+    }
+
+    /// Returns the absolute validity supplied with this credential.
+    #[must_use]
+    pub const fn validity(&self) -> crate::CredentialValidity {
+        match self {
+            Self::OcspResponse(material) => material.validity,
+            Self::CertificateRevocationLists(material) => material.validity,
+            Self::CertificateWithKey(material) => material.validity,
+            Self::SymmetricKey(material) => material.validity,
+            Self::CaCertificateBag(material) | Self::EeCertificateBag(material) => {
+                material.validity
+            }
+        }
+    }
+
     /// Returns the credential kind for request and response matching.
     #[must_use]
     pub const fn kind(&self) -> CredentialKind {
         match self {
+            Self::OcspResponse(_) => CredentialKind::OcspResponse,
+            Self::CertificateRevocationLists(_) => CredentialKind::CertificateRevocationLists,
             Self::CertificateWithKey(_) => CredentialKind::CertificateWithKey,
             Self::SymmetricKey(_) => CredentialKind::SymmetricKey,
             Self::CaCertificateBag(_) => CredentialKind::CaCertificateBag,
@@ -107,13 +222,23 @@ impl ResolvedCredential {
 
 #[cfg(test)]
 mod tests {
-    use tacacsrs_config::crypto_types::{PrivateKeyFormat, PublicKeyFormat, SymmetricKeyFormat};
-
     use super::*;
 
     #[test]
-    fn provider_material_preserves_generated_inline_metadata() {
+    fn revocation_material_preserves_bytes_without_debug_disclosure() {
+        let material = CertificateRevocationListsMaterial {
+            validity: crate::CredentialValidity::unbounded(),
+            lists: vec![PublicBytes::new(b"provider-crl-test-material".to_vec())],
+        };
+        assert_eq!(material.lists[0].as_bytes(), b"provider-crl-test-material");
+        assert!(!format!("{material:?}").contains("provider-crl-test-material"));
+    }
+
+    #[test]
+    fn provider_material_preserves_encoding_metadata() {
         let certificate = CertificateWithKeyMaterial {
+            intermediates: Vec::new(),
+            validity: crate::CredentialValidity::unbounded(),
             public_key_format: Some(PublicKeyFormat::SubjectPublicKeyInfoFormat),
             public_key: Some(PublicBytes::new(b"public-key".to_vec())),
             private_key_format: PrivateKeyFormat::OneAsymmetricKeyFormat,
@@ -121,10 +246,12 @@ mod tests {
             private_key: SecretBytes::new(b"private-key".to_vec()),
         };
         let symmetric_key = SymmetricKeyMaterial {
+            validity: crate::CredentialValidity::unbounded(),
             key_format: Some(SymmetricKeyFormat::OctetStringKeyFormat),
             key: SecretBytes::new(b"symmetric-key".to_vec()),
         };
         let bag = CertificateBagMaterial {
+            validity: crate::CredentialValidity::unbounded(),
             certificates: vec![NamedCertificateMaterial {
                 name: "provider-name".to_owned(),
                 certificate: PublicBytes::new(b"bag-certificate".to_vec()),

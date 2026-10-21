@@ -129,7 +129,7 @@ impl ResolvedCredentialSet {
     }
 
     /// Consumes the closed result set into slot-associated credentials.
-    #[must_use]
+    #[must_use = "Consume the iterator to access the resolved credentials."]
     pub fn into_credentials(
         self,
     ) -> impl ExactSizeIterator<Item = (RequestSlot, RequestContext, ResolvedCredential)> {
@@ -155,59 +155,53 @@ impl fmt::Debug for ResolvedCredentialSet {
 
 #[cfg(test)]
 mod tests {
-    use tacacsrs_config::parse_yang_json;
-
     use super::*;
     use crate::{
         CertificateBagMaterial, CertificateWithKeyMaterial, NamedCertificateMaterial, PublicBytes,
-        SecretBytes,
+        SecretBytes, CredentialReference, RequestContext, PrivateKeyFormat,
     };
 
     #[test]
     fn lookup_uses_request_slot_when_plan_iteration_order_changes() {
-        let config = parse_yang_json(
-            r#"{
-                "ietf-system-tacacs-plus:tacacs-plus": {
-                    "server": [{
-                        "name": "reordered-plan",
-                        "server-type": "accounting",
-                        "address": "192.0.2.40",
-                        "port": 49,
-                        "client-identity": {
-                            "certificate": {
-                                "central-keystore-reference": {
-                                    "asymmetric-key": "key-reference",
-                                    "certificate": "certificate-reference"
-                                }
-                            }
-                        },
-                        "server-authentication": {
-                            "ca-certs": {"central-truststore-reference": "ca-reference"},
-                            "ee-certs": {"central-truststore-reference": "ee-reference"}
-                        }
-                    }]
-                }
-            }"#,
-        )
-        .expect("central credential configuration must parse");
-        let mut plan =
-            ResolutionPlan::from_server(&config.server[0]).expect("resolution plan must build");
+        let mut plan = ResolutionPlan::new([
+            (
+                RequestContext::new("reordered-plan", "client-identity/certificate"),
+                CredentialKind::CertificateWithKey,
+                CredentialReference::CertificateWithKey {
+                    asymmetric_key: Some("key-reference".to_owned()),
+                    certificate: Some("certificate-reference".to_owned()),
+                },
+            ),
+            (
+                RequestContext::new("reordered-plan", "server-authentication/ca-certs"),
+                CredentialKind::CaCertificateBag,
+                CredentialReference::CertificateBag("ca-reference".to_owned()),
+            ),
+            (
+                RequestContext::new("reordered-plan", "server-authentication/ee-certs"),
+                CredentialKind::EeCertificateBag,
+                CredentialReference::CertificateBag("ee-reference".to_owned()),
+            ),
+        ])
+        .expect("resolution plan must build");
         plan.reverse_requests_for_test();
 
         let responses = plan.requests().iter().map(|request| {
             let credential = match request.kind() {
                 CredentialKind::CertificateWithKey => {
                     ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
+                        intermediates: Vec::new(),
+                        validity: crate::CredentialValidity::unbounded(),
                         public_key_format: None,
                         public_key: None,
-                        private_key_format:
-                            tacacsrs_config::crypto_types::PrivateKeyFormat::OneAsymmetricKeyFormat,
+                        private_key_format: PrivateKeyFormat::OneAsymmetricKeyFormat,
                         certificate: PublicBytes::new(b"certificate".to_vec()),
                         private_key: SecretBytes::new(b"private-key".to_vec()),
                     })
                 }
                 CredentialKind::CaCertificateBag => {
                     ResolvedCredential::CaCertificateBag(CertificateBagMaterial {
+                        validity: crate::CredentialValidity::unbounded(),
                         certificates: vec![NamedCertificateMaterial {
                             name: "ca".to_owned(),
                             certificate: PublicBytes::new(b"ca".to_vec()),
@@ -216,14 +210,17 @@ mod tests {
                 }
                 CredentialKind::EeCertificateBag => {
                     ResolvedCredential::EeCertificateBag(CertificateBagMaterial {
+                        validity: crate::CredentialValidity::unbounded(),
                         certificates: vec![NamedCertificateMaterial {
                             name: "ee".to_owned(),
                             certificate: PublicBytes::new(b"ee".to_vec()),
                         }],
                     })
                 }
-                CredentialKind::SymmetricKey => {
-                    unreachable!("the test plan must not contain a symmetric key")
+                CredentialKind::SymmetricKey
+                | CredentialKind::CertificateRevocationLists
+                | CredentialKind::OcspResponse => {
+                    unreachable!("the test plan contains only a client identity and two trust bags")
                 }
             };
             ResolvedResponse::new(request.slot(), credential)

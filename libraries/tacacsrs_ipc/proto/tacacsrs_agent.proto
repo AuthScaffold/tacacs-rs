@@ -1,0 +1,399 @@
+// Local IPC contract for the central TACACS+ client service.
+//
+// This schema defines the gRPC interface of the central TACACS+ client service.
+// The service exposes the interface through a Linux Unix domain socket. Local
+// clients use this contract. They do not manage TACACS+
+// sessions, TCP or TLS connections, failover, or protocol details.
+//
+// ## Building your own client
+//
+// 1. Generate gRPC stubs from this file with protoc and the gRPC plug-in for
+//    your language. For example, use grpcio-tools for Python.
+//
+// 2. Connect to the local IPC endpoint:
+//      - Unix domain socket at /run/tacacs/tacacs.sock
+//    The service operator can configure the IPC endpoint.
+//
+// 3. Send a unary Accounting or Authorization RPC. The service selects the
+//    TACACS+ server and manages connection reuse, TLS, and failover.
+//
+// 4. Read the AccountingReply oneof:
+//      - "response" when the server returns a protocol reply.
+//      - "error" when a service error occurs. The error contains a readable
+//        message and failure facts. The facts describe the cause, the phase,
+//        and whether the operation can have reached a server. The service
+//        derives retry advice from the facts.
+//
+// ## Versioning
+//
+// This v1 contract does not promise compatibility across versions. If the
+// schema changes, update the service and all clients together. Use a known
+// commit or release tag for a stable contract.
+//
+// ## Transport notes
+//
+// - An IPC channel can carry multiple RPC exchanges. Clients can reuse the
+//   channel for multiple unary RPC calls.
+// - The TCP listener accepts loopback addresses only. Do not expose the IPC
+//   endpoint to a network.
+
+syntax = "proto3";
+
+package tacacsrs.agent.v1;
+
+// Read-only operational data. This service never sends upstream TACACS+ traffic.
+service Diagnostics {
+  rpc Statistics(StatisticsRequest) returns (StatisticsReply);
+}
+
+message StatisticsRequest {
+  // Exact configured server name. Absent selects the bounded server set.
+  optional string server = 1;
+}
+
+message StatisticsReply {
+  // RFC 7951 operational subtree. Contains no credential values or request payloads.
+  string yang_json = 1;
+}
+
+// The local TACACS+ client service interface.
+//
+// This service exposes TACACS+ operations as unary RPCs. Local clients do not
+// manage TACACS+ packet framing, session multiplexing, or server selection.
+//
+// The service supports PAP authentication, command accounting, and command
+// authorization. New RPCs can add other operations. Existing calls do not change.
+service TacacsAgent {
+  // Authenticates one username/password pair using the fixed PAP exchange.
+  rpc AuthenticatePap(PapAuthenticationRequest) returns (PapAuthenticationReply);
+
+  // Records a shell command on a configured TACACS+ server.
+  //
+  // The service selects a server and opens or reuses a connection.
+  // It starts a session and sends a TAC_PLUS_ACCT request with START|STOP
+  // flags. The service returns the reply in an AccountingReply envelope.
+  //
+  // If a server error occurs, the service advances failover for later requests.
+  // It returns a ServiceError whose facts describe the failure. An unsent
+  // operation can recommend a later retry. An unknown delivery outcome does not.
+  rpc Accounting(AccountingRequest) returns (AccountingReply);
+
+  // Authorizes a shell command that a local session wrapper observed.
+  //
+  // The request contains the user context, command, and arguments. The wrapper
+  // is about to run this command. The service returns an AuthorizationReply
+  // that contains a decision or a structured service error.
+  rpc Authorization(AuthorizationRequest) returns (AuthorizationReply);
+}
+
+message PapAuthenticationRequest {
+  string user = 1;
+  bytes password = 2;
+  string port = 3;
+  string remote_address = 4;
+  uint32 privilege_level = 5;
+}
+
+enum AuthenticationStatus {
+  AUTHENTICATION_STATUS_UNSPECIFIED = 0;
+  AUTHENTICATION_STATUS_PASS = 1;
+  AUTHENTICATION_STATUS_FAIL = 2;
+  AUTHENTICATION_STATUS_ERROR = 7;
+}
+
+message PapAuthenticationResponse {
+  string server = 1;
+  AuthenticationStatus status = 2;
+  string server_message = 3;
+  bytes data = 4;
+}
+
+message PapAuthenticationReply {
+  oneof result {
+    PapAuthenticationResponse response = 1;
+    ServiceError error = 2;
+  }
+}
+
+// Client-supplied inputs for a TACACS+ accounting operation.
+//
+// The service converts these fields into a TAC_PLUS_ACCT request body
+// (RFC 8907 §7). The service sets the TACACS+ header flags, session IDs, and
+// authentication method fields.
+message AccountingRequest {
+  // The username associated with the accounting record for the command.
+  // This value maps to the "user" field of the TACACS+ accounting request body.
+  string user = 1;
+
+  // The NAS port or tty identifier, for example, "tty0", "pts/1", or "console".
+  // This value maps to the "port" field of the TACACS+ accounting request body.
+  string port = 2;
+
+  // The remote client address, for example, "10.0.0.1" or "192.168.1.42".
+  // This value maps to the "rem_address" field of the TACACS+ accounting request body.
+  string remote_address = 3;
+
+  // The command name in the accounting record, for example, "show" or "configure".
+  // The service encodes this value as the TACACS+ argument "cmd={value}".
+  string command = 4;
+
+  // Additional command arguments, for example, ["users", "brief"].
+  // The service encodes each element as a TACACS+ argument "cmd-arg={value}".
+  // The service prepends "service=shell".
+  repeated string command_arguments = 5;
+}
+
+// TACACS+ accounting reply status values from RFC 8907 §7.2.
+//
+// Where possible, the numeric values match the TACACS+ status octets on the
+// wire. UNSPECIFIED (0) is the protobuf zero-value sentinel. The service must
+// not return this value.
+enum AccountingStatus {
+  // This value is the protobuf zero-value sentinel. The service does not
+  // return it. A client must treat it as an unexpected or malformed response.
+  ACCOUNTING_STATUS_UNSPECIFIED = 0;
+
+  // TAC_PLUS_ACCT_STATUS_SUCCESS (0x01) means that the server
+  // accepted the accounting record.
+  ACCOUNTING_STATUS_SUCCESS = 1;
+
+  // TAC_PLUS_ACCT_STATUS_ERROR (0x02) means that the server rejected
+  // the accounting operation or had a processing error.
+  ACCOUNTING_STATUS_ERROR = 2;
+
+  // TAC_PLUS_ACCT_STATUS_FOLLOW (0x21 = 33 decimal) is deprecated. RFC 8907
+  // recommends treating it as an authentication failure.
+  ACCOUNTING_STATUS_FOLLOW = 33;
+}
+
+// A server returns this response for a TACACS+ accounting operation.
+// AccountingReply.response contains this message for each protocol reply.
+message AccountingResponse {
+  // The server that handled this request, for example,
+  // "tacacs-primary:49". Use this value for diagnostics and logs.
+  string server = 1;
+
+  // The accounting status in the server reply.
+  // See AccountingStatus for the possible values and their RFC meaning.
+  AccountingStatus status = 2;
+
+  // A readable message from the server, if available.
+  // This corresponds to the "server_msg" field of the TACACS+ reply body.
+  // This field is empty if the server did not include a message.
+  string server_message = 3;
+
+  // Opaque data from the server, if available.
+  // This corresponds to the "data" field of the TACACS+ reply body.
+  // This field can be empty. Its meaning depends on the deployment.
+  string data = 4;
+}
+
+// The known cause of a service failure.
+//
+// UNSPECIFIED is the protobuf zero-value sentinel. The service does not set it.
+// A client rejects a message that leaves this field unset.
+enum FailureCategory {
+  FAILURE_CATEGORY_UNSPECIFIED = 0;
+  // The available error does not establish a more specific cause.
+  FAILURE_CATEGORY_UNCLASSIFIED = 1;
+  // The local request is invalid.
+  FAILURE_CATEGORY_INVALID_REQUEST = 2;
+  // No usable configured endpoint or service is available.
+  FAILURE_CATEGORY_UNAVAILABLE = 3;
+  // The operation exceeds the current capacity limit.
+  FAILURE_CATEGORY_OVERLOADED = 4;
+  // The operation exhausted its deadline.
+  FAILURE_CATEGORY_DEADLINE = 5;
+  // Upstream transport or exchange execution failed.
+  FAILURE_CATEGORY_TRANSPORT = 6;
+  // A received message violates the protocol contract.
+  FAILURE_CATEGORY_PROTOCOL = 7;
+  // The caller or host cancelled the operation.
+  FAILURE_CATEGORY_CANCELLED = 8;
+  // An internal service failure prevents completion.
+  FAILURE_CATEGORY_INTERNAL = 9;
+}
+
+// The boundary at which a failure became known.
+//
+// UNSPECIFIED is the protobuf zero-value sentinel. The service does not set it.
+// A client rejects a message that leaves this field unset. UNKNOWN is a real
+// value for a failure with no known phase.
+enum FailurePhase {
+  FAILURE_PHASE_UNSPECIFIED = 0;
+  // The available error does not establish a phase.
+  FAILURE_PHASE_UNKNOWN = 1;
+  // Local request validation or encoding.
+  FAILURE_PHASE_VALIDATION = 2;
+  // Admission to the bounded operation queue.
+  FAILURE_PHASE_ADMISSION = 3;
+  // Endpoint selection or binding before operation transmission.
+  FAILURE_PHASE_ROUTING = 4;
+  // Upstream setup, transmission, or reply processing.
+  FAILURE_PHASE_UPSTREAM = 5;
+  // Local IPC connection or RPC execution.
+  FAILURE_PHASE_IPC = 6;
+}
+
+// Whether the failed operation can have executed remotely.
+//
+// UNSPECIFIED is the protobuf zero-value sentinel. The service does not set it.
+// A client rejects a message that leaves this field unset.
+enum DeliveryState {
+  DELIVERY_STATE_UNSPECIFIED = 0;
+  // The operation did not reach its upstream transport.
+  DELIVERY_STATE_NOT_SENT = 1;
+  // Remote execution is possible and no valid reply establishes the outcome.
+  DELIVERY_STATE_OUTCOME_UNKNOWN = 2;
+}
+
+// Advice for a later independent request, not an instruction to replay now.
+//
+// The service derives this value from the failure facts. A client recomputes the
+// advice and rejects a message whose advice is inconsistent with its facts.
+// UNSPECIFIED is the protobuf zero-value sentinel. A client rejects it.
+enum RetryAdvice {
+  RETRY_ADVICE_UNSPECIFIED = 0;
+  // Do not replay this operation automatically.
+  RETRY_ADVICE_NEVER = 1;
+  // The operation was not sent and a later request can succeed after recovery.
+  RETRY_ADVICE_AFTER_RECOVERY = 2;
+}
+
+// A structured error that the service returns when it cannot complete a request.
+//
+// A reply oneof sets this message instead of a response. The error carries
+// failure facts: the cause category, the phase where the failure became known,
+// and the delivery state of the operation. The service derives retry advice from
+// these facts. An unknown delivery outcome never permits automatic replay.
+message ServiceError {
+  // Tag 3 was a boolean retriable flag. Facts and derived advice replace it.
+  reserved 3;
+  reserved "retriable";
+
+  // A readable error description for logs and diagnostics.
+  // Examples: "No responsive TACACS+ servers are currently available",
+  //           "connection reset by peer".
+  string message = 1;
+
+  // The server associated with the error, if the service selected one.
+  // An empty string means that the service did not select a server.
+  string server = 2;
+
+  // The known cause of the failure. The service sets a specific category.
+  FailureCategory category = 4;
+
+  // The boundary at which the failure became known.
+  FailurePhase phase = 5;
+
+  // Whether the operation can have executed remotely.
+  DeliveryState delivery = 6;
+
+  // Retry advice derived from the facts. A client validates this value.
+  RetryAdvice retry_advice = 7;
+
+  // The routing generation captured before admission, scoped to the running
+  // service instance. Absent when the service did not capture one.
+  optional uint64 runtime_generation = 8;
+
+  // The one-based upstream attempt number within the captured request. Absent
+  // when no upstream attempt occurred. A present zero value is invalid.
+  optional uint32 attempt = 9;
+}
+
+// Reply envelope for the Accounting RPC.
+//
+// The oneof distinguishes a TACACS+ protocol response from a service error.
+// The service sets exactly one field.
+message AccountingReply {
+  oneof result {
+    // The service sets this field for a protocol reply from the server.
+    AccountingResponse response = 1;
+
+    // The service sets this field when an error occurs. It carries failure facts
+    // and derived retry advice.
+    ServiceError error = 2;
+  }
+}
+
+// Client-supplied inputs for a TACACS+ authorization operation.
+//
+// The service converts these fields into a TAC_PLUS_AUTHOR request body
+// (RFC 8907 §6) for authorization forwarding to a server. The
+// fixed fields map to fields in the Authorization REQUEST body. `args` contains
+// the variable arguments in the AuthorizationResponse arg-val format.
+message AuthorizationRequest {
+  string user = 1;
+  string port = 2;
+  string remote_address = 3;
+  uint32 privilege_level = 4;
+
+  // RFC 8907 §8.2 authorization arg-val pairs, in order.
+  // `service` MUST be included. If service is `shell`, `cmd` MUST be included.
+  // The order of multiple `cmd-arg` values is significant.
+  repeated AuthorizationArg args = 5;
+  AuthorizationAuthenticationContext authentication_context = 6;
+}
+
+enum AuthorizationAuthenticationContext {
+  AUTHORIZATION_AUTHENTICATION_CONTEXT_UNSPECIFIED = 0;
+  AUTHORIZATION_AUTHENTICATION_CONTEXT_TACACS_ASCII = 1;
+  AUTHORIZATION_AUTHENTICATION_CONTEXT_TACACS_PAP = 2;
+  AUTHORIZATION_AUTHENTICATION_CONTEXT_UNAUTHENTICATED = 3;
+}
+
+// TACACS+ authorization reply status values from RFC 8907 §6.2.
+enum AuthorizationStatus {
+  AUTHORIZATION_STATUS_UNSPECIFIED = 0;
+  AUTHORIZATION_STATUS_PASS_ADD = 1;
+  AUTHORIZATION_STATUS_PASS_REPL = 2;
+  AUTHORIZATION_STATUS_FAIL = 16;
+  AUTHORIZATION_STATUS_ERROR = 17;
+  AUTHORIZATION_STATUS_FOLLOW = 33;
+}
+
+// A single TACACS+ authorization argument-value pair.
+//
+// A TACACS+ authorization argument (RFC 8907 §6.1) contains a name, separator,
+// and value in one string. The separator specifies whether the argument is
+// mandatory or optional:
+//   mandatory ('=') — The receiver MUST process it or treat authorization as failed.
+//   optional  ('*') — The receiver MAY ignore it.
+//
+// This message decodes the wire value for AuthorizationRequest and
+// AuthorizationResponse. Callers can use the decoded values for policy decisions.
+message AuthorizationArg {
+  // The argument name, for example, "priv-lvl", "cmd", or "service".
+  string name = 1;
+
+  // True when the original separator was '=' (mandatory).
+  // False when the original separator was '*' (optional).
+  bool mandatory = 2;
+
+  // The argument value is everything after the first separator in the wire string.
+  string value = 3;
+}
+
+// The service returns this response for a TACACS+ authorization operation.
+message AuthorizationResponse {
+  string server = 1;
+  AuthorizationStatus status = 2;
+  string server_message = 3;
+
+  // Arg-val pairs from the server for PASS_ADD (merge) and PASS_REPL (replace).
+  // This field is empty if the server returned arg_cnt = 0.
+  // In that case, the server approved the request without changes.
+  // Args represent privilege changes, for example, `priv-lvl=15`.
+  // This representation follows the RFC 8907 arg-val semantics.
+  repeated AuthorizationArg args = 4;
+
+  string data = 5;              // This field contains data for client display or logs.
+}
+
+// Reply envelope for the Authorization RPC.
+message AuthorizationReply {
+  oneof result {
+    AuthorizationResponse response = 1;
+    ServiceError error = 2;
+  }
+}

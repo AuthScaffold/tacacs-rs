@@ -2,41 +2,67 @@
 
 use std::sync::Arc;
 
-use tacacsrs_agent_client::IpcEndpoint;
+use tacacsrs_config::local_services::ListenerEndpoint;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::listener;
 use super::upstream_bridge::UpstreamBridge;
 use crate::runtime::{
     ListenerRegistration, RequestGuard, RequestTracker, RuntimeHealthPublisher, RuntimeService,
-    ShutdownReceiver,
+    ShutdownReceiver, ProxyLoopGuard, ProxyListenerBinding,
 };
 use crate::services::ListenerOptions;
 use crate::upstream::manager::UpstreamManager;
+use crate::upstream::UpstreamConnection;
+use tacacsrs_networking::routed::EndpointConnector;
 
 /// Owns the raw TACACS+ proxy runtime dependencies.
-#[derive(Clone)]
-pub(crate) struct TacacsProxyService {
+pub(crate) struct TacacsProxyService<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
     request_tracker: Arc<RequestTracker>,
-    upstream_bridge: UpstreamBridge,
+    upstream_bridge: UpstreamBridge<Connector>,
+    proxy_loop_guard: ProxyLoopGuard,
 }
 
-impl TacacsProxyService {
+impl<Connector: EndpointConnector> Clone for TacacsProxyService<Connector> {
+    fn clone(&self) -> Self {
+        Self {
+            request_tracker: self.request_tracker.clone(),
+            upstream_bridge: self.upstream_bridge.clone(),
+            proxy_loop_guard: self.proxy_loop_guard.clone(),
+        }
+    }
+}
+
+impl<Connector: EndpointConnector> TacacsProxyService<Connector>
+where
+    Connector::Connection: UpstreamConnection,
+{
     /// Creates a raw TACACS+ proxy service with shared runtime state.
     pub(crate) fn new(
-        upstream_manager: Arc<UpstreamManager>,
+        upstream_manager: Arc<UpstreamManager<Connector>>,
         request_tracker: Arc<RequestTracker>,
+        proxy_loop_guard: ProxyLoopGuard,
     ) -> Self {
         Self {
             request_tracker,
             upstream_bridge: UpstreamBridge::new(upstream_manager),
+            proxy_loop_guard,
         }
+    }
+
+    pub(super) fn bind_proxy_listener(
+        &self,
+        address: std::net::SocketAddr,
+    ) -> anyhow::Result<ProxyListenerBinding> {
+        self.proxy_loop_guard.bind(address)
     }
 
     /// Runs the TACACS+ proxy listener until the process receives a shutdown signal.
     pub(crate) async fn serve(
         &self,
-        endpoint: &IpcEndpoint,
+        endpoint: &ListenerEndpoint,
         options: ListenerOptions,
         shutdown: ShutdownReceiver,
         health: RuntimeHealthPublisher,

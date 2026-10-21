@@ -1,8 +1,8 @@
 //! Mutable TACACS+ client conversations.
 
 use anyhow::Context;
-use tacacsrs_messages::enumerations::{TacacsMajorVersion, TacacsMinorVersion, TacacsType};
-use tacacsrs_messages::packet::{Packet, PacketTrait};
+use tacacsrs_protocol::conversation::ConversationState;
+use tacacsrs_protocol::packet::{Packet, PacketTrait};
 
 use super::ClientSession;
 
@@ -12,20 +12,20 @@ use super::ClientSession;
 /// packet and waits for the corresponding even-sequence server reply. The
 /// conversation enforces one session identifier, packet type, protocol
 /// version, and monotonically increasing sequence numbers.
+///
+/// Keep the originating [`crate::TacacsClient`] alive while using a conversation.
+/// Dropping that client closes its transports. Terminal client shutdown can also
+/// force a retained conversation closed when its drain deadline expires.
 pub struct ClientConversation {
     session: Option<ClientSession>,
-    packet_type: Option<TacacsType>,
-    minor_version: Option<TacacsMinorVersion>,
-    next_request_sequence: Option<u8>,
+    state: ConversationState,
 }
 
 impl ClientConversation {
     pub(crate) fn new(session: ClientSession) -> Self {
         Self {
+            state: ConversationState::new(session.session_id()),
             session: Some(session),
-            packet_type: None,
-            minor_version: None,
-            next_request_sequence: Some(1),
         }
     }
 
@@ -46,8 +46,8 @@ impl ClientConversation {
     /// Returns an error for an inactive conversation, invalid request metadata,
     /// packet I/O failure, or a response that does not match the request.
     pub async fn round_trip(&mut self, request: Packet) -> anyhow::Result<Packet> {
-        let request_sequence = self.validate_request(&request)?;
-        let result = self.round_trip_inner(request, request_sequence).await;
+        self.state.validate_request(request.header())?;
+        let result = self.round_trip_inner(request).await;
         if result.is_err() {
             self.complete().await;
         }
@@ -59,93 +59,22 @@ impl ClientConversation {
         if let Some(session) = self.session.take() {
             session.complete().await;
         }
-        self.next_request_sequence = None;
+        self.state.complete();
     }
 
-    fn validate_request(&mut self, request: &Packet) -> anyhow::Result<u8> {
+    async fn round_trip_inner(&mut self, request: Packet) -> anyhow::Result<Packet> {
         let session = self
             .session
             .as_ref()
             .context("TACACS+ conversation is complete")?;
-        let header = request.header();
-        let expected_sequence = self
-            .next_request_sequence
-            .context("TACACS+ conversation exhausted its sequence numbers")?;
-
-        if header.session_id != session.session_id() {
-            anyhow::bail!(
-                "TACACS+ conversation session mismatch: request={:#x}, expected={:#x}",
-                header.session_id,
-                session.session_id(),
-            );
-        }
-        if header.major_version != TacacsMajorVersion::TacacsPlusMajor1 {
-            anyhow::bail!("TACACS+ conversation requires protocol major version 1");
-        }
-        if header.seq_no != expected_sequence {
-            anyhow::bail!(
-                "unexpected TACACS+ conversation request sequence {}; expected {}",
-                header.seq_no,
-                expected_sequence,
-            );
-        }
-        match self.packet_type {
-            Some(packet_type) if packet_type != header.tacacs_type => {
-                anyhow::bail!("TACACS+ conversation packet type changed")
-            }
-            Some(_) => {}
-            None => self.packet_type = Some(header.tacacs_type),
-        }
-        match self.minor_version {
-            Some(minor_version) if minor_version != header.minor_version => {
-                anyhow::bail!("TACACS+ conversation minor version changed")
-            }
-            Some(_) => {}
-            None => self.minor_version = Some(header.minor_version),
-        }
-
-        Ok(expected_sequence)
-    }
-
-    async fn round_trip_inner(
-        &mut self,
-        request: Packet,
-        request_sequence: u8,
-    ) -> anyhow::Result<Packet> {
-        let session = self
-            .session
-            .as_ref()
-            .context("TACACS+ conversation is complete")?;
-        let packet_type = self
-            .packet_type
-            .context("conversation packet type was not recorded")?;
-        let minor_version = self
-            .minor_version
-            .context("conversation minor version was not recorded")?;
-        let expected_response_sequence = request_sequence
-            .checked_add(1)
-            .context("TACACS+ conversation response sequence exceeds 255")?;
-
+        let _reply_wait = session.awaiting_reply(&request);
         session.send_packet(request).await?;
         let response = session.receive_packet().await?;
-        let header = response.header();
-        if header.session_id != session.session_id()
-            || header.major_version != TacacsMajorVersion::TacacsPlusMajor1
-            || header.minor_version != minor_version
-            || header.tacacs_type != packet_type
-            || header.seq_no != expected_response_sequence
-        {
-            anyhow::bail!(
-                "unexpected TACACS+ conversation response header for session {:#x}: seq_no={}, type={}, version={:?}.{:?}",
-                header.session_id,
-                header.seq_no,
-                header.tacacs_type,
-                header.major_version,
-                header.minor_version,
-            );
+        if let Err(error) = self.state.validate_response(response.header()) {
+            session.reject_malformed_response().await;
+            return Err(error);
         }
-
-        self.next_request_sequence = request_sequence.checked_add(2);
+        session.record_terminal_reply(&response);
         Ok(response)
     }
 }

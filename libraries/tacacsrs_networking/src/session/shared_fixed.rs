@@ -4,12 +4,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context;
-use tacacsrs_messages::packet::Packet;
+use tacacsrs_protocol::packet::Packet;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
 use super::SessionManager;
 
 pub(crate) struct SharedFixedSession {
+    pub(crate) connection_owner: Option<Arc<crate::connection::MultiplexedConnection>>,
     id: u32,
     outbound: mpsc::Sender<Packet>,
     response: Mutex<Option<oneshot::Receiver<anyhow::Result<Packet>>>>,
@@ -25,6 +26,7 @@ impl SharedFixedSession {
         manager: Arc<SessionManager>,
     ) -> Self {
         Self {
+            connection_owner: None,
             id,
             outbound,
             response: Mutex::new(Some(response)),

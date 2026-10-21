@@ -1,19 +1,45 @@
 [package]
 name = "tacacsrs-config"
 description = "YANG JSON configuration types for TACACS+ and ietf-system-tacacs-plus."
-version = "0.1.14"
+version = "0.2.0"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
 anyhow = "1"
+async-trait = "0.1"
+futures-core = "0.3"
+log = "0.4.30"
+notify = "8.2.0"
+rustls-pki-types = "1.14.1"
+tokio = { version = "1.52.3", features = ["fs", "sync", "macros", "rt", "time"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
 base64 = "0.23"
 bitflags = { version = "2", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_ignored = "0.1"
 serde_json = "1"
+jiff = { version = "0.2", default-features = false, features = ["std"] }
 tacacsrs-secrets = { path = "../tacacsrs_secrets", features = ["rfc7951"] }
+tacacsrs-credential-resolution = { path = "../tacacsrs_credential_resolution" }
+tacacsrs-networking = { path = "../tacacsrs_networking" }
+tacacsrs-protocol = { path = "../tacacsrs_protocol" }
+
+[target.'cfg(windows)'.dependencies]
+same-file = "1.0.6"
+
+[dev-dependencies]
+futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+tokio = { version = "1.52.3", features = ["macros", "rt", "rt-multi-thread", "fs", "test-util"] }
+openssl = "0.10.80"
+tokio-openssl = "0.6.5"
+env_logger = "0.11.10"
+console-subscriber = "0.5.0"
+
+[package.metadata.cargo-udeps.ignore]
+development = ["console-subscriber"]
 
 [lints]
 workspace = true

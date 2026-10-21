@@ -3,59 +3,215 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
-use tokio::sync::RwLock;
+#[cfg(test)]
+use async_trait::async_trait;
 
-use super::server_slot::ServerSlot;
-use super::circuit::RecoveryPermit;
-use crate::config::{ProxyDownstreamObfuscation, RuntimePolicy};
+use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
+use tacacsrs_networking::routed::{BoundEndpoint, EndpointConnector, RoutedClient};
+use tacacsrs_networking::retry::FailoverPlan;
+use tacacsrs_networking::RequestDeadline;
+
+use super::prepared_server::PreparedServer;
+use crate::config::{PolicyService, PreparedProxyPolicy, RuntimePolicy};
 use crate::upstream::admission::AdmissionRegistry;
-use crate::upstream::{OperationKind, UpstreamConnection};
+use crate::upstream::admission::AdmissionError;
+use crate::upstream::OperationKind;
+#[cfg(test)]
+use crate::upstream::{UpstreamConnection, UpstreamConnector};
 
 /// Immutable routing inputs published as one generation.
-pub(super) struct RuntimeRoutingSnapshot {
-    pub(super) server_set: Arc<ServerSet>,
-    pub(super) proxy_downstream_obfuscation: ProxyDownstreamObfuscation,
+pub(super) struct RuntimeRoutingSnapshot<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
+    pub(super) generation: u64,
+    pub(super) availability_generation: u64,
+    pub(super) server_set: Arc<ServerSet<Connector>>,
+    pub(super) proxy_downstream_obfuscation: PreparedProxyPolicy,
     pub(super) runtime_policy: Arc<RuntimePolicy>,
     pub(super) admission: Arc<AdmissionRegistry>,
+    pub(super) credential_lifetime: crate::runtime::CredentialLifetime,
 }
 
-/// Immutable server set and its mutable failover cursor.
-pub(super) struct ServerSet {
-    /// Per-server state including cached connections and reconnect locks.
-    pub(super) servers: Vec<Arc<ServerSlot>>,
-    /// Independent eligible-server lists and cursors for each operation.
-    routes: [OperationRoute; 3],
+/// One request's immutable routing and retry-policy inputs.
+pub(crate) struct RoutingLease<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
+    pub(super) runtime: Arc<RuntimeRoutingSnapshot<Connector>>,
+    pub(super) operation: OperationKind,
+    plan: FailoverPlan,
+    deadline: RequestDeadline,
 }
 
-/// Ordered eligible servers and the active position for one operation.
-pub(super) struct OperationRoute {
-    server_indices: Vec<usize>,
-    active_position: RwLock<usize>,
+impl<Connector: EndpointConnector> RoutingLease<Connector> {
+    pub(super) fn new(
+        runtime: Arc<RuntimeRoutingSnapshot<Connector>>,
+        service: PolicyService,
+        operation: OperationKind,
+    ) -> Self {
+        let plan = runtime
+            .runtime_policy
+            .failover_plan(service, runtime.server_set.client.eligible_count(operation));
+        let deadline =
+            RequestDeadline::after(runtime.runtime_policy.limits(operation).request_timeout())
+                .unwrap_or_else(|_| RequestDeadline::at(tokio::time::Instant::now()));
+        let deadline = runtime
+            .credential_lifetime
+            .deadline
+            .map_or(deadline, |expiry| RequestDeadline::at(deadline.expires_at().min(expiry)));
+        Self {
+            runtime,
+            operation,
+            plan,
+            deadline,
+        }
+    }
+
+    pub(crate) const fn failover_plan(&self) -> FailoverPlan {
+        self.plan
+    }
+
+    pub(crate) const fn deadline(&self) -> RequestDeadline {
+        self.deadline
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.runtime.generation
+    }
+
+    pub(crate) fn reserve(
+        &self,
+        body_length: usize,
+    ) -> Result<tacacsrs_networking::admission::AdmissionReservation, AdmissionError> {
+        self.validate_body_length(body_length)?;
+        let runtime = &self.runtime;
+        let operation = self.operation;
+        if runtime.server_set.client.eligible_count(operation) == 0 {
+            return Err(AdmissionError::NoEligibleServer { operation });
+        }
+        runtime.admission.reserve(operation, self.deadline())
+    }
+
+    pub(crate) async fn admit_reserved(
+        &self,
+        reservation: tacacsrs_networking::admission::AdmissionReservation,
+    ) -> Result<crate::upstream::AdmissionPermit, AdmissionError> {
+        let runtime = &self.runtime;
+        let operation = self.operation;
+        let wait_timeout = runtime
+            .server_set
+            .client
+            .active_endpoint(operation)
+            .await
+            .and_then(|endpoint| endpoint.prepared().connection_timeout())
+            .unwrap_or(Duration::ZERO);
+        reservation
+            .wait_until(self.deadline().capped(wait_timeout))
+            .await
+            .map_err(|error| match error {
+                tacacsrs_networking::admission::AdmissionError::Closed => AdmissionError::Closed,
+                _ => AdmissionError::CapacityTimeout { wait_timeout },
+            })
+    }
+
+    pub(crate) async fn admit(
+        &self,
+        body_length: usize,
+    ) -> Result<crate::upstream::AdmissionPermit, AdmissionError> {
+        let reservation = self.reserve(body_length)?;
+        self.admit_reserved(reservation).await
+    }
+
+    pub(crate) fn validate_body_length(&self, body_length: usize) -> Result<(), AdmissionError> {
+        let maximum = self
+            .runtime
+            .runtime_policy
+            .limits(self.operation)
+            .max_body_length();
+        if body_length > maximum {
+            return Err(AdmissionError::BodyTooLarge {
+                actual: body_length,
+                maximum,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Source metadata and the networking-owned catalog published with it.
+pub(super) struct ServerSet<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
+    pub(super) servers: Vec<Arc<PreparedServer>>,
+    pub(super) client: RoutedClient<Connector>,
+}
+
+#[cfg(test)]
+pub(crate) struct ServiceConnector(pub(crate) Arc<UpstreamConnector>);
+
+#[cfg(test)]
+#[async_trait]
+impl EndpointConnector for ServiceConnector {
+    type Connection = dyn UpstreamConnection;
+
+    async fn connect(
+        &self,
+        endpoint: tacacsrs_networking::PreparedEndpoint,
+        operation: OperationKind,
+    ) -> anyhow::Result<Arc<Self::Connection>> {
+        self.0.connect(endpoint, operation).await
+    }
+
+    async fn retire(&self, connection: &Self::Connection) {
+        connection.stop_accepting_new_sessions().await;
+    }
+
+    fn close(&self, connection: &Self::Connection) {
+        connection.close();
+    }
+
+    async fn close_and_join(
+        &self,
+        connection: &Self::Connection,
+        deadline: RequestDeadline,
+    ) -> anyhow::Result<()> {
+        connection.close_and_join(deadline).await
+    }
 }
 
 /// Result of binding an IPC request to a TACACS+ server.
 ///
 /// Contains the server index for failover records and the request connection.
-pub(crate) struct BoundServer {
-    /// The server snapshot this request was bound against.
-    pub(super) server_set: Arc<ServerSet>,
+pub(crate) struct BoundServer<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
+    pub(super) server: Arc<TacacsPlusServer>,
+    pub(super) binding: BoundEndpoint<Connector>,
     /// Index in the service server list.
     pub(crate) index: usize,
-    /// Operation that owns this connection and route decision.
-    pub(crate) operation: OperationKind,
-    /// Connection generation used to prevent stale failure invalidation.
-    pub(super) connection_generation: u64,
-    /// Present when this request owns the one half-open recovery trial.
-    pub(super) recovery_permit: Option<RecoveryPermit>,
     /// Server connection for this request.
-    pub(crate) connection: Arc<dyn UpstreamConnection>,
+    pub(crate) connection: Arc<Connector::Connection>,
 }
 
-impl BoundServer {
+impl<Connector: EndpointConnector> BoundServer<Connector> {
+    /// Records failure for this binding's connection generation and operation.
+    pub(crate) async fn note_failure(&self) {
+        self.binding.note_failure().await;
+    }
+
+    /// Completes this binding's recovery trial after a successful request.
+    pub(crate) async fn note_success(&self) {
+        self.binding.note_success().await;
+    }
+
+    pub(crate) fn observe_failure(
+        &self,
+    ) -> tacacsrs_networking::routed::FailureObservation<Connector> {
+        self.binding.observe_failure()
+    }
+
     /// Returns the configured upstream server selected for this request.
     pub(crate) fn server(&self) -> &TacacsPlusServer {
-        &self.server_set.servers[self.index].server
+        &self.server
     }
 
     /// Returns the timeout configured on the selected upstream server.
@@ -64,94 +220,114 @@ impl BoundServer {
     }
 }
 
-impl ServerSet {
-    pub(super) fn new(servers: Vec<Arc<ServerSlot>>) -> Self {
-        let routes = OperationKind::ALL.map(|operation| {
-            let server_indices = servers
+impl<Connector: EndpointConnector> ServerSet<Connector> {
+    pub(super) fn new(servers: Vec<Arc<PreparedServer>>, connector: Connector) -> Self {
+        let client = RoutedClient::with_connector(
+            servers
                 .iter()
-                .enumerate()
-                .filter_map(|(index, slot)| {
-                    slot.server
-                        .supports_server_type(operation.server_type())
-                        .then_some(index)
-                })
-                .collect();
-            OperationRoute {
-                server_indices,
-                active_position: RwLock::new(0),
-            }
-        });
-        Self { servers, routes }
+                .map(|server| server.endpoint.clone())
+                .collect(),
+            connector,
+        );
+        Self { servers, client }
     }
 
     pub(super) fn server_count(&self) -> usize {
         self.servers.len()
     }
 
-    pub(super) fn route(&self, operation: OperationKind) -> &OperationRoute {
-        &self.routes[operation.index()]
+    pub(super) fn retire_replaced_until(
+        &self,
+        replacement: &Self,
+        deadline: RequestDeadline,
+        urgent: &std::collections::BTreeSet<&str>,
+    ) {
+        let immediate = RequestDeadline::at(tokio::time::Instant::now());
+        self.client
+            .retire_replaced_with_deadlines(&replacement.client, |name| {
+                if urgent.contains(name) {
+                    immediate
+                } else {
+                    deadline
+                }
+            });
+    }
+
+    pub(super) fn changed_revocation_servers(
+        &self,
+        replacement: &Self,
+    ) -> std::collections::BTreeSet<&str> {
+        self.servers
+            .iter()
+            .filter(|old| {
+                replacement
+                    .servers
+                    .iter()
+                    .find(|new| new.server.name == old.server.name)
+                    .is_some_and(|new| revocation_changed(&old.server, &new.server))
+            })
+            .map(|old| old.server.name.as_str())
+            .collect()
     }
 }
 
-impl OperationRoute {
-    pub(super) fn server_count(&self) -> usize {
-        self.server_indices.len()
-    }
+pub(super) fn revocation_changed(
+    old: &tacacsrs_config::TacacsPlusServer,
+    new: &tacacsrs_config::TacacsPlusServer,
+) -> bool {
+    old.server_authentication
+        .as_ref()
+        .map(|auth| (&auth.require_crls, &auth.require_ocsp, &auth.require_stapled_ocsp))
+        != new
+            .server_authentication
+            .as_ref()
+            .map(|auth| (&auth.require_crls, &auth.require_ocsp, &auth.require_stapled_ocsp))
+        && (old.server_authentication.as_ref().is_some_and(|auth| {
+            auth.require_crls.is_some()
+                || auth.require_ocsp.is_some()
+                || auth.require_stapled_ocsp.is_some()
+        }) || new.server_authentication.as_ref().is_some_and(|auth| {
+            auth.require_crls.is_some()
+                || auth.require_ocsp.is_some()
+                || auth.require_stapled_ocsp.is_some()
+        }))
+}
 
-    pub(super) fn server_index(&self, position: usize) -> usize {
-        self.server_indices[position]
-    }
+#[cfg(test)]
+mod revocation_tests {
+    use super::revocation_changed;
 
-    pub(super) async fn active_position(&self) -> usize {
-        *self.active_position.read().await
-    }
-
-    pub(super) async fn set_active_position(&self, position: usize) {
-        *self.active_position.write().await = position;
-    }
-
-    pub(super) fn position_of(&self, server_index: usize) -> Option<usize> {
-        self.server_indices
-            .iter()
-            .position(|index| *index == server_index)
-    }
-
-    pub(super) async fn active_server_name(&self, servers: &[Arc<ServerSlot>]) -> Option<String> {
-        if self.server_indices.is_empty() {
-            return None;
-        }
-        let position = self.active_position().await;
-        Some(servers[self.server_indices[position]].name().to_owned())
-    }
-
-    pub(super) async fn preserve_active_server(
-        &self,
-        previous_name: Option<&str>,
-        servers: &[Arc<ServerSlot>],
-    ) {
-        let position = previous_name
-            .and_then(|name| {
-                self.server_indices
-                    .iter()
-                    .position(|index| servers[*index].name() == name)
-            })
-            .unwrap_or(0);
-        self.set_active_position(position).await;
-    }
-
-    pub(super) async fn advance_if_active(
-        &self,
-        failed_server_index: usize,
-    ) -> Option<(usize, usize)> {
-        if self.server_indices.is_empty() {
-            return None;
-        }
-        let mut active = self.active_position.write().await;
-        if self.server_indices[*active] != failed_server_index {
-            return None;
-        }
-        let previous = self.server_indices[*active];
-        *active = (*active + 1) % self.server_indices.len();
-        Some((previous, self.server_indices[*active]))
+    #[test]
+    fn fetched_evidence_changes_require_immediate_retirement() {
+        let old = tacacsrs_config::TacacsPlusServerBuilder::new(
+            "revocation",
+            tacacsrs_config::TacacsPlusServerType::all(),
+            "127.0.0.1",
+            300,
+        )
+        .build();
+        let mut changed = old.clone();
+        changed.server_authentication =
+            Some(tacacsrs_config::TlsClientServerAuthentication::default());
+        assert!(!revocation_changed(&old, &changed));
+        changed.server_authentication.as_mut().unwrap().require_ocsp =
+            Some(tacacsrs_config::tacacsrs::RequireOcsp {
+                response: Some(vec![1]),
+                evidence_reference: None,
+                max_response_age_seconds: 300,
+            });
+        assert!(revocation_changed(&old, &changed));
+        assert!(!revocation_changed(&changed, &changed));
+        let previous = changed.clone();
+        changed
+            .server_authentication
+            .as_mut()
+            .unwrap()
+            .require_ocsp
+            .as_mut()
+            .unwrap()
+            .response = Some(vec![2]);
+        assert!(revocation_changed(&previous, &changed));
+        assert!(revocation_changed(&changed, &old));
     }
 }

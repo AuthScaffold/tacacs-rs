@@ -46,6 +46,7 @@ impl crate::CredentialResolver for FakeCredentialResolver {
     async fn resolve(
         &self,
         request: &CredentialRequest,
+        _scope: &crate::WorkScope,
     ) -> Result<ResolvedCredential, ResolutionError> {
         let response = self
             .responses

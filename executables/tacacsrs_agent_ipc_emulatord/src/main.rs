@@ -7,7 +7,7 @@ use std::str::FromStr;
 
 use anyhow::Context;
 use clap::Parser;
-use tacacsrs_agent_client::IpcEndpoint;
+use tacacsrs_ipc::IpcEndpoint;
 use tacacsrs_agent_ipc_emulator::{EmulatorPolicy, IpcEmulator};
 
 #[derive(Debug, Parser)]

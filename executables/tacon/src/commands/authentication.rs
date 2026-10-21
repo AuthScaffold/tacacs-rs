@@ -3,18 +3,13 @@
 use std::io::{IsTerminal, Read};
 
 use anyhow::Context;
-#[cfg(target_os = "linux")]
-use tacacsrs_agent_client::{
-    PapAuthenticationOperation, PapAuthenticationOperationResponse, ServiceClient,
-};
-use tacacsrs_flows::authentication::PapAuthenticationExchange;
-use tacacsrs_messages::authentication::reply::AuthenticationReply;
+use tacacsrs_protocol::operations::{PapAuthenticationOperation, PapAuthenticationOperationResponse};
 use tacacsrs_secrets::SecretBytes;
 
 use crate::cli::RequestArgs;
 use crate::connection::Connection;
 
-pub fn read_password(from_stdin: bool) -> anyhow::Result<SecretBytes> {
+pub(crate) fn read_password(from_stdin: bool) -> anyhow::Result<SecretBytes> {
     let bytes = if from_stdin {
         let mut bytes = Vec::new();
         std::io::stdin()
@@ -35,37 +30,36 @@ pub fn read_password(from_stdin: bool) -> anyhow::Result<SecretBytes> {
     Ok(SecretBytes::new(bytes))
 }
 
-pub async fn authenticate_direct(
+/// Sends a prepared PAP authentication operation over a direct TACACS+ connection.
+///
+/// # Errors
+///
+/// Returns an error if the exchange fails or the reply is nonterminal.
+pub(crate) async fn send_direct(
     connection: &Connection,
-    args: &RequestArgs,
-    privilege_level: u8,
-    password: SecretBytes,
-) -> anyhow::Result<AuthenticationReply> {
-    connection
-        .execute(PapAuthenticationExchange::new(
-            args.user.clone(),
-            password,
-            args.port.clone(),
-            args.rem_addr.clone(),
-            privilege_level,
-        ))
-        .await
+    operation: &PapAuthenticationOperation,
+) -> anyhow::Result<PapAuthenticationOperationResponse> {
+    let reply = connection.execute(&operation.exchange()?).await?;
+    PapAuthenticationOperationResponse::from_reply(connection.server_name(), reply)
 }
 
-#[cfg(target_os = "linux")]
-pub async fn authenticate_service(
-    client: &ServiceClient,
+/// Builds a validated [`PapAuthenticationOperation`] from CLI arguments.
+///
+/// # Errors
+///
+/// Returns an error if the privilege level or the assembled operation is invalid.
+pub(crate) fn pap_operation(
     args: &RequestArgs,
     privilege_level: u8,
     password: SecretBytes,
-) -> anyhow::Result<PapAuthenticationOperationResponse> {
-    client
-        .authenticate_pap(PapAuthenticationOperation {
-            user: args.user.clone(),
-            password,
-            port: args.port.clone(),
-            remote_address: args.rem_addr.clone(),
-            privilege_level: u32::from(privilege_level),
-        })
-        .await
+) -> anyhow::Result<PapAuthenticationOperation> {
+    let operation = PapAuthenticationOperation {
+        user: args.user.clone(),
+        password,
+        port: args.port.clone(),
+        remote_address: args.rem_addr.clone(),
+        privilege_level: tacacsrs_protocol::privilege::PrivilegeLevel::try_from(privilege_level)?,
+    };
+    operation.validate()?;
+    Ok(operation)
 }

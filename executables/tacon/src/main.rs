@@ -4,6 +4,7 @@
 )))]
 compile_error!("tacon supports Linux GNU and Windows MSVC only");
 
+mod backend;
 mod batch;
 mod cli;
 mod commands;
@@ -11,27 +12,16 @@ mod config;
 mod connection;
 
 use std::path::Path;
-#[cfg(target_os = "linux")]
-use std::str::FromStr;
 
 use anyhow::bail;
-#[cfg(target_os = "linux")]
-use anyhow::Context;
 use clap::Parser;
-#[cfg(target_os = "linux")]
-use tacacsrs_agent_client::{AccountingOperation, IpcEndpoint, ServiceClient};
-use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerType};
-use tacacsrs_networking::ConnectOptions;
 
+use tacacsrs_config::TacacsPlusServerType;
+use tacacsrs_config::prepare::PrepareOptions;
+
+use backend::Backend;
 use cli::{Cli, Command};
-use commands::accounting::send_accounting_request;
-use commands::authentication::{authenticate_direct, read_password};
-#[cfg(target_os = "linux")]
-use commands::authentication::authenticate_service;
-use commands::authorization::authorize_direct;
-#[cfg(target_os = "linux")]
-use commands::authorization::authorize_service;
-use connection::{Connection, establish_connection, establish_dedicated_connection};
+use connection::{establish_connection, establish_dedicated_connection};
 
 /// Initializes the logger based on verbosity level
 fn init_logger(verbose: u8) {
@@ -51,8 +41,8 @@ fn init_logger(verbose: u8) {
     }
 }
 
-/// Runs the requested TACACS+ command.
-async fn execute_command(command: &Command, connection: &Connection) -> anyhow::Result<()> {
+/// Runs the requested TACACS+ command against the resolved backend.
+async fn execute_command(backend: &Backend, command: &Command) -> anyhow::Result<()> {
     log::info!("Running command: {command:?}");
 
     match command {
@@ -61,15 +51,15 @@ async fn execute_command(command: &Command, connection: &Connection) -> anyhow::
             cmd,
             cmd_args,
         } => {
-            send_accounting_request(
-                connection,
+            let operation = commands::accounting::accounting_operation(
                 &args.user,
                 &args.port,
                 &args.rem_addr,
                 cmd,
                 cmd_args.as_ref(),
-            )
-            .await?;
+            );
+            let response = backend.accounting(&operation).await?;
+            println!("Received accounting response: {response:#?}");
         }
 
         Command::Authentication {
@@ -77,9 +67,10 @@ async fn execute_command(command: &Command, connection: &Connection) -> anyhow::
             password_stdin,
             privilege_level,
         } => {
-            let password = read_password(*password_stdin)?;
-            let response =
-                authenticate_direct(connection, args, *privilege_level, password).await?;
+            let password = commands::authentication::read_password(*password_stdin)?;
+            let operation =
+                commands::authentication::pap_operation(args, *privilege_level, password)?;
+            let response = backend.pap_authentication(&operation).await?;
             println!("Received PAP authentication response: {response:#?}");
         }
 
@@ -89,14 +80,18 @@ async fn execute_command(command: &Command, connection: &Connection) -> anyhow::
             privilege_level,
             mode,
         } => {
-            let response =
-                authorize_direct(connection, args, *privilege_level, *authentication_context, mode)
-                    .await?;
+            let operation = commands::authorization::authorization_operation(
+                args,
+                *privilege_level,
+                *authentication_context,
+                mode,
+            )?;
+            let response = backend.authorization(&operation).await?;
             println!("Received authorization response: {response:#?}");
         }
 
         Command::Batch { .. } => {
-            // Batch mode is handled separately in run() before this function is called
+            // Batch mode is handled separately in run() before this function is called.
             unreachable!("Batch commands are handled by run_batch_mode before execute_command");
         }
         Command::DumpYangConfig => {
@@ -107,62 +102,36 @@ async fn execute_command(command: &Command, connection: &Connection) -> anyhow::
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-async fn execute_command_via_service(endpoint: &str, command: &Command) -> anyhow::Result<()> {
-    let endpoint = IpcEndpoint::from_str(endpoint).context("Invalid service endpoint")?;
-    let client = ServiceClient::connect(endpoint)
-        .await
-        .context("Failed to connect to TACACS+ service")?;
-
-    match command {
-        Command::Accounting {
-            args,
-            cmd,
-            cmd_args,
-        } => {
-            let response = client
-                .send_accounting(AccountingOperation {
-                    user: args.user.clone(),
-                    port: args.port.clone(),
-                    remote_address: args.rem_addr.clone(),
-                    command: cmd.clone(),
-                    command_arguments: cmd_args.clone().unwrap_or_default(),
-                })
-                .await?;
-
-            println!("Received accounting response: {response:#?}");
-        }
-        Command::Authentication {
-            args,
-            password_stdin,
-            privilege_level,
-        } => {
-            let password = read_password(*password_stdin)?;
-            let response = authenticate_service(&client, args, *privilege_level, password).await?;
-            println!("Received PAP authentication response: {response:#?}");
-        }
-        Command::Authorization {
-            args,
-            authentication_context,
-            privilege_level,
-            mode,
-        } => {
-            let response =
-                authorize_service(&client, args, *privilege_level, *authentication_context, mode)
-                    .await?;
-            println!("Received authorization response: {response:#?}");
-        }
-        Command::Batch { .. } => {
-            unreachable!(
-                "Batch commands are handled by run_batch_mode before execute_command_via_service"
-            )
-        }
-        Command::DumpYangConfig => {
-            unreachable!("dump-yang-config is handled in run() before service execution")
-        }
+/// Builds the execution backend for a single AAA command.
+///
+/// On Linux, `--service-endpoint` selects the agent IPC channel. Otherwise the
+/// command uses a direct connection: dedicated or adaptive single-connection,
+/// depending on `--dedicated` and the resolved server configuration.
+async fn build_backend(cli: &Cli, command: &Command) -> anyhow::Result<Backend> {
+    #[cfg(target_os = "linux")]
+    if let Some(endpoint) = cli.service_endpoint.as_deref() {
+        return Ok(Backend::Service(backend::connect_service(endpoint).await?));
     }
 
-    Ok(())
+    let server = config::resolve_server_for_command(cli, command)?;
+    let options = PrepareOptions::default().with_certificate_verification(
+        if cli.insecure_disable_certificate_verification {
+            tacacsrs_networking::CertificateVerification::DisabledForDevelopment
+        } else {
+            tacacsrs_networking::CertificateVerification::Required
+        },
+    );
+
+    let connection = if cli.dedicated {
+        // Dedicated mode uses a minimal TCP or TLS connection with no background
+        // tasks or session multiplexing.
+        log::info!("Running in dedicated connection mode");
+        establish_dedicated_connection(&server, options).await?
+    } else {
+        establish_connection(&server, options).await?
+    };
+
+    Ok(Backend::Direct(connection))
 }
 
 /// Runs the CLI in batch mode with requests from a JSON file.
@@ -189,10 +158,14 @@ async fn run_batch_mode(cli: &Cli, batch_path: &Path) -> anyhow::Result<()> {
         .required_server_type()
         .unwrap_or(TacacsPlusServerType::ACCOUNTING);
     let server_config = config::resolve_server_for_type(cli, required_type)?;
-    let options = ConnectOptions::default()
-        .with_certificate_verification_disabled(cli.insecure_disable_certificate_verification);
-    let results =
-        batch::execute_batch(&server_config, cli.dedicated, &batch_file, &options).await?;
+    let options = PrepareOptions::default().with_certificate_verification(
+        if cli.insecure_disable_certificate_verification {
+            tacacsrs_networking::CertificateVerification::DisabledForDevelopment
+        } else {
+            tacacsrs_networking::CertificateVerification::Required
+        },
+    );
+    let results = batch::execute_batch(&server_config, cli.dedicated, &batch_file, options).await?;
 
     finish_batch(&results)
 }
@@ -234,35 +207,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         | Command::Authorization { .. } => {}
     }
 
-    #[cfg(target_os = "linux")]
-    if let Some(ref endpoint) = cli.service_endpoint {
-        return execute_command_via_service(endpoint, &cli.command).await;
-    }
-
-    let server_config = config::resolve_server_for_command(&cli, &cli.command)?;
-    let connect_options = ConnectOptions::default()
-        .with_certificate_verification_disabled(cli.insecure_disable_certificate_verification);
-
-    // Dedicated connection mode uses a minimal TCP or TLS connection for each
-    // request. It has no background tasks or session multiplexing.
-    if cli.dedicated {
-        return execute_command_dedicated(&server_config, &connect_options, &cli.command).await;
-    }
-
-    let connection = establish_connection(&server_config, &connect_options).await?;
-    execute_command(&cli.command, &connection).await
-}
-
-/// Runs the command with a dedicated connection. This is a minimal one-shot
-/// TCP connection with no background tasks or session multiplexing.
-async fn execute_command_dedicated(
-    server: &TacacsPlusServer,
-    options: &ConnectOptions,
-    command: &Command,
-) -> anyhow::Result<()> {
-    log::info!("Running in dedicated connection mode");
-    let connection = establish_dedicated_connection(server, options).await?;
-    execute_command(command, &connection).await
+    let backend = build_backend(&cli, &cli.command).await?;
+    execute_command(&backend, &cli.command).await
 }
 
 #[tokio::main]

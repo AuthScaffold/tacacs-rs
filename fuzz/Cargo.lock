@@ -258,6 +258,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
+name = "subtle"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
 name = "syn"
 version = "2.0.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -273,11 +279,11 @@ name = "tacacsrs-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
- "tacacsrs-messages",
+ "tacacsrs-protocol",
 ]
 
 [[package]]
-name = "tacacsrs-messages"
+name = "tacacsrs-protocol"
 version = "0.0.0-dev"
 dependencies = [
  "anyhow",
@@ -285,6 +291,16 @@ dependencies = [
  "byteorder",
  "md-5",
  "num_enum",
+ "tacacsrs-secrets",
+ "zeroize",
+]
+
+[[package]]
+name = "tacacsrs-secrets"
+version = "0.0.0-dev"
+dependencies = [
+ "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -352,3 +368,9 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "zeroize"
+version = "1.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"

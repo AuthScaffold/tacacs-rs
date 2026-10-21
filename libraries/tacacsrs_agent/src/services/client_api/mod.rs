@@ -1,16 +1,13 @@
-//! Local client API listener and protobuf/gRPC adapter layer.
+//! Local client API operations over managed upstream connections.
 //!
-//! The client API service controls how local clients connect to the agent. It
-//! contains the Tonic services, Unix domain socket setup, loopback TCP setup,
-//! and graceful listener drain. Its upstream bridge converts local requests to
-//! TACACS+ messages. It sends these messages through the shared upstream
-//! manager.
+//! The upstream bridge converts local client API requests into TACACS+ messages
+//! and sends them through the shared upstream manager. Only TACACS+ messages
+//! cross the server boundary. [`ClientApiHandle`] is the public entry point. A
+//! host adapts it to an IPC server; the agent runtime does not own the IPC
+//! transport or the protobuf schema.
 
-mod grpc;
-mod health;
-pub(crate) mod listener;
-mod service;
+mod handle;
 mod upstream_bridge;
 
-pub(crate) use service::ClientApiService;
-pub(crate) use grpc::GrpcService;
+pub use handle::ClientApiHandle;
+pub(crate) use upstream_bridge::UpstreamBridge;

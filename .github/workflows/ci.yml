@@ -4,19 +4,17 @@ on:
   push:
     branches: ["main"]
   schedule:
-    # Run weekly on Monday at 00:00 UTC to detect dependency errors.
     - cron: "0 0 * * 1"
+  workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  group: ci-${{ github.workflow }}-${{ github.ref }}${{ github.event_name != 'push' && '-validation' || '' }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
-  packages: read
 
 jobs:
-  # -- Release policy for main pushes ------------------------
   release-policy:
     name: Release Policy
     runs-on: ubuntu-latest
@@ -25,7 +23,6 @@ jobs:
       pull-requests: read
     outputs:
       skip-release: ${{ steps.detect.outputs.skip_release }}
-      reason: ${{ steps.detect.outputs.reason }}
     steps:
       - name: Detect norelease marker
         id: detect
@@ -35,279 +32,156 @@ jobs:
           COMMIT_SHA: ${{ github.sha }}
           HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
           GH_TOKEN: ${{ github.token }}
-          GH_REPOSITORY: ${{ github.repository }}
-          GH_API_URL: ${{ github.api_url }}
         run: |
           set -euo pipefail
-
           skip_release=false
-          reason="release-enabled"
           marker_regex='(^|[^[:alnum:]_-])(\[?(no[-_ ]?release|skip[-_ ]?release)\]?)([^[:alnum:]_-]|$)'
           label_regex='^(no[-_ ]?release|skip[-_ ]?release)$'
-
-          if [ "$EVENT_NAME" != "push" ]; then
-            reason="not-a-push"
-          elif printf '%s\n' "$HEAD_COMMIT_MESSAGE" | grep -Eiq "$marker_regex"; then
-            skip_release=true
-            reason="head-commit-marker"
-          else
-            api_url="${GH_API_URL}/repos/${GH_REPOSITORY}/commits/${COMMIT_SHA}/pulls"
-            prs_json=$(curl -fsSL \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "$api_url")
-
-            if printf '%s' "$prs_json" | jq -r '.[].labels[].name?' | grep -Eiq "$label_regex"; then
+          if [ "$EVENT_NAME" = "push" ]; then
+            if printf '%s\n' "$HEAD_COMMIT_MESSAGE" | grep -Eiq "$marker_regex"; then
               skip_release=true
-              reason="associated-pr-label"
+            else
+              prs_json=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/pulls")
+              if printf '%s' "$prs_json" | jq -r '.[].labels[].name?' | grep -Eiq "$label_regex"; then
+                skip_release=true
+              fi
             fi
           fi
-
           echo "skip_release=${skip_release}" >> "$GITHUB_OUTPUT"
-          echo "reason=${reason}" >> "$GITHUB_OUTPUT"
-          echo "skip_release=${skip_release} (${reason})"
+          echo "skip_release=${skip_release}"
 
-  # ── Compute versions from Git tags ───────────────────────
   compute-versions:
     name: Compute Versions
     runs-on: ubuntu-latest
     needs: [release-policy]
-    if: github.event_name == 'push' && needs.release-policy.outputs.skip-release != 'true'
-    permissions:
-      contents: read
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     outputs:
-      versions: ${{ steps.compute.outputs.versions }}
-      calver-tag: ${{ steps.compute.outputs.calver_tag }}
-      has-release: ${{ steps.compute.outputs.has_release }}
-      new-tags: ${{ steps.compute.outputs.new_tags }}
-      previous-calver-tag: ${{ steps.compute.outputs.previous_calver_tag }}
+      versions: ${{ steps.recover.outputs.versions || steps.compute.outputs.versions }}
+      calver-tag: ${{ steps.recover.outputs.calver-tag || steps.compute.outputs.calver_tag }}
+      has-release: ${{ steps.recover.outputs.has-release || steps.compute.outputs.has_release }}
+      new-tags: ${{ steps.recover.outputs.new-tags || steps.compute.outputs.new_tags }}
+      previous-calver-tag: ${{ steps.recover.outputs.previous-calver-tag || steps.compute.outputs.previous_calver_tag }}
+      candidate: ${{ steps.recover.outputs.candidate }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
-
       - name: Install Rust
         uses: ./.github/steps/setup-rust
         with:
           cache-key: stable
-          install-libseccomp-dev: 'false'
-          install-openssl: 'false'
-
+          install-libseccomp-dev: 'true'
+          install-openssl: 'true'
+      - name: Recover an interrupted source release
+        id: recover
+        if: github.event_name == 'push'
+        uses: ./.github/steps/source-release
+        with:
+          command: recover
+          source: ${{ github.sha }}
       - name: Compute versions
         id: compute
+        if: steps.recover.outputs.candidate == ''
         uses: ./.github/steps/compute-versions
         with:
           binary-name: tacon
           shared-executables: tacacsrs-agentd,tacacsrs-agent-health
+          skip-semver-checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
 
-  # ── Run the full CI pipeline ─────────────────────────────
+  prepare-release:
+    name: Prepare Verified Source
+    runs-on: ubuntu-latest
+    needs: [release-policy, compute-versions]
+    if: >-
+      github.repository_owner == 'AuthScaffold' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' &&
+        needs.release-policy.outputs.skip-release != 'true' &&
+        needs.compute-versions.outputs.has-release == 'true'))
+    permissions:
+      contents: write
+    outputs:
+      candidate: ${{ steps.prepare.outputs.candidate }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+      - name: Prepare signed hydrated source without publishing refs
+        id: prepare
+        uses: ./.github/steps/source-release
+        with:
+          command: prepare
+          source: ${{ github.sha }}
+          candidate: ${{ needs.compute-versions.outputs.candidate }}
+          versions: ${{ needs.compute-versions.outputs.versions }}
+          new-tags: ${{ needs.compute-versions.outputs.new-tags }}
+          calver-tag: ${{ needs.compute-versions.outputs.calver-tag }}
+          previous-calver-tag: ${{ needs.compute-versions.outputs.previous-calver-tag }}
+
   pipeline:
     name: CI Pipeline
-    needs: [release-policy, compute-versions]
-    if: always()
+    needs: [release-policy, compute-versions, prepare-release]
+    if: >-
+      !cancelled() &&
+      needs.release-policy.result == 'success' &&
+      (needs.compute-versions.result == 'success' || needs.compute-versions.result == 'skipped') &&
+      (needs.prepare-release.result == 'success' || needs.prepare-release.result == 'skipped')
     uses: ./.github/workflows/reusable-pipeline.yml
     permissions:
       checks: write
       contents: read
-      packages: write
+      pull-requests: read
     with:
       include-fmt: false
       include-proto-compat: false
       include-outdated: false
-      include-container-build: ${{ github.event_name != 'push' || needs.compute-versions.outputs.has-release != 'true' }}
-      container-registry: ghcr.io/authscaffold
-      products: |
-        [
-          {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacon-linux-gnu-x86_64", "package_name": "tacon", "package_root": "executables/tacon", "artifact_name": "tacon", "artifact_kind": "bin", "features": "", "sbom_describe": "binaries"},
-          {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacacsrs-agentd-linux-gnu-x86_64", "package_name": "tacacsrs-agentd", "package_root": "executables/tacacsrs_agentd", "artifact_name": "tacacsrs-agentd", "artifact_kind": "bin", "features": "", "sbom_describe": "binaries"},
-          {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacacsrs-agent-health-linux-gnu-x86_64", "package_name": "tacacsrs-agent-health", "package_root": "executables/tacacsrs_agent_health", "artifact_name": "tacacsrs-agent-health", "artifact_kind": "bin", "features": "", "sbom_describe": "binaries"},
-          {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu", "asset_name": "tacacsrs-bash-plugin-linux-gnu-x86_64", "package_name": "tacacsrs-bash-plugin", "package_root": "libraries/tacacsrs_bash_plugin", "artifact_name": "tacacsrs_bash_plugin", "artifact_kind": "cdylib", "features": "", "sbom_describe": "all-cargo-targets"},
-          {"os": "windows-latest", "target": "x86_64-pc-windows-msvc", "asset_name": "tacon-windows-msvc-x86_64", "package_name": "tacon", "package_root": "executables/tacon", "artifact_name": "tacon", "artifact_kind": "bin", "features": "", "sbom_describe": "binaries"}
-        ]
-      versions: ${{ needs.release-policy.outputs.skip-release == 'true' && '{}' || needs.compute-versions.outputs.versions || '{}' }}
+      validation-ref: ${{ needs.prepare-release.outputs.candidate || github.sha }}
+      require-hydrated: ${{ needs.prepare-release.result == 'success' }}
+      versions: ${{ needs.compute-versions.outputs.versions || '{}' }}
     secrets: inherit
 
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [pipeline]
+    needs: [pipeline, compute-versions, release-policy, prepare-release]
     if: always()
     steps:
-      - name: Make sure that the pipeline succeeded
-        if: needs.pipeline.result != 'success'
+      - name: Require validation and release policy
+        if: needs.pipeline.result != 'success' || needs.release-policy.result != 'success'
+        run: exit 1
+      - name: Require version computation on pushes and rehearsals
+        if: >-
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+          needs.compute-versions.result != 'success'
+        run: exit 1
+      - name: Require the signed candidate for eligible releases
+        if: >-
+          github.repository_owner == 'AuthScaffold' &&
+          (github.event_name == 'workflow_dispatch' ||
+           (github.event_name == 'push' &&
+            needs.release-policy.outputs.skip-release != 'true' &&
+            needs.compute-versions.outputs.has-release == 'true')) &&
+          needs.prepare-release.result != 'success'
         run: exit 1
 
-  container-stage:
-    name: Stage Container
-    runs-on: ubuntu-latest
-    needs: [ci-success, compute-versions, release-policy]
-    if: >-
-      github.event_name == 'push' &&
-      github.repository_owner == 'AuthScaffold' &&
-      needs.release-policy.outputs.skip-release != 'true' &&
-      needs.ci-success.result == 'success' &&
-      needs.compute-versions.outputs.has-release == 'true'
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-
-      - name: Build and stage the release container
-        uses: ./.github/steps/container-image
-        with:
-          versions: ${{ needs.compute-versions.outputs.versions }}
-          registry: ghcr.io/authscaffold
-          image-name: tacacsrs-agentd
-          image-tag: sha-${{ github.sha }}
-          publish: 'true'
-
-  # ── Release: tag and publish (only on push to main) ──────
+  # GitHub generates source downloads from the hydrated tag, not github.sha.
   release:
-    name: Release
+    name: Release Source
     runs-on: ubuntu-latest
-    needs: [ci-success, compute-versions, release-policy, container-stage]
+    needs: [ci-success, prepare-release]
     if: >-
       github.event_name == 'push' &&
-      github.repository_owner == 'AuthScaffold' &&
-      needs.release-policy.outputs.skip-release != 'true' &&
       needs.ci-success.result == 'success' &&
-      needs.container-stage.result == 'success' &&
-      needs.compute-versions.outputs.has-release == 'true'
+      needs.prepare-release.result == 'success'
     permissions:
       contents: write
-      packages: write
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
-
-      - name: Fetch the generated release branch
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if git ls-remote --exit-code --heads origin release >/dev/null 2>&1; then
-            git fetch origin +refs/heads/release:refs/remotes/origin/release
-          fi
-
-      - name: Hydrate release versions
-        uses: ./.github/steps/inject-versions
+      - name: Publish the hydrated tag and create its GitHub Release
+        uses: ./.github/steps/source-release
         with:
-          versions: ${{ needs.compute-versions.outputs.versions }}
-
-      - name: Publish the generated release commit and tags
-        id: publish-release
-        shell: bash
-        env:
-          NEW_TAGS: ${{ needs.compute-versions.outputs.new-tags }}
-          VERSIONS: ${{ needs.compute-versions.outputs.versions }}
-        run: |
-          set -euo pipefail
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- Cargo.lock ':(glob)**/Cargo.toml'
-
-          existing_commit=
-          existing_count=0
-          tag_count=$(jq 'length' <<< "$NEW_TAGS")
-          while IFS= read -r tag; do
-            [ -n "$tag" ] || continue
-            if tag_commit=$(git rev-parse --verify "refs/tags/$tag^{commit}" 2>/dev/null); then
-              existing_count=$((existing_count + 1))
-              if [ -n "$existing_commit" ] && [ "$existing_commit" != "$tag_commit" ]; then
-                echo "Error: Existing release tags do not point to one commit."
-                exit 1
-              fi
-              existing_commit=$tag_commit
-            fi
-          done < <(jq -r '.[]' <<< "$NEW_TAGS")
-
-          if [ "$existing_count" -ne 0 ]; then
-            if [ "$existing_count" -ne "$tag_count" ]; then
-              echo "Error: Only some release tags already exist."
-              exit 1
-            fi
-            branch_commit=$(git rev-parse refs/remotes/origin/release)
-            source_commit=$(git log -1 --format='%(trailers:key=Source-Commit,valueonly)' "$existing_commit")
-            if ! git merge-base --is-ancestor "$existing_commit" "$branch_commit" ||
-              [ "$source_commit" != "$GITHUB_SHA" ]; then
-              echo "Error: Existing release refs do not match this source commit."
-              exit 1
-            fi
-            echo "Release refs already exist for $existing_commit."
-            echo "release-commit=$existing_commit" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if git diff --cached --quiet; then
-            echo "Error: Release hydration did not change the generated tree."
-            exit 1
-          fi
-
-          tree=$(git write-tree)
-          parents=(-p "$GITHUB_SHA")
-          if git rev-parse --verify refs/remotes/origin/release >/dev/null 2>&1; then
-            parents=(-p refs/remotes/origin/release -p "$GITHUB_SHA")
-          fi
-
-          release_commit=$(
-            printf \
-              'chore: hydrate release versions\n\nVersions: %s\nSource-Commit: %s\n' \
-              "$VERSIONS" \
-              "$GITHUB_SHA" |
-              git commit-tree "$tree" "${parents[@]}"
-          )
-          echo "release-commit=$release_commit" >> "$GITHUB_OUTPUT"
-
-          push_refs=("$release_commit:refs/heads/release")
-          while IFS= read -r tag; do
-            [ -n "$tag" ] || continue
-            echo "Create tag: $tag"
-            git tag -a "$tag" "$release_commit" -m "Release $tag"
-            push_refs+=("refs/tags/$tag")
-          done < <(jq -r '.[]' <<< "$NEW_TAGS")
-
-          git push --atomic origin "${push_refs[@]}"
-
-      - name: Promote the tested container image
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          IMAGE_VERSION: ${{ fromJson(needs.compute-versions.outputs.versions)['tacacsrs-agentd'] }}
-        run: |
-          set -euo pipefail
-
-          echo "$GH_TOKEN" |
-            docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker buildx imagetools create \
-            --tag "ghcr.io/authscaffold/tacacsrs-agentd:${IMAGE_VERSION}" \
-            "ghcr.io/authscaffold/tacacsrs-agentd:sha-${GITHUB_SHA}"
-
-      # ── Download artifacts built by the pipeline ──
-      - name: Download release assets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-assets
-          path: artifacts
-
-      - name: List artifacts
-        run: ls -la artifacts/
-
-      # ── Create GitHub Release (for tacon only) ──
-      - name: Create Release
-        if: needs.compute-versions.outputs.calver-tag != ''
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
-        with:
-          tag_name: ${{ needs.compute-versions.outputs.calver-tag }}
-          name: "tacon ${{ needs.compute-versions.outputs.versions && fromJson(needs.compute-versions.outputs.versions).tacon || '' }}"
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-          previous_tag: ${{ needs.compute-versions.outputs.previous-calver-tag }}
-          files: |
-            artifacts/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          command: publish
+          source: ${{ github.sha }}
+          candidate: ${{ needs.prepare-release.outputs.candidate }}

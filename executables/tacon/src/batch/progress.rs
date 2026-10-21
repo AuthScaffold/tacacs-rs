@@ -12,7 +12,7 @@ use super::types::{LoadTestResult, RequestResult};
 
 /// Configuration for progress display
 #[derive(Clone, Copy)]
-pub struct ProgressConfig {
+pub(super) struct ProgressConfig {
     /// Total number of requests expected
     pub total_requests: usize,
     /// Update interval for the progress bar
@@ -32,7 +32,7 @@ impl Default for ProgressConfig {
 }
 
 /// Handles for tracking and stopping progress display
-pub struct ProgressTracker {
+pub(super) struct ProgressTracker {
     /// Counter for completed requests
     pub completed: Arc<AtomicUsize>,
     /// Flag that shows if the run failed
@@ -46,7 +46,7 @@ pub struct ProgressTracker {
 #[allow(dead_code)] // Methods provide a clean API for future use and testing
 impl ProgressTracker {
     /// Creates a new progress tracker and spawns the progress display task
-    pub fn new(config: ProgressConfig) -> Self {
+    pub(super) fn new(config: ProgressConfig) -> Self {
         let completed = Arc::new(AtomicUsize::new(0));
         let failed = Arc::new(AtomicBool::new(false));
         let first_failure = Arc::new(tokio::sync::Mutex::new(None));
@@ -115,7 +115,7 @@ impl ProgressTracker {
 
     /// Creates a tracker without spawning a progress display task
     /// Use this tracker for silent runs or tests.
-    pub fn silent() -> Self {
+    pub(super) fn silent() -> Self {
         Self {
             completed: Arc::new(AtomicUsize::new(0)),
             failed: Arc::new(AtomicBool::new(false)),
@@ -125,12 +125,12 @@ impl ProgressTracker {
     }
 
     /// Records a successful request completion
-    pub fn record_success(&self) {
+    pub(super) fn record_success(&self) {
         self.completed.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Records a failure and stores the error message. The tracker keeps only the first message.
-    pub async fn record_failure(&self, message: String) {
+    pub(super) async fn record_failure(&self, message: String) {
         if !self.failed.swap(true, Ordering::Relaxed) {
             let mut failure = self.first_failure.lock().await;
             *failure = Some(message);
@@ -138,12 +138,12 @@ impl ProgressTracker {
     }
 
     /// Returns true if the tracker recorded a failure.
-    pub fn has_failed(&self) -> bool {
+    pub(super) fn has_failed(&self) -> bool {
         self.failed.load(Ordering::Relaxed)
     }
 
     /// Waits for the progress display task to complete
-    pub async fn finish(mut self) -> Option<String> {
+    pub(super) async fn finish(mut self) -> Option<String> {
         if let Some(handle) = self.handle.take() {
             let _ = handle.await;
         }
@@ -151,13 +151,13 @@ impl ProgressTracker {
     }
 
     /// Gets the count of completed requests
-    pub fn completed_count(&self) -> usize {
+    pub(super) fn completed_count(&self) -> usize {
         self.completed.load(Ordering::Relaxed)
     }
 }
 
 /// Prints a summary of load test results
-pub fn print_load_test_summary(result: &LoadTestResult) {
+pub(super) fn print_load_test_summary(result: &LoadTestResult) {
     println!("\n=== Load Test Results ===");
     println!("Total requests planned: {}", result.total_requests);
     println!("Successful requests:    {}", result.successful_requests);
@@ -173,7 +173,7 @@ pub fn print_load_test_summary(result: &LoadTestResult) {
 }
 
 /// Prints a summary of the batch run.
-pub fn print_results_summary(results: &[RequestResult]) {
+pub(crate) fn print_results_summary(results: &[RequestResult]) {
     println!("\n=== Batch Run Summary ===");
 
     let successful = results.iter().filter(|r| r.result.is_ok()).count();

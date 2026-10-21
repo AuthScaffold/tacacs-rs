@@ -23,12 +23,15 @@ pub mod upstream;
 mod test_support;
 
 pub use config::{
-    EnabledServices, FailoverStrategy, OperationPolicies, PolicyService,
-    ProxyDownstreamObfuscation, RequestLimits, RuntimePolicy, ServiceConfig,
+    EnabledServices, FailoverStrategy, OperationPolicies, PolicyService, PreparedProxyPolicy,
+    RequestLimits, RuntimePolicy, RuntimeCandidateLimits, ServiceConfig,
 };
 pub use upstream::OperationKind;
 pub use runtime::{
-    DatastoreState, DegradationReason, ListenerState, RuntimeHealthPublisher,
-    RuntimeHealthSnapshot, RuntimeLifecycle, RuntimeService, TacacsClientService,
-    UpstreamAvailability,
+    DiagnosticsHandle, PolicyRevision, PolicyUpdate, CredentialRevision, MaterializationRevision,
+    SourceRevision, DatastoreState, DegradationReason, ListenerRegistration, ListenerSettings,
+    ListenerState, RuntimeHealthPublisher, RuntimeGeneration, RuntimeHealthSnapshot,
+    RuntimeLifecycle, RuntimeListenerService, RuntimeService, ShutdownReceiver,
+    TacacsClientService, UpstreamAvailability,
 };
+pub use services::client_api::ClientApiHandle;

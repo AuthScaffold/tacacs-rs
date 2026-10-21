@@ -1,5 +1,7 @@
 name: Run Tests
-description: Run workspace tests for a target platform
+description: >
+  Enforce the production dependency architecture and run unit, integration, and
+  doc tests for the selected packages on a target platform.
 
 inputs:
   package-args:
@@ -21,7 +23,13 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Run unit tests
+    - name: Enforce the production dependency architecture
+      uses: ./.github/steps/check-architecture
+      with:
+        target: ${{ inputs.target }}
+        all-features: 'true'
+
+    - name: Run unit, integration, and doc tests
       shell: bash
       run: |
         RELEASE_FLAG=""
@@ -29,7 +37,7 @@ runs:
           RELEASE_FLAG="--release"
         fi
 
-        cargo test \
+        cargo test --locked \
           ${{ inputs.package-args }} \
           --target "${{ inputs.target }}" \
           ${{ inputs.feature-args }} \

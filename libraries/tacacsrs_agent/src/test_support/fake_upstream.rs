@@ -10,20 +10,19 @@ use std::time::Duration;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
-use tacacsrs_messages::accounting::reply::AccountingReply;
-use tacacsrs_messages::authentication::reply::AuthenticationReply;
-use tacacsrs_messages::accounting::request::AccountingRequest;
-use tacacsrs_messages::authorization::reply::AuthorizationReply;
-use tacacsrs_messages::authorization::request::AuthorizationRequest;
-use tacacsrs_messages::enumerations::{
+use tacacsrs_protocol::accounting::reply::AccountingReply;
+use tacacsrs_protocol::authentication::reply::AuthenticationReply;
+use tacacsrs_protocol::exchange::accounting::AccountingExchange;
+use tacacsrs_protocol::authorization::reply::AuthorizationReply;
+use tacacsrs_protocol::exchange::authorization::AuthorizationExchange;
+use tacacsrs_protocol::enumerations::{
     TacacsAccountingStatus, TacacsAuthenticationReplyFlags, TacacsAuthenticationStatus,
     TacacsAuthorizationStatus,
 };
-use tacacsrs_flows::authentication::PapAuthenticationExchange;
+use tacacsrs_protocol::exchange::authentication::PapAuthenticationExchange;
 use tokio::sync::Mutex;
 
-use crate::upstream::{OperationKind, UpstreamConnection, UpstreamConnector, UpstreamRequestError};
+use crate::upstream::{OperationKind, UpstreamConnection, UpstreamRequestError};
 
 #[derive(Debug)]
 pub(crate) struct FakeConnection {
@@ -42,13 +41,26 @@ impl UpstreamConnection for FakeConnection {
         self.usable.store(false, Ordering::Relaxed);
     }
 
+    fn close(&self) {
+        self.usable.store(false, Ordering::Relaxed);
+    }
+
+    async fn close_and_join(
+        &self,
+        _deadline: tacacsrs_networking::RequestDeadline,
+    ) -> anyhow::Result<()> {
+        self.close();
+        Ok(())
+    }
+
     async fn open_conversation(&self) -> anyhow::Result<tacacsrs_networking::ClientConversation> {
         anyhow::bail!("Fake server {} does not implement raw proxy sessions", self.address)
     }
 
     async fn send_accounting(
         &self,
-        _request: AccountingRequest,
+        _exchange: &AccountingExchange,
+        _deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AccountingReply, UpstreamRequestError> {
         if self.fail_next_request.swap(false, Ordering::Relaxed) {
             self.usable.store(false, Ordering::Relaxed);
@@ -67,7 +79,8 @@ impl UpstreamConnection for FakeConnection {
 
     async fn authenticate_pap(
         &self,
-        _exchange: PapAuthenticationExchange,
+        _exchange: &PapAuthenticationExchange,
+        _deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthenticationReply, UpstreamRequestError> {
         if self.fail_next_request.swap(false, Ordering::Relaxed) {
             self.usable.store(false, Ordering::Relaxed);
@@ -86,7 +99,8 @@ impl UpstreamConnection for FakeConnection {
 
     async fn send_authorization(
         &self,
-        _request: AuthorizationRequest,
+        _exchange: &AuthorizationExchange,
+        _deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthorizationReply, UpstreamRequestError> {
         if self.fail_next_request.swap(false, Ordering::Relaxed) {
             self.usable.store(false, Ordering::Relaxed);
@@ -115,7 +129,7 @@ pub(crate) struct FakeConnector {
 }
 
 impl FakeConnector {
-    pub fn new(connections: HashMap<String, Arc<FakeConnection>>) -> Self {
+    pub(crate) fn new(connections: HashMap<String, Arc<FakeConnection>>) -> Self {
         Self {
             connections,
             connect_attempts: Mutex::new(HashMap::new()),
@@ -125,12 +139,12 @@ impl FakeConnector {
         }
     }
 
-    pub fn with_connect_delay(mut self, connect_delay: Duration) -> Self {
+    pub(crate) fn with_connect_delay(mut self, connect_delay: Duration) -> Self {
         self.connect_delay = connect_delay;
         self
     }
 
-    pub async fn connect_attempts_for(&self, address: &str) -> usize {
+    pub(crate) async fn connect_attempts_for(&self, address: &str) -> usize {
         *self
             .connect_attempts
             .lock()
@@ -139,19 +153,35 @@ impl FakeConnector {
             .unwrap_or(&0)
     }
 
-    pub fn max_in_flight_connects(&self) -> usize {
+    pub(crate) fn max_in_flight_connects(&self) -> usize {
         self.max_in_flight_connects.load(Ordering::Relaxed)
     }
 }
 
 #[async_trait]
-impl UpstreamConnector for FakeConnector {
+impl tacacsrs_networking::routed::EndpointConnector for FakeConnector {
+    type Connection = dyn UpstreamConnection;
+
+    async fn retire(&self, connection: &Self::Connection) {
+        connection.stop_accepting_new_sessions().await;
+    }
+    fn close(&self, connection: &Self::Connection) {
+        connection.close();
+    }
+    async fn close_and_join(
+        &self,
+        connection: &Self::Connection,
+        deadline: tacacsrs_networking::RequestDeadline,
+    ) -> anyhow::Result<()> {
+        connection.close_and_join(deadline).await
+    }
+
     async fn connect(
         &self,
-        server: Arc<TacacsPlusServer>,
+        endpoint: tacacsrs_networking::PreparedEndpoint,
         _operation: OperationKind,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
-        let address = server.socket_address();
+        let address = endpoint.address().to_string();
         {
             let mut attempts = self.connect_attempts.lock().await;
             *attempts.entry(address.clone()).or_default() += 1;

@@ -5,8 +5,16 @@ configuration directly from SONiC CONFIG_DB. This is useful for development,
 image validation, and deployment experiments before packaging the agent as a
 native SONiC service.
 
-This guide assumes an agent image is already available. For image build commands,
-see [Building for SONiC](sonic-build-guide.md). For CONFIG_DB schema mapping,
+Build the image locally from the pinned release source:
+
+```bash
+make -C containers/tacacsrs-agentd build
+```
+
+This command loads `tacacsrs/tacacsrs-agentd:dev` into local Docker.
+TACACS-RS does not publish product images.
+The local `dev` image tag does not identify an immutable source revision.
+For build-version overrides, see [Building for SONiC](sonic-build-guide.md). For CONFIG_DB schema mapping,
 Redis notification behavior, and local Redis smoke tests, see
 [SONiC ConfigDB Integration](sonic-configdb-integration.md).
 
@@ -35,7 +43,7 @@ docker run --rm --network host \
     -v /var/run/redis/redis.sock:/var/run/redis/redis.sock \
     -v /run/tacacs:/run/tacacs \
     -p 127.0.0.1:49:49 \
-    ghcr.io/authscaffold/tacacsrs-agentd:2026.706.1 \
+    tacacsrs/tacacsrs-agentd:dev \
     --sonic \
     --service-mode both \
     --host-integration none \
@@ -63,7 +71,7 @@ without the publish flag:
 docker run --rm --network host \
     -v /var/run/redis/redis.sock:/var/run/redis/redis.sock \
     -v /run/tacacs:/run/tacacs \
-    ghcr.io/authscaffold/tacacsrs-agentd:2026.706.1 \
+    tacacsrs/tacacsrs-agentd:dev \
     --sonic \
     --service-mode both \
     --host-integration none \

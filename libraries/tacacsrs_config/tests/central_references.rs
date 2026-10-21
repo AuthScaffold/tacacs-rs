@@ -1,6 +1,6 @@
 use tacacsrs_config::{
     CentralCredentialReference, CentralCredentialUsage, UnexpandedCredentialField,
-    enumerate_servers, inspect_central_references, parse_yang_json, pipeline,
+    enumerate_servers, inspect_central_references, parse_root_json, parse_yang_json,
 };
 
 #[test]
@@ -87,7 +87,7 @@ fn inspection_emits_deterministic_typed_slots_without_interpreting_references() 
 
 #[test]
 fn inspection_requires_config_local_bundles_to_be_enumerated_first() {
-    let root = pipeline::parse_root_json(
+    let root = parse_root_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
                 "client-credentials": [{

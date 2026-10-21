@@ -1,16 +1,18 @@
 [package]
 name = "tacacsrs-networking"
-version = "0.1.40"
+version = "0.2.0"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "TACACS+ TCP and TLS connections with certificate and PSK support."
 
 [dependencies]
-tacacsrs-config = { path = "../tacacsrs_config" }
+tacacsrs-secrets = { path = "../tacacsrs_secrets" }
 anyhow = { version = "1.0.102", features = ["backtrace"] }
+async-trait = "0.1.89"
 tokio = { version = "1.52.3", features = ["io-util", "macros", "net", "parking_lot", "rt", "rt-multi-thread", "sync", "time"] }
-tacacsrs-messages = { path = "../tacacsrs_messages" }
+tacacsrs-protocol = { path = "../tacacsrs_protocol" }
 rand = "0.10.1"
 log = "0.4.30"
 parking_lot = "0.12.5"
@@ -19,18 +21,14 @@ openssl-sys = "0.9.116"
 tokio-openssl = "0.6.5"
 foreign-types = "0.3.2"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+rtnetlink = "0.23.0"
+futures-util = "0.3"
+libc = "0.2"
+
 [dev-dependencies]
-console-subscriber = "0.5.0"
-env_logger = "0.11.10"
 futures = "0.3"
-tacacsrs-flows = { path = "../tacacsrs_flows" }
-tacacsrs-secrets = { path = "../tacacsrs_secrets" }
+tokio = { version = "1.52.3", features = ["test-util"] }
 
 [lints]
 workspace = true
-
-[package.metadata.cargo-udeps.ignore]
-development = ["console-subscriber"]
-
-[[example]]
-name = "tls_psk_client"

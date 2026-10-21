@@ -1,95 +1,33 @@
-//! Request-size and concurrency admission controls.
+//! Shared operation concurrency and admission failure types.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tacacsrs_networking::admission::{AdmissionPool, AdmissionReservation, AdmissionError as PoolError};
+use tacacsrs_networking::RequestDeadline;
+use tacacsrs_protocol::failure::{DeliveryState, FailureCategory, FailureFacts, FailurePhase};
+use tacacsrs_protocol::failure::ServiceError;
+pub(crate) use tacacsrs_networking::admission::AdmissionPermit;
 
 use crate::config::RuntimePolicy;
 
 use super::OperationKind;
 
-struct OperationAdmission {
-    max_body_length: AtomicUsize,
-    concurrency_limit: AtomicUsize,
-    permit_debt: AtomicUsize,
-    semaphore: Arc<Semaphore>,
-}
-
-impl OperationAdmission {
-    fn new(max_body_length: usize, max_concurrent_requests: usize) -> Self {
-        Self {
-            max_body_length: AtomicUsize::new(max_body_length),
-            concurrency_limit: AtomicUsize::new(max_concurrent_requests),
-            permit_debt: AtomicUsize::new(0),
-            semaphore: Arc::new(Semaphore::new(max_concurrent_requests)),
-        }
-    }
-
-    fn update(&self, max_body_length: usize, max_concurrent_requests: usize) {
-        self.max_body_length
-            .store(max_body_length, Ordering::Release);
-        let previous = self
-            .concurrency_limit
-            .swap(max_concurrent_requests, Ordering::AcqRel);
-        if max_concurrent_requests > previous {
-            let increase = max_concurrent_requests - previous;
-            let cancelled_debt = self.consume_debt(increase);
-            self.semaphore.add_permits(increase - cancelled_debt);
-        } else if max_concurrent_requests < previous {
-            let reduction = previous - max_concurrent_requests;
-            let removed = self.semaphore.forget_permits(reduction);
-            self.permit_debt
-                .fetch_add(reduction - removed, Ordering::AcqRel);
-        }
-    }
-
-    fn consume_debt(&self, maximum: usize) -> usize {
-        let mut current = self.permit_debt.load(Ordering::Acquire);
-        loop {
-            let consumed = current.min(maximum);
-            match self.permit_debt.compare_exchange_weak(
-                current,
-                current - consumed,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return consumed,
-                Err(actual) => current = actual,
-            }
-        }
-    }
-}
-
-/// Permit for one request in the shared operation limit.
-pub(crate) struct AdmissionPermit {
-    admission: Arc<OperationAdmission>,
-    permit: Option<OwnedSemaphorePermit>,
-}
-
-impl Drop for AdmissionPermit {
-    fn drop(&mut self) {
-        let permit = self.permit.take().expect("admission permit must exist");
-        if self.admission.consume_debt(1) == 1 {
-            permit.forget();
-        }
-    }
-}
-
-/// Immutable admission generation built from one runtime policy.
+/// Shared operation capacity retained across routing generations.
 pub(crate) struct AdmissionRegistry {
-    operations: [Arc<OperationAdmission>; 3],
+    operations: [AdmissionPool; 3],
 }
 
 impl AdmissionRegistry {
+    pub(crate) fn close(&self) {
+        for operation in &self.operations {
+            operation.close();
+        }
+    }
+
     pub(crate) fn new(policy: &RuntimePolicy) -> Self {
         let operations = OperationKind::ALL.map(|operation| {
             let limits = policy.limits(operation);
-            Arc::new(OperationAdmission::new(
-                limits.max_body_length(),
-                limits.max_concurrent_requests(),
-            ))
+            AdmissionPool::new(limits.max_concurrent_requests())
         });
         Self { operations }
     }
@@ -97,59 +35,69 @@ impl AdmissionRegistry {
     pub(crate) fn update(&self, policy: &RuntimePolicy) {
         for operation in OperationKind::ALL {
             let limits = policy.limits(operation);
-            self.operations[operation.index()]
-                .update(limits.max_body_length(), limits.max_concurrent_requests());
+            self.operations[operation.index()].update(limits.max_concurrent_requests());
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn acquire(
         &self,
         operation: OperationKind,
-        body_length: usize,
         wait_timeout: Duration,
     ) -> Result<AdmissionPermit, AdmissionError> {
-        let admission = Arc::clone(&self.operations[operation.index()]);
-        self.validate_body_length(operation, body_length)?;
-
-        let permit =
-            tokio::time::timeout(wait_timeout, Arc::clone(&admission.semaphore).acquire_owned())
-                .await
-                .map_err(|_| AdmissionError::CapacityTimeout { wait_timeout })?
-                .map_err(|_| AdmissionError::Closed)?;
-        Ok(AdmissionPermit {
-            admission,
-            permit: Some(permit),
-        })
+        let deadline = RequestDeadline::after(wait_timeout)
+            .map_err(|_| AdmissionError::CapacityTimeout { wait_timeout })?;
+        self.acquire_until(operation, deadline, wait_timeout).await
     }
 
-    pub(crate) fn validate_body_length(
+    #[cfg(test)]
+    pub(crate) async fn acquire_until(
         &self,
         operation: OperationKind,
-        body_length: usize,
-    ) -> Result<(), AdmissionError> {
-        let admission = &self.operations[operation.index()];
-        let maximum = admission.max_body_length.load(Ordering::Acquire);
-        if body_length > maximum {
-            return Err(AdmissionError::BodyTooLarge {
-                actual: body_length,
-                maximum,
-            });
-        }
-        Ok(())
+        deadline: RequestDeadline,
+        wait_timeout: Duration,
+    ) -> Result<AdmissionPermit, AdmissionError> {
+        self.operations[operation.index()]
+            .acquire(deadline.capped(wait_timeout))
+            .await
+            .map_err(|error| match error {
+                PoolError::Full => AdmissionError::Full,
+                PoolError::Closed => AdmissionError::Closed,
+                PoolError::Expired => AdmissionError::CapacityTimeout { wait_timeout },
+            })
+    }
+
+    pub(crate) fn reserve(
+        &self,
+        operation: OperationKind,
+        deadline: RequestDeadline,
+    ) -> Result<AdmissionReservation, AdmissionError> {
+        self.operations[operation.index()]
+            .reserve(deadline)
+            .map_err(|error| match error {
+                PoolError::Full => AdmissionError::Full,
+                PoolError::Closed => AdmissionError::Closed,
+                PoolError::Expired => AdmissionError::CapacityTimeout {
+                    wait_timeout: Duration::ZERO,
+                },
+            })
     }
 }
 
 /// Reason that a local request did not enter the upstream routing path.
 #[derive(Debug)]
 pub(crate) enum AdmissionError {
+    Closed,
     BodyTooLarge { actual: usize, maximum: usize },
     CapacityTimeout { wait_timeout: Duration },
-    Closed,
+    Full,
+    NoEligibleServer { operation: OperationKind },
 }
 
 impl std::fmt::Display for AdmissionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Closed => formatter.write_str("The TACACS+ service is closed"),
             Self::BodyTooLarge { actual, maximum } => write!(
                 formatter,
                 "TACACS+ request body length {actual} exceeds the configured maximum of {maximum}"
@@ -157,7 +105,12 @@ impl std::fmt::Display for AdmissionError {
             Self::CapacityTimeout { wait_timeout } => {
                 write!(formatter, "No request capacity became available within {wait_timeout:?}")
             }
-            Self::Closed => formatter.write_str("The request admission controller is closed"),
+            Self::Full => formatter.write_str("The TACACS+ request admission queue is full"),
+            Self::NoEligibleServer { operation } => write!(
+                formatter,
+                "No configured TACACS+ server supports {}; waiting for initial configuration",
+                operation.name()
+            ),
         }
     }
 }
@@ -166,13 +119,24 @@ impl std::error::Error for AdmissionError {}
 
 impl AdmissionError {
     #[must_use]
-    pub(crate) const fn is_retriable(&self) -> bool {
-        !matches!(self, Self::BodyTooLarge { .. })
+    pub(crate) fn into_service_error(self) -> ServiceError {
+        let category = match self {
+            Self::Closed => FailureCategory::Cancelled,
+            Self::BodyTooLarge { .. } => FailureCategory::InvalidRequest,
+            Self::CapacityTimeout { .. } => FailureCategory::Deadline,
+            Self::Full => FailureCategory::Overloaded,
+            Self::NoEligibleServer { .. } => FailureCategory::Unavailable,
+        };
+        ServiceError::new(
+            self.to_string(),
+            FailureFacts::new(category, FailurePhase::Admission, DeliveryState::NotSent),
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use crate::config::{FailoverStrategy, OperationPolicies, RequestLimits};
 
     use super::*;
@@ -200,20 +164,14 @@ mod tests {
     async fn operation_limits_are_independent() {
         let registry = AdmissionRegistry::new(&RuntimePolicy::default());
         let authentication = registry
-            .acquire(OperationKind::Authentication, 4 * 1024, Duration::from_secs(1))
+            .acquire(OperationKind::Authentication, Duration::from_secs(1))
             .await
             .expect("authentication capacity");
         let authorization = registry
-            .acquire(OperationKind::Authorization, 16 * 1024, Duration::from_secs(1))
+            .acquire(OperationKind::Authorization, Duration::from_secs(1))
             .await
             .expect("authorization capacity");
 
-        assert!(matches!(
-            registry
-                .acquire(OperationKind::Authentication, 4 * 1024 + 1, Duration::from_secs(1),)
-                .await,
-            Err(AdmissionError::BodyTooLarge { .. })
-        ));
         drop((authentication, authorization));
     }
 
@@ -230,14 +188,14 @@ mod tests {
         .expect("test policy");
         let registry = Arc::new(AdmissionRegistry::new(&policy));
         let active = registry
-            .acquire(OperationKind::Authentication, 1, Duration::from_secs(5))
+            .acquire(OperationKind::Authentication, Duration::from_secs(5))
             .await
             .expect("first request capacity");
         let waiting = {
             let registry = Arc::clone(&registry);
             tokio::spawn(async move {
                 registry
-                    .acquire(OperationKind::Authentication, 1, Duration::from_secs(5))
+                    .acquire(OperationKind::Authentication, Duration::from_secs(5))
                     .await
             })
         };
@@ -252,14 +210,43 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn pending_admission_is_bounded_by_operation_capacity() {
+        let registry = AdmissionRegistry::new(&policy_with_authentication_limit(1024, 1));
+        let _active = registry
+            .acquire(OperationKind::Authentication, Duration::from_secs(5))
+            .await
+            .unwrap();
+        let waiting = registry.acquire(OperationKind::Authentication, Duration::from_secs(5));
+        tokio::pin!(waiting);
+        std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(waiting.as_mut(), context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        let excess = registry.acquire(OperationKind::Authentication, Duration::from_secs(5));
+        tokio::pin!(excess);
+        std::future::poll_fn(|context| {
+            assert!(
+                matches!(
+                    std::future::Future::poll(excess.as_mut(), context),
+                    std::task::Poll::Ready(Err(_))
+                ),
+                "excess requests must fail instead of adding an unbounded waiter"
+            );
+            std::task::Poll::Ready(())
+        })
+        .await;
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn live_limit_decrease_preserves_global_in_flight_accounting() {
         let registry = Arc::new(AdmissionRegistry::new(&policy_with_authentication_limit(1024, 2)));
         let first = registry
-            .acquire(OperationKind::Authentication, 1, Duration::from_secs(1))
+            .acquire(OperationKind::Authentication, Duration::from_secs(1))
             .await
             .expect("first permit");
         let second = registry
-            .acquire(OperationKind::Authentication, 1, Duration::from_secs(1))
+            .acquire(OperationKind::Authentication, Duration::from_secs(1))
             .await
             .expect("second permit");
 
@@ -267,20 +254,14 @@ mod tests {
         drop(first);
         assert!(matches!(
             registry
-                .acquire(OperationKind::Authentication, 1, Duration::from_millis(1),)
+                .acquire(OperationKind::Authentication, Duration::from_millis(1),)
                 .await,
             Err(AdmissionError::CapacityTimeout { .. })
-        ));
-        assert!(matches!(
-            registry
-                .acquire(OperationKind::Authentication, 513, Duration::from_secs(1),)
-                .await,
-            Err(AdmissionError::BodyTooLarge { maximum: 512, .. })
         ));
 
         drop(second);
         registry
-            .acquire(OperationKind::Authentication, 1, Duration::from_secs(1))
+            .acquire(OperationKind::Authentication, Duration::from_secs(1))
             .await
             .expect("new limit permits one request");
     }

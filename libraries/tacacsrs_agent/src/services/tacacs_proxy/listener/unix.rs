@@ -3,33 +3,38 @@
 use std::path::Path;
 
 use anyhow::Context;
+use tacacsrs_unix_socket::prepare_unix_listener;
 
 use super::{ProxyListener, accept_loop};
 use crate::runtime::{ListenerRegistration, ShutdownReceiver};
-use crate::services::client_api::listener as client_api_listener;
 use crate::services::tacacs_proxy::TacacsProxyService;
 
-pub(super) async fn serve(
+pub(super) async fn serve<Connector: tacacsrs_networking::routed::EndpointConnector>(
     path: &Path,
-    service: TacacsProxyService,
-    socket_mode: u32,
+    service: TacacsProxyService<Connector>,
+    options: crate::services::ListenerOptions,
     shutdown: ShutdownReceiver,
     registration: ListenerRegistration,
-) -> anyhow::Result<()> {
-    let (listener, socket_guard) =
-        client_api_listener::prepare_unix_listener(path, socket_mode).await?;
+) -> anyhow::Result<()>
+where
+    Connector::Connection: crate::upstream::UpstreamConnection,
+{
+    let (listener, socket_guard) = prepare_unix_listener(path, options.socket_mode()).await?;
     registration.mark_bound();
 
     log::info!(
         "The TACACS+ proxy listener accepts clients on Unix domain socket {}",
         path.display()
     );
-    let result =
-        accept_loop(listener, service, format!("Unix domain socket {}", path.display()), shutdown)
-            .await;
-    socket_guard
-        .cleanup("TACACS+ proxy Unix domain socket")
-        .await?;
+    let result = accept_loop(
+        listener,
+        service,
+        format!("Unix domain socket {}", path.display()),
+        options,
+        shutdown,
+    )
+    .await;
+    socket_guard.cleanup().await?;
     result
 }
 

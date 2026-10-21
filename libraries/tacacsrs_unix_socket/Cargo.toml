@@ -1,0 +1,21 @@
+[package]
+name = "tacacsrs-unix-socket"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Unix domain socket binding, advisory locking, and inode-aware cleanup for cooperating Linux services."
+readme = "README.md"
+
+[dependencies]
+anyhow = "1.0.102"
+log = "0.4.30"
+rustix = { version = "1.1.4", features = ["fs"] }
+tokio = { version = "1.52.3", features = ["fs", "net"] }
+
+[dev-dependencies]
+tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+[lints]
+workspace = true

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 
-use tacacsrs_messages::packet::PacketTrait;
+use tacacsrs_protocol::packet::PacketTrait;
 
 use crate::codec::{PacketReadResult, PacketReader};
 use crate::transport::abstractions::Transport;
@@ -26,7 +26,7 @@ use super::mock_write_half::MockWriteHalf;
 /// Create one with [`MockTransport::new()`]. Get a
 /// [`MockTransportCoordinator`] through [`MockTransport::coordinator()`]. Then
 /// pass the transport to
-/// [`MultiplexedConnection`](crate::runtime::MultiplexedConnection).
+/// [`MultiplexedConnection`](crate::connection::MultiplexedConnection).
 ///
 /// [`split`](Transport::split) consumes `self`, so it can run only once.
 #[derive(Debug)]
@@ -225,11 +225,11 @@ mod tests {
     use std::time::{Duration, Instant};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    use tacacsrs_messages::enumerations::{
+    use tacacsrs_protocol::enumerations::{
         TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType,
     };
-    use tacacsrs_messages::header::Header;
-    use tacacsrs_messages::packet::Packet;
+    use tacacsrs_protocol::header::Header;
+    use tacacsrs_protocol::packet::Packet;
 
     /// Creates a TACACS+ header for tests.
     fn test_header(session_id: u32, seq_no: u8, body_length: u32) -> Header {

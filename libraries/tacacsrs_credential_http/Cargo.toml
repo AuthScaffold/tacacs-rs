@@ -1,0 +1,23 @@
+[package]
+name = "tacacsrs-credential-http"
+version = "0.1.0"
+description = "Bounded HTTP retrieval of explicitly configured TACACS+ CRL evidence."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+openssl = "0.10.81"
+reqwest = { version = "0.12", default-features = false, features = ["native-tls"] }
+tacacsrs-credential-resolution = { path = "../tacacsrs_credential_resolution" }
+tokio = { version = "1.52.3", features = ["sync", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1.52.3", features = ["io-util", "macros", "net", "rt", "test-util"] }
+
+[lints]
+workspace = true

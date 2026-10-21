@@ -1,80 +1,49 @@
-//! TACACS+ Accounting command implementation
+//! TACACS+ accounting command support.
 
 use anyhow::Context;
-use tacacsrs_messages::accounting::{reply::AccountingReply, request::AccountingRequest};
-use tacacsrs_messages::enumerations::{
-    TacacsAccountingFlags, TacacsAuthenticationMethod, TacacsAuthenticationService,
-    TacacsAuthenticationType,
-};
-use tacacsrs_flows::accounting::AccountingExchange;
+use tacacsrs_protocol::operations::{AccountingOperation, AccountingOperationResponse};
 
 use crate::connection::Connection;
 
-/// Sends an accounting request to record a command run.
+/// Sends a prepared accounting operation over a direct TACACS+ connection.
 ///
-/// # Arguments
+/// # Errors
 ///
-/// * `connection` - The connection used to send this accounting exchange
-/// * `user` - Username that runs the command
-/// * `port` - Port identifier (for example, "tty0")
-/// * `rem_address` - Remote address of the client
-/// * `cmd` - The command that the user runs
-/// * `cmd_args` - Optional arguments to the command
-///
-/// # Returns
-///
-/// The accounting reply from the server, or an error if the request failed.
-pub async fn send_accounting_request(
+/// Returns an error if the accounting exchange fails.
+pub(crate) async fn send_direct(
     connection: &Connection,
-    user: &str,
-    port: &str,
-    rem_address: &str,
-    cmd: &str,
-    cmd_args: Option<&Vec<String>>,
-) -> anyhow::Result<AccountingReply> {
-    let request = build_accounting_request(user, port, rem_address, cmd, cmd_args);
-
-    let response = connection
-        .execute(AccountingExchange::new(request))
+    operation: &AccountingOperation,
+) -> anyhow::Result<AccountingOperationResponse> {
+    let reply = connection
+        .execute(&operation.exchange()?)
         .await
         .context("Failed to send accounting request")?;
 
-    log::info!("Received accounting response: {response:?}");
-
-    Ok(response)
+    Ok(AccountingOperationResponse::from_reply(connection.server_name(), reply))
 }
 
-/// Constructs an [`AccountingRequest`] from CLI-level arguments.
-pub fn build_accounting_request(
+/// Builds an [`AccountingOperation`] from CLI-level arguments.
+pub(crate) fn accounting_operation(
     user: &str,
     port: &str,
     rem_address: &str,
     cmd: &str,
     cmd_args: Option<&Vec<String>>,
-) -> AccountingRequest {
-    AccountingRequest {
-        flags: TacacsAccountingFlags::START | TacacsAccountingFlags::STOP,
-        authen_method: TacacsAuthenticationMethod::TacPlusAuthenMethodNone,
-        priv_lvl: 0,
-        authen_type: TacacsAuthenticationType::TacPlusAuthenTypeNotSet,
-        authen_service: TacacsAuthenticationService::TacPlusAuthenSvcNone,
+) -> AccountingOperation {
+    AccountingOperation {
         user: user.to_owned(),
         port: port.to_owned(),
-        rem_address: rem_address.to_owned(),
-        args: build_accounting_args(cmd, cmd_args),
+        remote_address: rem_address.to_owned(),
+        command: cmd.to_owned(),
+        command_arguments: cmd_args.cloned().unwrap_or_default(),
     }
 }
 
-/// Builds the argument list for an accounting request.
+#[cfg(test)]
 fn build_accounting_args(cmd: &str, cmd_args: Option<&Vec<String>>) -> Vec<String> {
-    let base_args = ["service=shell".to_owned(), format!("cmd={cmd}")];
-
-    let extra_args = cmd_args
-        .into_iter()
-        .flatten()
-        .map(|arg| format!("cmd-arg={arg}"));
-
-    base_args.into_iter().chain(extra_args).collect()
+    accounting_operation("admin", "tty0", "192.0.2.1", cmd, cmd_args)
+        .to_request()
+        .args
 }
 
 #[cfg(test)]

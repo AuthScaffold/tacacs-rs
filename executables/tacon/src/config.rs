@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
 use anyhow::Context;
-use tacacsrs_cli_datastore::{
+use tacacsrs_config::input::{
     CliConfigSource, CliDatastoreInput, CliSecurity, CliSecurityInputs, CliServerInput,
     tacacs_plus_from_cli_input, tacacs_plus_from_file as shared_tacacs_plus_from_file,
 };
-use tacacsrs_cli_datastore::{CliPskInputs, PskKeyExchangeMode, PskKeyMaterial};
+use tacacsrs_config::input::{CliPskInputs, PskKeyExchangeMode, PskKeyMaterial};
 use tacacsrs_config::{
     TacacsPlus, TacacsPlusServer, TacacsPlusServerExt, TacacsPlusServerType, ValidationOptions,
     YangConfigRoot,
@@ -19,7 +19,7 @@ use crate::cli::PskKeyExchange;
 /// # Errors
 ///
 /// Returns an error if `--server-addr` is not provided or the address cannot be parsed.
-pub fn tacacs_plus_from_cli(cli: &Cli) -> anyhow::Result<TacacsPlus> {
+pub(crate) fn tacacs_plus_from_cli(cli: &Cli) -> anyhow::Result<TacacsPlus> {
     let server_addr = cli
         .server_addr
         .as_deref()
@@ -97,7 +97,7 @@ fn cli_psk_inputs(cli: &Cli) -> Option<CliPskInputs> {
 /// # Errors
 ///
 /// Returns an error if the configuration file cannot be read or parsed.
-pub fn tacacs_plus_from_file(
+pub(crate) fn tacacs_plus_from_file(
     path: &std::path::Path,
     options: &ValidationOptions,
 ) -> anyhow::Result<TacacsPlus> {
@@ -109,7 +109,7 @@ pub fn tacacs_plus_from_file(
 /// # Errors
 ///
 /// Returns an error if neither source provides valid configuration.
-pub fn resolve_tacacs_plus_config(cli: &Cli) -> anyhow::Result<TacacsPlus> {
+pub(crate) fn resolve_tacacs_plus_config(cli: &Cli) -> anyhow::Result<TacacsPlus> {
     let options = validation_options_from_cli(cli);
     if let Some(ref config_path) = cli.config {
         tacacs_plus_from_file(config_path, &options)
@@ -123,7 +123,7 @@ pub fn resolve_tacacs_plus_config(cli: &Cli) -> anyhow::Result<TacacsPlus> {
 /// # Errors
 ///
 /// Returns an error if the configuration cannot be resolved or serialized.
-pub fn render_yang_config(cli: &Cli) -> anyhow::Result<String> {
+pub(crate) fn render_yang_config(cli: &Cli) -> anyhow::Result<String> {
     if cli.service_endpoint.is_some() {
         anyhow::bail!("dump-yang-config requires direct configuration via --config or direct server flags, not --service-endpoint");
     }
@@ -146,7 +146,7 @@ pub fn render_yang_config(cli: &Cli) -> anyhow::Result<String> {
 ///
 /// Returns an error if the resolved configuration contains no matching server,
 /// or if credential-reference resolution fails.
-pub fn resolve_server_for_type(
+pub(crate) fn resolve_server_for_type(
     cli: &Cli,
     required_type: TacacsPlusServerType,
 ) -> anyhow::Result<TacacsPlusServer> {
@@ -160,7 +160,7 @@ pub fn resolve_server_for_type(
 ///
 /// Returns an error if the command has no direct server type or if no configured
 /// server supports the command's required service.
-pub fn resolve_server_for_command(
+pub(crate) fn resolve_server_for_command(
     cli: &Cli,
     command: &Command,
 ) -> anyhow::Result<TacacsPlusServer> {
@@ -219,7 +219,7 @@ mod tests {
     use crate::cli::Cli;
     use tacacsrs_config::PskDheKeSupportedGroup;
     use tacacsrs_config::{TacacsPlusServerType, ValidationOptions, crypto_types::PrivateKeyFormat};
-    use tacacsrs_cli_datastore::tacacs_plus_from_str;
+    use tacacsrs_config::input::tacacs_plus_from_str;
 
     fn sample_path(file_name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))

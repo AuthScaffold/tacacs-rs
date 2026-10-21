@@ -1,0 +1,66 @@
+name: Source Release
+description: Prepare, verify, and promote signed hydrated source commits
+
+inputs:
+  command:
+    description: 'Operation: recover, prepare, or publish'
+    required: true
+  source:
+    description: 'Triggering source commit used to verify candidate provenance'
+    required: true
+  candidate:
+    description: 'Signed hydrated commit SHA to validate or publish'
+    default: ''
+  versions:
+    description: 'Computed crate versions'
+    default: '{}'
+  new-tags:
+    description: 'Computed release tags. An empty array permits candidate validation only.'
+    default: '[]'
+  calver-tag:
+    description: 'Repository CalVer tag, or empty for a library-only release'
+    default: ''
+  previous-calver-tag:
+    description: 'Previous repository or historical tacon release tag'
+    default: ''
+
+outputs:
+  candidate:
+    value: ${{ steps.release.outputs.candidate }}
+    description: 'Signed hydrated commit SHA'
+  versions:
+    value: ${{ steps.release.outputs.versions }}
+    description: 'Recovered version map'
+  new-tags:
+    value: ${{ steps.release.outputs.new_tags }}
+    description: 'Recovered tag set'
+  calver-tag:
+    value: ${{ steps.release.outputs.calver_tag }}
+    description: 'Recovered repository release tag'
+  previous-calver-tag:
+    value: ${{ steps.release.outputs.previous_calver_tag }}
+    description: 'Recovered release baseline'
+  has-release:
+    value: ${{ steps.release.outputs.has_release }}
+    description: 'Whether recovery found a release for this source'
+
+runs:
+  using: composite
+  steps:
+    - name: Install pinned hydration tooling
+      shell: bash
+      run: python -m pip install --disable-pip-version-check -r "${{ github.action_path }}/../inject-versions/requirements.txt"
+    - name: Run source release operation
+      id: release
+      shell: bash
+      env:
+        RELEASE_COMMAND: ${{ inputs.command }}
+        SOURCE_SHA: ${{ inputs.source }}
+        CANDIDATE_SHA: ${{ inputs.candidate }}
+        VERSIONS: ${{ inputs.versions }}
+        NEW_TAGS: ${{ inputs.new-tags }}
+        CALVER_TAG: ${{ inputs.calver-tag }}
+        PREVIOUS_CALVER_TAG: ${{ inputs.previous-calver-tag }}
+        GH_TOKEN: ${{ github.token }}
+        VALIDATION_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: python "${{ github.action_path }}/source_release.py"

@@ -8,22 +8,27 @@ use super::{ProxyListener, accept_loop};
 use crate::runtime::{ListenerRegistration, ShutdownReceiver};
 use crate::services::tacacs_proxy::TacacsProxyService;
 
-pub(super) async fn serve(
+pub(super) async fn serve<Connector: tacacsrs_networking::routed::EndpointConnector>(
     address: SocketAddr,
-    service: TacacsProxyService,
+    service: TacacsProxyService<Connector>,
+    options: crate::services::ListenerOptions,
     shutdown: ShutdownReceiver,
     registration: ListenerRegistration,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    Connector::Connection: crate::upstream::UpstreamConnection,
+{
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .with_context(|| format!("Failed to bind TCP TACACS+ proxy endpoint {address}"))?;
     let local_address = listener
         .local_addr()
         .with_context(|| format!("Failed to inspect TCP TACACS+ proxy endpoint {address}"))?;
+    let _binding = service.bind_proxy_listener(local_address)?;
     registration.mark_bound();
 
     log::info!("The TACACS+ proxy listener accepts clients on TCP {local_address}");
-    accept_loop(listener, service, format!("TCP {local_address}"), shutdown).await
+    accept_loop(listener, service, format!("TCP {local_address}"), options, shutdown).await
 }
 
 #[async_trait::async_trait]

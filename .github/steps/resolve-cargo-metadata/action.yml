@@ -1,20 +1,51 @@
 name: Resolve Cargo Metadata
-description: Resolve Cargo metadata for a target platform without compiling the workspace
+description: >
+  Resolve a Cargo-derived workspace inventory for a target platform and upload it
+  as a CI artifact. The inventory comes from the shared cargo-metadata helper, so
+  release discovery, hydration, and CI reporting read the same Cargo-authoritative
+  facts.
 
 inputs:
   metadata-target:
     description: 'Target triple used for cargo metadata platform filtering'
     required: true
+  profile:
+    description: 'Toolchain profile label that makes the uploaded artifact name unique per profile and target'
+    required: true
+  all-features:
+    description: 'Resolve the inventory with all features enabled'
+    required: false
+    default: 'true'
 
 runs:
   using: composite
   steps:
-    - name: Resolve cargo metadata
+    - name: Resolve the workspace inventory
+      id: inventory
       shell: bash
+      env:
+        INPUT_TARGET: ${{ inputs.metadata-target }}
+        INPUT_ALL_FEATURES: ${{ inputs.all-features }}
+        GITHUB_WORKSPACE: ${{ github.workspace }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
-        cargo metadata \
-          --locked \
-          --format-version 1 \
-          --all-features \
-          --filter-platform "${{ inputs.metadata-target }}" \
-          > /dev/null
+        set -euo pipefail
+
+        helper="${ACTION_PATH}/../cargo-metadata/workspace.py"
+        output="${RUNNER_TEMP}/cargo-inventory-${INPUT_TARGET}.json"
+
+        args=(--workspace "$GITHUB_WORKSPACE" --resolved --target "$INPUT_TARGET")
+        if [ "$INPUT_ALL_FEATURES" = "true" ]; then
+          args+=(--all-features)
+        fi
+
+        python "$helper" "${args[@]}" > "$output"
+        echo "path=$output" >> "$GITHUB_OUTPUT"
+        echo "Resolved the workspace inventory for ${INPUT_TARGET}."
+
+    - name: Upload the workspace inventory
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: cargo-inventory-${{ inputs.profile }}-${{ inputs.metadata-target }}
+        path: ${{ steps.inventory.outputs.path }}
+        retention-days: 7

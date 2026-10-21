@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use clap::{ArgGroup, Parser, ValueEnum};
 use clap::builder::TypedValueParser as _;
 use tacacsrs_config::PskDheKeSupportedGroup;
+use tacacsrs_config::tacacsrs::ProxyCredentialSource;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
 pub(crate) enum ServiceMode {
@@ -50,6 +51,15 @@ fn psk_dhe_ke_supported_group_parser(
         })
 }
 
+fn proxy_credential_source_parser(
+) -> impl clap::builder::TypedValueParser<Value = ProxyCredentialSource> {
+    clap::builder::PossibleValuesParser::new(ProxyCredentialSource::ALLOWED_VALUES.iter().copied())
+        .map(|value| {
+            ProxyCredentialSource::from_rfc7951_str(&value)
+                .expect("clap accepted only generated proxy credential-source values")
+        })
+}
+
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Parser)]
 #[command(name = "tacacsrs-agentd", version, author)]
@@ -75,9 +85,40 @@ pub(crate) struct Cli {
     ])]
     pub(crate) config: Option<PathBuf>,
 
-    /// Optional live runtime-policy JSON file.
+    /// Optional live YANG JSON file containing a tacacsrs:runtime-policy resource.
     #[arg(long, value_name = "FILE")]
     pub(crate) runtime_policy: Option<PathBuf>,
+
+    /// Publish read-only YANG statistics atomically to this file once per second.
+    #[arg(long, value_name = "FILE")]
+    pub(crate) statistics_file: Option<PathBuf>,
+
+    /// Register a public HTTP(S) CRL URL for an opaque evidence reference.
+    /// Repeat the reference to add issuer CRLs in fetch order. Locations must contain no secrets.
+    #[arg(long, value_names = ["REFERENCE", "URL"], num_args = 2, action = clap::ArgAction::Append)]
+    pub(crate) http_crl_source: Vec<String>,
+
+    /// Discover CRLs from a DER certificate, limited to this reference's registered URLs.
+    #[arg(long, value_names = ["REFERENCE", "CERTIFICATE"], num_args = 2, action = clap::ArgAction::Append, requires = "http_crl_source")]
+    pub(crate) http_crl_certificate: Vec<String>,
+
+    /// Query an explicitly authorized OCSP responder for a DER certificate and issuer.
+    #[arg(long, value_names = ["REFERENCE", "URL", "CERTIFICATE", "ISSUER"], num_args = 4, action = clap::ArgAction::Append)]
+    pub(crate) http_ocsp_source: Vec<String>,
+
+    /// Discover an OCSP responder from a DER certificate under the responder allowlist.
+    #[arg(long, value_names = ["REFERENCE", "CERTIFICATE", "ISSUER"], num_args = 3, action = clap::ArgAction::Append, requires = "http_ocsp_allow_url")]
+    pub(crate) http_ocsp_certificate: Vec<String>,
+
+    /// Authorize an exact public URL for certificate-driven OCSP discovery.
+    #[arg(long, value_name = "URL", requires = "http_ocsp_certificate")]
+    pub(crate) http_ocsp_allow_url: Vec<String>,
+
+    /// Startup YANG JSON file containing a tacacsrs:local-services resource.
+    #[arg(long, value_name = "FILE", conflicts_with_all = [
+        "listen_endpoint", "proxy_endpoint", "service_mode", "socket_mode", "sonic", "proxy_credential_source",
+    ])]
+    pub(crate) local_services: Option<PathBuf>,
 
     /// Ordered list of TACACS+ upstream servers. The first server is preferred.
     #[arg(long = "server-addr", conflicts_with_all = ["sonic", "sonic_redis_url", "sonic_redis_db"])]
@@ -106,26 +147,33 @@ pub(crate) struct Cli {
     pub(crate) proxy_endpoint: Option<String>,
 
     /// Shared secret expected from raw TACACS+ proxy clients.
-    #[arg(long, value_name = "SECRET", requires = "proxy_endpoint", conflicts_with = "sonic")]
-    pub(crate) proxy_shared_secret: Option<String>,
+    #[arg(long, value_name = "SECRET", requires = "proxy_endpoint", conflicts_with = "sonic",
+        value_parser = clap::builder::NonEmptyStringValueParser::new().map(tacacsrs_secrets::SecretString::new))]
+    pub(crate) proxy_shared_secret: Option<tacacsrs_secrets::SecretString>,
+
+    /// Downstream credential source. `SONiC` defaults to `local-proxy-row`.
+    #[arg(long, value_parser = proxy_credential_source_parser())]
+    pub(crate) proxy_credential_source: Option<ProxyCredentialSource>,
 
     /// Runtime service mode. `SONiC` mode requires both services.
     #[arg(long, value_enum)]
     pub(crate) service_mode: Option<ServiceMode>,
 
     /// File mode applied to the Unix domain socket path (octal string, for example 660).
-    #[arg(long, default_value = "660")]
-    pub(crate) socket_mode: String,
+    #[arg(long)]
+    pub(crate) socket_mode: Option<String>,
 
     /// Shared secret for TACACS+ message obfuscation.
-    #[arg(short = 'k', long)]
-    pub(crate) shared_secret: Option<String>,
+    #[arg(short = 'k', long,
+        value_parser = clap::builder::StringValueParser::new().map(tacacsrs_secrets::SecretString::new))]
+    pub(crate) shared_secret: Option<tacacsrs_secrets::SecretString>,
 
     /// Use TLS for upstream TACACS+ server connections.
     #[arg(long)]
     pub(crate) use_tls: bool,
 
-    /// Path to a PEM- or DER-encoded client certificate file for TLS authentication.
+    /// Path to a PEM client certificate chain or one DER certificate.
+    /// Put the leaf first, followed by intermediates in issuer order. Omit the root.
     #[arg(long, value_name = "FILE", requires = "client_key")]
     pub(crate) client_certificate: Option<String>,
 
@@ -160,8 +208,9 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "IDENTITY", requires_all = ["use_tls", "psk_key"], conflicts_with_all = ["client_certificate", "client_key"])]
     pub(crate) psk_identity: Option<String>,
 
-    #[arg(long, value_name = "KEY", requires_all = ["use_tls", "psk_identity"], conflicts_with_all = ["client_certificate", "client_key"])]
-    pub(crate) psk_key: Option<String>,
+    #[arg(long, value_name = "KEY", requires_all = ["use_tls", "psk_identity"], conflicts_with_all = ["client_certificate", "client_key"],
+        value_parser = clap::builder::StringValueParser::new().map(tacacsrs_secrets::SecretString::new))]
+    pub(crate) psk_key: Option<tacacsrs_secrets::SecretString>,
 
     /// TLS 1.3 PSK key-exchange mode.
     #[arg(long, value_enum, requires_all = ["use_tls", "psk_identity", "psk_key"], conflicts_with_all = ["client_certificate", "client_key"])]

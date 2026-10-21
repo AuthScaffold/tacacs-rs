@@ -10,10 +10,17 @@
 - Configuration-local credential bundle validation
 - Per-server bundle enumeration helpers for `client-credentials` and `server-credentials`
 - Secret-free inspection of central keystore and truststore references on enumerated servers
+- Provider request planning and transactional materialization under `prepare`
+- Canonical local-service policy parsing and validation under `policy`
+- YANG-to-endpoint projection with native TLS credential validation
+- Source contracts, snapshot deltas, and static configuration under `source`
+- CLI input normalization, credential-file loading, and file watching under `input`
 - A reusable `TacacsPlusServerBuilder` for constructing `TacacsPlusServer` values in code
 - A project-owned YANG augmentation for TLS 1.3 PSK DHE key exchange group selection
+- Canonical source, egress-interface, VRF, and local binding policy for Linux TCP connections
 
-`tacacsrs-credential-resolution` defines external secret resolution. Provider implementations and runtime materialization remain outside `tacacsrs-config`.
+`tacacsrs-credential-resolution` defines provider-neutral requests, material, and resolver contracts.
+This crate owns their conversion to and from canonical YANG fields. Provider implementations remain outside configuration.
 
 ## Parsing API
 
@@ -34,7 +41,8 @@ The primary entry points are:
 - `enumerate_server(&TacacsPlus, &str)` — inline shared credential bundles for one named server
 - `inspect_central_references(&TacacsPlusServer)` — inspect opaque central references without retrieving secret material
 
-Enumerate servers before passing them to `tacacsrs-credential-resolution`. Planning rejects unresolved configuration-local bundle references with an enumerate-first error.
+Enumerate servers before calling `prepare::resolution_plan`.
+Planning rejects unresolved configuration-local bundle references with an enumerate-first error.
 
 ## Multi-layer design
 
@@ -43,9 +51,9 @@ This crate implements a three-layer design to support both round-tripping (for c
 ### 1) Raw YANG (non-destructive)
 
 ```rust
-use tacacsrs_config::pipeline;
+use tacacsrs_config::parse_root_json;
 
-let raw_config = pipeline::parse_root_json(json_str)?;
+let raw_config = parse_root_json(json_str)?;
 // raw_config is unchanged; credential references are still present as-is
 // Safe for round-tripping, logging, and reporting
 ```
@@ -70,37 +78,257 @@ let server = enumerate_server(&config, "primary")?;
 
 ### 3) Central credential resolution
 
-Pass each enumerated server to `tacacsrs_credential_resolution::ResolutionPlan::from_server`. The resolution crate extracts deterministic typed requests for central certificate-with-key, TLS 1.3 symmetric key, CA bag, and end-entity bag references. A `CredentialResolver` returns typed material, and `resolve_plan` validates the complete slot/variant-matched result set.
+Pass each enumerated server to `prepare::resolution_plan`.
+The planner maps central references to deterministic provider requests without changing their values.
+It returns a `prepare::ServerResolutionPlan` with private installation targets for each request slot.
+Call `plan.neutral_plan()` to borrow the provider-neutral `ResolutionPlan` for resolution or dependency inspection.
+A `CredentialResolver` returns typed material, and `resolve_plan(plan.neutral_plan(), resolver, scope)` validates the complete slot/variant-matched result set.
+Materialization matches each stored `CentralCredentialUsage` with its resolved material. Diagnostic field paths do not select installation targets.
+
+For complete materialization, call `prepare::enumerate_materialized_servers` with a source snapshot, resolver, and validation options.
+This function enumerates local bundles, resolves central requests, installs provider results, and validates the complete candidate set.
+It leaves the source snapshot and its references unchanged.
+`prepare::materialize_server` and `prepare::materialize_servers` accept servers whose local bundles are already expanded.
+These direct helpers use caller-unowned work scopes and do not enforce a global preparation budget.
+Supervised callers use `materialize_planned_servers` with preflighted typed plans and their registered work scope.
+They supply a nonblocking admission check before each typed installation.
+`ConfigurationMaterialBudget` supplies checked request counts, logical payload, retained-copy charges, and high-water checks without Tokio.
+Borrowed payload sizing covers decoded secrets, keys, certificates, intermediates, trust bags, CRLs, and OCSP responses.
+Names, opaque references, metadata, and allocator slack are excluded.
+This configuration-only sizing does not exempt Rust payload created by endpoint preparation.
+`PrepareOptions::with_payload_ledger` supplies the same candidate ledger to networking through `PreparationPayloadLedger`.
+`PrepareOptions` is cloneable, not `Copy`. Each endpoint shares its payload owner without copying its reservation.
+Known copies require admission before allocation. Native encoding outputs also pass a byte check before further retention.
+The ledger includes temporary comparison buffers and retains its high-water mark after those buffers drop.
+Direct helpers remain unmanaged unless their caller supplies this ledger. They do not acquire a supervisor work lease.
 
 Central references are opaque in both generic crates. They can contain spaces, slashes, traversal-like text, or provider-defined syntax.
 
 `tacacsrs-config` enforces the generated YANG structure and inline-versus-central choices. It does not apply SONiC identifier grammar or map references to paths.
 
-It does not inspect path existence, inspect permissions, watch files, or retrieve secrets.
+Materialization does not inspect provider paths or permissions. It delegates secret retrieval to the supplied resolver.
+The separate `input` module loads CLI credential files and observes file-backed configuration.
 
-The SONiC integration layer provides the resolver. It projects the closed result set into networking inputs.
+The SONiC integration layer supplies a resolver. It does not interpret generated fields during provider lookup.
 
-### Module-oriented API (recommended for most users)
+### 4) Native Endpoint Preparation
 
-This crate also exposes grouped modules so callers can choose APIs by intent:
+Call `prepare::prepare_endpoint` with a materialized server and `prepare::PrepareOptions`.
+The source snapshot must first pass schema validation with its selected validation options.
+Configuration maps the YANG transport choice, certificate encodings, PSK hash, ordered groups, expected peer identity, and optional SNI into networking inputs.
+Networking validates borrowed DER and PSK material and constructs private reusable TLS contexts.
+The resulting `PreparedEndpoint` contains no generated model or source reference.
 
+Unchecked builders, validated canonical roots, materialized server values, and prepared endpoints are distinct stages.
+Schema validation checks the source contract. Runtime readiness checks supported combinations. Native preparation validates transport material.
+The agent carries prepared endpoint identities with source metadata in a complete derived catalog before the atomic publication fence.
+That catalog is not another configuration model.
+
+Preparation derives the TCP connection timeout from the canonical server's `timeout` leaf, in seconds.
+`PrepareOptions` has no timeout override. It selects preflight and a typed certificate verification policy.
+`CertificateVerification::Required` is the default. Use `PrepareOptions::with_certificate_verification` to select a policy.
+CAUTION: `CertificateVerification::DisabledForDevelopment` permits server impersonation. Do not use it in production.
+These controls are not serialized configuration and do not change the source snapshot.
+The timeout bounds TCP connection establishment, not TLS handshakes or complete requests.
+`PreparedEndpoint::connection_timeout` exposes the prepared value for inspection.
+
+Callers must replace networking `ConnectOptions` with `prepare::PrepareOptions` at this API boundary.
+Set a different timeout in the canonical YANG source or with `TacacsPlusServerBuilder::with_timeout` before preparation.
+Schema-free callers use `PreparedEndpoint::new` with one `PreparedTransport` and a validated `ServerAddress`.
+`ConnectOptions` controls the TCP timeout, optional preflight, and derived local binding.
+`TlsClientConfig::prepare` takes `CertificateVerification`, peer identity, trust, and optional SNI. It does not accept a verification boolean.
+Disabled verification emits a warning and rejects required revocation evidence. Credential validation and authentication certificate dates still apply.
+Attach stapled OCSP, fetched OCSP, and CRLs to that configuration before endpoint construction.
+The endpoint has no security-selection or evidence-attachment methods.
+`PskClientConfig::prepare` validates and retains optional SNI with the PSK context.
+`PreparedTransport::Psk` accepts only that prepared configuration, with no separate SNI override.
+
+`ServerAddress::new` accepts separate host and port fields without network I/O.
+String entry points use `ServerAddress::parse` with a caller-selected default port.
+Bare IPv6 is always a whole host. Brackets are required for an explicit IPv6 port.
+DNS names can have a trailing dot. Port zero, zone IDs, malformed brackets, and invalid ports are rejected.
+Noncanonical numeric addresses, such as `127.1` and `0x7f000001`, are rejected instead of interpreted as DNS names.
+Each connection attempt resolves DNS again and checks the resolved and connected destinations through the host guard.
+
+Certificate TLS verifies the configured `domain-name`, or `address` when no domain is configured, against the peer's DNS or IP subject alternative name.
+Verification remains active when SNI is disabled. CN fallback and partial-label wildcard matches are disabled.
+The `sni-enabled` field controls only the optional DNS name sent in the TLS `ClientHello`.
+An omitted or false value sends no SNI. A true value requires `domain-name`.
+Native callers pass the expected peer identity and optional SNI name separately to `TlsClientConfig::prepare`.
+This replaces the earlier chain-only check and can reject previously accepted certificates that lack a matching SAN.
+The explicit development verification override still disables certificate verification. It does not change SNI selection.
+
+Certificate trust roles remain distinct during preparation:
+
+- `ca-certs` permits a valid certificate path to a configured authority.
+- `ee-certs` permits an exact DER certificate match, not another certificate with the same key or issuer.
+- Both sets are additive. An exact peer entry cannot authorize certificates that it issued, but an independent CA path can still succeed.
+- Explicit bags must contain materialized certificates. Empty bags fail even when the development verification override is selected.
+- If neither bag is selected, the existing server-authentication-only API uses platform trust. Selecting either bag excludes platform roots.
+
+Native callers pass `CertificateTrust::Platform` or `CertificateTrust::Certificates` to `TlsClientConfig::prepare`.
+The explicit variant separates authority DER from exact peer DER. Its collections cannot both be empty.
+OpenSSL still enforces peer identity, validity, purpose, and path checks. The trust-role callback never changes failed native verification into success.
+Direct trust accepts a CA-signed leaf without requiring its issuer. A renewed certificate with the same key needs a new exact entry or CA trust.
+These changes do not add revocation retrieval or client certificate-chain provisioning.
+
+Each certificate field contains exactly one DER certificate. Native preparation rejects concatenated certificates and trailing bytes, including with verification disabled.
+CLI PEM input likewise requires exactly one certificate. DER input is normalized without modification, then checked during native preparation.
+The generic certificate-with-key provider result contains one end-entity certificate. Trust bags can contain multiple individually encoded certificates with distinct names.
+Provisioning a client chain needs a separate canonical/provider contract. It is not supported by concatenating certificates into `cert-data`.
+
+Separate client public-key metadata must include both its bytes and format.
+Preparation supports one DER SPKI value matching the certificate key and rejects SSH encoding, missing metadata, mismatches, and trailing data.
+The certificate and private key must also agree. The development verification override does not bypass material validation.
+Native `CertificateIdentity` now includes optional `public_key_info` for this validated metadata path.
+
+The optional server `tls13-epsks` selector uses `Option<YangEmpty>` and RFC 7951 `[null]` encoding, not `Option<bool>`.
+Presence requires a client EPSK identity after enumeration. Certificate trust bags alongside client EPSK are explicitly rejected by runtime readiness.
+The canonical root parser consumes the complete JSON document and rejects trailing input.
+
+Pass this endpoint to `TacacsClient::connect_prepared`.
+With preflight disabled, construction does not open a connection. Native material errors still fail during preparation.
+The old networking `connect` and `connect_shared` constructors are removed.
+
+Before publishing a complete materialized server set, call `prepare::validate_materialized_servers` with the source's validation options.
+This shared check rejects invalid choices, duplicate names or endpoints, unresolved credentials, and unsupported runtime fields.
+An empty runtime set is permitted so a service can wait for configuration. Parsed YANG documents still require a nonempty server list.
+Each changed endpoint must also finish native context construction before the generation becomes active.
+
+Linux runtime connections support `source-ip`, `source-interface`, and `vrf-instance`.
+`source-interface` derives a source address. It does not force egress.
+The project `tacacsrs:egress-interface` leaf forces egress through a named Linux device.
+See [local TCP binding](../../docs/yang-config-guide.md#local-tcp-binding) for semantics, fallback, and deployment requirements.
+It also rejects PSK derivation fields and `one-symmetric-key-format`, which the native PSK path does not implement.
+Schema-valid source values remain available for reports and round trips. Validation relaxations do not enable these unsupported transport capabilities.
+
+### Module map
+
+This crate exposes grouped modules alongside curated crate-root exports:
+
+- `generated` — YANG-generated types and namespaces (do not edit by hand)
 - `builders` — programmatic construction helpers for `TacacsPlusServer`
-- `model` — YANG-generated types and namespaces
 - `extensions` — helper traits layered over generated model types
-- `pipeline` — step-by-step processing
-- `runtime` — bundle enumeration (`enumerate_server`, `enumerate_servers`)
-- `stats` — runtime stats types
+- `prepare` — provider request planning, materialization, candidate validation, and native endpoint projection
+- `source` — observation contracts and their backends (`StaticDatastore`, `CliFileDatastore`, and runtime-policy observation)
+- `input` — parsed CLI inputs, PEM/DER normalization, and YANG file loading
+- `validation`, `policy`, `local_services`, `proxy_policy` — validation and resource preparation
 
-For simple end-to-end usage with credential bundles defined directly in the configuration:
+The crate root re-exports the common parsing, enumeration, builder, statistics, and generated types directly. Most callers use those root exports:
 
 ```rust
-use tacacsrs_config::{parse_yang_json, runtime};
+use tacacsrs_config::{enumerate_servers, parse_yang_json};
 
 let config = parse_yang_json(json_str)?;
-let servers = runtime::enumerate_servers(&config)?;
+let servers = enumerate_servers(&config)?;
 ```
 
-The existing flat root exports remain available for compatibility.
+For the raw generated model without validation, use `parse_root_json` with the `generated` module.
+
+## Runtime Policy Resource
+
+The project module defines `tacacsrs:runtime-policy` as a system-level YANG augmentation.
+It specifies local-service failover strategies, recovery seconds, and per-operation body and concurrency limits.
+It is separate from the ordered upstream server resource.
+
+`policy::parse_runtime_policy` parses the module-qualified RFC 7951 resource and rejects unknown fields and invalid ranges.
+The generated `tacacsrs::RuntimePolicy` retains absent operation containers as `None`.
+Consumers use their generated defaults when preparing runtime behavior without changing the source value.
+`policy::validate_runtime_policy` also validates programmatically constructed generated values.
+
+The YANG defaults are 30 recovery seconds, deferred failover, and 64 concurrent requests per operation.
+Authentication defaults to a 4096-byte body limit. Authorization and accounting default to 16384 bytes.
+The runtime derives these defaults from generated types rather than independent constants.
+
+The non-presence `candidate-preparation` container has three positive `uint32` leaves:
+
+| Leaf | Generated Default |
+| --- | --- |
+| `timeout-seconds` | 30 |
+| `max-resolution-requests` | 256 |
+| `max-retained-material-bytes` | 67108864 |
+
+An absent container remains `None`. An empty container uses its generated defaults.
+JSON parsing and programmatic validation reject zero. Each leaf accepts values from 1 through 4294967295.
+The agent derives one admission deadline and a checked configuration-material ledger from this canonical policy.
+This policy is not a process-memory or native-allocation limit.
+
+## Local Service Resource
+
+`tacacsrs:local-services` defines startup service selection, listener endpoints, and Unix socket permissions under `ietf-system:system`.
+`local_services::parse_local_services` parses its module-qualified RFC 7951 resource and rejects unknown fields and invalid values.
+`local_services::prepare_local_services` borrows the generated source and returns immutable `PreparedLocalServices` bind targets.
+It performs no network or filesystem I/O. The source remains unchanged.
+
+The default enables the client API at `/run/tacacs/tacacs.sock` with mode `0660` and disables the raw proxy.
+Permissions use decimal numbers in JSON. Unix listener paths use absolute Linux syntax and at most 107 bytes.
+Preparation rejects inconsistent service selection, invalid permissions, and lexical endpoint collisions before binding.
+It does not resolve symlink aliases. TCP proxy targets accept numeric addresses, including wildcard and ephemeral-port bindings.
+Runtime listeners still report filesystem permissions, occupied addresses, and other bind-time failures.
+
+Agent callers now supply `ServiceConfig::local_services`, not independent service flags, IPC endpoints, or socket modes.
+The agent prepares this source before startup and stores the resulting targets privately.
+Process runtime settings remain separate from this resource.
+
+### Downstream Credentials
+
+`LocalServices::proxy_credential_source` selects `unobfuscated`, `inline`, or `local-proxy-row` behavior.
+Inline mode requires `proxy_shared_secret`. Generated code uses a redacted, zeroizing `SecretString` for that leaf.
+Other modes reject the inline field. Credential-bearing modes require an enabled proxy.
+
+`proxy_policy::prepare_proxy_policy` derives immutable `PreparedProxyPolicy` material without changing the source.
+For row-derived mode, the adapter supplies the first matching row in canonical server order before removing self-looping upstreams.
+Preparation rejects missing or empty credentials. Inline and unobfuscated modes ignore row credentials, so filtering cannot override explicit policy.
+The runtime type has private state and no serialization. Its unavailable state rejects access rather than returning a plaintext policy.
+
+The agent no longer accepts an independent `ServiceConfig::proxy_downstream_obfuscation` field or the old mutable credential enum.
+Startup derives inline or unobfuscated policy directly from the canonical source.
+`TacacsClientService::new` starts empty. Its retained `ConfigSupervisor` publishes the adapter's derived policy with the upstream set.
+Publication rejects unavailable policy and retains the previous generation on failure.
+This contract uses existing inline and source-row material. It does not add a new central credential provider or change upstream EPSK resolution.
+
+## Configuration Sources
+
+`source::ConfigDatastore` supplies canonical YANG snapshots through `load` and change events through `observe`.
+Every accepted change contains the complete snapshot. Consumers can use its delta, but the delta does not replace authoritative configuration.
+`source::StaticDatastore` holds one caller-validated snapshot and returns an empty observation stream.
+The source contract also carries validation options and initial-load and change-notification policies.
+
+`input::CliDatastoreInput` accepts parsed executable inputs without depending on clap.
+`input::tacacs_plus_from_cli_input` converts those inputs into a validated YANG snapshot through the canonical builders and validation rules.
+These input values are adapters, not a second desired-configuration schema.
+
+For an omitted input port, shared configuration defaults select 49 for legacy TCP and 300 for certificate or PSK TLS.
+Explicit ports remain unchanged. Malformed explicit ports fail instead of selecting a default.
+The pinned YANG model requires a port, so canonical snapshots and programmatic server builders retain explicit port values.
+
+`source::CliFileDatastore` implements the same source contract for CLI and file inputs.
+It watches a YANG file or referenced CLI certificate and key files when applicable.
+Observation installs the watcher before loading and publishing its baseline snapshot.
+Rejected reloads emit `CandidateRejected` without replacing the previous accepted snapshot.
+On Linux, native notifications keep idle file observations passive without timer wakes or periodic filesystem checks.
+On Windows, each file observation checks the captured directory identity every 100 ms.
+Directory removal, rename, or replacement ends the observation with an error.
+Dropping the observation stops its native watcher and any Windows identity checks. No detached monitor remains.
+Inputs with no watched paths yield an empty observation stream.
+
+```rust
+use tacacsrs_config::input::{CliConfigSource, CliDatastoreInput};
+use tacacsrs_config::source::{CliFileDatastore, ConfigDatastore};
+
+# async fn load() -> anyhow::Result<()> {
+let source = CliFileDatastore::new(CliDatastoreInput::new(
+  CliConfigSource::YangFile { path: "tacacs.json".into() },
+  "file",
+));
+let snapshot = source.load().await?;
+# Ok(())
+# }
+```
+
+The separate `tacacsrs-datastore` and `tacacsrs-cli-datastore` packages are removed.
+Consumers import `tacacsrs_config::source` and `tacacsrs_config::input` directly.
+This consolidation preserves the load and observation contracts. File sources use owned observation sessions.
 
 ## Programmatic builder API
 
@@ -130,7 +358,8 @@ let server = TacacsPlusServerBuilder::new(
 .with_shared_secret("super-secret")
 .build();
 
-assert_eq!(server.socket_address(), "192.0.2.10:49");
+assert_eq!(server.address, "192.0.2.10");
+assert_eq!(server.port, 49);
 assert!(server.is_obfuscation());
 # anyhow::Ok::<(), anyhow::Error>(())
 ```
@@ -143,8 +372,10 @@ The intended long-term split is:
 
 - `tacacsrs-config` stays as the open configuration model. It owns RFC 7951 parsing, schema validation, bundle enumeration, and generated YANG types.
 - Small derived helpers that are valid before and after secret resolution belong here, in `extensions`, on top of `TacacsPlusServer` and other generated types.
-- `tacacsrs-credential-resolution` consumes enumerated `TacacsPlusServer` values and returns a closed provider-neutral result set with concrete material.
-- Provider implementations and projection into connection-ready networking types remain integration-layer responsibilities.
+- `tacacsrs-credential-resolution` consumes typed request plans and returns closed provider-neutral result sets. It does not depend on configuration.
+- `prepare` maps YANG references and provider metadata, then validates materialized candidates without changing authoritative snapshots.
+- `prepare_endpoint` projects the materialized YANG server into explicit networking inputs.
+- Networking owns native context construction and execution. It has no dependency on configuration or credential providers.
 
 This separation keeps the generated configuration model suitable for round trips and reports. Runtime code receives only the normalized fields that it needs for connections.
 
@@ -152,11 +383,13 @@ This separation keeps the generated configuration model suitable for round trips
 
 The crate includes runnable examples under `examples/`:
 
-- `quick_start.rs` — parse + validate + enumerate using the root exports plus `runtime`
+- `quick_start.rs` — parse + validate + enumerate using the crate-root exports
 - `quick_start_credential_refs.rs` — minimal end-to-end example showing bundle validation and enumeration
-- `pipeline_flow.rs` — explicit step-by-step parse/enumerate/external-resolution pipeline
+- `pipeline_flow.rs` — step-by-step parse and inspect, with the production enumerate/resolve/materialize/prepare flow
 - `model_access.rs` — direct access to generated model types and flags
-- The provider-neutral central-resolution example lives in `tacacsrs-credential-resolution`.
+- `central_resolution.rs` — YANG planning and provider-neutral resolution with a fake resolver
+- `single_transaction.rs` and `multiple_transactions.rs` — configured accounting clients
+- `tls_client.rs` and `tls_psk_client.rs` — certificate TLS and PSK clients
 
 Run examples from the workspace root:
 
@@ -165,7 +398,7 @@ cargo run -p tacacsrs-config --example quick_start
 cargo run -p tacacsrs-config --example quick_start_credential_refs
 cargo run -p tacacsrs-config --example pipeline_flow
 cargo run -p tacacsrs-config --example model_access
-cargo run -p tacacsrs-credential-resolution --example central_resolution
+cargo run -p tacacsrs-config --example central_resolution
 ```
 
 ## Public API surface
@@ -226,12 +459,12 @@ This is the supported way to create `TacacsPlusServer` values in application cod
 `secp384r1,secp256r1`. Use `with_tls13_epsk_psk_only(...)` only for
 interoperability with peers that cannot negotiate PSK-DHE.
 
-### 2) Advanced: Generated YANG model and pipeline API
+### 2) Advanced: Generated YANG model and raw parsing
 
 For advanced use cases, these lower-level functions are available:
 
-- `pipeline::parse_root_json()` - Parse JSON into raw generated types without validation
-- `pipeline::parse_root_json_file()` - File-based raw parse into the generated root type without validation
+- `parse_root_json()` - Parse JSON into raw generated types without validation
+- `parse_root_json_file()` - File-based raw parse into the generated root type without validation
 - `generated` module - Full generated type graph for schema-aware integrations
 
 ### 3) Runtime types
@@ -243,7 +476,7 @@ Programmatic construction helpers for the generated server model live in `Tacacs
 Runtime statistics are exposed separately via:
 
 - `ServerStatistics`
-- `stats` module
+- `OperationalStatistics` and `ServerOperationalStatistics`
 
 ### 4) Generated YANG model (advanced use)
 

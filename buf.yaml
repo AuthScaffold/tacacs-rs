@@ -1,6 +1,6 @@
 version: v2
 modules:
-  - path: libraries/tacacsrs_agent_client/proto
+  - path: libraries/tacacsrs_ipc/proto
 breaking:
   use:
     - WIRE_JSON

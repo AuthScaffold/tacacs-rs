@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
 use tacacsrs_config::{
-    enumerate_server as resolve_server, parse_yang_json, parse_yang_json_file, pipeline,
-    validate_credential_references, PskDheKeSupportedGroup, YangConfigRoot, TacacsPlusServerType,
+    enumerate_server as resolve_server, parse_yang_json, parse_yang_json_file,
+    parse_root_json_file, validate_credential_references, PskDheKeSupportedGroup, YangConfigRoot,
+    TacacsPlusServerType,
 };
 
 fn write_temp_json_file(json: &str) -> PathBuf {
@@ -28,6 +29,106 @@ fn assert_unknown_field_error(err: &anyhow::Error, field: &str) {
             && message.contains(field),
         "unexpected error: {message}",
     );
+}
+
+fn identity_choice_document(identity: &serde_json::Value, bundled: bool) -> serde_json::Value {
+    let mut document = serde_json::json!({"ietf-system-tacacs-plus:tacacs-plus": {
+        "server": [{"name": "identity", "server-type": "accounting",
+            "address": "192.0.2.1", "port": 300, "client-identity": identity}]
+    }});
+    if bundled {
+        let mut credentials = identity.clone();
+        credentials["id"] = serde_json::json!("bundle");
+        document["ietf-system-tacacs-plus:tacacs-plus"]["client-credentials"] =
+            serde_json::json!([credentials]);
+        document["ietf-system-tacacs-plus:tacacs-plus"]["server"][0]["client-identity"] =
+            serde_json::json!({"credentials-reference": "bundle"});
+    }
+    document
+}
+
+#[test]
+fn client_identity_auth_type_is_exclusive() {
+    let certificate = serde_json::json!({"inline-definition": {
+        "cert-data": "AQ==", "cleartext-private-key": "Ag=="
+    }});
+    let epsk = serde_json::json!({"external-identity": "client", "inline-definition": {
+        "cleartext-symmetric-key": "Aw=="
+    }});
+    for bundled in [false, true] {
+        for identity in [
+            serde_json::json!({"certificate": certificate}),
+            serde_json::json!({"tls13-epsk": epsk}),
+        ] {
+            let document = identity_choice_document(&identity, bundled);
+            let source = parse_yang_json(&document.to_string()).unwrap();
+            let original = source.clone();
+            let server = resolve_server(&source, "identity").unwrap();
+            let actual = server.client_identity.as_ref().unwrap();
+            assert_eq!(actual.certificate.is_some(), identity.get("certificate").is_some());
+            assert_eq!(actual.tls13_epsk.is_some(), identity.get("tls13-epsk").is_some());
+            assert_eq!(source, original);
+        }
+        let document = identity_choice_document(
+            &serde_json::json!({"certificate": certificate, "tls13-epsk": epsk}),
+            bundled,
+        );
+        let error = parse_yang_json(&document.to_string()).unwrap_err();
+        assert!(error.to_string().contains("auth-type allows only one"), "{error}");
+    }
+}
+
+#[test]
+fn active_inline_key_choices_require_key_material() {
+    for bundled in [false, true] {
+        for inline in [
+            serde_json::json!({}),
+            serde_json::json!({"cert-data": "AQ=="}),
+            serde_json::json!({"private-key-format": "ietf-crypto-types:one-asymmetric-key-format"}),
+        ] {
+            let document = identity_choice_document(
+                &serde_json::json!({"certificate": {"inline-definition": inline}}),
+                bundled,
+            );
+            let error = parse_yang_json(&document.to_string()).unwrap_err();
+            assert!(error.to_string().contains("private-key-type requires one"), "{error}");
+        }
+        for inline in [
+            serde_json::json!({}),
+            serde_json::json!({"key-format": "ietf-crypto-types:octet-string-key-format"}),
+        ] {
+            let document = identity_choice_document(
+                &serde_json::json!({"tls13-epsk": {
+                    "external-identity": "client", "inline-definition": inline
+                }}),
+                bundled,
+            );
+            let error = parse_yang_json(&document.to_string()).unwrap_err();
+            assert!(error.to_string().contains("key-type requires one"), "{error}");
+        }
+    }
+}
+
+#[test]
+fn inactive_inline_key_choices_allow_central_references() {
+    for bundled in [false, true] {
+        for identity in [
+            serde_json::json!({"certificate": {"central-keystore-reference": {
+                "asymmetric-key": "opaque-key", "certificate": "opaque-cert"
+            }}}),
+            serde_json::json!({"tls13-epsk": {
+                "external-identity": "client", "central-keystore-reference": "opaque-key"
+            }}),
+        ] {
+            let document = identity_choice_document(&identity, bundled);
+            let source = parse_yang_json(&document.to_string()).unwrap();
+            let original = source.clone();
+            resolve_server(&source, "identity").unwrap();
+            assert_eq!(source, original);
+        }
+    }
+    let document = identity_choice_document(&serde_json::json!({}), false);
+    parse_yang_json(&document.to_string()).unwrap();
 }
 
 #[test]
@@ -555,7 +656,7 @@ fn parse_yang_json_file_parses_and_validates_config() {
 }
 
 #[test]
-fn pipeline_parse_root_json_file_reads_root_without_validation() {
+fn parse_root_json_file_reads_root_without_validation() {
     let json = r#"{
         "ietf-system-tacacs-plus:tacacs-plus": {
             "server": [
@@ -571,7 +672,7 @@ fn pipeline_parse_root_json_file_reads_root_without_validation() {
     }"#;
 
     let path = write_temp_json_file(json);
-    let result = pipeline::parse_root_json_file(&path);
+    let result = parse_root_json_file(&path);
     let _ = std::fs::remove_file(&path);
 
     let root = result.expect("root parse from the file must succeed");
@@ -580,11 +681,11 @@ fn pipeline_parse_root_json_file_reads_root_without_validation() {
 }
 
 #[test]
-fn pipeline_parse_root_json_file_reports_missing_file() {
+fn parse_root_json_file_reports_missing_file() {
     let mut missing = std::env::temp_dir();
     missing.push("tacacsrs-config-test-does-not-exist.json");
 
-    let err = pipeline::parse_root_json_file(&missing).unwrap_err();
+    let err = parse_root_json_file(&missing).unwrap_err();
     assert!(
         err.to_string()
             .contains("failed to read configuration file"),
@@ -917,7 +1018,7 @@ fn reject_client_identity_reference_and_explicit_together() {
     let err = parse_yang_json(json).unwrap_err();
     assert!(
         err.to_string()
-            .contains("client-identity allows only one of [ref, explicit/auth-type]"),
+            .contains("client-identity allows only one of [ref, explicit]"),
         "unexpected error: {err}",
     );
 }
@@ -947,7 +1048,8 @@ fn reject_server_auth_reference_and_explicit_together() {
                     "client-identity": {
                         "certificate": {
                             "inline-definition": {
-                                "cert-data": "Y2VydA=="
+                                "cert-data": "Y2VydA==",
+                                "cleartext-private-key": "a2V5"
                             }
                         }
                     },
@@ -1134,18 +1236,18 @@ fn accept_client_credentials_with_tls13_epsk_auth_type() {
 }
 
 #[test]
-fn validation_maps_all_tacacs_plus_choice_mandatory_constants_to_expected_validators() {
+fn validation_maps_tacacs_and_keystore_choice_constraints_to_expected_validators() {
     let generated = include_str!("../src/generated.rs");
     let validation = include_str!("../src/validation.rs");
 
     let tacacs_plus_start = generated
         .find("pub mod tacacs_plus {")
         .expect("generated.rs must contain the tacacs_plus module");
-    let keystore_start = generated
-        .find("/// Types from `ietf-keystore`.")
-        .expect("generated.rs must contain the keystore module marker");
-    let tacacs_plus_block = &generated[tacacs_plus_start..keystore_start];
-    let generated_constants = generated_tacacs_plus_choice_mandatory_constants(tacacs_plus_block);
+    let crypto_start = generated
+        .find("/// Types from `ietf-crypto-types`.")
+        .expect("generated.rs must contain the crypto-types module marker");
+    let choice_modules = &generated[tacacs_plus_start..crypto_start];
+    let generated_constants = generated_choice_mandatory_constants(choice_modules);
     let expected_mappings = expected_choice_mandatory_mappings();
 
     let expected_constants: std::collections::BTreeSet<&str> = expected_mappings
@@ -1173,10 +1275,10 @@ fn validation_maps_all_tacacs_plus_choice_mandatory_constants_to_expected_valida
     }
 }
 
-fn generated_tacacs_plus_choice_mandatory_constants(
-    tacacs_plus_block: &str,
+fn generated_choice_mandatory_constants(
+    choice_modules: &str,
 ) -> std::collections::BTreeSet<String> {
-    let generated_lines: Vec<&str> = tacacs_plus_block.lines().collect();
+    let generated_lines: Vec<&str> = choice_modules.lines().collect();
 
     generated_lines
         .iter()
@@ -1213,6 +1315,7 @@ fn expected_choice_mandatory_mappings() -> Vec<(&'static str, &'static [&'static
     mappings.extend(expected_client_identity_choice_mappings());
     mappings.extend(expected_server_auth_choice_mappings());
     mappings.extend(expected_client_credentials_choice_mappings());
+    mappings.extend(expected_inline_key_choice_mappings());
     mappings
 }
 
@@ -1241,7 +1344,7 @@ fn expected_server_choice_mappings() -> [(&'static str, &'static [&'static str])
     ]
 }
 
-fn expected_client_identity_choice_mappings() -> [(&'static str, &'static [&'static str]); 3] {
+fn expected_client_identity_choice_mappings() -> [(&'static str, &'static [&'static str]); 4] {
     [
         (
             "TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT_MANDATORY",
@@ -1251,6 +1354,17 @@ fn expected_client_identity_choice_mappings() -> [(&'static str, &'static [&'sta
                     "client-identity",
                     TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT,
                     TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT_MANDATORY,
+                "#],
+        ),
+        (
+            "TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT_EXPLICIT_AUTH_TYPE_MANDATORY",
+            &[r#"
+                validate_activated_choice(
+                    &server.name,
+                    "client-identity/auth-type",
+                    TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT_EXPLICIT_AUTH_TYPE,
+                    TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT_EXPLICIT_AUTH_TYPE_MANDATORY,
+                    TlsClientClientIdentity::CHOICE_REF_OR_EXPLICIT_EXPLICIT_AUTH_TYPE_ACTIVATION,
                 "#],
         ),
         (
@@ -1342,6 +1456,31 @@ fn expected_client_credentials_choice_mappings() -> [(&'static str, &'static [&'
                     ClientCredentials::CHOICE_AUTH_TYPE_MANDATORY,
                 "#],
     )]
+}
+
+fn expected_inline_key_choice_mappings() -> [(&'static str, &'static [&'static str]); 2] {
+    [
+        (
+            "EndEntityCertWithKeyInlineDefinition::CHOICE_PRIVATE_KEY_TYPE_MANDATORY",
+            &[r#"
+                validate_choice(
+                    context,
+                    &format!("{field_path}/inline-definition/private-key-type"),
+                    EndEntityCertWithKeyInlineDefinition::CHOICE_PRIVATE_KEY_TYPE,
+                    EndEntityCertWithKeyInlineDefinition::CHOICE_PRIVATE_KEY_TYPE_MANDATORY,
+                "#],
+        ),
+        (
+            "SymmetricKeyInlineDefinition::CHOICE_KEY_TYPE_MANDATORY",
+            &[r#"
+                validate_choice(
+                    context,
+                    &format!("{field_path}/inline-definition/key-type"),
+                    SymmetricKeyInlineDefinition::CHOICE_KEY_TYPE,
+                    SymmetricKeyInlineDefinition::CHOICE_KEY_TYPE_MANDATORY,
+                "#],
+        ),
+    ]
 }
 
 fn normalize_whitespace(input: &str) -> String {
@@ -2432,6 +2571,29 @@ fn reject_invalid_rpk_public_key_format_in_server_auth() {
 
     let err = parse_yang_json(json).unwrap_err();
     assert_unknown_field_error(&err, "raw-public-keys");
+}
+
+#[test]
+fn combined_crl_and_ocsp_policy_accepts_direct_and_bundled_configuration() {
+    for bundle in [false, true] {
+        let mut authentication = serde_json::json!({
+            "tacacsrs:require-stapled-ocsp": {},
+            "tacacsrs:require-crls": {"crl": ["AQ=="]}
+        });
+        let mut document = serde_json::json!({"ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [{"name": "combined", "server-type": "accounting", "address": "127.0.0.1", "port": 300}]
+        }});
+        if bundle {
+            authentication["id"] = serde_json::json!("trust");
+            document["ietf-system-tacacs-plus:tacacs-plus"]["server-credentials"] =
+                serde_json::json!([authentication]);
+            authentication = serde_json::json!({"credentials-reference": "trust"});
+        }
+        document["ietf-system-tacacs-plus:tacacs-plus"]["server"][0]["server-authentication"] =
+            authentication;
+        let parsed = parse_yang_json(&document.to_string());
+        assert!(parsed.is_ok(), "bundle {bundle}: {parsed:?}");
+    }
 }
 
 #[test]

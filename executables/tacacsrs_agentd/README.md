@@ -17,10 +17,42 @@ tacacsrs-agent-health \
 
 Use `--host-integration none` in containers. `auto` selects systemd only when `NOTIFY_SOCKET` is present. Explicit `systemd` requires the notification socket and helper, sends `READY=1` once, and sends `STOPPING=1` before listener drain.
 
-The daemon supervises SONiC ConfigDB startup and notification subscriptions. It can bind listeners before Redis exists, and it retries with capped jittered backoff. It applies valid snapshots without a restart. It keeps the previous known-good configuration after invalid reloads or subscription outages.
+The daemon supervises SONiC ConfigDB startup and notification subscriptions.
+In SONiC mode, it loads the forwarder profile before binding listeners. It retries unavailable configuration with capped backoff.
+It applies valid snapshots without a restart and retains known-good configuration after invalid reloads or subscription outages.
+
+The process registers SIGINT and SIGTERM once, before asynchronous bootstrap.
+Either signal cancels startup or requests listener drain through the signal-free agent API.
+An unavailable bootstrap dependency does not prevent signal handling. Requested shutdown exits successfully after cleanup.
+Unexpected host or configuration task exit is fatal, but the daemon still requests service drain and joins its other tasks.
+
+Startup uses one `TacacsClientService::new` path with no upstream source in its startup controls.
+The private `PreparedService` owner creates one retained `ConfigSupervisor` for initial preparation and all later server updates.
+Fail-fast preparation completes before listeners bind. Cancellation before serving does not bind listeners.
+The independent `PolicySupervisor` submits canonical policy through `apply_policy_candidate`.
+Host integration, configuration supervision, and serving remain critical peers under one shutdown budget.
+The [agent embedding guide](../../libraries/tacacsrs_agent/README.md#embedding) documents the public contract and removed reload variants.
 
 Use `--runtime-policy <FILE>` to load live failover strategies and request
 limits. The daemon keeps the last-known-good policy after an invalid update.
+
+Set `shutdown-timeout-seconds` in that canonical policy resource to bound graceful service and peer cleanup. Its default is 30 seconds; zero is invalid.
+The daemon captures the applied value once when cleanup begins. Later policy updates do not renew the deadline.
+At expiry it cancels pending work and exits with an error. An earlier failure remains the primary reported error.
+Systemd notifications use owned asynchronous child processes, so a stalled helper is terminated when teardown aborts its task.
+
+## Operational Statistics
+
+Use `--statistics-file FILE` for private, atomically replaced read-only YANG statistics once per second.
+The report identifies the runtime generation and each counter epoch. It never includes credentials or command data.
+Unchanged endpoints retain counters across reloads; replacements start a new counter lifetime.
+The last report remains after shutdown. Check process health before treating it as current.
+See [operational statistics](../../docs/tacacsrs-agentd.md#operational-statistics) for counter semantics and failure behavior.
+
+## Optional Profiling
+
+Tokio Console profiling requires the `console` feature and `RUSTFLAGS="--cfg tokio_unstable"` when building Tokio and the daemon.
+Without that instrumentation cfg, a `console` build reports that profiling is disabled and uses normal logging instead of panicking.
 
 ## Runtime Service Modes
 
@@ -58,6 +90,18 @@ When the upstream TACACS+ server requires the daemon to present a TLS client ide
 - Both files can be PEM or DER. The daemon detects PEM input and converts it to DER before it builds the runtime connection configuration.
 - Windows "export with private key" workflows commonly produce PKCS#12 (`.pfx` / `.p12`) bundles. These flags do not accept that container format. Provide PEM or DER certificate and private-key material instead.
 - This PEM-or-DER behavior applies only to the CLI flags. If upstream TLS material comes from `--config`, the YANG-backed `tacacsrs-config` path remains DER-only.
+
+## HTTP CRL Registration
+
+Use `--http-crl-source REFERENCE URL` to register public HTTP(S) CRL locations at startup.
+Repeat the reference to supply an ordered issuer set. Canonical `tacacsrs:require-crls` policy retains the opaque reference.
+Registration does not enable verification by itself. URL-map changes require a process restart.
+
+The provider uses a whole-set timeout and byte and concurrency limits. HTTPS requires trusted, matching certificates.
+Locations must contain no secrets. URL credentials, queries, fragments, redirects, and environment proxies are not supported.
+The existing supervisor refreshes evidence and enforces failure and expiry policy. Host signals cancel pending retrieval.
+SONiC credential resolution and notifications remain available through provider composition.
+See [HTTP CRL registration](../../docs/tacacsrs-agentd.md#http-crl-registration) for limits and examples.
 
 ## TLS 1.3 PSK
 

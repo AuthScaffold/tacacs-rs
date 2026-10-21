@@ -4,16 +4,22 @@ use std::process::ExitCode;
 use std::str::FromStr;
 use std::time::Duration;
 
-use clap::{Parser, ValueEnum};
-use tacacsrs_agent_client::health::{
-    LIVENESS_HEALTH_SERVICE, READINESS_HEALTH_SERVICE, STARTUP_HEALTH_SERVICE,
-};
-use tacacsrs_agent_client::{HealthClient, IpcEndpoint};
+use clap::{Parser, Subcommand, ValueEnum};
+use tacacsrs_ipc::health::{LIVENESS_HEALTH_SERVICE, READINESS_HEALTH_SERVICE, STARTUP_HEALTH_SERVICE};
+use tacacsrs_ipc::{HealthClient, IpcEndpoint};
 use tonic_health::pb::health_check_response::ServingStatus;
 
 const EXIT_NOT_SERVING: u8 = 1;
 const EXIT_INVOCATION_ERROR: u8 = 2;
 const EXIT_CHECK_ERROR: u8 = 3;
+
+mod statistics;
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Report read-only agent, connection, and server statistics.
+    Statistics(statistics::StatisticsArgs),
+}
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum HealthCheck {
@@ -34,18 +40,24 @@ impl HealthCheck {
 
 #[derive(Debug, Parser)]
 #[command(name = "tacacsrs-agent-health", version, author)]
-#[command(about = "Report tacacsrs-agentd startup, liveness, or readiness status")]
+#[command(
+    about = "Report agent health or read-only operational statistics",
+    subcommand_negates_reqs = true
+)]
 struct Cli {
     /// Client API Unix domain socket path or loopback TCP endpoint.
-    #[arg(long, default_value = "/run/tacacs/tacacs.sock")]
+    #[arg(long, global = true, default_value = "/run/tacacs/tacacs.sock")]
     endpoint: String,
 
     /// Health check to run.
-    #[arg(long, value_enum)]
-    check: HealthCheck,
+    #[arg(long, value_enum, required = true)]
+    check: Option<HealthCheck>,
+
+    #[command(subcommand)]
+    command: Option<Command>,
 
     /// Maximum duration of the health check.
-    #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u64).range(1..))]
+    #[arg(long, global = true, default_value_t = 2, value_parser = clap::value_parser!(u64).range(1..))]
     timeout_seconds: u64,
 }
 
@@ -54,8 +66,16 @@ async fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => {
+            let informational = matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            );
             let _ = error.print();
-            return ExitCode::from(EXIT_INVOCATION_ERROR);
+            return if informational {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(EXIT_INVOCATION_ERROR)
+            };
         }
     };
     let Ok(endpoint) = IpcEndpoint::from_str(&cli.endpoint) else {
@@ -63,15 +83,43 @@ async fn main() -> ExitCode {
         return ExitCode::from(EXIT_INVOCATION_ERROR);
     };
 
+    if let Some(Command::Statistics(arguments)) = cli.command {
+        if cli.check.is_some() {
+            eprintln!("--check cannot be combined with statistics");
+            return ExitCode::from(EXIT_INVOCATION_ERROR);
+        }
+        return match tokio::time::timeout(
+            Duration::from_secs(cli.timeout_seconds),
+            statistics::query(endpoint, &arguments),
+        )
+        .await
+        {
+            Ok(Ok(output)) => {
+                println!("{output}");
+                ExitCode::SUCCESS
+            }
+            Ok(Err(error)) => {
+                eprintln!("Statistics query failed: {error}");
+                ExitCode::from(EXIT_CHECK_ERROR)
+            }
+            Err(_) => {
+                eprintln!("Statistics query timed out");
+                ExitCode::from(EXIT_CHECK_ERROR)
+            }
+        };
+    }
+    let Some(check) = cli.check else {
+        return ExitCode::from(EXIT_INVOCATION_ERROR);
+    };
     match tokio::time::timeout(
         Duration::from_secs(cli.timeout_seconds),
-        check_health(&endpoint, cli.check),
+        check_health(&endpoint, check),
     )
     .await
     {
         Ok(Ok(ServingStatus::Serving)) => ExitCode::SUCCESS,
         Ok(Ok(ServingStatus::NotServing | ServingStatus::Unknown)) => {
-            eprintln!("{} health check is not serving", cli.check.service_name());
+            eprintln!("{} health check is not serving", check.service_name());
             ExitCode::from(EXIT_NOT_SERVING)
         }
         Ok(Err(())) => {
@@ -83,7 +131,7 @@ async fn main() -> ExitCode {
             ExitCode::from(EXIT_CHECK_ERROR)
         }
         Ok(Ok(ServingStatus::ServiceUnknown)) => {
-            eprintln!("{} health check is unknown", cli.check.service_name());
+            eprintln!("{} health check is unknown", check.service_name());
             ExitCode::from(EXIT_NOT_SERVING)
         }
     }
@@ -112,7 +160,7 @@ mod tests {
         .expect("documented CLI must parse");
 
         assert_eq!(cli.endpoint, "127.0.0.1:9049");
-        assert_eq!(cli.check.service_name(), READINESS_HEALTH_SERVICE);
+        assert_eq!(cli.check.unwrap().service_name(), READINESS_HEALTH_SERVICE);
         assert_eq!(cli.timeout_seconds, 2);
     }
 

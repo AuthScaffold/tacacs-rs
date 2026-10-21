@@ -21,9 +21,6 @@ impl FromStr for PskDheKeSupportedGroup {
 /// These methods derive values from the generated YANG model without changing
 /// its round-trip behavior.
 pub trait TacacsPlusServerExt {
-    /// Returns the server socket address in `host:port` form with brackets for IPv6.
-    fn socket_address(&self) -> String;
-
     /// Returns the configured timeout as a `Duration`.
     fn timeout_duration(&self) -> Duration;
 
@@ -44,14 +41,6 @@ pub trait TacacsPlusServerExt {
 }
 
 impl TacacsPlusServerExt for TacacsPlusServer {
-    fn socket_address(&self) -> String {
-        if self.address.contains(':') {
-            format!("[{}]:{}", self.address, self.port)
-        } else {
-            format!("{}:{}", self.address, self.port)
-        }
-    }
-
     fn timeout_duration(&self) -> Duration {
         Duration::from_secs(u64::from(self.timeout))
     }
@@ -98,22 +87,11 @@ mod tests {
             source_ip: None,
             source_interface: None,
             vrf_instance: None,
+            egress_interface: None,
+            binding_policy: crate::tacacsrs::BindingPolicy::BestEffort,
             single_connection: false,
             timeout: 5,
         }
-    }
-
-    #[test]
-    fn socket_address_formats_ipv4() {
-        let server = base_server();
-        assert_eq!(server.socket_address(), "192.0.2.10:49");
-    }
-
-    #[test]
-    fn socket_address_formats_ipv6() {
-        let mut server = base_server();
-        server.address = "2001:db8::1".to_owned();
-        assert_eq!(server.socket_address(), "[2001:db8::1]:49");
     }
 
     #[test]
@@ -130,6 +108,9 @@ mod tests {
 
         server.shared_secret = None;
         server.server_authentication = Some(TlsClientServerAuthentication {
+            require_crls: None,
+            require_ocsp: None,
+            require_stapled_ocsp: None,
             credentials_reference: None,
             ca_certs: None,
             ee_certs: None,

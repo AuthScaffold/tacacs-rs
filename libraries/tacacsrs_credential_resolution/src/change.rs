@@ -69,10 +69,28 @@ impl fmt::Display for CredentialChangeError {
 impl std::error::Error for CredentialChangeError {}
 
 /// Stream returned by a [`CredentialChangeSource`].
+///
+/// Each stream owns its subscription and backend notification workers.
+/// Dropping the stream must stop notification delivery and cancel those workers.
+/// Worker cleanup can finish asynchronously. The stream type does not make
+/// arbitrary I/O cancellable. Providers must document operations that can outlive
+/// cancellation and prevent those operations from publishing further events.
+///
+/// [`CredentialChangeEvent::Unavailable`] reports observation failure. A provider
+/// can recover on the same stream with [`CredentialChangeEvent::Recovered`], or
+/// end the stream so the consumer can subscribe again. End-of-stream also means
+/// notification loss, even without an `Unavailable` event. Recovery reports
+/// observation availability, not credential validity. Consumers must resolve
+/// affected credentials again before publication.
 pub type CredentialChangeStream =
     Pin<Box<dyn Stream<Item = CredentialChangeEvent> + Send + 'static>>;
 
 /// Source of credential provider change notifications.
+///
+/// Each successful subscription transfers notification lifetime ownership to
+/// the returned stream. Keeping the source alive must not keep a dropped
+/// subscription's workers active. See [`CredentialChangeStream`] for failure,
+/// recovery, and cancellation requirements.
 #[async_trait]
 pub trait CredentialChangeSource: Send + Sync {
     /// Establishes a new provider notification stream.

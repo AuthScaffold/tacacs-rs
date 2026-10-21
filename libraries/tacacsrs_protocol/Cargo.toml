@@ -1,0 +1,21 @@
+[package]
+name = "tacacsrs-protocol"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure TACACS+ wire types, operations, and exchange contracts."
+readme = "README.md"
+
+[dependencies]
+anyhow = { version = "1.0.102", features = ["backtrace"] }
+bitflags = "2.11.1"
+byteorder = "1.5.0"
+md-5 = "0.11.0"
+num_enum = "0.7.6"
+zeroize = "1.9.0"
+tacacsrs-secrets = { path = "../tacacsrs_secrets" }
+
+[lints]
+workspace = true

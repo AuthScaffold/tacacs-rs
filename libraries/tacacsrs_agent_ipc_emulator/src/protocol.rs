@@ -1,16 +1,25 @@
+//! Policy input projection and shared domain response conversion.
+//!
+//! Accounting and Authorization project raw protobuf fields without domain
+//! request validation. This boundary supports malformed-request scenarios.
+//! Policy responses use shared domain types. Raw handlers retain gRPC status
+//! errors for deliberate fault simulation instead of structured domain errors.
+
 use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
-use tacacsrs_agent_client::ipc;
-use tacacsrs_agent_client::{
+use tacacsrs_ipc::proto;
+use tacacsrs_protocol::failure::{DeliveryState, FailureCategory, FailureFacts, FailurePhase};
+use tacacsrs_protocol::operations::{
     AccountingOperationResponse, AccountingResponseStatus, AuthorizationArg,
-    AuthorizationOperationResponse, AuthorizationResponseStatus, ServiceError,
+    AuthorizationOperationResponse, AuthorizationResponseStatus,
 };
+use tacacsrs_protocol::failure::ServiceError;
 use tonic::Status;
 
 use crate::policy::{ErrorBody, ResponseBody};
 
-pub(crate) fn accounting_fields(request: &ipc::AccountingRequest) -> BTreeMap<String, Value> {
+pub(crate) fn accounting_fields(request: &proto::AccountingRequest) -> BTreeMap<String, Value> {
     BTreeMap::from([
         ("user".to_owned(), json!(request.user)),
         ("port".to_owned(), json!(request.port)),
@@ -20,7 +29,9 @@ pub(crate) fn accounting_fields(request: &ipc::AccountingRequest) -> BTreeMap<St
     ])
 }
 
-pub(crate) fn authorization_fields(request: &ipc::AuthorizationRequest) -> BTreeMap<String, Value> {
+pub(crate) fn authorization_fields(
+    request: &proto::AuthorizationRequest,
+) -> BTreeMap<String, Value> {
     let command = request
         .args
         .iter()
@@ -108,9 +119,35 @@ pub(crate) fn authorization_response(
 }
 
 pub(crate) fn service_error(error: ErrorBody) -> ServiceError {
-    let mut service_error = ServiceError::new(error.message).retriable(error.retriable);
+    // The emulator performs no upstream I/O, so every failure is NotSent at the
+    // IPC phase. The Rego `retriable` field is a simulation input, not an
+    // authoritative retry decision: it only selects a recoverable or terminal
+    // category. The domain type derives the retry advice from the facts.
+    let category = if error.retriable {
+        FailureCategory::Unavailable
+    } else {
+        FailureCategory::Internal
+    };
+    let facts = FailureFacts::new(category, FailurePhase::Ipc, DeliveryState::NotSent);
+    let mut service_error = ServiceError::new(error.message, facts);
     if !error.server.is_empty() {
         service_error = service_error.with_server(error.server);
     }
     service_error
+}
+
+/// Builds the error returned for the unsupported PAP authentication RPC.
+///
+/// The emulator rejects the local request before any upstream I/O, so the
+/// delivery state is `NotSent` and the derived advice is never to replay.
+pub(crate) fn pap_unsupported_error() -> ServiceError {
+    ServiceError::new(
+        "PAP authentication is not supported by the policy emulator",
+        FailureFacts::new(
+            FailureCategory::InvalidRequest,
+            FailurePhase::Ipc,
+            DeliveryState::NotSent,
+        ),
+    )
+    .with_server("ipc-emulator")
 }

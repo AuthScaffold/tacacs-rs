@@ -4,37 +4,44 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tacacsrs_agent_client::{
+use tacacsrs_protocol::operations::{
     AccountingOperation, AccountingResponseStatus, AuthenticationResponseStatus,
     PapAuthenticationOperation,
 };
 use tacacsrs_config::TacacsPlusServer;
-use tacacsrs_flows::authentication::PapAuthenticationExchange;
-use tacacsrs_messages::accounting::reply::AccountingReply;
-use tacacsrs_messages::accounting::request::AccountingRequest;
-use tacacsrs_messages::authentication::reply::AuthenticationReply;
-use tacacsrs_messages::authorization::reply::AuthorizationReply;
-use tacacsrs_messages::authorization::request::AuthorizationRequest;
-use tacacsrs_messages::enumerations::{
+use tacacsrs_protocol::exchange::authentication::PapAuthenticationExchange;
+use tacacsrs_protocol::exchange::FixedExchange;
+use tacacsrs_protocol::accounting::reply::AccountingReply;
+use tacacsrs_protocol::exchange::accounting::AccountingExchange;
+use tacacsrs_protocol::authentication::reply::AuthenticationReply;
+use tacacsrs_protocol::authorization::reply::AuthorizationReply;
+use tacacsrs_protocol::exchange::authorization::AuthorizationExchange;
+use tacacsrs_protocol::enumerations::{
     TacacsAccountingStatus, TacacsAuthenticationReplyFlags, TacacsAuthenticationStatus,
     TacacsAuthorizationStatus,
 };
 use tacacsrs_secrets::SecretBytes;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 use super::UpstreamBridge;
-use crate::config::{FailoverStrategy, OperationPolicies, ProxyDownstreamObfuscation, RuntimePolicy};
+use crate::config::{FailoverStrategy, OperationPolicies, PreparedProxyPolicy, RuntimePolicy};
 use crate::runtime::{REQUIRED_SERVER_TYPES, RuntimeHealthPublisher};
 use crate::upstream::manager::UpstreamManager;
-use crate::upstream::{OperationKind, UpstreamConnection, UpstreamConnector, UpstreamRequestError};
+use crate::upstream::{OperationKind, UpstreamConnection, UpstreamRequestError};
 use crate::EnabledServices;
 
 struct ScriptedConnection {
     address: String,
     fail_authentication: AtomicBool,
     fail_accounting: AtomicBool,
+    fail_authorization: AtomicBool,
     authentication_status: TacacsAuthenticationStatus,
     accounting_status: TacacsAccountingStatus,
+    authorization_args: Vec<String>,
+    accounting_barrier: Option<(Arc<Notify>, Arc<Notify>)>,
+    accounting_delay: Duration,
+    accounting_started: Notify,
+    bodies: Mutex<Vec<Vec<u8>>>,
 }
 
 impl ScriptedConnection {
@@ -43,8 +50,14 @@ impl ScriptedConnection {
             address: address.to_owned(),
             fail_authentication: AtomicBool::new(false),
             fail_accounting: AtomicBool::new(false),
+            fail_authorization: AtomicBool::new(false),
             authentication_status: TacacsAuthenticationStatus::TacPlusAuthenStatusPass,
             accounting_status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
+            authorization_args: Vec::new(),
+            accounting_barrier: None,
+            accounting_delay: Duration::ZERO,
+            accounting_started: Notify::new(),
+            bodies: Mutex::new(Vec::new()),
         }
     }
 }
@@ -57,14 +70,36 @@ impl UpstreamConnection for ScriptedConnection {
 
     async fn stop_accepting_new_sessions(&self) {}
 
+    fn close(&self) {}
+
+    async fn close_and_join(
+        &self,
+        _deadline: tacacsrs_networking::RequestDeadline,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     async fn open_conversation(&self) -> anyhow::Result<tacacsrs_networking::ClientConversation> {
         anyhow::bail!("raw conversations are not used in client API routing tests")
     }
 
     async fn send_accounting(
         &self,
-        _request: AccountingRequest,
+        exchange: &AccountingExchange,
+        _deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AccountingReply, UpstreamRequestError> {
+        self.bodies
+            .lock()
+            .await
+            .push(exchange.request_body().as_bytes().to_vec());
+        self.accounting_started.notify_one();
+        if !self.accounting_delay.is_zero() {
+            tokio::time::sleep(self.accounting_delay).await;
+        }
+        if let Some((entered, release)) = &self.accounting_barrier {
+            entered.notify_one();
+            release.notified().await;
+        }
         if self.fail_accounting.swap(false, Ordering::AcqRel) {
             return Err(UpstreamRequestError::outcome_unknown(anyhow::anyhow!(
                 "injected accounting transport failure"
@@ -79,8 +114,13 @@ impl UpstreamConnection for ScriptedConnection {
 
     async fn authenticate_pap(
         &self,
-        _exchange: PapAuthenticationExchange,
+        exchange: &PapAuthenticationExchange,
+        _deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthenticationReply, UpstreamRequestError> {
+        self.bodies
+            .lock()
+            .await
+            .push(exchange.request_body().as_bytes().to_vec());
         if self.fail_authentication.swap(false, Ordering::AcqRel) {
             return Err(UpstreamRequestError::outcome_unknown(anyhow::anyhow!(
                 "injected authentication transport failure"
@@ -96,12 +136,22 @@ impl UpstreamConnection for ScriptedConnection {
 
     async fn send_authorization(
         &self,
-        _request: AuthorizationRequest,
+        exchange: &AuthorizationExchange,
+        _deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthorizationReply, UpstreamRequestError> {
+        self.bodies
+            .lock()
+            .await
+            .push(exchange.request_body().as_bytes().to_vec());
+        if self.fail_authorization.swap(false, Ordering::AcqRel) {
+            return Err(UpstreamRequestError::outcome_unknown(anyhow::anyhow!(
+                "injected authorization transport failure"
+            )));
+        }
         Ok(AuthorizationReply {
             status: TacacsAuthorizationStatus::TacPlusPassAdd,
             server_msg: String::new(),
-            args: Vec::new(),
+            args: self.authorization_args.clone(),
             data: String::new(),
         })
     }
@@ -110,6 +160,7 @@ impl UpstreamConnection for ScriptedConnection {
 struct OperationConnector {
     connections: HashMap<(String, OperationKind), Arc<ScriptedConnection>>,
     attempts: Mutex<HashMap<(String, OperationKind), usize>>,
+    connect_delay: Duration,
 }
 
 impl OperationConnector {
@@ -117,7 +168,13 @@ impl OperationConnector {
         Self {
             connections,
             attempts: Mutex::new(HashMap::new()),
+            connect_delay: Duration::ZERO,
         }
+    }
+
+    fn with_connect_delay(mut self, delay: Duration) -> Self {
+        self.connect_delay = delay;
+        self
     }
 
     async fn attempts(&self, address: &str, operation: OperationKind) -> usize {
@@ -131,13 +188,32 @@ impl OperationConnector {
 }
 
 #[async_trait]
-impl UpstreamConnector for OperationConnector {
+impl tacacsrs_networking::routed::EndpointConnector for OperationConnector {
+    type Connection = dyn UpstreamConnection;
+
+    async fn retire(&self, connection: &Self::Connection) {
+        connection.stop_accepting_new_sessions().await;
+    }
+    fn close(&self, connection: &Self::Connection) {
+        connection.close();
+    }
+    async fn close_and_join(
+        &self,
+        connection: &Self::Connection,
+        deadline: tacacsrs_networking::RequestDeadline,
+    ) -> anyhow::Result<()> {
+        connection.close_and_join(deadline).await
+    }
+
     async fn connect(
         &self,
-        server: Arc<TacacsPlusServer>,
+        endpoint: tacacsrs_networking::PreparedEndpoint,
         operation: OperationKind,
     ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
-        let address = tacacsrs_config::TacacsPlusServerExt::socket_address(server.as_ref());
+        if !self.connect_delay.is_zero() {
+            tokio::time::sleep(self.connect_delay).await;
+        }
+        let address = endpoint.address().to_string();
         *self
             .attempts
             .lock()
@@ -168,6 +244,8 @@ fn server(address: &str) -> Arc<TacacsPlusServer> {
         source_ip: None,
         source_interface: None,
         vrf_instance: None,
+        egress_interface: None,
+        binding_policy: tacacsrs_config::tacacsrs::BindingPolicy::BestEffort,
     })
 }
 
@@ -181,14 +259,28 @@ fn policy(strategy: FailoverStrategy) -> RuntimePolicy {
     .expect("test policy")
 }
 
-fn bridge(connector: Arc<OperationConnector>, strategy: FailoverStrategy) -> UpstreamBridge {
-    let manager = Arc::new(UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
-        vec![server("primary"), server("backup")],
-        ProxyDownstreamObfuscation::default(),
-        policy(strategy),
-        connector,
-        RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
-    ));
+fn bridge(
+    connector: Arc<OperationConnector>,
+    strategy: FailoverStrategy,
+) -> UpstreamBridge<crate::upstream::manager::ServiceConnector> {
+    bridge_with_policy(connector, policy(strategy))
+}
+
+fn bridge_with_policy(
+    connector: Arc<OperationConnector>,
+    runtime_policy: RuntimePolicy,
+) -> UpstreamBridge<crate::upstream::manager::ServiceConnector> {
+    let manager = Arc::new(
+        UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
+            vec![server("primary"), server("backup")],
+            PreparedProxyPolicy::unobfuscated(),
+            runtime_policy,
+            connector,
+            RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
+            tacacsrs_config::prepare::PrepareOptions::default(),
+        )
+        .expect("test endpoints must prepare"),
+    );
     UpstreamBridge::new(manager)
 }
 
@@ -198,7 +290,7 @@ fn authentication() -> PapAuthenticationOperation {
         password: SecretBytes::new(b"secret".to_vec()),
         port: "tty0".to_owned(),
         remote_address: "192.0.2.1".to_owned(),
-        privilege_level: 15,
+        privilege_level: tacacsrs_protocol::privilege::PrivilegeLevel::MAX,
     }
 }
 
@@ -210,6 +302,176 @@ fn accounting() -> AccountingOperation {
         command: "show".to_owned(),
         command_arguments: vec!["users".to_owned()],
     }
+}
+
+#[tokio::test]
+async fn prepared_admission_matches_all_transmitted_bodies_at_the_exact_limit() {
+    use crate::config::RequestLimits;
+    let authorization = crate::test_support::build_authorization_request();
+    for operation in [
+        OperationKind::Accounting,
+        OperationKind::Authorization,
+        OperationKind::Authentication,
+    ] {
+        let expected = match operation {
+            OperationKind::Accounting => accounting()
+                .exchange()
+                .unwrap()
+                .request_body()
+                .as_bytes()
+                .to_vec(),
+            OperationKind::Authorization => authorization
+                .exchange()
+                .unwrap()
+                .request_body()
+                .as_bytes()
+                .to_vec(),
+            OperationKind::Authentication => authentication()
+                .exchange()
+                .unwrap()
+                .request_body()
+                .as_bytes()
+                .to_vec(),
+        };
+        for excess in [0, 1] {
+            let primary = Arc::new(ScriptedConnection::successful("primary:49"));
+            let connector = Arc::new(OperationConnector::new(HashMap::from([(
+                ("primary:49".into(), operation),
+                primary.clone(),
+            )])));
+            let limits = RequestLimits::new(expected.len() - excess, 1).unwrap();
+            let runtime_policy = RuntimePolicy::new(
+                FailoverStrategy::OrderedSafeRetry,
+                FailoverStrategy::default(),
+                OperationPolicies::new(limits, limits, limits),
+                Duration::from_secs(30),
+            )
+            .unwrap();
+            let bridge = bridge_with_policy(connector.clone(), runtime_policy);
+            let result = match operation {
+                OperationKind::Accounting => bridge
+                    .execute_accounting_request(accounting())
+                    .await
+                    .map(|_| ()),
+                OperationKind::Authorization => bridge
+                    .execute_authorization_request(authorization.clone())
+                    .await
+                    .map(|_| ()),
+                OperationKind::Authentication => bridge
+                    .execute_pap_authentication_request(authentication())
+                    .await
+                    .map(|_| ()),
+            };
+            assert_eq!(result.is_ok(), excess == 0, "{operation:?}: {result:?}");
+            assert_eq!(connector.attempts("primary:49", operation).await, usize::from(excess == 0));
+            assert_eq!(connector.attempts("backup:49", operation).await, 0);
+            let bodies = primary.bodies.lock().await;
+            if excess == 0 {
+                assert_eq!(*bodies, vec![expected.clone()]);
+            } else {
+                assert!(bodies.is_empty());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn malformed_inputs_do_not_wait_for_admission_or_open_connections() {
+    let connector = Arc::new(OperationConnector::new(HashMap::new()));
+    let limits = crate::config::RequestLimits::new(65536, 1).unwrap();
+    let runtime_policy = RuntimePolicy::new(
+        FailoverStrategy::OrderedSafeRetry,
+        FailoverStrategy::default(),
+        OperationPolicies::new(limits, limits, limits),
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    let bridge = bridge_with_policy(connector.clone(), runtime_policy);
+    let captured = bridge.router.capture_request(OperationKind::Accounting);
+    let _permit = captured.admit(1).await.unwrap();
+    let mut accounting = accounting();
+    accounting.user = "x".repeat(256);
+    let mut authorization = crate::test_support::build_authorization_request();
+    authorization.user = "x".repeat(256);
+    let mut pap = authentication();
+    pap.password = SecretBytes::new(vec![0xff; 256]);
+    let results = tokio::time::timeout(Duration::from_secs(1), async {
+        [
+            bridge
+                .execute_accounting_request(accounting)
+                .await
+                .map(|_| ()),
+            bridge
+                .execute_authorization_request(authorization)
+                .await
+                .map(|_| ()),
+            bridge
+                .execute_pap_authentication_request(pap)
+                .await
+                .map(|_| ()),
+        ]
+    })
+    .await
+    .unwrap();
+    for result in results {
+        assert_eq!(
+            result.unwrap_err().facts.category(),
+            tacacsrs_protocol::failure::FailureCategory::InvalidRequest
+        );
+    }
+    assert!(connector.attempts.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn preparation_cannot_renew_the_captured_deadline() {
+    struct SlowPreparation;
+    #[async_trait]
+    impl super::routed::RoutedOperation for SlowPreparation {
+        type Request = Arc<std::sync::atomic::AtomicUsize>;
+        type Exchange = AccountingExchange;
+        type Response = AccountingReply;
+        const NAME: &'static str = "slow preparation";
+        const DISPLAY_NAME: &'static str = "Slow preparation";
+        const OPERATION: OperationKind = OperationKind::Accounting;
+        async fn send<Connection: UpstreamConnection + ?Sized>(
+            connection: &Connection,
+            exchange: &AccountingExchange,
+            deadline: tacacsrs_networking::RequestDeadline,
+        ) -> Result<AccountingReply, UpstreamRequestError> {
+            connection.send_accounting(exchange, deadline).await
+        }
+        fn is_server_error(_: &AccountingReply) -> bool {
+            false
+        }
+        fn prepare(count: &Self::Request) -> Result<AccountingExchange, UpstreamRequestError> {
+            count.fetch_add(1, Ordering::Relaxed);
+            std::thread::sleep(Duration::from_millis(25));
+            accounting()
+                .exchange()
+                .map_err(UpstreamRequestError::invalid_request)
+        }
+    }
+    let connector = Arc::new(OperationConnector::new(HashMap::new()));
+    let limits = crate::config::RequestLimits::new(1024, 1)
+        .unwrap()
+        .with_request_timeout(Duration::from_millis(1))
+        .unwrap();
+    let runtime_policy = RuntimePolicy::new(
+        FailoverStrategy::OrderedSafeRetry,
+        FailoverStrategy::default(),
+        OperationPolicies::new(limits, limits, limits),
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    let bridge = bridge_with_policy(connector.clone(), runtime_policy);
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let error = bridge
+        .execute_operation::<SlowPreparation>(count.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(error.facts.category(), tacacsrs_protocol::failure::FailureCategory::Deadline);
+    assert_eq!(count.load(Ordering::Relaxed), 1);
+    assert!(connector.attempts.lock().await.is_empty());
 }
 
 fn operation_map(
@@ -224,7 +486,338 @@ fn operation_map(
 }
 
 #[tokio::test]
-async fn ordered_retry_moves_authentication_to_the_next_server() {
+async fn overload_is_retriable_without_upstream_io_and_cancellation_releases_capacity() {
+    use crate::config::{PolicyService, RequestLimits};
+    use crate::upstream::OperationRouter;
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let release = Arc::new(Notify::new());
+        let primary = Arc::new(ScriptedConnection {
+            accounting_barrier: Some((Arc::new(Notify::new()), Arc::clone(&release))),
+            ..ScriptedConnection::successful("primary:49")
+        });
+        let connector = Arc::new(OperationConnector::new(HashMap::from([(
+            ("primary:49".to_owned(), OperationKind::Accounting),
+            primary.clone(),
+        )])));
+        let limits = RequestLimits::new(1024, 1).unwrap();
+        let manager = Arc::new(
+            UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
+                vec![server("primary")],
+                PreparedProxyPolicy::unobfuscated(),
+                RuntimePolicy::new(
+                    FailoverStrategy::default(),
+                    FailoverStrategy::default(),
+                    OperationPolicies::new(limits, limits, limits),
+                    Duration::from_secs(30),
+                )
+                .unwrap(),
+                connector.clone(),
+                RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
+                tacacsrs_config::prepare::PrepareOptions::default(),
+            )
+            .unwrap(),
+        );
+        let bridge = UpstreamBridge::new(Arc::clone(&manager));
+        let proxy = OperationRouter::new(manager, PolicyService::TacacsProxy)
+            .capture_request(OperationKind::Accounting);
+        {
+            let active = bridge.execute_accounting_request(accounting());
+            tokio::pin!(active);
+            tokio::select! {
+                () = primary.accounting_started.notified() => {},
+                result = &mut active => panic!("request completed before its barrier: {result:?}"),
+            }
+            let pending = proxy.admit(1);
+            tokio::pin!(pending);
+            std::future::poll_fn(|context| {
+                assert!(std::future::Future::poll(pending.as_mut(), context).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            let error = bridge
+                .execute_accounting_request(accounting())
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error.facts.retry_advice(),
+                tacacsrs_protocol::failure::RetryAdvice::AfterRecovery
+            );
+            assert!(error.message.contains("admission queue is full"));
+            assert_eq!(
+                connector
+                    .attempts("primary:49", OperationKind::Accounting)
+                    .await,
+                1
+            );
+        }
+        release.notify_one();
+        let _released_capacity = proxy.admit(1).await.unwrap();
+        assert_eq!(
+            connector
+                .attempts("primary:49", OperationKind::Accounting)
+                .await,
+            1
+        );
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn request_retry_keeps_original_servers_and_policy_across_reload() {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let primary = Arc::new(ScriptedConnection {
+            accounting_status: TacacsAccountingStatus::TacPlusAcctStatusError,
+            accounting_barrier: Some((Arc::clone(&entered), Arc::clone(&release))),
+            ..ScriptedConnection::successful("primary:49")
+        });
+        let backup = Arc::new(ScriptedConnection::successful("backup:49"));
+        let mut connections = operation_map(primary, backup, OperationKind::Accounting);
+        connections.insert(
+            ("replacement:49".to_owned(), OperationKind::Accounting),
+            Arc::new(ScriptedConnection::successful("replacement:49")),
+        );
+        let connector = Arc::new(OperationConnector::new(connections));
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let manager = Arc::new(
+            UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
+                vec![server("primary"), server("backup")],
+                PreparedProxyPolicy::unobfuscated(),
+                policy(FailoverStrategy::OrderedSafeRetry),
+                connector.clone(),
+                health.clone(),
+                tacacsrs_config::prepare::PrepareOptions::default(),
+            )
+            .unwrap(),
+        );
+        let request = {
+            let bridge = UpstreamBridge::new(Arc::clone(&manager));
+            tokio::spawn(async move { bridge.execute_accounting_request(accounting()).await })
+        };
+        entered.notified().await;
+        manager
+            .reload_shared_servers(vec![server("replacement")])
+            .await
+            .unwrap();
+        manager.reload_runtime_policy(policy(FailoverStrategy::DeferredFailover));
+        release.notify_one();
+        let response = request.await.unwrap().unwrap();
+        assert_eq!(response.server, "backup:49");
+        assert_eq!(
+            connector
+                .attempts("replacement:49", OperationKind::Accounting)
+                .await,
+            0
+        );
+        assert_eq!(
+            health.snapshot().upstream_availability(),
+            crate::runtime::UpstreamAvailability::Unknown,
+            "an old request must not report availability for the replacement generation"
+        );
+        let next = UpstreamBridge::new(manager)
+            .execute_accounting_request(accounting())
+            .await
+            .unwrap();
+        assert_eq!(next.server, "replacement:49");
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn deadline_includes_admission_and_retry_and_survives_policy_reload() {
+    use crate::config::{PolicyService, RequestLimits};
+    use crate::upstream::OperationRouter;
+
+    let primary = Arc::new(ScriptedConnection {
+        accounting_status: TacacsAccountingStatus::TacPlusAcctStatusError,
+        accounting_delay: Duration::from_secs(2),
+        ..ScriptedConnection::successful("primary:49")
+    });
+    let backup = Arc::new(ScriptedConnection {
+        accounting_delay: Duration::from_secs(4),
+        ..ScriptedConnection::successful("backup:49")
+    });
+    let connector = Arc::new(OperationConnector::new(operation_map(
+        primary.clone(),
+        backup.clone(),
+        OperationKind::Accounting,
+    )));
+    let policy = |seconds| {
+        let limits = RequestLimits::new(1024, 1)
+            .unwrap()
+            .with_request_timeout(Duration::from_secs(seconds))
+            .unwrap();
+        RuntimePolicy::new(
+            FailoverStrategy::OrderedSafeRetry,
+            FailoverStrategy::default(),
+            OperationPolicies::new(limits, limits, limits),
+            Duration::from_secs(30),
+        )
+        .unwrap()
+    };
+    let manager = Arc::new(
+        UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
+            vec![server("primary"), server("backup")],
+            PreparedProxyPolicy::unobfuscated(),
+            policy(5),
+            connector.clone(),
+            RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
+            tacacsrs_config::prepare::PrepareOptions::default(),
+        )
+        .unwrap(),
+    );
+    let occupied = OperationRouter::new(manager.clone(), PolicyService::TacacsProxy)
+        .capture_request(OperationKind::Accounting)
+        .admit(1)
+        .await
+        .unwrap();
+    let bridge = UpstreamBridge::new(manager.clone());
+    let started = tokio::time::Instant::now();
+    let request = bridge.execute_accounting_request(accounting());
+    tokio::pin!(request);
+    std::future::poll_fn(|context| {
+        assert!(std::future::Future::poll(request.as_mut(), context).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    tokio::time::advance(Duration::from_secs(2)).await;
+    manager.reload_runtime_policy(policy(30));
+    drop(occupied);
+    tokio::select! {
+        () = primary.accounting_started.notified() => {},
+        result = &mut request => panic!("primary request did not start: {result:?}"),
+    }
+    tokio::time::advance(Duration::from_secs(2)).await;
+    tokio::select! {
+        () = backup.accounting_started.notified() => {},
+        result = &mut request => panic!("backup request did not start: {result:?}"),
+    }
+    let error = request.await.unwrap_err();
+    assert_eq!(error.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::Never);
+    assert_eq!(error.facts.delivery(), tacacsrs_protocol::failure::DeliveryState::OutcomeUnknown);
+    assert_eq!(started.elapsed(), Duration::from_secs(5));
+    assert_eq!(
+        connector
+            .attempts("primary:49", OperationKind::Accounting)
+            .await,
+        1
+    );
+    assert_eq!(
+        connector
+            .attempts("backup:49", OperationKind::Accounting)
+            .await,
+        1
+    );
+    assert!(bridge
+        .execute_accounting_request(accounting())
+        .await
+        .is_err());
+    tokio::time::advance(Duration::from_secs(30)).await;
+    assert_eq!(
+        bridge
+            .execute_accounting_request(accounting())
+            .await
+            .unwrap()
+            .server,
+        "backup:49"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn expired_upstream_attempt_routes_the_next_request_to_backup() {
+    use crate::config::RequestLimits;
+
+    let primary = Arc::new(ScriptedConnection {
+        accounting_delay: Duration::from_secs(60),
+        ..ScriptedConnection::successful("primary:49")
+    });
+    let backup = Arc::new(ScriptedConnection::successful("backup:49"));
+    let connector = Arc::new(OperationConnector::new(operation_map(
+        primary,
+        backup,
+        OperationKind::Accounting,
+    )));
+    let limits = RequestLimits::new(1024, 1)
+        .unwrap()
+        .with_request_timeout(Duration::from_secs(1))
+        .unwrap();
+    let policy = RuntimePolicy::new(
+        FailoverStrategy::default(),
+        FailoverStrategy::default(),
+        OperationPolicies::new(limits, limits, limits),
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    let manager = Arc::new(
+        UpstreamManager::new_shared_with_proxy_downstream_obfuscation(
+            vec![server("primary"), server("backup")],
+            PreparedProxyPolicy::unobfuscated(),
+            policy,
+            connector.clone(),
+            RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
+            tacacsrs_config::prepare::PrepareOptions::default(),
+        )
+        .unwrap(),
+    );
+    let bridge = UpstreamBridge::new(manager);
+    let error = bridge
+        .execute_accounting_request(accounting())
+        .await
+        .unwrap_err();
+    assert_eq!(error.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::Never);
+    assert_eq!(error.facts.category(), tacacsrs_protocol::failure::FailureCategory::Deadline);
+    assert_eq!(error.facts.phase(), tacacsrs_protocol::failure::FailurePhase::Upstream);
+    assert_eq!(
+        connector
+            .attempts("backup:49", OperationKind::Accounting)
+            .await,
+        0
+    );
+    let response = bridge
+        .execute_accounting_request(accounting())
+        .await
+        .unwrap();
+    assert_eq!(response.server, "backup:49");
+}
+
+#[tokio::test(start_paused = true)]
+async fn binding_deadline_is_reported_as_deadline() {
+    use crate::config::{OperationPolicies, RequestLimits};
+
+    let primary = Arc::new(ScriptedConnection::successful("primary:49"));
+    let backup = Arc::new(ScriptedConnection::successful("backup:49"));
+    let connector = Arc::new(
+        OperationConnector::new(operation_map(primary, backup, OperationKind::Accounting))
+            .with_connect_delay(Duration::from_secs(2)),
+    );
+    let limits = RequestLimits::new(1024, 1)
+        .unwrap()
+        .with_request_timeout(Duration::from_secs(1))
+        .unwrap();
+    let runtime_policy = RuntimePolicy::new(
+        FailoverStrategy::default(),
+        FailoverStrategy::default(),
+        OperationPolicies::new(limits, limits, limits),
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    let bridge = bridge_with_policy(connector, runtime_policy);
+    let error = bridge
+        .execute_accounting_request(accounting())
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.facts.category(), tacacsrs_protocol::failure::FailureCategory::Deadline);
+    assert_eq!(error.facts.phase(), tacacsrs_protocol::failure::FailurePhase::Routing);
+    assert_eq!(error.facts.delivery(), tacacsrs_protocol::failure::DeliveryState::NotSent);
+}
+
+#[tokio::test]
+async fn ordered_retry_stops_on_unknown_authentication_outcome() {
     let mut primary = ScriptedConnection::successful("primary:49");
     primary.fail_authentication = AtomicBool::new(true);
     let primary = Arc::new(primary);
@@ -236,17 +829,18 @@ async fn ordered_retry_moves_authentication_to_the_next_server() {
     )));
     let bridge = bridge(Arc::clone(&connector), FailoverStrategy::OrderedSafeRetry);
 
-    let response = bridge
+    let error = bridge
         .execute_pap_authentication_request(authentication())
         .await
-        .expect("the backup must authenticate");
+        .expect_err("uncertain authentication must not be replayed");
 
-    assert_eq!(response.server, "backup:49");
+    assert_eq!(error.server.as_deref(), Some("primary:49"));
+    assert_eq!(error.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::Never);
     assert_eq!(
         connector
             .attempts("backup:49", OperationKind::Authentication)
             .await,
-        1
+        0
     );
 }
 
@@ -292,10 +886,14 @@ async fn uncertain_accounting_failure_does_not_retry() {
     )));
     let bridge = bridge(Arc::clone(&connector), FailoverStrategy::OrderedSafeRetry);
 
-    bridge
+    let error = bridge
         .execute_accounting_request(accounting())
         .await
         .expect_err("an uncertain accounting result must not be replayed");
+    assert_eq!(error.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::Never);
+    assert_eq!(error.facts.delivery(), tacacsrs_protocol::failure::DeliveryState::OutcomeUnknown);
+    assert_eq!(error.runtime_generation, Some(0));
+    assert_eq!(error.attempt.map(std::num::NonZeroU32::get), Some(1));
 
     assert_eq!(
         connector
@@ -303,6 +901,142 @@ async fn uncertain_accounting_failure_does_not_retry() {
             .await,
         0
     );
+}
+
+#[tokio::test]
+async fn uncertain_failure_stops_before_binding_a_missing_backup() {
+    let primary = Arc::new(ScriptedConnection {
+        fail_authentication: AtomicBool::new(true),
+        ..ScriptedConnection::successful("primary:49")
+    });
+    let connector = Arc::new(OperationConnector::new(HashMap::from([(
+        ("primary:49".to_owned(), OperationKind::Authentication),
+        primary,
+    )])));
+    let bridge = bridge(Arc::clone(&connector), FailoverStrategy::OrderedSafeRetry);
+    let error = bridge
+        .execute_pap_authentication_request(authentication())
+        .await
+        .unwrap_err();
+    assert_eq!(error.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::Never);
+    assert_eq!(
+        connector
+            .attempts("backup:49", OperationKind::Authentication)
+            .await,
+        0
+    );
+}
+
+#[tokio::test]
+async fn ordered_retry_stops_on_unknown_authorization_outcome() {
+    let primary = Arc::new(ScriptedConnection {
+        fail_authorization: AtomicBool::new(true),
+        ..ScriptedConnection::successful("primary:49")
+    });
+    let backup = Arc::new(ScriptedConnection::successful("backup:49"));
+    let connector = Arc::new(OperationConnector::new(operation_map(
+        primary,
+        backup,
+        OperationKind::Authorization,
+    )));
+    let bridge = bridge(Arc::clone(&connector), FailoverStrategy::OrderedSafeRetry);
+    let request = tacacsrs_protocol::operations::AuthorizationOperation::builder(
+        "admin",
+        15,
+        tacacsrs_protocol::operations::AuthorizationAuthenticationContext::TacacsPap,
+    )
+    .service("shell")
+    .command("show")
+    .build()
+    .unwrap();
+    let error = bridge
+        .execute_authorization_request(request)
+        .await
+        .unwrap_err();
+    assert_eq!(error.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::Never);
+    assert_eq!(error.server.as_deref(), Some("primary:49"));
+    assert_eq!(
+        connector
+            .attempts("backup:49", OperationKind::Authorization)
+            .await,
+        0
+    );
+}
+
+#[tokio::test]
+async fn malformed_authorization_reply_is_reported_as_protocol_failure() {
+    let primary = Arc::new(ScriptedConnection {
+        authorization_args: vec!["=value".to_owned()],
+        ..ScriptedConnection::successful("primary:49")
+    });
+    let backup = Arc::new(ScriptedConnection::successful("backup:49"));
+    let connector = Arc::new(OperationConnector::new(operation_map(
+        primary,
+        backup,
+        OperationKind::Authorization,
+    )));
+    let bridge = bridge(Arc::clone(&connector), FailoverStrategy::OrderedSafeRetry);
+    let request = tacacsrs_protocol::operations::AuthorizationOperation::builder(
+        "admin",
+        15,
+        tacacsrs_protocol::operations::AuthorizationAuthenticationContext::TacacsPap,
+    )
+    .service("shell")
+    .command("show")
+    .build()
+    .unwrap();
+    let error = bridge
+        .execute_authorization_request(request)
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.facts.category(), tacacsrs_protocol::failure::FailureCategory::Protocol);
+    assert_eq!(error.facts.delivery(), tacacsrs_protocol::failure::DeliveryState::OutcomeUnknown);
+    assert_eq!(error.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::Never);
+    assert_eq!(
+        connector
+            .attempts("backup:49", OperationKind::Authorization)
+            .await,
+        0
+    );
+}
+
+#[tokio::test]
+async fn ordered_retry_preserves_explicit_authentication_error_failover() {
+    let primary = Arc::new(ScriptedConnection {
+        authentication_status: TacacsAuthenticationStatus::TacPlusAuthenStatusError,
+        ..ScriptedConnection::successful("primary:49")
+    });
+    let backup = Arc::new(ScriptedConnection::successful("backup:49"));
+    let connector = Arc::new(OperationConnector::new(operation_map(
+        primary,
+        backup,
+        OperationKind::Authentication,
+    )));
+    let bridge = bridge(Arc::clone(&connector), FailoverStrategy::OrderedSafeRetry);
+    let response = bridge
+        .execute_pap_authentication_request(authentication())
+        .await
+        .unwrap();
+    assert_eq!(response.server, "backup:49");
+    assert_eq!(
+        connector
+            .attempts("backup:49", OperationKind::Authentication)
+            .await,
+        1
+    );
+}
+
+#[tokio::test]
+async fn unsent_accounting_bind_failure_remains_retriable() {
+    let connector = Arc::new(OperationConnector::new(HashMap::new()));
+    let bridge = bridge(connector, FailoverStrategy::OrderedSafeRetry);
+    let error = bridge
+        .execute_accounting_request(accounting())
+        .await
+        .unwrap_err();
+    assert_eq!(error.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::AfterRecovery);
+    assert_eq!(error.facts.delivery(), tacacsrs_protocol::failure::DeliveryState::NotSent);
 }
 
 #[tokio::test]

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from pathlib import Path
-from typing import TextIO
+from typing import TextIO, TypeAlias
 import tomllib
 
 from pyang import plugin
@@ -35,7 +35,7 @@ _BINARY_SENTINEL = "__BINARY__"
 _YANG_TO_RUST = {
     "string": "String",
     "boolean": "bool",
-    "empty": "bool",
+    "empty": "crate::YangEmpty",
     "uint8": "u8",
     "uint16": "u16",
     "uint32": "u32",
@@ -511,10 +511,13 @@ class Struct:
 
 class ChoiceGroup:
     """Store metadata for a flattened YANG choice node."""
-    __slots__ = ("yang_name", "mandatory", "cases")
+    __slots__ = ("yang_name", "path", "activation", "mandatory", "cases")
 
-    def __init__(self, yang_name: str, mandatory: bool):
+    def __init__(self, yang_name: str, mandatory: bool,
+                 path: tuple[str, ...], activation: tuple[tuple[str, str], ...]):
         self.yang_name = yang_name
+        self.path = path
+        self.activation = activation
         self.mandatory = mandatory
         # Each case contains (case_yang_name, [field_yang_names]).
         self.cases: list[tuple[str, list[str]]] = []
@@ -669,11 +672,14 @@ def _resolve_identityref_base(type_stmt):
 # The collector walks the resolved YANG data tree and groups nodes by source module.
 # ---------------------------------------------------------------------------
 
+_Fingerprint: TypeAlias = tuple["str | bool | None | _Fingerprint", ...]
+
+
 class Collector:
     def __init__(self, ctx=None, secret_fields: SecretFieldManifest | None = None):
         self.modules: OrderedDict[str, ModuleTypes] = OrderedDict()
         # Map a fingerprint to (module_name, struct_name) to remove duplicates.
-        self._fingerprints: dict[str, tuple[str, str]] = {}
+        self._fingerprints: dict[tuple[str, _Fingerprint], tuple[str, str]] = {}
         self._ctx = ctx
         self._secret_fields = secret_fields
 
@@ -754,7 +760,7 @@ class Collector:
         fp = self._fingerprint(stmt)
 
         # Reuse this exact structure if it exists in the same module.
-        fp_key = f"{mod.yang_name}:{fp}"
+        fp_key = (mod.yang_name, fp)
         if fp_key in self._fingerprints:
             existing_mod_name, existing_name = self._fingerprints[fp_key]
             return mod, existing_name, True
@@ -777,43 +783,50 @@ class Collector:
         return mod, name, False
 
     @staticmethod
-    def _fingerprint(stmt) -> str:
+    def _fingerprint(stmt, choice_path=(), activation=()) -> _Fingerprint:
         """Create a structural fingerprint of a container or list node.
         
         Two nodes with the same fingerprint have the same child structure.
-        Their leaf names, types, and nested container shapes are equal.
+        Their leaf names, types, defaults, and nested container shapes are equal.
         """
-        parts = []
+        parts: list[_Fingerprint] = []
         children = _get_children(stmt)
         for ch in children:
             if ch.keyword == "leaf":
                 t = ch.search_one("type")
                 type_name = t.arg if t else "?"
-                parts.append(f"L:{ch.arg}:{type_name}")
+                default = ch.search_one("default")
+                mandatory = ch.search_one("mandatory")
+                parts.append((
+                    "L", ch.arg, type_name, default.arg if default else None,
+                    mandatory.arg if mandatory else "false",
+                ))
             elif ch.keyword == "leaf-list":
                 t = ch.search_one("type")
                 type_name = t.arg if t else "?"
-                parts.append(f"LL:{ch.arg}:{type_name}")
+                parts.append(("LL", ch.arg, type_name))
             elif ch.keyword in ("container", "list"):
                 # Recurse to get the shape.
                 sub_fp = Collector._fingerprint(ch)
-                parts.append(f"C:{ch.arg}:{sub_fp}")
+                parts.append(("C", ch.arg, sub_fp))
             elif ch.keyword == "choice":
-                sub_fp = Collector._fingerprint(ch)
-                parts.append(f"CH:{ch.arg}:{sub_fp}")
+                path = choice_path + (ch.arg,)
+                sub_fp = Collector._fingerprint(ch, path, activation)
+                parts.append(("CH", path, _is_mandatory(ch), activation, sub_fp))
             elif ch.keyword == "case":
-                sub_fp = Collector._fingerprint(ch)
-                parts.append(f"CA:{ch.arg}:{sub_fp}")
-        return "|".join(parts)
+                case_activation = activation + (("/".join(choice_path), ch.arg),)
+                sub_fp = Collector._fingerprint(ch, choice_path + (ch.arg,), case_activation)
+                parts.append(("CA", ch.arg, sub_fp))
+        return tuple(parts)
 
     # Send each node to the applicable function.
 
     def _process_node(self, stmt, parent_prefix: str, current_mod: ModuleTypes | None = None) -> Field | None:
         kw = stmt.keyword
         if kw == "container":
-            return self._process_container(stmt, parent_prefix)
+            return self._process_container(stmt, parent_prefix, current_mod)
         if kw == "list":
-            return self._process_list(stmt, parent_prefix)
+            return self._process_list(stmt, parent_prefix, current_mod)
         if kw == "leaf":
             return self._process_leaf(stmt, parent_prefix, current_mod)
         if kw == "leaf-list":
@@ -822,7 +835,7 @@ class Collector:
             return None  # The caller uses _flatten_choice.
         return None
 
-    def _process_container(self, stmt, parent_prefix: str) -> Field:
+    def _process_container(self, stmt, parent_prefix: str, current_mod: ModuleTypes | None = None) -> Field:
         mod, sname, existed = self._struct_name(stmt, parent_prefix)
         if not existed:
             rs = Struct(sname, _get_desc(stmt))
@@ -830,9 +843,10 @@ class Collector:
             mod.structs[sname] = rs
 
         type_ref = self._qualified_type(stmt, sname)
-        return Field(stmt.arg, type_ref, optional=True, doc=_get_desc(stmt))
+        return Field(stmt.arg, type_ref, optional=True, doc=_get_desc(stmt),
+                 serde_name=self._serde_name(stmt, current_mod or mod))
 
-    def _process_list(self, stmt, parent_prefix: str) -> Field:
+    def _process_list(self, stmt, parent_prefix: str, current_mod: ModuleTypes | None = None) -> Field:
         mod, sname, existed = self._struct_name(stmt, parent_prefix)
         if not existed:
             rs = Struct(sname, _get_desc(stmt))
@@ -840,7 +854,8 @@ class Collector:
             mod.structs[sname] = rs
 
         type_ref = self._qualified_type(stmt, sname)
-        return Field(stmt.arg, type_ref, is_vec=True, doc=_get_desc(stmt))
+        return Field(stmt.arg, type_ref, is_vec=True, doc=_get_desc(stmt),
+                 serde_name=self._serde_name(stmt, current_mod or mod))
 
     def _process_leaf(self, stmt, parent_prefix: str, current_mod: ModuleTypes | None = None) -> Field:
         type_stmt = stmt.search_one("type")
@@ -1021,10 +1036,13 @@ class Collector:
             return f"{src}:{stmt.arg}"
         return stmt.arg
 
-    def _flatten_choice(self, choice_stmt, parent_prefix: str, current_mod: ModuleTypes) -> tuple[list[Field], ChoiceGroup]:
+    def _flatten_choice(self, choice_stmt, parent_prefix: str, current_mod: ModuleTypes,
+                        path=(), activation=()) -> tuple[list[Field], list[ChoiceGroup]]:
         """Flatten case branches into ``Option<T>`` fields and record choice metadata."""
         mandatory = _is_mandatory(choice_stmt)
-        choice_group = ChoiceGroup(choice_stmt.arg, mandatory)
+        choice_path = path + (choice_stmt.arg,)
+        choice_group = ChoiceGroup(choice_stmt.arg, mandatory, choice_path, activation)
+        groups = [choice_group]
         fields = []
 
         cases = [ch for ch in _get_children(choice_stmt) if ch.keyword == "case"]
@@ -1035,14 +1053,14 @@ class Collector:
             case_field_names = []
             for child in _get_children(case):
                 if child.keyword == "choice":
-                    # Recurse into the nested choice and merge it.
-                    nested_fields, nested_group = self._flatten_choice(child, parent_prefix, current_mod)
+                    nested_fields, nested_groups = self._flatten_choice(
+                        child, parent_prefix, current_mod,
+                        choice_path + (case.arg,),
+                        activation + (("/".join(choice_path), case.arg),),
+                    )
                     fields.extend(nested_fields)
-                    # Attach the nested choice as a separate group.
-                    choice_group.cases.append((
-                        f"{case.arg}/{child.arg}",
-                        [f.yang_name for f in nested_fields],
-                    ))
+                    groups.extend(nested_groups)
+                    case_field_names.extend(f.yang_name for f in nested_fields)
                 else:
                     field = self._process_node(child, parent_prefix, current_mod)
                     if field is not None:
@@ -1052,15 +1070,14 @@ class Collector:
             if case_field_names:
                 choice_group.cases.append((case.arg, case_field_names))
 
-        return fields, choice_group
+        return fields, groups
 
     def _fill_children(self, stmt, rs: Struct, sname: str, current_mod: ModuleTypes):
         for child in _get_children(stmt):
             if child.keyword == "choice":
-                choice_fields, choice_group = self._flatten_choice(child, sname, current_mod)
+                choice_fields, choice_groups = self._flatten_choice(child, sname, current_mod)
                 rs.fields.extend(choice_fields)
-                if choice_group.cases:
-                    rs.choices.append(choice_group)
+                rs.choices.extend(group for group in choice_groups if group.cases)
             else:
                 field = self._process_node(child, sname, current_mod)
                 if field is not None:
@@ -1166,7 +1183,7 @@ class RustEmitter:
             for f in st.fields:
                 if "::" in f.rust_type:
                     foreign_mod = f.rust_type.split("::")[0]
-                    if foreign_mod != mod.rust_name and foreign_mod != "tacacsrs_secrets":
+                    if foreign_mod != mod.rust_name and foreign_mod not in ("tacacsrs_secrets", "crate"):
                         imports.add(foreign_mod)
         for imp in sorted(imports):
             w(f"    use super::{imp};\n")
@@ -1435,12 +1452,33 @@ class RustEmitter:
             w("\n")
 
         self._doc(st.doc, "    ")
-        w("    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]\n")
+        has_default = all(f.optional or f.is_vec or f.default_value is not None for f in st.fields)
+        derive_default = has_default and all(
+            f.optional or f.is_vec or f.yang_name in bare_defaults for f in st.fields
+        )
+        extra_derive = ", Default" if derive_default else ""
+        w(f"    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize{extra_derive})]\n")
         w('    #[serde(rename_all = "kebab-case")]\n')
         w(f"    pub struct {st.name} {{\n")
         for f in st.fields:
             self._emit_field(f, current_mod, default_fns, bare_defaults)
         w("    }\n\n")
+
+        if has_default and not derive_default:
+            w(f"    impl Default for {st.name} {{\n")
+            w("        fn default() -> Self {\n")
+            w("            Self {\n")
+            for field in st.fields:
+                if field.optional:
+                    expression = "None"
+                elif field.is_vec:
+                    expression = "Vec::new()"
+                elif field.yang_name in default_fns:
+                    expression = f"{default_fns[field.yang_name][0]}()"
+                else:
+                    expression = "Default::default()"
+                w(f"                {_safe_name(field.rust_name)}: {expression},\n")
+            w("            }\n        }\n    }\n\n")
 
         # Write choice-group constants for flattened choices.
         if st.choices:
@@ -1453,8 +1491,13 @@ class RustEmitter:
         if f.serde_name != f.rust_name or _needs_rename(f.serde_name):
             w(f'        #[serde(rename = "{f.serde_name}")]\n')
 
+        if f.rust_type == "crate::YangEmpty" and f.optional:
+            w('        #[serde(deserialize_with = "crate::serde_helpers::deserialize_present_empty")]\n')
+
         if f.rust_type == "Vec<u8>" and f.secret_kind is None:
-            if f.is_vec:
+            if f.is_vec and f.optional:
+                w('        #[serde(with = "crate::serde_helpers::base64_binary::option_vec_bytes")]\n')
+            elif f.is_vec:
                 w('        #[serde(with = "crate::serde_helpers::base64_binary::vec_bytes")]\n')
             elif f.optional:
                 w('        #[serde(with = "crate::serde_helpers::base64_binary::option_bytes")]\n')
@@ -1491,8 +1534,16 @@ class RustEmitter:
         w = self.fd.write
         w(f"    /// Choice constraints for [`{st.name}`].\n")
         w(f"    impl {st.name} {{\n")
+        used_names = set()
+        metadata_suffixes = ("", "_MANDATORY", "_PATH", "_ACTIVATION")
         for cg in st.choices:
-            const_name = f"CHOICE_{_yang_to_snake(cg.yang_name).upper()}"
+            base_name = "CHOICE_" + "_".join(_yang_to_snake(part).upper() for part in cg.path)
+            const_name = base_name
+            sequence = 2
+            while any(const_name + suffix in used_names for suffix in metadata_suffixes):
+                const_name = f"{base_name}_{sequence}"
+                sequence += 1
+            used_names.update(const_name + suffix for suffix in metadata_suffixes)
             mandatory_str = "true" if cg.mandatory else "false"
             w(f"        /// YANG choice `{cg.yang_name}` ")
             w(f"({'mandatory' if cg.mandatory else 'optional'}).\n")
@@ -1504,6 +1555,9 @@ class RustEmitter:
                 w(f'            ("{case_name}", &[{fields_str}]),\n')
             w("        ];\n")
             w(f"        pub const {const_name}_MANDATORY: bool = {mandatory_str};\n")
+            activation_str = ", ".join(f'("{path}", "{case}")' for path, case in cg.activation)
+            w(f'        pub const {const_name}_PATH: &str = "{"/".join(cg.path)}";\n')
+            w(f"        pub const {const_name}_ACTIVATION: &[(&str, &str)] = &[{activation_str}];\n")
         w("    }\n\n")
 
 

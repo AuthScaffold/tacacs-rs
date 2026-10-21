@@ -3,11 +3,10 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::os::unix::net::UnixListener;
 use std::path::Path;
 
-use tacacsrs_config::crypto_types::SymmetricKeyFormat;
+use tacacsrs_credential_resolution::SymmetricKeyFormat;
 use tacacsrs_config::parse_yang_json;
-use tacacsrs_credential_resolution::{
-    CredentialResolver, ResolutionErrorKind, ResolutionPlan, ResolvedCredential,
-};
+use tacacsrs_config::prepare::ServerResolutionPlan;
+use tacacsrs_credential_resolution::{CredentialResolver, ResolutionErrorKind, ResolvedCredential};
 use tacacsrs_sonic::{
     SonicCredentialInitializationError, SonicCredentialPolicy, SonicCredentialResolver,
     SonicCredentialRoots,
@@ -44,7 +43,7 @@ fn resolver(root: &Path, policy: SonicCredentialPolicy) -> SonicCredentialResolv
     .expect("open provider")
 }
 
-fn epsk_plan(reference: &str) -> ResolutionPlan {
+fn epsk_plan(reference: &str) -> ServerResolutionPlan {
     let reference = serde_json::to_string(reference).expect("serialize reference");
     let json = format!(
         r#"{{
@@ -65,10 +64,10 @@ fn epsk_plan(reference: &str) -> ResolutionPlan {
         }}"#
     );
     let config = parse_yang_json(&json).expect("central EPSK configuration");
-    ResolutionPlan::from_server(&config.server[0]).expect("resolution plan")
+    tacacsrs_config::prepare::resolution_plan(&config.server[0]).expect("resolution plan")
 }
 
-fn certificate_plan() -> ResolutionPlan {
+fn certificate_plan() -> ServerResolutionPlan {
     let config = parse_yang_json(
         r#"{
             "ietf-system-tacacs-plus:tacacs-plus": {
@@ -90,7 +89,7 @@ fn certificate_plan() -> ResolutionPlan {
         }"#,
     )
     .expect("central certificate configuration");
-    ResolutionPlan::from_server(&config.server[0]).expect("resolution plan")
+    tacacsrs_config::prepare::resolution_plan(&config.server[0]).expect("resolution plan")
 }
 
 #[tokio::test]
@@ -102,7 +101,10 @@ async fn safe_regular_epsk_resolves_to_zeroizing_secret_bytes() {
     let plan = epsk_plan("valid-object");
 
     let material = provider
-        .resolve(&plan.requests()[0])
+        .resolve(
+            &plan.neutral_plan().requests()[0],
+            &tacacsrs_credential_resolution::WorkScope::unowned(),
+        )
         .await
         .expect("resolve EPSK");
     let ResolvedCredential::SymmetricKey(material) = material else {
@@ -157,7 +159,10 @@ async fn unsafe_epsk_objects_are_rejected_with_sanitized_errors() {
         let provider = resolver(&root, policy);
         let plan = epsk_plan(id);
         let error = provider
-            .resolve(&plan.requests()[0])
+            .resolve(
+                &plan.neutral_plan().requests()[0],
+                &tacacsrs_credential_resolution::WorkScope::unowned(),
+            )
             .await
             .expect_err("unsafe object must fail");
         assert_eq!(error.kind(), ResolutionErrorKind::InvalidMaterial, "scenario {id}");
@@ -186,7 +191,10 @@ async fn wrong_file_owner_and_group_are_rejected_when_privileged() {
     for id in ["wrong-owner", "wrong-group"] {
         let plan = epsk_plan(id);
         let error = provider
-            .resolve(&plan.requests()[0])
+            .resolve(
+                &plan.neutral_plan().requests()[0],
+                &tacacsrs_credential_resolution::WorkScope::unowned(),
+            )
             .await
             .expect_err("unsafe ownership must fail");
         assert_eq!(error.kind(), ResolutionErrorKind::InvalidMaterial);
@@ -201,7 +209,10 @@ async fn missing_and_invalid_references_fail_before_secret_reads() {
 
     let missing = epsk_plan("missing-object");
     let error = provider
-        .resolve(&missing.requests()[0])
+        .resolve(
+            &missing.neutral_plan().requests()[0],
+            &tacacsrs_credential_resolution::WorkScope::unowned(),
+        )
         .await
         .expect_err("missing object must fail");
     assert_eq!(error.kind(), ResolutionErrorKind::NotFound);
@@ -219,7 +230,10 @@ async fn missing_and_invalid_references_fail_before_secret_reads() {
     ] {
         let plan = epsk_plan(invalid);
         let error = provider
-            .resolve(&plan.requests()[0])
+            .resolve(
+                &plan.neutral_plan().requests()[0],
+                &tacacsrs_credential_resolution::WorkScope::unowned(),
+            )
             .await
             .expect_err("invalid reference must fail");
         assert_eq!(error.kind(), ResolutionErrorKind::InvalidMaterial);
@@ -248,7 +262,10 @@ async fn opaque_id_boundaries_resolve_only_from_the_epsk_root() {
     ] {
         let plan = epsk_plan(id);
         let ResolvedCredential::SymmetricKey(material) = provider
-            .resolve(&plan.requests()[0])
+            .resolve(
+                &plan.neutral_plan().requests()[0],
+                &tacacsrs_credential_resolution::WorkScope::unowned(),
+            )
             .await
             .expect("boundary ID resolves")
         else {
@@ -259,7 +276,10 @@ async fn opaque_id_boundaries_resolve_only_from_the_epsk_root() {
 
     let plan = epsk_plan("acms-only");
     let error = provider
-        .resolve(&plan.requests()[0])
+        .resolve(
+            &plan.neutral_plan().requests()[0],
+            &tacacsrs_credential_resolution::WorkScope::unowned(),
+        )
         .await
         .expect_err("EPSK requests cannot read the ACMS root");
     assert_eq!(error.kind(), ResolutionErrorKind::NotFound);
@@ -272,7 +292,10 @@ async fn deferred_certificate_requests_are_rejected_without_accessing_acms() {
     let plan = certificate_plan();
 
     let error = provider
-        .resolve(&plan.requests()[0])
+        .resolve(
+            &plan.neutral_plan().requests()[0],
+            &tacacsrs_credential_resolution::WorkScope::unowned(),
+        )
         .await
         .expect_err("certificate provider is deferred");
     assert_eq!(error.kind(), ResolutionErrorKind::InvalidMaterial);
@@ -292,7 +315,10 @@ async fn reloadable_provider_recovers_when_protected_root_appears() {
     let plan = epsk_plan("late-object");
 
     let error = provider
-        .resolve(&plan.requests()[0])
+        .resolve(
+            &plan.neutral_plan().requests()[0],
+            &tacacsrs_credential_resolution::WorkScope::unowned(),
+        )
         .await
         .expect_err("missing root must be unavailable");
     assert_eq!(error.kind(), ResolutionErrorKind::Unavailable);
@@ -302,7 +328,10 @@ async fn reloadable_provider_recovers_when_protected_root_appears() {
     write_object(&root, "late-object", &[0x88; 32]);
 
     let material = provider
-        .resolve(&plan.requests()[0])
+        .resolve(
+            &plan.neutral_plan().requests()[0],
+            &tacacsrs_credential_resolution::WorkScope::unowned(),
+        )
         .await
         .expect("reloadable provider recovers");
     let ResolvedCredential::SymmetricKey(material) = material else {

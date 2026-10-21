@@ -28,7 +28,7 @@
         {
             "label": "Rust: Build documentation",
             "type": "shell",
-            "command": "cargo doc --workspace --no-deps --all-features",
+            "command": "cargo doc --workspace --no-deps --all-features --document-private-items",
             "options": {
                 "env": {
                     "RUSTDOCFLAGS": "-D warnings"

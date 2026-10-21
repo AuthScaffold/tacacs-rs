@@ -2,6 +2,22 @@
 
 const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
+/// Presence of a YANG `empty` leaf, encoded as `[null]` in RFC 7951 JSON.
+///
+/// Use `Some(YangEmpty::default())` for a present optional leaf and `None` for absence.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct YangEmpty([(); 1]);
+
+pub(crate) fn deserialize_present_empty<'de, D>(
+    deserializer: D,
+) -> Result<Option<YangEmpty>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    <YangEmpty as serde::Deserialize>::deserialize(deserializer).map(Some)
+}
+
 pub(crate) mod base64_binary {
     use super::BASE64;
 
@@ -11,14 +27,14 @@ pub(crate) mod base64_binary {
 
         use super::BASE64;
 
-        pub fn serialize<S>(value: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+        pub(crate) fn serialize<S>(value: &[u8], serializer: S) -> Result<S::Ok, S::Error>
         where
             S: serde::Serializer,
         {
             serializer.serialize_str(&BASE64.encode(value))
         }
 
-        pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+        pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
         where
             D: serde::Deserializer<'de>,
         {
@@ -33,7 +49,10 @@ pub(crate) mod base64_binary {
 
         use super::BASE64;
 
-        pub fn serialize<S>(value: &Option<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
+        pub(crate) fn serialize<S>(
+            value: &Option<Vec<u8>>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error>
         where
             S: serde::Serializer,
         {
@@ -43,12 +62,46 @@ pub(crate) mod base64_binary {
             }
         }
 
-        pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Vec<u8>>, D::Error>
+        pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Option<Vec<u8>>, D::Error>
         where
             D: serde::Deserializer<'de>,
         {
             Option::<String>::deserialize(deserializer)?
                 .map(|encoded| BASE64.decode(encoded).map_err(serde::de::Error::custom))
+                .transpose()
+        }
+    }
+
+    pub(crate) mod option_vec_bytes {
+        use base64::Engine;
+        use serde::{Deserialize, Serialize};
+        use super::BASE64;
+
+        pub(crate) fn serialize<S: serde::Serializer>(
+            value: &Option<Vec<Vec<u8>>>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            value
+                .as_ref()
+                .map(|values| {
+                    values
+                        .iter()
+                        .map(|value| BASE64.encode(value))
+                        .collect::<Vec<_>>()
+                })
+                .serialize(serializer)
+        }
+
+        pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Option<Vec<Vec<u8>>>, D::Error> {
+            Option::<Vec<String>>::deserialize(deserializer)?
+                .map(|values| {
+                    values
+                        .into_iter()
+                        .map(|value| BASE64.decode(value).map_err(serde::de::Error::custom))
+                        .collect()
+                })
                 .transpose()
         }
     }
@@ -61,7 +114,7 @@ pub(crate) mod base64_binary {
 
         use super::BASE64;
 
-        pub fn serialize<S>(value: &[Vec<u8>], serializer: S) -> Result<S::Ok, S::Error>
+        pub(crate) fn serialize<S>(value: &[Vec<u8>], serializer: S) -> Result<S::Ok, S::Error>
         where
             S: serde::Serializer,
         {
@@ -72,7 +125,7 @@ pub(crate) mod base64_binary {
             encoded.serialize(serializer)
         }
 
-        pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<Vec<u8>>, D::Error>
+        pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Vec<Vec<u8>>, D::Error>
         where
             D: serde::Deserializer<'de>,
         {

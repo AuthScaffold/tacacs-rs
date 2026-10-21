@@ -1,57 +1,40 @@
 //! Explicit shell session and command authorization.
 
-#[cfg(target_os = "linux")]
-use tacacsrs_agent_client::{
+use tacacsrs_protocol::operations::{
     AuthorizationAuthenticationContext, AuthorizationOperation, AuthorizationOperationResponse,
-    ServiceClient,
 };
-use tacacsrs_flows::authorization::{AuthenticationContext, AuthorizationExchange};
-use tacacsrs_messages::authorization::reply::AuthorizationReply;
 
 use crate::cli::{AuthorizationAuthContext, AuthorizationMode, RequestArgs};
 use crate::connection::Connection;
 
-pub async fn authorize_direct(
+/// Sends a prepared authorization operation over a direct TACACS+ connection.
+///
+/// # Errors
+///
+/// Returns an error if the exchange fails or the reply is malformed.
+pub(crate) async fn send_direct(
     connection: &Connection,
-    args: &RequestArgs,
-    privilege_level: u8,
-    context: AuthorizationAuthContext,
-    mode: &AuthorizationMode,
-) -> anyhow::Result<AuthorizationReply> {
-    let context = flow_context(context);
-    let exchange = match mode {
-        AuthorizationMode::Session => AuthorizationExchange::shell_session(
-            context,
-            args.user.clone(),
-            args.port.clone(),
-            args.rem_addr.clone(),
-            privilege_level,
-        ),
-        AuthorizationMode::Command { command, arguments } => AuthorizationExchange::shell_command(
-            context,
-            args.user.clone(),
-            args.port.clone(),
-            args.rem_addr.clone(),
-            privilege_level,
-            command.clone(),
-            arguments.clone(),
-        ),
-    };
-    connection.execute(exchange).await
+    operation: &AuthorizationOperation,
+) -> anyhow::Result<AuthorizationOperationResponse> {
+    let reply = connection.execute(&operation.exchange()?).await?;
+    AuthorizationOperationResponse::from_reply(connection.server_name(), reply)
 }
 
-#[cfg(target_os = "linux")]
-pub async fn authorize_service(
-    client: &ServiceClient,
+/// Builds an [`AuthorizationOperation`] from CLI arguments.
+///
+/// # Errors
+///
+/// Returns an error if the assembled operation is invalid.
+pub(crate) fn authorization_operation(
     args: &RequestArgs,
     privilege_level: u8,
     context: AuthorizationAuthContext,
     mode: &AuthorizationMode,
-) -> anyhow::Result<AuthorizationOperationResponse> {
+) -> anyhow::Result<AuthorizationOperation> {
     let mut builder = AuthorizationOperation::builder(
         args.user.clone(),
         u32::from(privilege_level),
-        ipc_context(context),
+        authentication_context(context),
     )
     .port(args.port.clone())
     .remote_address(args.rem_addr.clone())
@@ -64,19 +47,12 @@ pub async fn authorize_service(
                 .command_args(arguments.clone());
         }
     }
-    client.send_authorization(builder.build()?).await
+    builder.build()
 }
 
-const fn flow_context(context: AuthorizationAuthContext) -> AuthenticationContext {
-    match context {
-        AuthorizationAuthContext::Ascii => AuthenticationContext::TacacsAscii,
-        AuthorizationAuthContext::Pap => AuthenticationContext::TacacsPap,
-        AuthorizationAuthContext::Unauthenticated => AuthenticationContext::Unauthenticated,
-    }
-}
-
-#[cfg(target_os = "linux")]
-const fn ipc_context(context: AuthorizationAuthContext) -> AuthorizationAuthenticationContext {
+const fn authentication_context(
+    context: AuthorizationAuthContext,
+) -> AuthorizationAuthenticationContext {
     match context {
         AuthorizationAuthContext::Ascii => AuthorizationAuthenticationContext::TacacsAscii,
         AuthorizationAuthContext::Pap => AuthorizationAuthenticationContext::TacacsPap,

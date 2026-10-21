@@ -1,0 +1,216 @@
+use tacacsrs_protocol::enumerations::{TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType};
+use tacacsrs_protocol::constants::TACACS_MAX_BODY_LENGTH;
+use tacacsrs_protocol::header::Header;
+use tacacsrs_protocol::packet::{Packet, PacketTrait};
+
+use super::DedicatedConnection;
+use crate::exchange_error::ProtocolFailure;
+use crate::single_connect::SingleConnectionState;
+use crate::transport::mock::MockTransport;
+
+const TEST_SESSION_ID: u32 = 0xDEAD_BEEF;
+
+fn test_packet(seq_no: u8, flags: TacacsFlags, body: &[u8]) -> Packet {
+    Packet::new(
+        Header {
+            major_version: TacacsMajorVersion::TacacsPlusMajor1,
+            minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
+            tacacs_type: TacacsType::TacPlusAccounting,
+            seq_no,
+            flags,
+            session_id: TEST_SESSION_ID,
+            length: u32::try_from(body.len()).unwrap(),
+        },
+        body.to_vec(),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn write_and_read_packet_round_trip() {
+    let mock = MockTransport::new();
+    let coordinator = mock.coordinator();
+    let reply = test_packet(2, TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG, b"reply");
+
+    coordinator.add_reply(reply.clone()).await.unwrap();
+
+    let mut connection = DedicatedConnection::new(mock, None);
+    connection
+        .write_packet(test_packet(1, TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG, b"request"))
+        .await
+        .unwrap();
+
+    let response = connection.read_packet().await.unwrap();
+    assert_eq!(response.header().session_id, TEST_SESSION_ID);
+    assert_eq!(response.header().seq_no, 2);
+    assert_eq!(response.body(), reply.body());
+
+    let requests = coordinator
+        .get_requests_for_session(TEST_SESSION_ID)
+        .await
+        .unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests.contains_key(&1));
+}
+
+#[tokio::test]
+async fn write_packet_obfuscates_when_key_is_configured() {
+    let key = b"test_secret";
+    let mock = MockTransport::new();
+    let coordinator = mock.coordinator();
+    let reply = test_packet(2, TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG, b"reply").to_obfuscated(key);
+
+    coordinator.add_reply(reply).await.unwrap();
+
+    let mut connection = DedicatedConnection::new(mock, Some(key));
+    connection
+        .write_packet(test_packet(1, TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG, b"request"))
+        .await
+        .unwrap();
+    let _response = connection.read_packet().await.unwrap();
+
+    let requests = coordinator
+        .get_requests_for_session(TEST_SESSION_ID)
+        .await
+        .unwrap();
+    let captured = &requests[&1];
+    assert!(
+        !captured
+            .header()
+            .flags
+            .contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG),
+        "captured request must be obfuscated"
+    );
+}
+
+#[tokio::test]
+async fn upgrade_reuses_stream_for_multiplexed_connection() {
+    let mock = MockTransport::new();
+    let coordinator = mock.coordinator();
+    let reply = test_packet(
+        2,
+        TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG | TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+        b"reply",
+    );
+    coordinator.add_reply(reply).await.unwrap();
+
+    let mut dedicated = DedicatedConnection::new(mock, None);
+    dedicated
+        .write_packet(test_packet(
+            1,
+            TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG | TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+            b"request",
+        ))
+        .await
+        .unwrap();
+    let response = dedicated.read_packet().await.unwrap();
+    assert!(response
+        .header()
+        .flags
+        .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
+
+    let connection = dedicated.upgrade();
+    assert_eq!(connection.single_connection_state(), SingleConnectionState::Supported);
+}
+
+#[tokio::test]
+async fn invalid_header_and_excessive_body_are_protocol_failures() {
+    let invalid_header = [0xff; 12];
+    let mut excessive_header = test_packet(2, TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG, &[])
+        .header()
+        .clone();
+    excessive_header.length = TACACS_MAX_BODY_LENGTH + 1;
+
+    for bytes in [invalid_header, excessive_header.to_bytes()] {
+        let mock = MockTransport::new();
+        let coordinator = mock.coordinator();
+        coordinator
+            .add_reply_bytes(TEST_SESSION_ID, 2, bytes.to_vec())
+            .await
+            .unwrap();
+        let mut connection = DedicatedConnection::new(mock, None);
+        connection
+            .write_packet(test_packet(1, TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG, b"request"))
+            .await
+            .unwrap();
+
+        let error = connection.read_packet().await.unwrap_err();
+        assert!(error.is::<ProtocolFailure>(), "unexpected error: {error:#}");
+    }
+}
+
+#[tokio::test]
+async fn promotion_retains_protected_keys_after_dedicated_owners_drop() {
+    use tacacsrs_secrets::SecretBytes;
+    use crate::session::ExpectedResponseHeader;
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let key = SecretBytes::new(b"promotion-key-sentinel".to_vec());
+        let mock = MockTransport::new();
+        let coordinator = mock.coordinator();
+        let flags =
+            TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG | TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG;
+        coordinator
+            .add_reply(test_packet(2, flags, b"probe reply").to_obfuscated(key.expose_secret()))
+            .await
+            .unwrap();
+        let mut dedicated = DedicatedConnection::new(mock, Some(key.expose_secret()));
+        let protected: &SecretBytes = dedicated.writer.obfuscation_key().unwrap();
+        assert!(protected.expose_secret() == key.expose_secret());
+        drop(key);
+        dedicated
+            .write_packet(test_packet(1, flags, b"probe request"))
+            .await
+            .unwrap();
+        assert!(dedicated.read_packet().await.unwrap().body() == b"probe reply");
+
+        let connection = dedicated.upgrade();
+        let session = connection
+            .create_fixed_session(ExpectedResponseHeader::fixed(
+                TacacsType::TacPlusAccounting,
+                TacacsMinorVersion::TacacsPlusMinorVerDefault,
+            ))
+            .unwrap();
+        let session_id = session.session_id();
+        let make_packet = |sequence, body: &[u8]| {
+            let packet = test_packet(sequence, TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG, body);
+            let mut header = packet.header().clone();
+            header.session_id = session_id;
+            Packet::new(header, body.to_vec()).unwrap()
+        };
+        coordinator
+            .add_reply(make_packet(2, b"shared reply").to_obfuscated(b"promotion-key-sentinel"))
+            .await
+            .unwrap();
+        let response = session
+            .round_trip(make_packet(1, b"shared request"))
+            .await
+            .unwrap();
+        assert!(response.body() == b"shared reply");
+        let requests = coordinator
+            .get_requests_for_session(session_id)
+            .await
+            .unwrap();
+        let captured = &requests[&1];
+        assert!(!captured
+            .header()
+            .flags
+            .contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG));
+        assert!(
+            captured
+                .clone()
+                .to_deobfuscated(b"promotion-key-sentinel")
+                .body()
+                == b"shared request"
+        );
+        connection
+            .close_and_join(
+                crate::RequestDeadline::after(std::time::Duration::from_secs(1)).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(connection.driver_finished());
+    })
+    .await
+    .expect("protected-key promotion must complete");
+}

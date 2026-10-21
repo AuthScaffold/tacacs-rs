@@ -1,8 +1,8 @@
 //! Async Redis I/O for SONiC ConfigDB.
 //!
 //! This module wraps [`redis::aio::MultiplexedConnection`]. It reads the
-//! TACACS+ tables in one atomic Redis call. It also provides a Tokio task that
-//! subscribes to `__keyspace@<db>__:TACPLUS*` notifications.
+//! TACACS+ tables in one atomic Redis call. Credential change streams own their
+//! native watchers and cancel their workers when dropped.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -17,7 +17,6 @@ use futures_util::StreamExt;
 use redis::aio::MultiplexedConnection;
 use redis::AsyncCommands;
 use tokio::sync::{Notify, mpsc};
-use tokio_stream::wrappers::ReceiverStream;
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 use tacacsrs_credential_resolution::{
@@ -63,11 +62,9 @@ impl SonicCredentialChangeSource {
 #[async_trait]
 impl CredentialChangeSource for SonicCredentialChangeSource {
     async fn subscribe(&self) -> Result<CredentialChangeStream, CredentialChangeError> {
-        let receiver = spawn_credential_change_notifier(self.root.clone(), self.debounce)
-            .await
+        let changes = watch_credential_changes(self.root.clone(), self.debounce)
             .map_err(|_| CredentialChangeError)?;
-        let stream = tokio_stream::once(CredentialChangeEvent::Recovered)
-            .chain(ReceiverStream::new(receiver));
+        let stream = tokio_stream::once(CredentialChangeEvent::Recovered).chain(changes);
         Ok(Box::pin(stream))
     }
 }
@@ -303,81 +300,23 @@ fn redis_string(value: redis::Value) -> anyhow::Result<String> {
     }
 }
 
-/// Spawns a task that subscribes to TACPLUS keyspace notifications.
-///
-/// SONiC requires Redis keyspace notifications. Enable them with
-/// `CONFIG SET notify-keyspace-events KEA` or an equivalent setting in
-/// `/etc/redis/redis.conf`. If notifications are disabled, the task runs but
-/// does not send events.
-///
-/// The receiver yields one signal for each coalesced change window. The task
-/// stops when the receiver closes or the Redis connection fails.
-///
-/// # Errors
-///
-/// Returns an error if the pubsub connection cannot be established or the
-/// subscription cannot be installed.
-pub async fn spawn_change_notifier(
-    settings: SonicConnection,
-) -> anyhow::Result<mpsc::Receiver<()>> {
-    let client = redis::Client::open(settings.url.as_str())
-        .context("invalid SONiC ConfigDB Redis connection string")?;
-    let mut pubsub = client
-        .get_async_pubsub()
-        .await
-        .context("failed to open SONiC ConfigDB keyspace subscription")?;
-    let pattern = settings.keyspace_pattern();
-    pubsub
-        .psubscribe(&pattern)
-        .await
-        .with_context(|| format!("PSUBSCRIBE {pattern} failed"))?;
-
-    let (tx, rx) = mpsc::channel::<()>(1);
-    let debounce = settings.debounce;
-
-    tokio::spawn(async move {
-        log::info!("subscribed to SONiC ConfigDB keyspace notifications: {pattern}");
-        let mut stream = pubsub.on_message();
-        while let Some(msg) = stream.next().await {
-            log::debug!("ConfigDB change on channel '{}'", msg.get_channel_name());
-
-            // Drain events during the debounce window. One reload handles the group.
-            if debounce > Duration::ZERO {
-                let deadline = tokio::time::sleep(debounce);
-                tokio::pin!(deadline);
-                loop {
-                    tokio::select! {
-                        _ = &mut deadline => break,
-                        next = stream.next() => {
-                            if next.is_none() {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if tx.send(()).await.is_err() {
-                log::debug!("ConfigDB change consumer dropped; exiting notifier");
-                break;
-            }
-        }
-        log::info!("ConfigDB pubsub stream ended");
-    });
-
-    Ok(rx)
-}
-
 /// Watches the reviewed EPSK root and emits debounced complete-reload signals.
+///
+/// # Panics
+/// Panics when called outside a Tokio runtime.
 ///
 /// # Errors
 ///
 /// Returns an error if the root's parent cannot be watched, or if an existing
 /// root cannot be watched.
-pub async fn spawn_credential_change_notifier(
+pub fn watch_credential_changes(
     root: PathBuf,
     debounce: Duration,
-) -> anyhow::Result<mpsc::Receiver<CredentialChangeEvent>> {
+) -> anyhow::Result<CredentialChangeStream> {
+    Ok(Box::pin(credential_changes(root, debounce)?))
+}
+
+fn credential_changes(root: PathBuf, debounce: Duration) -> anyhow::Result<CredentialChanges> {
     let (event_tx, mut event_rx) = mpsc::channel(32);
     let lost_events = Arc::new(AtomicBool::new(false));
     let refresh_root_watch = Arc::new(AtomicBool::new(false));
@@ -412,7 +351,7 @@ pub async fn spawn_credential_change_notifier(
     }
 
     let (signal_tx, signal_rx) = mpsc::channel(1);
-    tokio::spawn(async move {
+    let worker = tokio::spawn(async move {
         loop {
             let scope = tokio::select! {
                 event = event_rx.recv() => {
@@ -445,6 +384,8 @@ pub async fn spawn_credential_change_notifier(
                 let _ = watcher.unwatch(&root);
                 if root.exists() && watcher.watch(&root, RecursiveMode::NonRecursive).is_err() {
                     log::warn!("failed to register the SONiC EPSK root watch again");
+                    let _ = signal_tx.send(CredentialChangeEvent::Unavailable).await;
+                    break;
                 }
                 scope = CredentialChangeScope::Unknown;
             }
@@ -457,7 +398,32 @@ pub async fn spawn_credential_change_notifier(
             }
         }
     });
-    Ok(signal_rx)
+    Ok(CredentialChanges {
+        receiver: signal_rx,
+        worker,
+    })
+}
+
+struct CredentialChanges {
+    receiver: mpsc::Receiver<CredentialChangeEvent>,
+    worker: tokio::task::JoinHandle<()>,
+}
+
+impl futures_util::Stream for CredentialChanges {
+    type Item = CredentialChangeEvent;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.get_mut().receiver.poll_recv(context)
+    }
+}
+
+impl Drop for CredentialChanges {
+    fn drop(&mut self) {
+        self.worker.abort();
+    }
 }
 
 fn enqueue_credential_event(
@@ -485,6 +451,7 @@ fn enqueue_credential_event(
 
 fn event_affects_root_watch(event: &notify::Result<Event>, root: &Path) -> bool {
     match event {
+        Ok(event) if event.need_rescan() => true,
         Ok(event) if matches!(event.kind, EventKind::Access(_)) => false,
         Ok(event) => event.paths.iter().any(|path| path == root),
         Err(_) => true,
@@ -498,6 +465,9 @@ fn credential_change_scope(
     let Ok(event) = event else {
         return Some(CredentialChangeScope::Unknown);
     };
+    if event.need_rescan() {
+        return Some(CredentialChangeScope::Unknown);
+    }
     if matches!(event.kind, EventKind::Access(_)) {
         return None;
     }
@@ -556,6 +526,25 @@ mod tests {
 
     use super::*;
 
+    #[tokio::test]
+    async fn dropping_idle_credential_stream_stops_its_watcher_worker() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("epsk");
+        std::fs::create_dir(&root).unwrap();
+        for _ in 0..8 {
+            let changes = credential_changes(root.clone(), Duration::from_secs(30)).unwrap();
+            let worker = changes.worker.abort_handle();
+            drop(changes);
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while !worker.is_finished() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("owned credential watcher must stop even without a file event");
+        }
+    }
+
     fn event(kind: EventKind, path: &str) -> Event {
         Event {
             kind,
@@ -587,6 +576,14 @@ mod tests {
         reconcile.notified().await;
         assert!(lost_events.load(Ordering::Acquire));
         assert!(refresh_root_watch.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn credential_rescan_requires_complete_reconciliation_and_watch_refresh() {
+        let event = Event::new(EventKind::Other).set_flag(notify::event::Flag::Rescan);
+        let root = Path::new("/credentials/epsk");
+        assert!(event_affects_root_watch(&Ok(event.clone()), root));
+        assert_eq!(credential_change_scope(Ok(event), root), Some(CredentialChangeScope::Unknown));
     }
 
     #[test]
@@ -752,19 +749,24 @@ mod tests {
 
     #[tokio::test]
     async fn change_notifier_error_is_sanitized_for_malformed_and_unreachable_urls() {
+        use tacacsrs_config::source::ConfigDatastore;
         let malformed = connection_with_url(&format!(
             "http://{SENTINEL_USER}:{SENTINEL_PASS}@malformed.invalid/?x={SENTINEL_QUERY}"
         ));
-        let error = spawn_change_notifier(malformed)
+        let error = crate::SonicConfigDb::new(malformed)
+            .observe()
             .await
-            .expect_err("a non-redis scheme must fail to open");
+            .err()
+            .expect("a non-redis scheme must fail to open");
         assert_error_is_sanitized(&error);
 
         let unreachable =
             connection_with_url(&format!("redis://{SENTINEL_USER}:{SENTINEL_PASS}@127.0.0.1:9/0"));
-        let error = spawn_change_notifier(unreachable)
+        let error = crate::SonicConfigDb::new(unreachable)
+            .observe()
             .await
-            .expect_err("an unreachable endpoint must fail to subscribe");
+            .err()
+            .expect("an unreachable endpoint must fail to subscribe");
         assert_error_is_sanitized(&error);
     }
 

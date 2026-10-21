@@ -72,6 +72,27 @@ def assert_equal(expected: Path, actual: Path, label: str) -> None:
     raise RuntimeError(f"The outputs for {label} differ:\n{difference[:4000]}")
 
 
+def verify_artifact_hashes(manifest: dict[str, object], base_dir: Path = SCRIPT_DIR) -> None:
+    """Verify that every manifest artifact matches its recorded SHA-256 hash.
+
+    The artifact paths resolve relative to ``base_dir``. A test can point this
+    check at a temporary fixture tree so that corruption cases never touch the
+    checked-in artifacts.
+    """
+    artifacts = manifest["artifacts"]
+    if not isinstance(artifacts, dict):
+        raise RuntimeError("The generation manifest artifacts section must be an object")
+
+    for relative_path, expected_hash in artifacts.items():
+        artifact_path = (Path(base_dir) / relative_path).resolve()
+        actual_hash = sha256(artifact_path)
+        if actual_hash != expected_hash:
+            raise RuntimeError(
+                f"The SHA-256 value of {relative_path} is {actual_hash}. "
+                f"The manifest value is {expected_hash}."
+            )
+
+
 def verify_manifest(manifest: dict[str, object]) -> None:
     source = manifest["source"]
     tools = manifest["tools"]
@@ -94,14 +115,7 @@ def verify_manifest(manifest: dict[str, object]) -> None:
             f"the manifest version {tools.get('pyang')}"
         )
 
-    for relative_path, expected_hash in artifacts.items():
-        artifact_path = (SCRIPT_DIR / relative_path).resolve()
-        actual_hash = sha256(artifact_path)
-        if actual_hash != expected_hash:
-            raise RuntimeError(
-                f"The SHA-256 value of {relative_path} is {actual_hash}. "
-                f"The manifest value is {expected_hash}."
-            )
+    verify_artifact_hashes(manifest)
 
 
 def verify_source_module(manifest: dict[str, object]) -> None:
@@ -148,14 +162,55 @@ def verify_generated(clean: bool) -> None:
     )
 
 
+def verify_offline() -> None:
+    """Check the checked-in artifacts against the manifest without regenerating.
+
+    This offline gate confirms that the recorded source identity, the pinned
+    pyang version, the reviewed feature flags, the secret-field manifest, the
+    checked-in YANG module, and the generated outputs still match their
+    SHA-256 hashes. It does not clone the pinned upstream source and does not
+    run the generator, so it is fast and needs no network access.
+
+    Offline consistency is not a proof of deterministic regeneration. Run this
+    script without ``--check`` to regenerate the artifacts from the pinned
+    source and confirm that they are byte-for-byte identical.
+    """
+    verify_manifest(load_manifest())
+    print(
+        "PASS (offline): The manifest source identity, pinned pyang version, "
+        "feature flags, secret-field manifest, checked-in YANG module, and "
+        "generated outputs match the recorded SHA-256 hashes. This check does "
+        "not regenerate the artifacts; run verify_generated.py without --check "
+        "to confirm deterministic regeneration from the pinned source."
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help=(
+            "Run the offline hash and version consistency check only. This mode "
+            "does not clone the pinned source and does not regenerate artifacts."
+        ),
+    )
     parser.add_argument(
         "--clean",
         action="store_true",
         help="Remove and recreate the pinned sparse YANG cache before comparison",
     )
     args = parser.parse_args()
+
+    if args.check:
+        if args.clean:
+            parser.error(
+                "--clean cannot be combined with --check because the offline "
+                "check never touches the YANG cache"
+            )
+        verify_offline()
+        return
+
     verify_generated(clean=args.clean)
 
 

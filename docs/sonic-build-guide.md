@@ -31,11 +31,61 @@ target/x86_64-unknown-linux-gnu/release/tacacsrs-agentd
 target/x86_64-unknown-linux-gnu/release/libtacacsrs_bash_plugin.so
 ```
 
-CI publishes each Linux artifact in a `.tar.gz` archive with its SBOM files.
-The SONiC repository owns the installation scripts and target paths.
+TACACS-RS releases contain source, not compiled artifacts or container images.
+Pin a `tacacs-rs-YYYY.MMDD.BUILD` tag or its hydrated commit before building.
+CI validates the exact hydrated commit before publication.
+The SONiC repository owns package builds, installation scripts, and target paths.
 
 If you are starting from Windows, run these Linux-targeted Cargo commands from
 WSL. Do not copy Windows-built binaries or libraries into SONiC.
+
+## ARMhf build and executed tests
+
+ARMhf is 32-bit ARM hard-float (`linux/arm/v7`), not ARM64. Its Rust target is
+`armv7-unknown-linux-gnueabihf`. The required ARMhf CI job cross-compiles release
+executables on AMD64 Debian Bookworm with Rust 1.90, the ARMhf linker and OpenSSL
+libraries, and a host-native Protobuf compiler. It then executes Cargo tests
+and all three release executables with QEMU, checking ELF32 and hard-float ABI.
+Existing AMD64 build/test coverage remains separate.
+
+Both protobuf build scripts honor an explicit `PROTOC` and use their vendored
+compiler only when it is unset. An invalid explicit path is an error; it does
+not silently select another compiler. Native ARMhf builds must install a
+compatible host compiler and set `PROTOC`, for example `/usr/bin/protoc`.
+
+From the repository root in WSL on an AMD64 Docker host:
+
+```bash
+# Only if ARM execution is not already configured on this Docker host:
+docker run --rm --privileged \
+  tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0 \
+  --install arm
+
+docker buildx build --platform linux/amd64 \
+  --file .github/steps/armhf/Dockerfile --no-cache-filter verify \
+  --output type=local,dest=target/armhf-evidence .
+```
+
+Installing the handler changes the Docker host. Do not reset unrelated handlers
+on shared hosts. Cargo's QEMU runner alone is insufficient for integration tests
+that start ARM child processes; those require working binfmt execution too.
+
+The uncached verification stage runs the three executable packages plus
+`tacacsrs-sonic`, `tacacsrs-ipc`, and `tacacsrs-agent-ipc-emulator`. Evidence
+includes the verification log, release binaries, ELF headers, help output,
+binary checksums, and a checksum manifest of the source inputs. Failures retain
+their exit status in the build log; a timeout or
+successful cross-compilation alone does not count as executed-test coverage.
+
+PRs call the reusable pipeline, whose `CI Success` gate explicitly requires
+ARMhf success, rejecting skipped or cancelled ARMhf jobs. Repository protection
+must require the PR workflow's aggregate `CI Success` check. Adding a workflow
+job does not itself configure GitHub branch protection.
+
+For downstream SONiC validation, use the aaaagent service's `make test` on both
+architectures. When advancing its source pin to this fix, retire its old ARMv7
+patch atomically with the pin update. An unpublished local-source overlay is
+useful for development but is not evidence for the final immutable source pin.
 
 ## Publishing artifacts to the SONiC VM
 

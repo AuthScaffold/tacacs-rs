@@ -1,8 +1,9 @@
-use tacacsrs_messages::constants::{TACACS_HEADER_LENGTH, TACACS_MAX_BODY_LENGTH};
-use tacacsrs_messages::enumerations::TacacsFlags;
-use tacacsrs_messages::packet::PacketTrait;
-use tacacsrs_messages::{header::Header, packet::Packet};
+use tacacsrs_protocol::constants::{TACACS_HEADER_LENGTH, TACACS_MAX_BODY_LENGTH};
+use tacacsrs_protocol::enumerations::TacacsFlags;
+use tacacsrs_protocol::packet::PacketTrait;
+use tacacsrs_protocol::{header::Header, packet::Packet};
 use tokio::io::{AsyncRead, AsyncReadExt};
+use tacacsrs_secrets::SecretBytes;
 
 /// Result of reading a packet from a connection.
 #[derive(Debug)]
@@ -36,24 +37,50 @@ pub enum PacketReadResult {
 
 /// Reads TACACS+ packets, including optional body deobfuscation.
 pub struct PacketReader {
-    obfuscation_key: Option<Vec<u8>>,
+    obfuscation_key: Option<SecretBytes>,
+    counters: Option<crate::ServerCounters>,
 }
 
 impl PacketReader {
     /// Creates a `PacketReader` with an optional obfuscation key.
+    /// The reader retains the protected key owner until it drops.
     ///
     /// # Arguments
     /// * `obfuscation_key` - Optional key used to deobfuscate incoming packets.
     ///   If `None`, packets are assumed to be unencrypted.
     #[must_use]
-    pub const fn new(obfuscation_key: Option<Vec<u8>>) -> Self {
-        Self { obfuscation_key }
+    pub const fn new(obfuscation_key: Option<SecretBytes>) -> Self {
+        Self {
+            obfuscation_key,
+            counters: None,
+        }
+    }
+
+    pub(crate) fn with_counters(mut self, counters: Option<crate::ServerCounters>) -> Self {
+        self.counters = counters;
+        self
     }
 }
 
 impl PacketReader {
     /// Reads and decodes one TACACS+ packet from `reader`.
     pub async fn read_packet<Reader>(&self, reader: &mut Reader) -> PacketReadResult
+    where
+        Reader: AsyncRead + Unpin + ?Sized,
+    {
+        let result = self.read_packet_inner(reader).await;
+        if let Some(counters) = &self.counters {
+            match &result {
+                PacketReadResult::HeaderReadError(error)
+                | PacketReadResult::BodyReadError { error, .. } => counters.io_error(error, false),
+                PacketReadResult::Success(_) => {}
+                _ => counters.disconnect_reason(crate::DisconnectReason::MalformedPacket),
+            }
+        }
+        result
+    }
+
+    async fn read_packet_inner<Reader>(&self, reader: &mut Reader) -> PacketReadResult
     where
         Reader: AsyncRead + Unpin + ?Sized,
     {
@@ -130,7 +157,7 @@ impl PacketReader {
 
         if let Some(key) = &self.obfuscation_key {
             if !is_packet_deobfuscated {
-                packet = packet.to_deobfuscated(key);
+                packet = packet.to_deobfuscated(key.expose_secret());
                 log::trace!(
                     target: "tacacsrs_networking::codec::reader::read_packet",
                     "Deobfuscated packet for session ID {session_id}"
@@ -138,6 +165,12 @@ impl PacketReader {
             }
         }
 
+        if let Some(counters) = &self.counters {
+            counters.record(crate::statistics::CounterEvent::MessageReceived);
+            if crate::statistics::reply_classification(&packet).is_some_and(|(error, _)| error) {
+                counters.record(crate::statistics::CounterEvent::ErrorReceived);
+            }
+        }
         PacketReadResult::Success(packet)
     }
 }
@@ -146,7 +179,7 @@ impl PacketReader {
 mod tests {
     use super::*;
     use std::io::Cursor;
-    use tacacsrs_messages::enumerations::{
+    use tacacsrs_protocol::enumerations::{
         TacacsFlags, TacacsType, TacacsMajorVersion, TacacsMinorVersion,
     };
 
@@ -159,6 +192,24 @@ mod tests {
             flags,
             session_id,
             length: body_length,
+        }
+    }
+
+    #[test]
+    fn owned_key_debug_is_redacted() {
+        let sentinel = b"reader-owned-key-sentinel";
+        let key = SecretBytes::new(sentinel.to_vec());
+        let allocation = key.expose_secret().as_ptr();
+        let reader = PacketReader::new(Some(key));
+        let owned: &SecretBytes = reader.obfuscation_key.as_ref().unwrap();
+        assert!(owned.expose_secret().as_ptr() == allocation);
+        assert!(owned.expose_secret() == sentinel);
+        for output in [
+            format!("{:?}", reader.obfuscation_key),
+            format!("{:#?}", reader.obfuscation_key),
+        ] {
+            assert!(!output.contains(&format!("{sentinel:?}")), "Debug exposed key bytes");
+            assert!(!output.contains(&format!("{sentinel:#?}")), "Debug exposed key bytes");
         }
     }
 
@@ -215,7 +266,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_packet_body_length_exceeded() {
-        use tacacsrs_messages::constants::TACACS_MAX_BODY_LENGTH;
+        use tacacsrs_protocol::constants::TACACS_MAX_BODY_LENGTH;
 
         // Create a header with a body length that exceeds the maximum.
         let excessive_length = TACACS_MAX_BODY_LENGTH + 1;
@@ -242,7 +293,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_packet_max_allowed_body_length() {
-        use tacacsrs_messages::constants::TACACS_MAX_BODY_LENGTH;
+        use tacacsrs_protocol::constants::TACACS_MAX_BODY_LENGTH;
 
         // Make sure that the maximum body length is accepted.
         let header = create_test_header(

@@ -2,44 +2,68 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use tacacsrs_config::{TacacsPlusServer, TacacsPlusServerExt};
-use tacacsrs_flows::accounting::AccountingExchange;
-use tacacsrs_flows::authentication::PapAuthenticationExchange;
-use tacacsrs_flows::authorization::AuthorizationExchange;
-use tacacsrs_messages::accounting::reply::AccountingReply;
-use tacacsrs_messages::accounting::request::AccountingRequest;
-use tacacsrs_messages::authentication::reply::AuthenticationReply;
-use tacacsrs_messages::authorization::reply::AuthorizationReply;
-use tacacsrs_messages::authorization::request::AuthorizationRequest;
-use tacacsrs_networking::{ConnectOptions, TacacsClient};
+use tacacsrs_protocol::exchange::accounting::AccountingExchange;
+use tacacsrs_protocol::exchange::authentication::PapAuthenticationExchange;
+use tacacsrs_protocol::exchange::authorization::AuthorizationExchange;
+use tacacsrs_protocol::accounting::reply::AccountingReply;
+use tacacsrs_protocol::authentication::reply::AuthenticationReply;
+use tacacsrs_protocol::authorization::reply::AuthorizationReply;
+use tacacsrs_protocol::exchange::FixedExchange;
+use tacacsrs_networking::{PreparedEndpoint, TacacsClient};
 
-use super::connection::{UpstreamConnection, UpstreamConnector};
+use super::connection::UpstreamConnection;
+#[cfg(test)]
+use super::connection::UpstreamConnector;
 use super::{OperationKind, UpstreamRequestError};
+use crate::runtime::ProxyLoopGuard;
 
 /// Production connector backed by [`tacacsrs_networking`].
 ///
-/// Reads the connection parameters from
-/// [`tacacsrs_config::TacacsPlusServer`] for each connection attempt.
+/// Reuses the native transport context prepared before generation publication.
 #[derive(Debug, Clone)]
 pub(crate) struct NetworkUpstreamConnector {
-    /// Disables TLS certificate verification for server connections.
-    ///
-    /// This option is dangerous. Use it only for development and tests.
-    pub disable_certificate_verification: bool,
+    proxy_loop_guard: ProxyLoopGuard,
+}
+
+impl NetworkUpstreamConnector {
+    pub(crate) const fn new(proxy_loop_guard: ProxyLoopGuard) -> Self {
+        Self { proxy_loop_guard }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn erased(self) -> Arc<UpstreamConnector> {
+        Arc::new(ErasedNetworkConnector(self))
+    }
 }
 
 #[async_trait]
-impl UpstreamConnector for NetworkUpstreamConnector {
+impl tacacsrs_networking::routed::EndpointConnector for NetworkUpstreamConnector {
+    type Connection = TacacsUpstreamConnection;
+
+    async fn retire(&self, connection: &Self::Connection) {
+        connection.stop_accepting_new_sessions().await;
+    }
+    fn close(&self, connection: &Self::Connection) {
+        connection.close();
+    }
+    async fn close_and_join(
+        &self,
+        connection: &Self::Connection,
+        deadline: tacacsrs_networking::RequestDeadline,
+    ) -> anyhow::Result<()> {
+        connection.close_and_join(deadline).await
+    }
+
     async fn connect(
         &self,
-        server: Arc<TacacsPlusServer>,
+        endpoint: PreparedEndpoint,
         operation: OperationKind,
-    ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
-        let address = server.socket_address();
-        let options = ConnectOptions::default()
-            .with_certificate_verification_disabled(self.disable_certificate_verification)
-            .with_timeout(server.timeout_duration());
-        let connection = TacacsClient::connect_shared(server, options).await?;
+    ) -> anyhow::Result<Arc<Self::Connection>> {
+        let address = endpoint.address().to_string();
+        let connection = TacacsClient::connect_prepared(
+            endpoint.with_connection_guard(self.proxy_loop_guard.clone()),
+        )
+        .await?;
 
         Ok(Arc::new(TacacsUpstreamConnection {
             server_address: address,
@@ -54,13 +78,46 @@ impl UpstreamConnector for NetworkUpstreamConnector {
 /// The networking layer selects a dedicated connection or a shared
 /// single-connection transport for each operation. The agent only runs
 /// request/reply flows and controls failover.
-struct TacacsUpstreamConnection {
+pub(crate) struct TacacsUpstreamConnection {
     /// The `host:port` address of the TACACS+ server.
     server_address: String,
     /// Operation isolated on this adaptive client.
     operation: OperationKind,
     /// The adaptive client connection.
     connection: TacacsClient,
+}
+
+#[cfg(test)]
+struct ErasedNetworkConnector(NetworkUpstreamConnector);
+
+#[cfg(test)]
+#[async_trait]
+impl tacacsrs_networking::routed::EndpointConnector for ErasedNetworkConnector {
+    type Connection = dyn UpstreamConnection;
+
+    async fn retire(&self, connection: &Self::Connection) {
+        connection.stop_accepting_new_sessions().await;
+    }
+    fn close(&self, connection: &Self::Connection) {
+        connection.close();
+    }
+    async fn close_and_join(
+        &self,
+        connection: &Self::Connection,
+        deadline: tacacsrs_networking::RequestDeadline,
+    ) -> anyhow::Result<()> {
+        connection.close_and_join(deadline).await
+    }
+
+    async fn connect(
+        &self,
+        endpoint: PreparedEndpoint,
+        operation: OperationKind,
+    ) -> anyhow::Result<Arc<dyn UpstreamConnection>> {
+        tacacsrs_networking::routed::EndpointConnector::connect(&self.0, endpoint, operation)
+            .await
+            .map(|connection| connection as Arc<dyn UpstreamConnection>)
+    }
 }
 
 #[async_trait]
@@ -73,6 +130,17 @@ impl UpstreamConnection for TacacsUpstreamConnection {
         self.connection.stop_accepting_new_sessions().await;
     }
 
+    fn close(&self) {
+        self.connection.close();
+    }
+
+    async fn close_and_join(
+        &self,
+        deadline: tacacsrs_networking::RequestDeadline,
+    ) -> anyhow::Result<()> {
+        self.connection.close_and_join(deadline).await
+    }
+
     async fn open_conversation(&self) -> anyhow::Result<tacacsrs_networking::ClientConversation> {
         self.connection
             .open_conversation()
@@ -82,18 +150,19 @@ impl UpstreamConnection for TacacsUpstreamConnection {
 
     async fn send_accounting(
         &self,
-        request: AccountingRequest,
+        exchange: &AccountingExchange,
+        deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AccountingReply, UpstreamRequestError> {
         debug_assert_eq!(self.operation, OperationKind::Accounting);
         log_session_start(
             "accounting",
             &self.server_address,
-            &format!("user={}, args={}", request.user, request.args.len()),
+            &format!("body_length={}", exchange.request_body().wire_length()),
         );
 
         let response = self
             .connection
-            .execute_classified(AccountingExchange::new(request))
+            .execute_classified_until(exchange, deadline)
             .await;
 
         match &response {
@@ -120,11 +189,12 @@ impl UpstreamConnection for TacacsUpstreamConnection {
 
     async fn authenticate_pap(
         &self,
-        exchange: PapAuthenticationExchange,
+        exchange: &PapAuthenticationExchange,
+        deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthenticationReply, UpstreamRequestError> {
         debug_assert_eq!(self.operation, OperationKind::Authentication);
         self.connection
-            .execute_classified(exchange)
+            .execute_classified_until(exchange, deadline)
             .await
             .map_err(|error| {
                 UpstreamRequestError::from_fixed(
@@ -136,18 +206,19 @@ impl UpstreamConnection for TacacsUpstreamConnection {
 
     async fn send_authorization(
         &self,
-        request: AuthorizationRequest,
+        exchange: &AuthorizationExchange,
+        deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthorizationReply, UpstreamRequestError> {
         debug_assert_eq!(self.operation, OperationKind::Authorization);
         log_session_start(
             "authorization",
             &self.server_address,
-            &format!("user={}, args={}", request.user, request.args.len()),
+            &format!("body_length={}", exchange.request_body().wire_length()),
         );
 
         let response = self
             .connection
-            .execute_classified(AuthorizationExchange::new(request))
+            .execute_classified_until(exchange, deadline)
             .await;
 
         match &response {

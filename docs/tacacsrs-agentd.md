@@ -57,10 +57,13 @@ tacon --service-endpoint /run/tacacs/tacacs.sock \
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--listen-endpoint <ENDPOINT>` | `/run/tacacs/tacacs.sock` | Unix domain socket path (Linux) or TCP address (other platforms) |
-| `--proxy-endpoint <ENDPOINT>` | *(disabled)* | Optional TACACS+ proxy listener on a Unix domain socket path or loopback TCP address |
+| `--local-services <FILE>` | none | Startup YANG listener resource, exclusive with listener flags and SONiC mode |
+| `--listen-endpoint <ENDPOINT>` | `/run/tacacs/tacacs.sock` | Absolute Unix domain socket path |
+| `--proxy-endpoint <ENDPOINT>` | *(disabled)* | Absolute Unix socket path or numeric IP socket address |
 | `--service-mode <MODE>` | `client-api`, or `both` when `--proxy-endpoint` is set | Runtime services to host: `client-api`, `tacacs-proxy`, or `both` |
 | `--socket-mode <MODE>` | `660` | File permission mode for the Unix domain socket (octal) |
+| `--proxy-credential-source <SOURCE>` | `unobfuscated`, `inline` with a CLI secret, or `local-proxy-row` in SONiC mode | Canonical downstream credential source |
+| `--proxy-shared-secret <SECRET>` | none | Nonempty inline downstream secret. Requires a proxy endpoint and conflicts with SONiC mode. |
 | `--worker-threads <COUNT>` | `1` | Tokio worker threads. TACACS+ requests are small and I/O bound, so extra workers mainly add cross-thread task migration. |
 | `--host-integration <MODE>` | `auto` | Host adapter: `auto`, `none`, or strict `systemd` |
 
@@ -75,6 +78,78 @@ tacon --service-endpoint /run/tacacs/tacacs.sock \
 | `both` | client API and raw TACACS+ proxy | `--proxy-endpoint` required, `--listen-endpoint` optional |
 
 If `--service-mode` is omitted, the daemon preserves the old behavior: it runs `client-api` by default, and switches to `both` when `--proxy-endpoint` is supplied. Configurations with no hosted services are rejected.
+
+### Canonical Listener Resource
+
+Service selection, listener endpoints, ingress limits, and Unix socket permissions belong to `tacacsrs:local-services` under `ietf-system:system`.
+The daemon normalizes listener flags into this generated YANG resource. It derives omitted values from the YANG defaults.
+The service validates the same source for library callers before binding sockets.
+Worker threads, verbosity, and host integration remain process bootstrap inputs, not listener configuration.
+
+Example resource for `--local-services`:
+
+```json
+{
+    "tacacsrs:local-services": {
+        "client-api-enabled": true,
+        "client-api-endpoint": "/run/tacacs/tacacs.sock",
+        "tacacs-proxy-enabled": true,
+        "tacacs-proxy-endpoint": "127.0.0.1:49",
+        "unix-socket-mode": 432,
+        "max-connections": 64,
+        "max-client-api-streams": 64,
+        "connection-lifetime-seconds": 300
+    }
+}
+```
+
+The default document is `{"tacacsrs:local-services":{}}`. It enables only the client API with permissions `0660`.
+YANG JSON encodes permission bits as a decimal number from 0 through 511. The CLI `--socket-mode` input remains octal.
+The resource file loads once at startup. Listener changes require a restart.
+It cannot be combined with listener flags, `--proxy-credential-source`, or `--sonic`.
+SONiC mode still loads its forwarder row and normalizes the result into the canonical resource.
+
+Each listener serves at most `max-connections` connections. Further connections wait in the operating system's bounded listen backlog.
+The client API permits at most `max-client-api-streams` concurrent HTTP/2 streams on each connection.
+Both limits are integers from 1 through 65535, with a generated default of 64.
+Client API protobuf request and response envelopes are limited to 128 KiB, including framing overhead relative to the TACACS+ body limit.
+
+Each served connection expires after `connection-lifetime-seconds`, including setup, idle time, requests, and reply delivery.
+The generated default is 300 seconds; zero is invalid. Clients must reconnect after expiry.
+The lifetime applies even to active requests. Increase it when the deployment requires longer local connections.
+
+All endpoint paths must be absolute. Unix paths cannot contain NUL, parent traversal, or more than 107 bytes.
+These rules apply even to a disabled client API endpoint. Relative paths previously accepted by the IPC parser are no longer valid listener inputs.
+Preparation normalizes repeated separators and current-directory components to detect lexical Unix path collisions. It does not resolve filesystem symlinks.
+Proxy TCP targets must use numeric addresses. IPv6 addresses require brackets. Port zero requests an ephemeral port.
+Wildcard proxy addresses remain supported. Deployments must restrict access to trusted clients.
+
+The resource also selects downstream credentials through `proxy-credential-source`:
+
+| Value | Credential contract |
+| --- | --- |
+| `unobfuscated` | No secret is configured or inferred from upstream rows. This is the YANG default. |
+| `inline` | `proxy-shared-secret` must contain a nonempty string. Matching upstream rows cannot override it. |
+| `local-proxy-row` | A numeric TCP endpoint is required. The highest-priority matching upstream row must exist and contain a nonempty shared secret. |
+
+An inline resource can contain these fields alongside its listener controls:
+
+```json
+{
+    "tacacsrs:local-services": {
+        "tacacs-proxy-enabled": true,
+        "tacacs-proxy-endpoint": "127.0.0.1:49",
+        "proxy-credential-source": "inline",
+        "proxy-shared-secret": "replace-with-local-secret"
+    }
+}
+```
+
+CAUTION: Restrict access to files containing inline secrets. JSON serialization contains the configured secret, even though debug output is redacted.
+CLI arguments can also appear in process listings. A protected resource file avoids placing the secret in the command line.
+Changes to this startup resource, including inline secret rotation, require a restart.
+With `local-proxy-row`, accepted upstream source updates can rotate the derived secret without changing the credential-source selection.
+Existing downstream connections retain their captured credentials until they close. This change does not force credential revocation on established connections.
 
 ### TACACS+ Proxy Mode
 
@@ -109,11 +184,28 @@ Other containers on the same Docker network can reach the wildcard listener. Use
 
 Unix domain socket endpoints use the same `--socket-mode` value as the IPC listener. When both services run, their endpoints must be different.
 
+Before publication, the shared loop filter checks upstreams on the proxy's configured TCP port.
+It removes matching classic rows after downstream credential preparation and rejects matching TLS rows.
+Wildcard listeners include current interface addresses and loopback destinations. IPv6 wildcard checks conservatively include dual-stack binding.
+DNS failures, empty answers, unspecified destinations, and lookup timeouts reject the candidate instead of retaining an unchecked upstream.
+The agent also guards each upstream connection after DNS resolution and before TCP connect.
+It checks the connected socket again before any TLS handshake or TACACS+ bytes.
+The TCP proxy registers its actual bound address before accepting clients, including the port selected by an ephemeral bind.
+Wildcard checks refresh interface addresses and inspect the connected socket's local address.
+While the TCP proxy is unbound or closed, new upstream connections fail closed. Disabled and Unix-only proxies do not restrict upstream TCP targets.
+Cached clients retain the same live guard across reconnects and configuration reloads. These checks do not rewrite canonical configuration.
+
 Downstream TACACS+ obfuscation is independent of the selected upstream transport. In SONiC mode, the daemon filters rows that target its loopback proxy.
 
-The daemon uses the highest-priority row's resolved `passkey` for the local hop. Outside SONiC mode, use `--proxy-shared-secret`.
+SONiC mode selects `local-proxy-row` by default. The selected row's mapped `passkey` supplies downstream material.
+For intentional plaintext downstream traffic, select `--proxy-credential-source unobfuscated` explicitly.
+Outside SONiC mode, `--proxy-shared-secret` selects inline policy unless an explicit source selector conflicts with it.
 
-If neither source provides a local-hop secret, downstream clients must send unobfuscated TACACS+ packets. Upstream failover never changes the downstream shared secret.
+This replaces the previous implicit local-row override and missing-secret fallback.
+A missing row, missing secret, or empty secret rejects the candidate generation in row-derived mode.
+Rejected updates retain the previous upstream set and downstream credentials, even if the candidate removed the local row.
+Before the first valid generation, the proxy rejects connections without reading packets. It never substitutes unobfuscated traffic for unresolved credentials.
+Upstream failover does not change downstream credentials. Source preparation publishes valid credential and upstream changes together.
 
 TACACS+ has no general in-band request to drain an established single-connect connection. Clearing the single-connect flag after negotiation has no effect. In this proxy, a TACACS+ `ERROR` is session-scoped and does not close the downstream connection.
 
@@ -139,6 +231,9 @@ A server can enforce its own drain by returning `ERROR` for new sessions, finish
 
 ### TLS Client Certificates and Keys
 
+Without an explicit server port, TLS inputs now select port 300 instead of the previous CLI default of 49.
+Legacy TCP still defaults to 49. Explicit configured ports are preserved.
+
 When `--use-tls` is set, `--client-certificate` and `--client-key` let the daemon present a TLS client identity to upstream TACACS+ servers.
 
 - Provide both flags together.
@@ -146,12 +241,130 @@ When `--use-tls` is set, `--client-certificate` and `--client-key` let the daemo
 - Windows "export with private key" workflows commonly produce PKCS#12 (`.pfx` / `.p12`) bundles. Those container formats are not accepted by these flags. Provide PEM or DER certificate and private-key material instead.
 - This PEM-or-DER behavior applies only to the CLI flags. If upstream TLS material is loaded through `--config`, the YANG-backed `tacacsrs-config` path remains DER-only.
 
+Certificate verification now checks the peer's DNS/IP SAN as well as certificate trust.
+The expected identity is `domain-name` when configured, otherwise `address`. SNI selection is independent of that check.
+Previously accepted CN-only or mismatched certificates now fail before TACACS+ traffic.
+See [certificate peer identity](yang-config-guide.md#certificate-peer-identity) for the full identity-selection contract.
+
+Configured CA trust and exact end-entity trust are now separate. Empty explicit trust bags fail before publication instead of selecting platform roots.
+A rejected replacement leaves the previous prepared generation active.
+See [certificate trust](yang-config-guide.md#certificate-trust) for exact-match renewal behavior and additive trust rules.
+
+### HTTP CRL Registration
+
+`--http-crl-source REFERENCE URL` authorizes a public HTTP(S) CRL location for one opaque evidence reference.
+Repeat the flag with the same reference to add issuer lists in fetch order:
+
+```bash
+tacacsrs-agentd --config /etc/tacacs/upstreams.json \
+    --http-crl-source primary-ca-crls https://pki.example.net/root.crl \
+    --http-crl-source primary-ca-crls https://pki.example.net/issuer.crl
+```
+
+The canonical `tacacsrs:require-crls/evidence-reference` must contain `primary-ca-crls` for this example.
+Registration does not enable CRL verification by itself or replace the canonical revocation policy.
+The startup map remains fixed until restart. Live source changes can select registered references but cannot authorize new URLs.
+Invalid registrations fail before source bootstrap or listener binding, including in SONiC mode.
+
+Each set permits at most 16 unique locations. The daemon uses a 10-second whole-set timeout, a 4 MiB body cap, and four active fetches.
+All locations must succeed. Redirects, environment proxies, decompression, URL credentials, queries, and fragments are disabled or rejected.
+Locations must contain no secrets, including path components. Process arguments and backend diagnostics can expose them.
+Registration authorizes each host and its DNS results; it is not a network sandbox.
+HTTPS verifies platform CA trust and host identity independently of upstream TACACS+ trust configuration.
+Downloaded CRLs still require native signature, freshness, path, and revocation checks.
+
+In SONiC mode, HTTP resolution composes with the existing credential provider and retains its notifications.
+Other credential kinds and unregistered references use the SONiC provider. A failed registered HTTP fetch never uses that fallback.
+Outside SONiC mode, unregistered references fail resolution.
+
+The existing `credential-refresh-interval-seconds` policy schedules retrieval without a separate HTTP task or notification source.
+Failed refresh uses the credential-staleness budget, then withdraws readiness. Signed evidence expiry applies independently.
+Successful refresh restores an expired credential catalog without changing canonical references or restarting the process.
+SIGINT and SIGTERM cancel pending retrieval during startup and live refresh.
+See [the YANG CRL guide](yang-config-guide.md#required-full-crls) for evidence requirements and unsupported modes.
+
+### Certificate Discovery and OCSP
+
+`--http-crl-certificate REFERENCE CERTIFICATE` selects certificate-driven CRL discovery for a registered CRL reference.
+The certificate file must contain one DER certificate. Repeat the option for a chain.
+For that reference, `--http-crl-source` URLs form an exact allowlist, not an instruction to fetch every URL.
+Every discovered full URI must be authorized. Relative distribution points are unsupported.
+
+`--http-ocsp-source REFERENCE URL CERTIFICATE ISSUER` registers an online OCSP query with an explicit responder and DER certificate files.
+Alternatively, `--http-ocsp-certificate REFERENCE CERTIFICATE ISSUER` selects an AIA responder from the certificate.
+Each eligible responder URL must be registered with `--http-ocsp-allow-url URL`.
+All URLs remain public, secret-free, and subject to the same proxy and redirect restrictions as CRL retrieval.
+
+The canonical `tacacsrs:require-ocsp/evidence-reference` selects the OCSP reference.
+The daemon periodically queries the responder through the existing credential refresh loop.
+Responses are limited to 64 KiB and use the shared provider timeout and concurrency cap.
+The supplied response does not replace a separately required TLS staple.
+
+Certificate files are bounded reads at startup. Changes to certificates or authorization maps require restart.
+The provider does not follow arbitrary URLs from live TLS peers. A renewed peer certificate must match freshly registered query material.
+Native verification rejects mismatched evidence before client authentication. Signed expiry still withdraws stale evidence while a fetch is pending.
+Readiness reports configuration availability, not a completed upstream certificate-status check.
+
 ### Timeouts and Failover
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--connect-timeout-seconds <SECS>` | `5` | Timeout for upstream TACACS+ connections |
 | `--runtime-policy <FILE>` | none | Optional live JSON policy for failover and request limits |
+
+### Operational Statistics
+
+`--statistics-file FILE` publishes a read-only RFC 7951 JSON snapshot once per second.
+The parent directory must already exist. Each write uses a private temporary file and atomic replacement, with mode `0600`.
+The destination cannot be a configuration input, discovery certificate, or local listener socket. Symlink destinations are rejected.
+No exporter runs when the flag is absent. An export error is a supervised failure and stops the daemon after normal cleanup.
+The last complete report remains after shutdown; consumers must check process health or file age before treating it as current.
+
+```json
+{
+    "ietf-system-tacacs-plus:tacacs-plus": {
+        "tacacsrs:runtime-generation": "4",
+        "server": [{
+            "name": "primary",
+            "tacacsrs:counter-epoch": "2",
+            "statistics": {
+                "discontinuity-time": "2026-10-14T12:00:00Z",
+                "connection-opens": "1",
+                "messages-sent": "2",
+                "messages-received": "2",
+                "sessions": "2"
+            }
+        }]
+    }
+}
+```
+
+The example omits other zero-valued counters. The actual report includes every supported counter.
+All 64-bit counters and identities are JSON strings. RPK counters are omitted because raw-public-key authentication is disabled.
+The file contains server names and statistics, not addresses, credential references, secrets, or command data.
+It is operational data, not a configuration file. Configuration parsing rejects it.
+
+Counters belong to prepared endpoint identities. Unchanged endpoints retain their epoch across configuration and policy reloads.
+Replacements receive a new epoch and discontinuity time. Removed endpoints leave the current report.
+Late events from an old endpoint update only its old counter owner, never the replacement.
+The report captures one routing generation. Each server snapshot is coherent, but different servers are not sampled at one global instant.
+
+| Counter | Recorded event |
+| --- | --- |
+| `connection-opens` | A logical establishment request for the configured server, including DNS and address selection |
+| `connection-failures` | An unsuccessful or cancelled establishment request |
+| `connection-timeouts` | A native configured connection-timeout failure; caller cancellation is a failure without a timeout classification |
+| `connection-closes` | Clean EOF or successful transport shutdown, recorded once when the transport closes |
+| `connection-aborts` | Forced closure, transport error, or failed/cancelled setup after TCP connects |
+| `messages-sent` | One fully written TACACS+ packet; queued or partial writes do not count |
+| `messages-received` | One complete, decoded packet frame; truncated or invalid frames do not count |
+| `errors-received` | A valid protocol `ERROR` reply, not an ordinary denial |
+| `sessions` | A validated terminal response, once per client session; abandoned or incomplete conversations do not count |
+| `cert-errors` | Establishment failures identified by local certificate or revocation verification |
+
+Single-connect negotiation and configured preflight traffic are included. IPC and proxy operations share the same per-endpoint counters.
+Counters wrap at 64 bits and are never reset in place. A new epoch marks a counter-lifetime discontinuity, not an ordinary counter wrap.
+Atomic replacement prevents partial reports but does not make filesystem I/O hard-cancellable. Temporary cleanup is best effort if underlying I/O outlives cancellation.
 
 ### Debugging
 
@@ -202,9 +415,13 @@ current request. These replay rules always apply:
 
 - A denial is a valid response and does not cause failover.
 - A server `ERROR` reply can use the next server.
-- Authentication and authorization can use the next server after an uncertain transport failure.
-- Accounting does not retry after an uncertain transport failure.
+- Unknown authentication, authorization, and accounting outcomes stop the current request without another attempt.
+- Proven-unsent failures can use the next server within the configured attempt budget.
 - A continuing authentication session stays on the server that sent its first valid reply.
+
+This changes earlier `ordered-safe-retry` behavior, which could replay uncertain authentication and authorization requests.
+Those operations can affect audit or lockout state, so their unknown outcomes now remain failures with no automatic replay.
+The default deferred strategy is unchanged. No uncertain-outcome replay opt-in is currently exposed.
 
 ### Preferred Server Recovery
 
@@ -224,36 +441,94 @@ accounting watchdog to test authentication or authorization routes.
 
 ## Runtime Policy
 
-The optional policy file contains no credentials. The daemon watches the file
+The optional policy file contains a `tacacsrs:runtime-policy` YANG resource with no credentials. The daemon watches the file
 and atomically applies each valid update. An invalid update leaves the
 last-known-good policy active and marks runtime health as degraded.
 
-An omitted field uses its safe default. This example enables same-request
+An omitted field uses its generated YANG default. This example enables same-request
 failover for both local services:
 
 ```json
 {
-  "failover-recovery-interval-seconds": 30,
-  "client-api-failover-strategy": "ordered-safe-retry",
-  "tacacs-proxy-failover-strategy": "ordered-safe-retry",
-  "authentication": {
-    "max-body-length": 4096,
-    "max-concurrent-requests": 64
-  },
-  "authorization": {
-    "max-body-length": 16384,
-    "max-concurrent-requests": 64
-  },
-  "accounting": {
-    "max-body-length": 16384,
-    "max-concurrent-requests": 64
+    "tacacsrs:runtime-policy": {
+        "shutdown-timeout-seconds": 30,
+        "source-stale-timeout-seconds": 300,
+        "credential-stale-timeout-seconds": 300,
+        "failover-recovery-interval-seconds": 30,
+        "client-api-failover-strategy": "ordered-safe-retry",
+        "tacacs-proxy-failover-strategy": "ordered-safe-retry",
+        "authentication": {
+            "max-body-length": 4096,
+            "max-concurrent-requests": 64,
+            "request-timeout-seconds": 30
+        },
+        "authorization": {
+            "max-body-length": 16384,
+            "max-concurrent-requests": 64,
+            "request-timeout-seconds": 30
+        },
+        "accounting": {
+            "max-body-length": 16384,
+            "max-concurrent-requests": 64,
+            "request-timeout-seconds": 30
+        }
   }
 }
 ```
 
-Each operation has one packet-size limit and one concurrency limit. IPC and
-proxy clients share that capacity. A request waits for capacity for no longer
-than the active server timeout.
+This replaces the old flat policy JSON format. Wrap existing fields in `tacacsrs:runtime-policy` before upgrading.
+The default document is `{"tacacsrs:runtime-policy":{}}`; a bare `{}` is no longer accepted.
+Unknown fields, trailing JSON, zero intervals, and zero concurrency limits are rejected.
+Body limits range from 1 through 65536 bytes. Recovery seconds and concurrent-request limits are unsigned 32-bit values.
+An omitted operation or field uses the corresponding YANG default, including authentication's smaller body limit.
+
+The resource is defined by the [project YANG augmentation](../libraries/tacacsrs_config/yang/modules/tacacsrs@2026-10-06.yang) under `ietf-system:system`.
+It is a sibling of the upstream `tacacs-plus` resource, not a field inside the server list.
+The policy file remains an independently watched resource. Policy and server changes use the shared runtime-generation publication boundary.
+
+`shutdown-timeout-seconds` bounds graceful teardown and defaults to 30 seconds. Its minimum is one second.
+The daemon captures the applied value when cleanup begins. Service drain and both peer tasks share that absolute deadline.
+Sequential cleanup steps do not receive new budgets, and policy changes cannot extend cleanup already in progress.
+
+`source-stale-timeout-seconds` limits continued use of stale source configuration. Its default is 300 seconds and its minimum is one second.
+After the first observed stale-source condition, retries, credential refresh, and policy updates do not renew the captured grace interval.
+At expiry the agent withdraws the upstream catalog, retires the old endpoints, and reports `SourceExpired`.
+Readiness becomes `NOT_SERVING`; liveness and configuration observation remain active.
+A valid source publication restores service without a process restart. Credential refresh alone cannot revive an expired unavailable source.
+The source budget is independent of provider validity and revocation-evidence freshness.
+
+`credential-stale-timeout-seconds` defaults to 300 seconds and rejects zero.
+Relevant credential invalidation, failed refresh, or notification loss starts a grace period for referenced material.
+Pending resolution counts as stale; a resolver that does not return cannot avoid expiry.
+Inline-only catalogs are not expired by loss of an unused credential notification source.
+Repeated failures and policy changes cannot renew the current grace period.
+Expiry withdraws the whole upstream catalog and reports `CredentialsExpired`, even if the source remains current.
+Fresh complete revalidation restores service. Pre-expiry work cannot revive withdrawn credentials, and credential recovery cannot bypass an expired source.
+These staleness budgets do not implement provider validity or revocation retrieval.
+
+The daemon validates client-certificate dates during preparation and before each new connection.
+It validates peer certificates in the native TLS handshake.
+An established connection continues after an authentication certificate expires.
+Certificate dates do not withdraw a catalog or shorten a request deadline.
+Provider validity, source staleness, OCSP and CRL freshness, and administrative revocation remain independent limits.
+
+IPC and proxy clients share each operation's active capacity and bounded FIFO admission queue.
+The pending limit equals `max-concurrent-requests`. A full queue returns an immediate overload error without upstream I/O.
+Reducing the limit retains existing work and waiters but does not admit work above the new active limit.
+
+Each operation also has a total `request-timeout-seconds` budget, with a generated default of 30 seconds and a minimum of one second.
+The request captures its deadline before admission. Admission, connection setup, retries, and proxy continuations consume that same budget.
+The active server timeout can shorten the admission wait. The selected server timeout can shorten an exchange attempt.
+Neither a retry nor a policy reload extends an existing request's deadline.
+Set a longer authentication budget when an interactive conversation needs more than 30 seconds.
+
+Expiry before transmission is classified as not sent. An expired exchange with an unknown outcome does not retry automatically.
+Proxy expiry terminates the conversation and releases admission capacity.
+The proxy reserves active or pending capacity before creating each session task. Overload replies use a bounded connection-level queue and create no session task.
+The request deadline covers upstream execution, reply queueing, and physical proxy socket writes.
+A final reply retains admission capacity until the writer acknowledges delivery. A partial write that expires closes the connection; it is not resumed or replayed.
+Full continuation queues also close the connection so one session cannot block dispatch to all other sessions.
+Client API physical delivery is bounded by the connection lifetime; its operation deadline still bounds upstream execution.
 
 SONiC ConfigDB is supervised differently from local CLI or file input. Before constructing the service, the daemon waits for a valid `TACPLUS_FORWARDER|global` row and uses its loopback address and port for the raw TACACS+ proxy listener. SONiC mode always hosts both the Client API and proxy. A conflicting `--proxy-endpoint` or non-`both` service mode is rejected. Ctrl-C or SIGTERM cancels this pre-bind retry.
 
@@ -268,6 +543,24 @@ Changes to the forwarder configuration do not change active endpoints. Instead, 
 The daemon clears this degradation after the bound values return. It rejects malformed rows without reporting a listener change.
 
 ## Health and Probes
+
+### Retirement and Shutdown
+
+When a reload removes an endpoint, existing requests retain it only until a fixed retirement cutoff.
+The cutoff uses the maximum current `request-timeout-seconds` value when preparation starts; its default is 30 seconds.
+All endpoints removed by that update share the same cutoff. Later reloads do not extend it.
+At expiry, retained endpoints reject new bindings, cancel setup, close active sockets, and join their owned tasks.
+Unchanged endpoints retain their connections.
+
+Shutdown closes admission and stops new upstream work before draining listeners.
+Library drain uses the smaller of the maximum current operation budget and `shutdown-timeout-seconds`.
+The daemon also applies one absolute cleanup deadline across service drain, configuration supervision, and host integration.
+At expiry, outstanding work is cancelled and remaining transports close. Unknown outcomes are not replayed automatically.
+The service removes its owned socket paths and reports stopped only after explicit cleanup completes.
+If daemon cleanup exceeds its budget, remaining service and peer futures are cancelled and shutdown reports failure.
+Pending systemd helper processes are terminated when their owner is dropped.
+Future cancellation cannot preempt arbitrary blocking code; deployments still need an external process supervisor for that case.
+An embedded host can use `TacacsClientService::serve_until` to request this sequence without process signals or process exit.
 
 The Client API endpoint also serves the standard `grpc.health.v1.Health` protocol. No custom health protobuf or additional network listener is used.
 

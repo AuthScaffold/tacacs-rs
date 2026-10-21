@@ -11,6 +11,142 @@ const _: () =
     assert!(tacacsrs_config::ServerAuthenticationCaCerts::CHOICE_INLINE_OR_TRUSTSTORE_MANDATORY);
 
 #[test]
+fn canonical_root_rejects_trailing_json() {
+    let document = r#"{"ietf-system-tacacs-plus:tacacs-plus":{"server":[{
+        "name":"test","server-type":"authentication authorization accounting",
+        "address":"192.0.2.1","port":49,"shared-secret":"test-shared-secret"
+    }]}}"#;
+    parse_yang_json(document).unwrap();
+    assert!(parse_yang_json(&format!("{document} {{}}")).is_err());
+}
+
+#[test]
+fn crl_policy_preserves_provider_reference_and_binary_choice() {
+    for evidence in [
+        serde_json::json!({"crl": ["AQ==", "Ag=="]}),
+        serde_json::json!({"evidence-reference": "opaque-crls"}),
+    ] {
+        let document = serde_json::json!({"ietf-system-tacacs-plus:tacacs-plus": {"server": [{
+            "name": "crls", "address": "localhost", "port": 300, "server-type": "accounting",
+            "server-authentication": {"tacacsrs:require-crls": evidence}
+        }]}});
+        let source = parse_yang_json(&document.to_string()).unwrap();
+        let policy = source.server[0]
+            .server_authentication
+            .as_ref()
+            .unwrap()
+            .require_crls
+            .as_ref()
+            .unwrap();
+        assert_eq!(policy.max_age_seconds, 300);
+        let serialized = serde_json::to_value(policy).unwrap();
+        for field in ["crl", "evidence-reference"] {
+            assert_eq!(serialized[field], evidence[field]);
+        }
+        let mut invalid = document.clone();
+        invalid["ietf-system-tacacs-plus:tacacs-plus"]["server"][0]["server-authentication"]
+            ["tacacsrs:require-crls"] = serde_json::json!({"crl": [""]});
+        assert!(parse_yang_json(&invalid.to_string()).is_err());
+    }
+}
+
+#[test]
+fn required_ocsp_policy_survives_bundle_expansion_and_rejects_insecure_preparation() {
+    for bundled in [false, true] {
+        let authentication = serde_json::json!({"tacacsrs:require-stapled-ocsp": {}});
+        let mut document = serde_json::json!({"ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [{"name": "ocsp", "server-type": "accounting", "address": "localhost", "port": 300, "server-authentication": authentication}]
+        }});
+        if bundled {
+            document["ietf-system-tacacs-plus:tacacs-plus"]["server-credentials"] =
+                serde_json::json!([{"id": "trust", "tacacsrs:require-stapled-ocsp": {}}]);
+            document["ietf-system-tacacs-plus:tacacs-plus"]["server"][0]["server-authentication"] =
+                serde_json::json!({"credentials-reference": "trust"});
+        }
+        let source = parse_yang_json(&document.to_string()).unwrap();
+        let original = source.clone();
+        let server = tacacsrs_config::enumerate_server(&source, "ocsp").unwrap();
+        assert_eq!(
+            server
+                .server_authentication
+                .as_ref()
+                .unwrap()
+                .require_stapled_ocsp
+                .as_ref()
+                .unwrap()
+                .max_response_age_seconds,
+            300
+        );
+        assert!(tacacsrs_config::prepare::prepare_endpoint(
+            &server,
+            tacacsrs_config::prepare::PrepareOptions::default()
+        )
+        .is_ok());
+        assert!(tacacsrs_config::prepare::prepare_endpoint(
+            &server,
+            tacacsrs_config::prepare::PrepareOptions::default().with_certificate_verification(
+                tacacsrs_networking::CertificateVerification::DisabledForDevelopment
+            )
+        )
+        .is_err());
+        assert_eq!(source, original);
+        let policy = if bundled {
+            &mut document["ietf-system-tacacs-plus:tacacs-plus"]["server-credentials"][0]
+        } else {
+            &mut document["ietf-system-tacacs-plus:tacacs-plus"]["server"][0]
+                ["server-authentication"]
+        };
+        policy["tacacsrs:require-stapled-ocsp"]["max-response-age-seconds"] = serde_json::json!(0);
+        assert!(parse_yang_json(&document.to_string()).is_err());
+    }
+}
+
+#[test]
+fn required_ocsp_policy_rejects_psk_authentication() {
+    let mut server =
+        TacacsPlusServerBuilder::new("psk", TacacsPlusServerType::all(), "localhost", 300)
+            .with_tls13_epsk_psk_only("client", b"valid-test-key-material".to_vec())
+            .build();
+    server.server_authentication = Some(tacacsrs_config::TlsClientServerAuthentication {
+        require_crls: None,
+        require_ocsp: None,
+        require_stapled_ocsp: Some(tacacsrs_config::tacacsrs::RequireStapledOcsp::default()),
+        ..Default::default()
+    });
+    assert!(tacacsrs_config::prepare::prepare_endpoint(
+        &server,
+        tacacsrs_config::prepare::PrepareOptions::default()
+    )
+    .is_err());
+}
+
+#[test]
+fn epsk_presence_uses_rfc7951_empty_encoding() {
+    let value = serde_json::json!({"tls13-epsks": [null]});
+    let direct: tacacsrs_config::TlsClientServerAuthentication =
+        serde_json::from_value(value.clone()).unwrap();
+    assert!(direct.tls13_epsks.is_some());
+    assert_eq!(serde_json::to_value(direct).unwrap(), value);
+    let bundled = serde_json::json!({"id": "trust", "tls13-epsks": [null]});
+    let bundle: tacacsrs_config::ServerCredentials =
+        serde_json::from_value(bundled.clone()).unwrap();
+    assert_eq!(serde_json::to_value(bundle).unwrap(), bundled);
+    for invalid in [
+        serde_json::json!(true),
+        serde_json::json!(false),
+        serde_json::json!(null),
+        serde_json::json!([]),
+        serde_json::json!([null, null]),
+        serde_json::json!([false]),
+    ] {
+        assert!(serde_json::from_value::<tacacsrs_config::TlsClientServerAuthentication>(
+            serde_json::json!({"tls13-epsks": invalid})
+        )
+        .is_err());
+    }
+}
+
+#[test]
 fn generated_central_certificate_shape_and_choice_metadata() {
     let certificate = tacacsrs_config::ClientIdentityCertificate {
         inline_definition: None,
@@ -43,6 +179,72 @@ fn generated_central_certificate_shape_and_choice_metadata() {
         serialized["certificate"]["central-keystore-reference"]["certificate"],
         "opaque-certificate",
     );
+}
+
+#[test]
+fn canonical_client_chains_round_trip_through_inline_and_bundle_inputs() {
+    let inline = serde_json::json!({
+        "private-key-format": "ietf-crypto-types:one-asymmetric-key-format",
+        "cleartext-private-key": "AQ==", "cert-data": "Ag==",
+        "tacacsrs:intermediate-certificate": ["Aw==", "BAU="]
+    });
+    for bundled in [false, true] {
+        let identity = serde_json::json!({"certificate": {"inline-definition": inline}});
+        let mut document = serde_json::json!({"ietf-system-tacacs-plus:tacacs-plus": {
+            "server": [{"name": "chain", "address": "192.0.2.1", "port": 300,
+                "server-type": "accounting", "client-identity": identity}]
+        }});
+        if bundled {
+            document["ietf-system-tacacs-plus:tacacs-plus"]["client-credentials"] = serde_json::json!([
+                {"id": "bundle", "certificate": {"inline-definition": inline}}
+            ]);
+            document["ietf-system-tacacs-plus:tacacs-plus"]["server"][0]["client-identity"] =
+                serde_json::json!({"credentials-reference": "bundle"});
+        }
+        let source = parse_yang_json(&document.to_string()).unwrap();
+        let original = source.clone();
+        let enumerated = tacacsrs_config::enumerate_server(&source, "chain").unwrap();
+        let certificate = enumerated
+            .client_identity
+            .unwrap()
+            .certificate
+            .unwrap()
+            .inline_definition
+            .unwrap();
+        assert_eq!(certificate.intermediate_certificate, [vec![3], vec![4, 5]]);
+        let serialized = serde_json::to_value(&certificate).unwrap();
+        assert_eq!(
+            serialized["tacacsrs:intermediate-certificate"],
+            inline["tacacsrs:intermediate-certificate"]
+        );
+        assert_eq!(source, original);
+        let certificate = if bundled {
+            &mut document["ietf-system-tacacs-plus:tacacs-plus"]["client-credentials"][0]
+                ["certificate"]["inline-definition"]
+        } else {
+            &mut document["ietf-system-tacacs-plus:tacacs-plus"]["server"][0]["client-identity"]
+                ["certificate"]["inline-definition"]
+        };
+        certificate["tacacsrs:intermediate-certificate"] =
+            serialized["tacacsrs:intermediate-certificate"].clone();
+        let round_trip = parse_yang_json(&document.to_string()).unwrap();
+        assert_eq!(round_trip, original);
+        for invalid in [
+            serde_json::json!([""]),
+            serde_json::json!(["Aw==", "Aw=="]),
+            serde_json::json!(["%%%"]),
+        ] {
+            let certificate = if bundled {
+                &mut document["ietf-system-tacacs-plus:tacacs-plus"]["client-credentials"][0]
+                    ["certificate"]["inline-definition"]
+            } else {
+                &mut document["ietf-system-tacacs-plus:tacacs-plus"]["server"][0]["client-identity"]
+                    ["certificate"]["inline-definition"]
+            };
+            certificate["tacacsrs:intermediate-certificate"] = invalid;
+            assert!(parse_yang_json(&document.to_string()).is_err());
+        }
+    }
 }
 
 #[test]
@@ -88,6 +290,9 @@ fn generated_central_trust_shape_is_shared_by_direct_and_bundle_ca_ee_fields() {
         central_truststore_reference: Some("opaque-certificate-bag".to_owned()),
     };
     let bundle = tacacsrs_config::ServerCredentials {
+        require_crls: None,
+        require_ocsp: None,
+        require_stapled_ocsp: None,
         id: "bundle".to_owned(),
         ca_certs: Some(trust.clone()),
         ee_certs: Some(trust),
@@ -269,7 +474,7 @@ fn symmetric_key_format_all_and_allowed_values() {
 
 #[test]
 fn server_type_serialize_single_flag() {
-    let root = tacacsrs_config::model::YangConfigRoot {
+    let root = tacacsrs_config::YangConfigRoot {
         tacacs_plus: tacacsrs_config::TacacsPlus {
             client_credentials: vec![],
             server_credentials: vec![],
@@ -288,6 +493,8 @@ fn server_type_serialize_single_flag() {
                 client_identity: None,
                 server_authentication: None,
                 vrf_instance: None,
+                egress_interface: None,
+                binding_policy: tacacsrs_config::tacacsrs::BindingPolicy::BestEffort,
             }],
         },
     };
@@ -298,7 +505,7 @@ fn server_type_serialize_single_flag() {
 
 #[test]
 fn server_type_serialize_two_flags() {
-    let root = tacacsrs_config::model::YangConfigRoot {
+    let root = tacacsrs_config::YangConfigRoot {
         tacacs_plus: tacacsrs_config::TacacsPlus {
             client_credentials: vec![],
             server_credentials: vec![],
@@ -318,6 +525,8 @@ fn server_type_serialize_two_flags() {
                 client_identity: None,
                 server_authentication: None,
                 vrf_instance: None,
+                egress_interface: None,
+                binding_policy: tacacsrs_config::tacacsrs::BindingPolicy::BestEffort,
             }],
         },
     };
@@ -328,7 +537,7 @@ fn server_type_serialize_two_flags() {
 
 #[test]
 fn serialization_omits_absent_optionals_and_empty_lists() {
-    let root = tacacsrs_config::model::YangConfigRoot {
+    let root = tacacsrs_config::YangConfigRoot {
         tacacs_plus: TacacsPlusBuilder::new()
             .with_server(
                 TacacsPlusServerBuilder::new(

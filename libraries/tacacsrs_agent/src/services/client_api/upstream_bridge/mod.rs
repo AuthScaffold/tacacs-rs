@@ -10,11 +10,11 @@ use std::sync::Arc;
 use crate::config::PolicyService;
 use crate::upstream::OperationRouter;
 use crate::upstream::manager::UpstreamManager;
+use tacacsrs_networking::routed::EndpointConnector;
 
 mod accounting;
 mod authentication;
 mod authorization;
-mod mapping;
 mod routed;
 
 #[cfg(test)]
@@ -25,14 +25,23 @@ mod routing_tests;
 /// The bridge holds an [`OperationRouter`], not the whole upstream manager. It
 /// can select servers and record outcomes. It cannot read proxy settings or
 /// change the runtime configuration.
-#[derive(Clone)]
-pub(super) struct UpstreamBridge {
-    router: OperationRouter,
+pub(crate) struct UpstreamBridge<
+    Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
+> {
+    router: OperationRouter<Connector>,
 }
 
-impl UpstreamBridge {
+impl<Connector: EndpointConnector> Clone for UpstreamBridge<Connector> {
+    fn clone(&self) -> Self {
+        Self {
+            router: self.router.clone(),
+        }
+    }
+}
+
+impl<Connector: EndpointConnector> UpstreamBridge<Connector> {
     /// Creates a client API bridge for the shared upstream manager.
-    pub(super) fn new(upstream_manager: Arc<UpstreamManager>) -> Self {
+    pub(crate) fn new(upstream_manager: Arc<UpstreamManager<Connector>>) -> Self {
         Self {
             router: OperationRouter::new(upstream_manager, PolicyService::ClientApi),
         }
@@ -47,7 +56,7 @@ mod tests {
     use std::time::Duration;
 
     use tacacsrs_config::TacacsPlusServer;
-    use tacacsrs_agent_client::{AuthenticationResponseStatus, PapAuthenticationOperation};
+    use tacacsrs_protocol::operations::{AuthenticationResponseStatus, PapAuthenticationOperation};
     use tacacsrs_secrets::SecretBytes;
 
     use super::UpstreamBridge;
@@ -78,6 +87,8 @@ mod tests {
             source_ip: None,
             source_interface: None,
             vrf_instance: None,
+            egress_interface: None,
+            binding_policy: tacacsrs_config::tacacsrs::BindingPolicy::BestEffort,
         }
     }
 
@@ -96,7 +107,7 @@ mod tests {
 
         let state = Arc::new(UpstreamManager::new(
             vec![test_server("server:49")],
-            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+            Arc::clone(&connector) as Arc<UpstreamConnector>,
             Duration::from_millis(200),
             RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
         ));
@@ -124,7 +135,7 @@ mod tests {
         )])));
         let state = Arc::new(UpstreamManager::new(
             vec![test_server("server:49")],
-            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+            Arc::clone(&connector) as Arc<UpstreamConnector>,
             Duration::from_millis(200),
             RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
         ));
@@ -136,7 +147,7 @@ mod tests {
                 password: SecretBytes::new(b"secret".to_vec()),
                 port: "tty0".to_owned(),
                 remote_address: "192.0.2.1".to_owned(),
-                privilege_level: 15,
+                privilege_level: tacacsrs_protocol::privilege::PrivilegeLevel::MAX,
             })
             .await
             .unwrap();
@@ -165,7 +176,7 @@ mod tests {
 
         let state = Arc::new(UpstreamManager::new(
             vec![test_server("primary:49"), test_server("secondary:49")],
-            Arc::clone(&connector) as Arc<dyn UpstreamConnector>,
+            Arc::clone(&connector) as Arc<UpstreamConnector>,
             Duration::from_millis(200),
             RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
         ));
@@ -176,7 +187,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.server.as_deref(), Some("primary:49"));
-        assert!(error.retriable);
+        assert_eq!(error.facts.retry_advice(), tacacsrs_protocol::failure::RetryAdvice::Never);
 
         let response = bridge
             .execute_authorization_request(build_authorization_request())
@@ -189,7 +200,7 @@ mod tests {
     async fn test_request_without_configured_servers_returns_waiting_error() {
         let state = Arc::new(UpstreamManager::new(
             Vec::new(),
-            Arc::new(FakeConnector::new(HashMap::new())) as Arc<dyn UpstreamConnector>,
+            Arc::new(FakeConnector::new(HashMap::new())) as Arc<UpstreamConnector>,
             Duration::from_millis(200),
             RuntimeHealthPublisher::new(EnabledServices::CLIENT_API),
         ));
@@ -200,7 +211,10 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(error.retriable);
+        assert_eq!(
+            error.facts.retry_advice(),
+            tacacsrs_protocol::failure::RetryAdvice::AfterRecovery
+        );
         assert!(error.message.contains("waiting for initial configuration"));
     }
 }

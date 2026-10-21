@@ -1,11 +1,12 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tacacsrs_messages::packet::Packet;
+use tacacsrs_protocol::packet::Packet;
 
 use super::{DuplexChannel, SessionManager};
 
 pub(crate) struct SharedSession {
+    pub(crate) connection_owner: Option<Arc<crate::connection::MultiplexedConnection>>,
     id: u32,
     duplex_channel: DuplexChannel,
 
@@ -20,6 +21,7 @@ impl SharedSession {
         manager: Option<Arc<SessionManager>>,
     ) -> Self {
         Self {
+            connection_owner: None,
             id: session_id,
             duplex_channel,
             complete: AtomicBool::new(false),

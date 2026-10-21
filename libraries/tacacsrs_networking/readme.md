@@ -10,11 +10,12 @@ Most TACACS+ operations are one request followed by one reply. Accounting,
 authorization, and PAP authentication use the fixed exchange lane:
 
 ```rust,ignore
-let reply = client.execute(exchange).await?;
+let reply = client.execute(&exchange).await?;
 ```
 
-An exchange descriptor serializes its operation body and parses its typed
-reply. Networking owns the random session ID, request/reply sequence numbers
+An exchange constructor validates and serializes its body before execution.
+The executor borrows its immutable body and parses the typed reply.
+Networking owns the random session ID, request/reply sequence numbers
 `1/2`, header validation, transport selection, and cleanup.
 
 Transparent proxying and genuinely interactive authentication use a mutable
@@ -35,7 +36,7 @@ RESTART, and terminal reply handling.
 
 ## Shared Connection Runtime
 
-One reader task and one writer task own each confirmed single-connect stream.
+One owned driver polls the reader and writer futures for each confirmed single-connect stream.
 The writer consumes a bounded outbound queue because bytes on one TCP/TLS stream
 must be serialized. The reader can receive server replies in any cross-session
 order and routes each packet by its TACACS+ session ID.
@@ -43,7 +44,7 @@ order and routes each packet by its TACACS+ session ID.
 Fixed exchanges register a direct one-shot route:
 
 ```text
-execute(exchange)
+execute(&exchange)
   -> reserve random nonzero session ID
   -> registry[session ID] = expected header + one-shot sender
   -> bounded outbound queue
@@ -96,14 +97,32 @@ the shared runtime.
 
 ## Packet Ownership
 
-Networking exposes packet bodies as byte slices, formats them as redacted
-metadata, and zeroizes them on drop. Obfuscation and deobfuscation mutate
-owned bodies in place. The writer emits the 12-byte header and body
-separately rather than allocating a second combined packet buffer.
+`PacketReader::new` and `PacketWriter::new` accept `Option<SecretBytes>` instead of raw key vectors.
+Dedicated connections, shared connections, and promotion copies retain protected key owners until those owners drop.
+Each `SecretBytes` owner redacts its `Debug` output and zeroizes its key allocation on drop.
+
+Networking exposes packet bodies as byte slices and formats them as redacted metadata.
+`Packet::drop` zeroizes the owned body. This does not guarantee that every temporary serialization buffer is zeroized.
+The writer serializes the 12-byte header and body into one contiguous buffer and writes the complete frame.
 
 TACACS+ shared-secret obfuscation is not confidentiality. PAP is allowed over
 the operator-configured transport for interoperability. Prefer TACACS+ over TLS
 1.3 for production deployments.
+
+## Preparation Payload
+
+`PreparationPayloadLedger` provides checked reservation and release without a configuration schema or async runtime.
+`PreparationPayload` shares the reservations for one endpoint. Byte owners release temporary reservations only after their buffers drop.
+Native TLS preparation can accept this owner through `prepare_with_payload`. The ordinary `prepare` methods are unmanaged entry points.
+They use the same implementation without a candidate limit. They are not a global resource guarantee.
+
+The payload measure includes Rust strings, keys, callback DER, fetched evidence, and temporary metadata and comparison buffers.
+It excludes native object internals, fixed-layout and collection metadata, allocator slack, connection execution, and process RSS.
+Known byte copies require reservation before allocation. Opaque native encodings pass a handoff check before retention or another copy.
+Client-chain deduplication stores accounted DER owners in a `BTreeSet` to avoid quadratic comparisons.
+All live DER buffers retain their reservations until the set drops, including rejection paths.
+The caller must retain its registered work lease through blocking execution and queued results.
+The agent owns this scheduling contract. Networking does not create a preparation executor.
 
 ## Baseline
 

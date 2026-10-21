@@ -2,8 +2,6 @@
 
 use std::fmt;
 
-use tacacsrs_config::EnumerationRequiredError;
-
 use crate::{CredentialKind, RequestContext, RequestSlot};
 
 /// Stable resolution error category.
@@ -11,7 +9,7 @@ use crate::{CredentialKind, RequestContext, RequestSlot};
 pub enum ResolutionErrorKind {
     /// Configuration-local credential bundle expansion is required first.
     EnumerationRequired,
-    /// A generated central container cannot form a usable request.
+    /// A reference cannot form a usable typed request.
     IncompleteRequest,
     /// The provider did not find the requested credential.
     NotFound,
@@ -67,6 +65,18 @@ pub struct ResolutionError {
 }
 
 impl ResolutionError {
+    /// Creates a sanitized error for a reference that still needs local expansion.
+    #[must_use]
+    pub fn enumeration_required(context: RequestContext) -> Self {
+        Self {
+            kind: ResolutionErrorKind::EnumerationRequired,
+            context: Some(context),
+            slot: None,
+            expected: None,
+            actual: None,
+        }
+    }
+
     pub(crate) fn incomplete_request(context: RequestContext, expected: CredentialKind) -> Self {
         Self {
             kind: ResolutionErrorKind::IncompleteRequest,
@@ -169,26 +179,6 @@ impl ResolutionError {
     #[must_use]
     pub const fn actual(&self) -> Option<CredentialKind> {
         self.actual
-    }
-}
-
-impl From<EnumerationRequiredError> for ResolutionError {
-    fn from(error: EnumerationRequiredError) -> Self {
-        let field_path = match error.field() {
-            tacacsrs_config::UnexpandedCredentialField::ClientIdentity => {
-                "client-identity/credentials-reference"
-            }
-            tacacsrs_config::UnexpandedCredentialField::ServerAuthentication => {
-                "server-authentication/credentials-reference"
-            }
-        };
-        Self {
-            kind: ResolutionErrorKind::EnumerationRequired,
-            context: Some(RequestContext::new(error.server_name(), field_path)),
-            slot: None,
-            expected: None,
-            actual: None,
-        }
     }
 }
 

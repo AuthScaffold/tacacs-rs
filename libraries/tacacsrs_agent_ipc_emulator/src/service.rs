@@ -3,9 +3,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
-use tacacsrs_agent_client::ipc;
-use tacacsrs_agent_client::ipc::tacacs_agent_server::TacacsAgent;
-use tacacsrs_agent_client::PapAuthenticationOperation;
+use tacacsrs_ipc::proto;
+use tacacsrs_ipc::proto::tacacs_agent_server::TacacsAgent;
+use tacacsrs_protocol::operations::PapAuthenticationOperation;
 use tokio::sync::{oneshot, Mutex};
 use tonic::{Request, Response, Status};
 
@@ -14,7 +14,7 @@ use crate::controller::tacacs_agent_mock_controller_server::TacacsAgentMockContr
 use crate::policy::{EmulatorPolicy, EmulatorResponse, IpcRpc, ResponseBody};
 use crate::protocol::{
     accounting_fields, accounting_response, authorization_fields, authorization_response,
-    service_error,
+    pap_unsupported_error, service_error,
 };
 use crate::state::{EmulatorState, EvaluatedDecision};
 
@@ -53,23 +53,21 @@ impl AgentService {
 impl TacacsAgent for AgentService {
     async fn authenticate_pap(
         &self,
-        request: Request<ipc::PapAuthenticationRequest>,
-    ) -> Result<Response<ipc::PapAuthenticationReply>, Status> {
+        request: Request<proto::PapAuthenticationRequest>,
+    ) -> Result<Response<proto::PapAuthenticationReply>, Status> {
         let _request = PapAuthenticationOperation::try_from(request.into_inner())
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        Ok(Response::new(ipc::PapAuthenticationReply {
-            result: Some(ipc::pap_authentication_reply::Result::Error(ipc::ServiceError {
-                message: "PAP authentication is not supported by the policy emulator".to_owned(),
-                server: "ipc-emulator".to_owned(),
-                retriable: false,
-            })),
+        Ok(Response::new(proto::PapAuthenticationReply {
+            result: Some(proto::pap_authentication_reply::Result::Error(
+                pap_unsupported_error().into(),
+            )),
         }))
     }
 
     async fn accounting(
         &self,
-        request: Request<ipc::AccountingRequest>,
-    ) -> Result<Response<ipc::AccountingReply>, Status> {
+        request: Request<proto::AccountingRequest>,
+    ) -> Result<Response<proto::AccountingReply>, Status> {
         let fields = accounting_fields(&request.into_inner());
         log_request(IpcRpc::Accounting, &fields);
         let Some(decision) = self.evaluate(IpcRpc::Accounting, fields).await? else {
@@ -80,17 +78,17 @@ impl TacacsAgent for AgentService {
         match decision.response {
             EmulatorResponse::Response(response) => {
                 log_response(IpcRpc::Accounting, &response);
-                Ok(Response::new(ipc::AccountingReply {
-                    result: Some(ipc::accounting_reply::Result::Response(
-                        accounting_response(response)?.into_proto(),
+                Ok(Response::new(proto::AccountingReply {
+                    result: Some(proto::accounting_reply::Result::Response(
+                        accounting_response(response)?.into(),
                     )),
                 }))
             }
             EmulatorResponse::Error(error) => {
                 log_error_response(IpcRpc::Accounting, &error);
-                Ok(Response::new(ipc::AccountingReply {
-                    result: Some(ipc::accounting_reply::Result::Error(
-                        service_error(error).into_proto(),
+                Ok(Response::new(proto::AccountingReply {
+                    result: Some(proto::accounting_reply::Result::Error(
+                        service_error(error).into(),
                     )),
                 }))
             }
@@ -99,8 +97,8 @@ impl TacacsAgent for AgentService {
 
     async fn authorization(
         &self,
-        request: Request<ipc::AuthorizationRequest>,
-    ) -> Result<Response<ipc::AuthorizationReply>, Status> {
+        request: Request<proto::AuthorizationRequest>,
+    ) -> Result<Response<proto::AuthorizationReply>, Status> {
         let fields = authorization_fields(&request.into_inner());
         log_request(IpcRpc::Authorization, &fields);
         let command_display = fields
@@ -124,17 +122,17 @@ impl TacacsAgent for AgentService {
         match response {
             EmulatorResponse::Response(response) => {
                 log_response(IpcRpc::Authorization, &response);
-                Ok(Response::new(ipc::AuthorizationReply {
-                    result: Some(ipc::authorization_reply::Result::Response(
-                        authorization_response(response)?.into_proto(),
+                Ok(Response::new(proto::AuthorizationReply {
+                    result: Some(proto::authorization_reply::Result::Response(
+                        authorization_response(response)?.into(),
                     )),
                 }))
             }
             EmulatorResponse::Error(error) => {
                 log_error_response(IpcRpc::Authorization, &error);
-                Ok(Response::new(ipc::AuthorizationReply {
-                    result: Some(ipc::authorization_reply::Result::Error(
-                        service_error(error).into_proto(),
+                Ok(Response::new(proto::AuthorizationReply {
+                    result: Some(proto::authorization_reply::Result::Error(
+                        service_error(error).into(),
                     )),
                 }))
             }

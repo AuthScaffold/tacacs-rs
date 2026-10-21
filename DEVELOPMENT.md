@@ -25,9 +25,6 @@ This document describes the development, CI, and release processes for tacacs-rs
 # Code coverage
 cargo install cargo-llvm-cov
 
-# Release automation
-cargo install cargo-release
-
 # Unused dependencies check
 cargo install cargo-udeps
 
@@ -54,21 +51,28 @@ cargo cyclonedx --format xml --all --all-features
 
 # SBOM files are generated for each workspace member:
 # - executables/tacon/tacon.cdx.json
-# - libraries/tacacsrs_messages/tacacsrs-messages.cdx.json
+# - libraries/tacacsrs_protocol/tacacsrs-protocol.cdx.json
 # - libraries/tacacsrs_networking/tacacsrs-networking.cdx.json
 ```
 
-The release pipeline generates SBOMs and includes them with each release.
+SBOM generation is optional for local consumers.
+The source-only release pipeline does not generate or distribute archive SBOMs.
 
 ## Development Setup
 
 ### Development container
 
-The development container is the supported environment for complete workspace development. It includes the Linux GNU dependencies.
+The development container is the supported environment for complete workspace development.
+Source, Git metadata, build artifacts, and remote editor state use persistent Linux-native volumes.
+The original host checkout is a read-only seed for the first import, not the active source directory.
 
-On Windows, start a Podman 5 or later machine before you open the repository. A Hyper-V or WSL2 machine is supported.
+Before rebuilding, read the [container migration guide](docs/dev-container.md).
+It explains how to preserve unpushed commits and untracked files.
 
-Configure VS Code to use Podman:
+On Windows, start a Podman 5 or later machine before opening the repository.
+A Hyper-V or WSL2 machine is supported. Docker is an alternative runtime.
+
+For Podman, configure VS Code:
 
 ```json
 {
@@ -76,12 +80,13 @@ Configure VS Code to use Podman:
 }
 ```
 
-Then run **Dev Containers: Reopen in Container**. Docker is an alternative container runtime.
+After saving and committing the seed checkout, run **Dev Containers: Reopen in Container** or **Dev Containers: Rebuild Container**.
+The bootstrap imports its current named branch once and preserves the native checkout on later rebuilds.
 
 ```bash
-# Clone the repository
-git clone https://github.com/AuthScaffold/tacacs-rs
-cd tacacs-rs
+# Run inside the native-volume workspace after setup.
+cd /workspaces/tacacs-rs
+git branch --show-current
 
 # Build all crates in Linux
 cargo build --workspace
@@ -169,7 +174,7 @@ cargo test --workspace -- --nocapture
 cargo test test_name
 
 # Run tests for a specific crate
-cargo test -p tacacsrs-messages
+cargo test -p tacacsrs-protocol
 ```
 
 ### Session Wrapper Smoke Tests
@@ -177,6 +182,20 @@ cargo test -p tacacsrs-messages
 The Linux `session-wrapper` has more smoke tests and integration tests. These tests cover seccomp notifications, child processes, and descendant processes.
 
 For the test procedure, read [Session Wrapper Testing](docs/session-wrapper-testing.md).
+
+### Parser fuzz smoke tests
+
+The protocol parsers have libFuzzer targets in `fuzz/`. CI runs them as blocking smoke tests through the `.github/steps/run-fuzz-smoke` action. Each target runs for 30 seconds.
+
+```bash
+# Run one target (requires nightly + cargo-fuzz)
+cargo +nightly fuzz run fuzz_authentication_parse -- -max_total_time=30
+
+# List all targets
+cargo +nightly fuzz list
+```
+
+The targets are `fuzz_header_parse`, `fuzz_accounting_request_parse`, `fuzz_accounting_reply_parse`, `fuzz_accounting_request_packet_parse`, `fuzz_authentication_parse`, `fuzz_authorization_parse`, and `fuzz_protocol_parse`. The dedicated `fuzz_authentication_parse` and `fuzz_authorization_parse` targets parse each message body with `from_bytes` and `from_packet`, then confirm that every parsed value re-serializes to identical bytes. The `fuzz_protocol_parse` target exercises every message family together.
 
 ### Code Coverage
 
@@ -204,10 +223,53 @@ cargo +nightly fmt --all
 
 ### Linting
 
+Blocking checks include default Clippy, checked numeric conversions, error and panic documentation, unsafe-block explanations, and internal API visibility.
+Broad pedantic and nursery checks are advisory. Function length is not a design requirement.
+Keep a cohesive state transition together when extraction would hide its sequencing or ownership.
+
+The workspace allows `assert_is_empty` and `chunks_exact_to_as_chunks`.
+Simple emptiness assertions avoid extra type annotations and do not print collection contents or secret bytes on failure.
+Checked chunk iterators keep argument grouping and remainder validation together.
+Keep correctness checks enabled. Add a specific global allowance when a style rule makes the code less clear.
+
+Dependency freshness is a report, not a requirement to adopt unrelated major upgrades.
+Security audits, unused-dependency checks, and tool execution failures remain blocking.
+
 ```bash
 # Run clippy
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+# Inspect advisory style findings
+cargo clippy --workspace --all-targets --all-features -- -W clippy::pedantic -W clippy::nursery
+
+# Match CI documentation coverage, including private implementation modules
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --document-private-items
+
+# Verify the declared minimum supported compiler
+cargo +1.88.0 check --workspace --all-targets --all-features --locked
 ```
+
+Every package inherits `rust-version.workspace`. Parser fuzz failures are blocking, not advisory.
+
+### Reading Stateful Code
+
+Start with the owner and its transition, then read the adjacent tests:
+
+| Behavior | Starting point |
+| --- | --- |
+| Canonical parsing and preparation | [Configuration facade](libraries/tacacsrs_config/src/lib.rs) |
+| Source observation, refresh, and expiry | [Configuration supervisor](libraries/tacacsrs_agent/src/runtime/config_supervisor.rs) |
+| Catalog and policy commits | [Publication](libraries/tacacsrs_agent/src/upstream/manager/publication.rs) |
+| Client construction and closure | [Client facade](libraries/tacacsrs_networking/src/client/mod.rs) |
+| First-reply negotiation and cache promotion | [Single-connect ownership](libraries/tacacsrs_networking/src/single_connect/mod.rs) |
+| Logical operations and wire conversion | [Operation facade](libraries/tacacsrs_protocol/src/operations.rs) |
+| CLI transport selection | [Backend](executables/tacon/src/backend.rs) |
+| Unix listener lifetime | [Socket owner](libraries/tacacsrs_unix_socket/src/listener.rs) |
+
+Module documentation names the owner, entry points, state transitions, and cancellation limits.
+Function documentation explains contracts and failure conditions. Inline comments explain invariants rather than narrating assignments.
+Client, catalog, connection, and session lifetimes are distinct even when their states use similar words.
+Publication keeps runtime state, health, and coordinator bookkeeping in one non-awaiting commit. Retirement occurs afterward.
 
 ### Other Checks
 
@@ -269,15 +331,30 @@ The `feature-flags.ini` file controls upstream and project features. Project fea
 
 The cache must use a detached HEAD at the specified commit. Use `--clean` to replace an old cache. The generator does not use a different revision.
 
-Before you commit generated changes, run:
+Before you commit generated changes, run the generator unit tests and the full regeneration check:
 
 ```bash
 cd libraries/tacacsrs_config/yang
-python -m unittest -v test_expand_yang_tree.py
+python -m unittest discover -v -p 'test_*.py'
 python verify_generated.py --clean
 ```
 
+`verify_generated.py --clean` clones the pinned `YangModels/yang` commit, regenerates the tree and Rust types, and compares them against the checked-in artifacts. It needs network access for the clone. Run it when you change the pinned source, the feature flags, or the generator.
+
 The verifier compares canonical LF content. Thus, Windows and Linux checkouts produce the same result.
+
+### Offline consistency check
+
+For a fast gate that needs no network access and does not regenerate anything, run:
+
+```bash
+cd libraries/tacacsrs_config/yang
+python verify_generated.py --check
+```
+
+The offline check validates the recorded SHA-256 hashes of the pinned source identity, the pyang version, the reviewed feature flags, the secret-field manifest, the checked-in YANG module, and the generated outputs. It confirms that the checked-in tree still matches the manifest. It is a consistency gate, not a proof of deterministic regeneration.
+
+CI runs the generator unit tests and the offline check through the `.github/steps/verify-yang` action. CI installs the pinned `pyang` version from `requirements.txt` and performs no branch writes. CI does not clone the upstream source or regenerate the artifacts; run `verify_generated.py --clean` locally when you change the source or generator.
 
 `.gitattributes` keeps generation inputs and outputs at LF. Do not recreate `feature-flags.ini` with `--list-features` before you review each value.
 
@@ -301,43 +378,60 @@ After you generate the code, run the workspace formatting, clippy, build, and te
 
 ### Pull Request Workflow
 
-When you open a pull request, these jobs run:
+When you open or update a pull request targeting `main`, Linux and Windows each run one platform validation job.
+Each job hydrates versions before linting, documentation checks, and tests.
+The jobs also own their toolchain caches and Cargo metadata reports.
+ARMhf, minimum-Rust, and delivery-automation checks remain separate jobs.
 
-| Job | Description |
+| Check | Description |
 |-----|-------------|
 | **Rustfmt** | Rust formatting validation |
 | **Clippy** | Linting and static analysis |
-| **Test** | Run the workspace on Linux and the `tacon` package group on Windows |
-| **Build** | Builds all targets |
-| **Build Artifacts** | Build release binaries for all platforms (same as release) |
-| **SBOM** | Generate Software Bill of Materials (same as release) |
-| **Checksums** | Generate SHA256 checksums for all artifacts |
+| **Test** | Run unit, integration, and documentation tests for the complete workspace, with Linux-only packages excluded on Windows |
+| **Default Features** | Type-check each Linux selection and Windows `tacon` independently with `cargo check` |
+| **ARMhf** | Build and execute tests with QEMU, then validate ABI and startup behavior |
 | **Documentation** | Builds documentation without warnings |
 | **Coverage** | Generate and upload code coverage |
 | **Security Audit** | Finds known vulnerabilities after dependency changes |
+| **YANG Verification** | Offline hash and version check plus generator unit tests for the pinned model (Linux) |
+| **Fuzz Smoke** | Blocking libFuzzer smoke tests for the protocol parsers (Linux, nightly) |
 
 All jobs must pass before you merge the pull request.
 
-**Note:** The pull request workflow produces the same compiled assets as the release build. These assets include binaries, SBOM files, and checksums.
+Unit and integration tests compile their required binaries.
+There is no separate product-build job.
+Default-feature checks retain configuration coverage without another binary build.
+Linux uses `cargo test --locked --workspace --all-features --release`.
+This command includes experimental workspace members, not only the supported-core default members.
+Windows also selects `--workspace`, but excludes the Linux-only packages:
+
+- `session-wrapper`.
+- `tacacsrs-agent`, `tacacsrs-agentd`, and `tacacsrs-agent-health`.
+- `tacacsrs-agent-ipc-emulator` and `tacacsrs-agent-ipc-emulatord`.
+- `tacacsrs-bash-plugin`, `tacacsrs-ipc`, `tacacsrs-sonic`, and `tacacsrs-unix-socket`.
+
+The Windows selection includes `tacon` and all six portable libraries.
+This includes the credential-resolution and HTTP credential libraries, whose tests were absent from the previous explicit package selection.
+Linting, documentation, unused-dependency checks, and tests use the same platform selection.
+There is no separate job that repeats the tests for individual crate groups.
+Architecture guards enforce the dependency boundaries.
+
+PRs validate source without publishing release assets.
+CI reports are diagnostic outputs, not installation packages.
+For validation before a PR exists, use the [manual CI rehearsal](docs/release-rehearsal.md#manual-signed-rehearsal).
 
 ### Main Branch CI
 
-After a merge to `main`, these additional checks run:
-
-- Test matrix (stable)
-- Documentation link verification
-
-The CI workflow generates the same artifacts as the release workflow:
-
-- **Release Archives**: Linux GNU `.tar.gz` archives and a Windows MSVC `.zip` archive
-- **SBOM Files**: Software Bill of Materials files in CycloneDX JSON and XML formats
-- **Checksums**: SHA-256 checksums for all generated artifacts
-
-GitHub stores these artifacts for seven days. You can use them for tests before an official release.
+Main CI uses the reusable validation pipeline.
+Eligible release pushes validate a signed hydrated source commit before publication.
+AMD64, executed ARMhf, Windows direct mode, and the existing quality gates remain.
+Current event-specific settings and advisory lint behavior remain unchanged.
+There is no product-image publishing or release archive assembly.
 
 For nonrelease changes, add a `norelease`, `no-release`, or `skip-release` label to the pull request. You can also add `[norelease]`, `[no-release]`, or `[skip-release]` to the head commit.
 
-Main branch CI still runs. It does not inject release versions, create tags, publish a GitHub release, or update `release/versions`.
+Main branch CI still computes versions and tests the hydrated validation worktrees.
+It does not create a remote candidate, advance `release`, create tags, or publish a GitHub Release.
 
 ### Release Workflow
 
@@ -345,11 +439,14 @@ Main branch CI is the release workflow. After a push to `main`, GitHub Actions:
 
 1. Applies the release policy. `[norelease]`, `[no-release]`, `[skip-release]`, or matching pull request labels skip release outputs.
 2. Computes versions from existing git tags with `.github/steps/compute-versions`.
-3. Injects the computed version map into `Cargo.toml` files in CI before official builds.
-4. Builds release archives, SBOMs, checksums, and release assets.
-5. Creates and pushes any new library semver tags and executable CalVer tags.
-6. Creates the GitHub Release for the primary executable release tag.
-7. Updates the generated `release/versions` branch with final Cargo package metadata populated.
+3. Hydrates manifests and the lockfile in a temporary worktree.
+4. Creates a GitHub-verified commit object without moving release refs.
+5. Runs the validation pipeline against that exact SHA.
+6. Atomically advances `release` and creates library SemVer and repository CalVer tags.
+7. Creates the `TACACS-RS YYYY.MMDD.BUILD` GitHub Release with every workspace crate version and no uploaded assets.
+
+Recovery reads an existing generated release for the same source before fresh version computation.
+See [Source Release Validation](docs/release-rehearsal.md) for the complete contract.
 
 ## Releasing
 
@@ -360,27 +457,31 @@ Package manifests on `main` use `0.0.0-dev`. Do not add a version commit to `mai
 Real release versions are derived from git tags:
 
 - Libraries receive semver versions and tags of the form `<crate>-vX.Y.Z`.
-- Executables receive CalVer versions of the form `YYYY.MMDD.BUILD` and tags of the form `<binary>-YYYY.MMDD.BUILD`.
-- `tacacsrs-agentd` shares the primary `tacon` CalVer version in the current release workflow.
+- Repository releases use CalVer tags of the form `tacacs-rs-YYYY.MMDD.BUILD`.
+- `tacon`, `tacacsrs-agentd`, and `tacacsrs-agent-health` share the executable CalVer version.
 
-The official pipeline injects the computed version map before the build and packaging steps. It does not commit release versions to `main`.
+The pipeline injects the computed map before candidate validation.
+It does not commit release versions to `main`.
 
-### Release Versions Branch
+### Release Branch
 
-The generated `release/versions` branch contains released Cargo package versions. Use this branch to build released source.
+The generated `release` branch contains released Cargo package versions.
+Pin a release tag or commit for a reproducible source selection.
 
-Release automation creates or rewrites this branch after successful release tagging. The release tags stay on the original `main` commit.
+Release automation retains append-only history.
+Each generated commit has the previous release and current source as its parents.
+The first release has only the source parent.
+Release tags point to the validated hydrated commit.
 
-The generated version commit exists only on `release/versions`. Automation does not merge it into `main`.
-
-Use `release/versions` for clone-and-build release source checkouts. Use `main` for development.
+Automation does not merge the generated commit into `main`.
+Use `main` for development.
 
 ### Release Process
 
 1. Merge the development changes into `main`.
 2. Main CI computes release versions from the previous tags and the changed crate paths.
-3. If release changes exist and CI succeeds, the release job creates the new tags and GitHub Release.
-4. The same release job updates `release/versions` with the computed final versions injected into `Cargo.toml`.
+3. If release changes exist, CI prepares a signed hydrated candidate and validates its SHA.
+4. After validation succeeds, CI publishes the release branch, tags, and source-only GitHub Release.
 
 For CI, LDE, documentation, or other nonrelease changes, use the no-release labels or commit markers.
 
@@ -388,7 +489,8 @@ For CI, LDE, documentation, or other nonrelease changes, use the no-release labe
 
 Pull request CI computes `dev` prerelease versions. It injects these versions into the CI checkout before the build.
 
-These versions apply only to validation artifacts. CI does not tag, commit, or push them to `release/versions`.
+These versions apply only to local build validation.
+CI does not tag, commit, or push PR prerelease versions.
 
 ### Troubleshooting Releases
 
@@ -396,20 +498,19 @@ These versions apply only to validation artifacts. CI does not tag, commit, or p
 
 Before you merge, add a `norelease`, `no-release`, or `skip-release` label to the pull request. You can also add `[norelease]`, `[no-release]`, or `[skip-release]` to the head commit.
 
-**Tag already exists?**
+**A tag or release page already exists**
 
-First, make sure that the tag was created by mistake. Then remove the conflicting local and remote tag, and run the release workflow again.
+Rerun the original workflow after a release-page error.
+Recovery reuses the same candidate, versions, and tags.
+Conflicting tags or a partial tag set stop publication.
+Investigate the recorded source and candidate before any manual ref change.
 
-```bash
-git tag -d <tag-name>
-git push origin :refs/tags/<tag-name>
-```
+**The verified commit or release branch update failed**
 
-**`release/versions` failed to update?**
-
-Make sure that branch protection lets `github-actions[bot]` update the generated branch. If protection is required, add an exception for the release workflow.
-
-You can instead update the branch with an approved automation token.
+Review the API error, signature status, and branch rules.
+The workflow requires `contents: write` for candidate creation and publication.
+A signature error has no unsigned fallback.
+A changed release head stops publication instead of replacing history.
 
 ## Project Structure
 
@@ -426,6 +527,6 @@ tacacs-rs/
 ├── executables/
 │   └── tacon/              # CLI application
 └── libraries/
-    ├── tacacsrs_messages/  # Protocol message types
+    ├── tacacsrs_protocol/  # Protocol message types
     └── tacacsrs_networking/# Network client implementation
 ```

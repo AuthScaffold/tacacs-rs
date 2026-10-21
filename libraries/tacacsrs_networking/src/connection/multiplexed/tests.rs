@@ -1,0 +1,676 @@
+use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+use tacacsrs_protocol::constants::TACACS_MAX_BODY_LENGTH;
+use tacacsrs_protocol::enumerations::{TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType};
+use tacacsrs_protocol::header::Header;
+use tacacsrs_protocol::packet::{Packet, PacketTrait};
+
+use super::MultiplexedConnection;
+use crate::codec::{PacketReadResult, PacketReader};
+use crate::exchange_error::ProtocolFailure;
+use crate::session::{ClientConversation, ExpectedResponseHeader, PacketDispatchError};
+
+fn conversation_packet(session_id: u32, seq_no: u8) -> Packet {
+    Packet::new(
+        Header {
+            major_version: TacacsMajorVersion::TacacsPlusMajor1,
+            minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
+            tacacs_type: TacacsType::TacPlusAuthorisation,
+            seq_no,
+            flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+            session_id,
+            length: 0,
+        },
+        Vec::new(),
+    )
+    .unwrap()
+}
+
+fn request(session_id: u32) -> Packet {
+    conversation_packet(session_id, 1)
+}
+
+fn reply(session_id: u32) -> Packet {
+    Packet::new(
+        Header {
+            major_version: TacacsMajorVersion::TacacsPlusMajor1,
+            minor_version: TacacsMinorVersion::TacacsPlusMinorVerDefault,
+            tacacs_type: TacacsType::TacPlusAuthorisation,
+            seq_no: 2,
+            flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG
+                | TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+            session_id,
+            length: 0,
+        },
+        Vec::new(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn test_connection_creation() {
+    let _conn = MultiplexedConnection::new(Some(b"test_key"));
+}
+
+#[test]
+fn test_connection_without_obfuscation() {
+    let _conn = MultiplexedConnection::new(None);
+}
+
+#[test]
+fn shared_runtime_retains_protected_key_until_last_owner_drops() {
+    let key = tacacsrs_secrets::SecretBytes::new(b"shared-key-owner-sentinel".to_vec());
+    let allocation = key.expose_secret().as_ptr();
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(Some(key), None));
+    let runtime = Arc::downgrade(&connection.runtime);
+    let remaining = Arc::clone(&connection);
+    drop(connection);
+    let protected: &tacacsrs_secrets::SecretBytes =
+        remaining.runtime.packet_writer.obfuscation_key().unwrap();
+    assert!(protected.expose_secret().as_ptr() == allocation);
+    assert!(protected.expose_secret() == b"shared-key-owner-sentinel");
+    assert!(runtime.upgrade().is_some());
+    drop(remaining);
+    assert!(runtime.upgrade().is_none());
+}
+
+#[tokio::test]
+async fn final_driver_owner_drop_closes_transport_without_a_join_caller() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+    let (client, mut peer) = tokio::io::duplex(256);
+    let (reader, writer) = tokio::io::split(client);
+    connection.run_with_halves(reader, writer);
+    drop(connection);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), peer.read(&mut [0; 1]))
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn explicit_close_joins_idle_driver_and_is_repeatable() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+    let (client, mut peer) = tokio::io::duplex(256);
+    let (reader, writer) = tokio::io::split(client);
+    connection.run_with_halves(reader, writer);
+    let deadline = crate::RequestDeadline::after(Duration::from_secs(1)).unwrap();
+    connection.close_and_join(deadline).await.unwrap();
+    connection.close_and_join(deadline).await.unwrap();
+    assert!(connection.create_session().is_err());
+    assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn forced_close_joins_driver_and_wakes_active_session() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+    let session = connection.create_session().unwrap();
+    let (client, mut peer) = tokio::io::duplex(256);
+    let (reader, writer) = tokio::io::split(client);
+    connection.run_with_halves(reader, writer);
+    connection
+        .close_and_join(crate::RequestDeadline::after(Duration::from_secs(1)).unwrap())
+        .await
+        .unwrap();
+    assert!(session.receive_packet().await.is_err());
+    assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn retirement_closes_idle_transport_without_peer_cooperation() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+    let (client, mut peer) = tokio::io::duplex(256);
+    let (reader, writer) = tokio::io::split(client);
+    connection.disable_new_sessions();
+
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        connection.handle_connection_with_halves(reader, writer),
+    )
+    .await
+    .expect("retired idle driver must finish")
+    .expect("retirement must close cleanly");
+    assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn retirement_waits_for_active_session_then_closes_transport() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+    let session = connection.create_session().unwrap();
+    let (client, mut peer) = tokio::io::duplex(256);
+    let (reader, writer) = tokio::io::split(client);
+    connection.disable_new_sessions();
+    assert!(connection.create_session().is_err());
+
+    let driver = connection.handle_connection_with_halves(reader, writer);
+    tokio::pin!(driver);
+    assert!(futures::poll!(&mut driver).is_pending());
+    drop(session);
+    tokio::time::timeout(Duration::from_secs(1), &mut driver)
+        .await
+        .expect("driver must finish after the last session drops")
+        .expect("retirement must close cleanly");
+    assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn cancelled_fixed_exchange_releases_route_and_allows_retirement() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+    let session = connection
+        .create_fixed_session(ExpectedResponseHeader::fixed(
+            TacacsType::TacPlusAuthorisation,
+            TacacsMinorVersion::TacacsPlusMinorVerDefault,
+        ))
+        .unwrap();
+    let session_id = session.session_id();
+    let mut outbound = connection.session_manager.take_receiver().unwrap();
+    {
+        let exchange = async move { session.round_trip(request(session_id)).await };
+        tokio::pin!(exchange);
+        assert!(futures::poll!(&mut exchange).is_pending());
+        assert_eq!(outbound.try_recv().unwrap().header().session_id, session_id);
+    }
+    assert!(matches!(
+        connection
+            .session_manager
+            .send_message_to_session(reply(session_id))
+            .await,
+        Err(PacketDispatchError::UnknownSession(_)),
+    ));
+    connection.disable_new_sessions();
+    tokio::time::timeout(Duration::from_secs(1), connection.session_manager.wait_for_close())
+        .await
+        .expect("a canceled exchange must not prevent retirement");
+}
+
+#[tokio::test]
+async fn routes_out_of_order_replies_by_session_id() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+    let first = connection.create_session().unwrap();
+    let second = connection.create_session().unwrap();
+
+    connection
+        .session_manager
+        .send_message_to_session(reply(second.session_id()))
+        .await
+        .unwrap();
+    connection
+        .session_manager
+        .send_message_to_session(reply(first.session_id()))
+        .await
+        .unwrap();
+
+    let first_reply = first.receive_packet().await.unwrap();
+    let second_reply = second.receive_packet().await.unwrap();
+    assert_eq!(first_reply.header().session_id, first.session_id());
+    assert_eq!(second_reply.header().session_id, second.session_id());
+
+    first.complete();
+    second.complete();
+}
+
+#[tokio::test]
+async fn completed_session_rejects_late_reply() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+    let session = connection.create_session().unwrap();
+    let session_id = session.session_id();
+
+    session.complete();
+
+    let result = connection
+        .session_manager
+        .send_message_to_session(reply(session_id))
+        .await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn routes_out_of_order_fixed_replies_by_session_id() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+    let first = connection.create_session().unwrap();
+    let second = connection.create_session().unwrap();
+    let first_receiver = connection
+        .session_manager
+        .prepare_fixed_response(
+            first.session_id(),
+            ExpectedResponseHeader::for_request(&request(first.session_id())),
+        )
+        .unwrap();
+    let second_receiver = connection
+        .session_manager
+        .prepare_fixed_response(
+            second.session_id(),
+            ExpectedResponseHeader::for_request(&request(second.session_id())),
+        )
+        .unwrap();
+
+    connection
+        .session_manager
+        .send_message_to_session(reply(second.session_id()))
+        .await
+        .unwrap();
+    connection
+        .session_manager
+        .send_message_to_session(reply(first.session_id()))
+        .await
+        .unwrap();
+
+    let first_reply = first_receiver.await.unwrap().unwrap();
+    let second_reply = second_receiver.await.unwrap().unwrap();
+    assert_eq!(first_reply.header().session_id, first.session_id());
+    assert_eq!(second_reply.header().session_id, second.session_id());
+
+    first.complete();
+    second.complete();
+}
+
+#[tokio::test]
+async fn rejects_invalid_fixed_response_metadata() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+    let session = connection.create_session().unwrap();
+    let receiver = connection
+        .session_manager
+        .prepare_fixed_response(
+            session.session_id(),
+            ExpectedResponseHeader::for_request(&request(session.session_id())),
+        )
+        .unwrap();
+    let invalid_reply = request(session.session_id());
+
+    let dispatch = connection
+        .session_manager
+        .send_message_to_session(invalid_reply)
+        .await;
+    assert!(matches!(dispatch, Err(PacketDispatchError::ProtocolViolation { .. })));
+    assert!(receiver.await.unwrap().is_err());
+
+    session.complete();
+}
+
+async fn fixed_channel_error(response: impl FnOnce(&Packet) -> Vec<u8>) -> anyhow::Error {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+    let session = connection
+        .create_fixed_session(ExpectedResponseHeader::fixed(
+            TacacsType::TacPlusAuthorisation,
+            TacacsMinorVersion::TacacsPlusMinorVerDefault,
+        ))
+        .unwrap();
+    let session_id = session.session_id();
+    let (client, mut peer) = tokio::io::duplex(256);
+    let (reader, writer) = tokio::io::split(client);
+    connection.run_with_halves(reader, writer);
+    let exchange = tokio::spawn(async move { session.round_trip(request(session_id)).await });
+
+    let PacketReadResult::Success(outbound) = tokio::time::timeout(
+        Duration::from_secs(1),
+        PacketReader::new(None).read_packet(&mut peer),
+    )
+    .await
+    .expect("the fixed request must arrive") else {
+        panic!("the fixed request must parse");
+    };
+    peer.write_all(&response(&outbound)).await.unwrap();
+
+    let error = tokio::time::timeout(Duration::from_secs(1), exchange)
+        .await
+        .expect("the fixed exchange must finish")
+        .unwrap()
+        .unwrap_err();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !connection.driver_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the shared driver must finish");
+    error
+}
+
+async fn two_fixed_channel_errors(
+    response: impl FnOnce(u32, u32) -> Vec<u8>,
+) -> (anyhow::Error, anyhow::Error) {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+    let first = connection
+        .create_fixed_session(ExpectedResponseHeader::fixed(
+            TacacsType::TacPlusAuthorisation,
+            TacacsMinorVersion::TacacsPlusMinorVerDefault,
+        ))
+        .unwrap();
+    let second = connection
+        .create_fixed_session(ExpectedResponseHeader::fixed(
+            TacacsType::TacPlusAuthorisation,
+            TacacsMinorVersion::TacacsPlusMinorVerDefault,
+        ))
+        .unwrap();
+    let first_id = first.session_id();
+    let second_id = second.session_id();
+    let (client, mut peer) = tokio::io::duplex(512);
+    let (reader, writer) = tokio::io::split(client);
+    connection.run_with_halves(reader, writer);
+    let first_task = tokio::spawn(async move { first.round_trip(request(first_id)).await });
+    let second_task = tokio::spawn(async move { second.round_trip(request(second_id)).await });
+
+    let reader = PacketReader::new(None);
+    for _ in 0..2 {
+        let PacketReadResult::Success(_) =
+            tokio::time::timeout(Duration::from_secs(1), reader.read_packet(&mut peer))
+                .await
+                .expect("the fixed request must arrive")
+        else {
+            panic!("the fixed request must parse");
+        };
+    }
+    peer.write_all(&response(first_id, second_id))
+        .await
+        .unwrap();
+
+    let (first_result, second_result) = tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::join!(first_task, second_task)
+    })
+    .await
+    .expect("both fixed exchanges must finish");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !connection.driver_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the shared driver must finish");
+    (first_result.unwrap().unwrap_err(), second_result.unwrap().unwrap_err())
+}
+
+#[tokio::test]
+async fn fixed_channel_marks_wrong_type_sequence_and_minor_version_as_protocol() {
+    for mutate in [
+        (|header: &mut Header| header.tacacs_type = TacacsType::TacPlusAccounting)
+            as fn(&mut Header),
+        |header| header.seq_no = 4,
+        |header| header.minor_version = TacacsMinorVersion::TacacsPlusMinorVerOne,
+    ] {
+        let error = fixed_channel_error(|request| {
+            let mut header = reply(request.header().session_id).header().clone();
+            mutate(&mut header);
+            Packet::new(header, Vec::new()).unwrap().to_bytes()
+        })
+        .await;
+        assert!(error.is::<ProtocolFailure>(), "unexpected error: {error:#}");
+    }
+}
+
+#[tokio::test]
+async fn fixed_channel_propagates_unrouteable_header_protocol_failure() {
+    let error = fixed_channel_error(|_| [0xff; 12].to_vec()).await;
+    assert!(error.is::<ProtocolFailure>(), "unexpected error: {error:#}");
+}
+
+#[tokio::test]
+async fn known_session_oversized_body_only_marks_affected_waiter_as_protocol() {
+    let (affected, collateral) = two_fixed_channel_errors(|first_id, _| {
+        let mut header = reply(first_id).header().clone();
+        header.length = TACACS_MAX_BODY_LENGTH + 1;
+        header.to_bytes().to_vec()
+    })
+    .await;
+
+    assert!(affected.is::<ProtocolFailure>(), "unexpected error: {affected:#}");
+    assert!(!collateral.is::<ProtocolFailure>(), "unexpected collateral error: {collateral:#}");
+}
+
+#[tokio::test]
+async fn unknown_session_oversized_body_does_not_mark_pending_waiters_as_protocol() {
+    let (first, second) = two_fixed_channel_errors(|_, _| {
+        let mut header = reply(0x1234_5678).header().clone();
+        header.length = TACACS_MAX_BODY_LENGTH + 1;
+        header.to_bytes().to_vec()
+    })
+    .await;
+
+    assert!(!first.is::<ProtocolFailure>(), "unexpected error: {first:#}");
+    assert!(!second.is::<ProtocolFailure>(), "unexpected error: {second:#}");
+}
+
+#[tokio::test]
+async fn raw_unrouteable_header_failure_marks_all_pending_waiters_as_protocol() {
+    let (first, second) = two_fixed_channel_errors(|_, _| [0xff; 12].to_vec()).await;
+
+    assert!(first.is::<ProtocolFailure>(), "unexpected error: {first:#}");
+    assert!(second.is::<ProtocolFailure>(), "unexpected error: {second:#}");
+}
+
+#[tokio::test]
+async fn routable_header_violation_does_not_relabel_collateral_waiters() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+    let first = connection
+        .create_fixed_session(ExpectedResponseHeader::fixed(
+            TacacsType::TacPlusAuthorisation,
+            TacacsMinorVersion::TacacsPlusMinorVerDefault,
+        ))
+        .unwrap();
+    let second = connection
+        .create_fixed_session(ExpectedResponseHeader::fixed(
+            TacacsType::TacPlusAuthorisation,
+            TacacsMinorVersion::TacacsPlusMinorVerDefault,
+        ))
+        .unwrap();
+    let first_id = first.session_id();
+    let second_id = second.session_id();
+    let (client, mut peer) = tokio::io::duplex(512);
+    let (reader, writer) = tokio::io::split(client);
+    connection.run_with_halves(reader, writer);
+    let first_task = tokio::spawn(async move { first.round_trip(request(first_id)).await });
+    let second_task = tokio::spawn(async move { second.round_trip(request(second_id)).await });
+    let reader = PacketReader::new(None);
+    let mut requests = Vec::new();
+    for _ in 0..2 {
+        let PacketReadResult::Success(packet) = reader.read_packet(&mut peer).await else {
+            panic!("fixed request must parse");
+        };
+        requests.push(packet);
+    }
+    let first_request = requests
+        .iter()
+        .find(|packet| packet.header().session_id == first_id)
+        .unwrap();
+    let mut invalid = reply(first_request.header().session_id).header().clone();
+    invalid.seq_no = 4;
+    peer.write_all(&Packet::new(invalid, Vec::new()).unwrap().to_bytes())
+        .await
+        .unwrap();
+
+    let first_error = first_task.await.unwrap().unwrap_err();
+    let second_error = second_task.await.unwrap().unwrap_err();
+    assert!(first_error.is::<ProtocolFailure>());
+    assert!(!second_error.is::<ProtocolFailure>());
+}
+
+#[tokio::test]
+async fn later_unset_flag_does_not_close_confirmed_connection() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+    let session = connection.create_session().unwrap();
+    let receiver = connection
+        .session_manager
+        .prepare_fixed_response(
+            session.session_id(),
+            ExpectedResponseHeader::for_request(&request(session.session_id())),
+        )
+        .unwrap();
+
+    connection
+        .session_manager
+        .set_single_connection_state(false);
+    connection
+        .session_manager
+        .send_message_to_session(reply(session.session_id()))
+        .await
+        .unwrap();
+    receiver.await.unwrap().unwrap();
+
+    let close = connection.session_manager.wait_for_close();
+    tokio::pin!(close);
+    assert!(tokio::time::timeout(Duration::from_millis(25), &mut close)
+        .await
+        .is_err());
+
+    session.complete();
+    assert!(tokio::time::timeout(Duration::from_millis(25), &mut close)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn conversation_enforces_multi_round_sequence_progression() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+    let session = connection.create_session().unwrap();
+    let session_id = session.session_id();
+    let mut conversation = ClientConversation::new(crate::session::ClientSession::shared(session));
+
+    let conversation_task = tokio::spawn(async move {
+        assert_eq!(conversation.session_id(), Some(session_id));
+        let first = conversation
+            .round_trip(conversation_packet(session_id, 1))
+            .await
+            .unwrap();
+        let second = conversation
+            .round_trip(conversation_packet(session_id, 3))
+            .await
+            .unwrap();
+        conversation.complete().await;
+        assert_eq!(conversation.session_id(), None);
+        (first, second)
+    });
+
+    tokio::task::yield_now().await;
+    connection
+        .session_manager
+        .send_message_to_session(conversation_packet(session_id, 2))
+        .await
+        .unwrap();
+    tokio::task::yield_now().await;
+    connection
+        .session_manager
+        .send_message_to_session(conversation_packet(session_id, 4))
+        .await
+        .unwrap();
+
+    let (first, second) = conversation_task.await.unwrap();
+    assert_eq!(first.header().seq_no, 2);
+    assert_eq!(second.header().seq_no, 4);
+    assert!(matches!(
+        connection
+            .session_manager
+            .send_message_to_session(conversation_packet(session_id, 6))
+            .await,
+        Err(PacketDispatchError::UnknownSession(id)) if id == session_id
+    ));
+}
+
+#[tokio::test]
+async fn invalid_conversation_reply_completes_session() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+    let session = connection.create_session().unwrap();
+    let session_id = session.session_id();
+    let mut conversation = ClientConversation::new(crate::session::ClientSession::shared(session));
+
+    let conversation_task = tokio::spawn(async move {
+        conversation
+            .round_trip(conversation_packet(session_id, 1))
+            .await
+    });
+    tokio::task::yield_now().await;
+    connection
+        .session_manager
+        .send_message_to_session(conversation_packet(session_id, 4))
+        .await
+        .unwrap();
+
+    assert!(conversation_task.await.unwrap().is_err());
+    tokio::task::yield_now().await;
+    assert!(matches!(
+        connection
+            .session_manager
+            .send_message_to_session(conversation_packet(session_id, 2))
+            .await,
+        Err(PacketDispatchError::UnknownSession(id)) if id == session_id
+    ));
+}
+
+#[tokio::test]
+#[ignore = "manual multiplexed routing baseline"]
+async fn shared_session_routing_burst_baseline() {
+    const EXCHANGE_COUNT: u32 = 512;
+
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+    let started = Instant::now();
+    let mut sessions = Vec::with_capacity(usize::try_from(EXCHANGE_COUNT).unwrap());
+
+    for _ in 0..EXCHANGE_COUNT {
+        sessions.push(connection.create_session().unwrap());
+    }
+    for session in sessions.iter().rev() {
+        connection
+            .session_manager
+            .send_message_to_session(reply(session.session_id()))
+            .await
+            .unwrap();
+    }
+    for session in sessions {
+        session.receive_packet().await.unwrap();
+        session.complete();
+    }
+
+    let elapsed = started.elapsed();
+    eprintln!(
+        "shared routing baseline: {EXCHANGE_COUNT} exchanges in {elapsed:?} ({:.0} exchanges/s)",
+        f64::from(EXCHANGE_COUNT) / elapsed.as_secs_f64(),
+    );
+}
+
+#[tokio::test]
+#[ignore = "manual direct fixed routing baseline"]
+async fn direct_fixed_routing_burst_baseline() {
+    const EXCHANGE_COUNT: u32 = 512;
+
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+    let mut outbound = connection.session_manager.take_receiver().unwrap();
+    let drain_task = tokio::spawn(async move { while outbound.recv().await.is_some() {} });
+    let started = Instant::now();
+    let mut sessions = Vec::with_capacity(usize::try_from(EXCHANGE_COUNT).unwrap());
+
+    for _ in 0..EXCHANGE_COUNT {
+        sessions.push(
+            connection
+                .create_fixed_session(ExpectedResponseHeader::fixed(
+                    TacacsType::TacPlusAuthorisation,
+                    TacacsMinorVersion::TacacsPlusMinorVerDefault,
+                ))
+                .unwrap(),
+        );
+    }
+    for session in sessions.iter().rev() {
+        connection
+            .session_manager
+            .send_message_to_session(reply(session.session_id()))
+            .await
+            .unwrap();
+    }
+    for session in sessions {
+        session
+            .round_trip(request(session.session_id()))
+            .await
+            .unwrap();
+        session.complete();
+    }
+
+    let elapsed = started.elapsed();
+    eprintln!(
+        "direct fixed routing baseline: {EXCHANGE_COUNT} exchanges in {elapsed:?} ({:.0} exchanges/s)",
+        f64::from(EXCHANGE_COUNT) / elapsed.as_secs_f64(),
+    );
+    drain_task.abort();
+}

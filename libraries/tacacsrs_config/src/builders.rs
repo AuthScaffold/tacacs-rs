@@ -5,6 +5,13 @@ use crate::{
 };
 use crate::validation::{self, ValidationOptions};
 
+/// Legacy TCP port from RFC 8907, used when an input adapter omits a port.
+pub const DEFAULT_TACACS_TCP_PORT: u16 = 49;
+
+/// TLS port from RFC 9887, used when an input adapter omits a port.
+/// Canonical YANG servers always contain an explicit port.
+pub const DEFAULT_TACACS_TLS_PORT: u16 = 300;
+
 /// Default TLS 1.3 PSK-DHE groups in preferred `ClientHello` key-share order.
 pub const DEFAULT_PSK_DHE_KE_GROUPS: &[PskDheKeSupportedGroup] = &[
     PskDheKeSupportedGroup::Secp384r1,
@@ -127,10 +134,51 @@ impl TacacsPlusServerBuilder {
                 source_ip: None,
                 source_interface: None,
                 vrf_instance: None,
+                egress_interface: None,
+                binding_policy: crate::tacacsrs::BindingPolicy::BestEffort,
                 single_connection: false,
                 timeout: 5,
             },
         }
+    }
+
+    /// Selects an explicit source IP without changing the egress interface.
+    #[must_use]
+    pub fn with_source_ip(mut self, address: std::net::IpAddr) -> Self {
+        self.server.source_ip = Some(address.to_string());
+        self.server.source_interface = None;
+        self
+    }
+
+    /// Derives a source address from an interface without forcing egress.
+    #[must_use]
+    pub fn with_source_interface(mut self, name: impl Into<String>) -> Self {
+        self.server.source_interface = Some(name.into());
+        self.server.source_ip = None;
+        self
+    }
+
+    /// Forces Linux egress through this device, with automatic source selection.
+    ///
+    /// An explicit source choice remains in effect.
+    #[must_use]
+    pub fn with_egress_interface(mut self, name: impl Into<String>) -> Self {
+        self.server.egress_interface = Some(name.into());
+        self
+    }
+
+    /// Selects a Linux VRF device.
+    #[must_use]
+    pub fn with_vrf_instance(mut self, name: impl Into<String>) -> Self {
+        self.server.vrf_instance = Some(name.into());
+        self
+    }
+
+    /// Selects strict or best-effort behavior for unavailable local constraints.
+    #[must_use]
+    pub fn with_binding_policy(mut self, policy: crate::tacacsrs::BindingPolicy) -> Self {
+        self.server.binding_policy = policy;
+        self
     }
 
     /// Sets the server timeout in seconds.
@@ -184,8 +232,27 @@ impl TacacsPlusServerBuilder {
     /// Selects TLS using a client certificate identity and private key format.
     #[must_use]
     pub fn with_tls_client_certificate_with_key_format(
+        self,
+        cert_data: Option<Vec<u8>>,
+        cleartext_private_key: Option<Vec<u8>>,
+        private_key_format: Option<crypto_types::PrivateKeyFormat>,
+    ) -> Self {
+        self.with_tls_client_certificate_chain(
+            cert_data,
+            Vec::new(),
+            cleartext_private_key,
+            private_key_format,
+        )
+    }
+
+    /// Selects a TLS client identity with DER intermediates in issuer order.
+    ///
+    /// Intermediates exclude the leaf and self-signed root. Native preparation validates the chain.
+    #[must_use]
+    pub fn with_tls_client_certificate_chain(
         mut self,
         cert_data: Option<Vec<u8>>,
+        intermediates: Vec<Vec<u8>>,
         cleartext_private_key: Option<Vec<u8>>,
         private_key_format: Option<crypto_types::PrivateKeyFormat>,
     ) -> Self {
@@ -200,6 +267,7 @@ impl TacacsPlusServerBuilder {
                     cleartext_private_key: cleartext_private_key
                         .map(tacacsrs_secrets::SecretBytes::new),
                     cert_data,
+                    intermediate_certificate: intermediates,
                 }),
                 central_keystore_reference: None,
             }),
@@ -275,6 +343,9 @@ impl TacacsPlusServerBuilder {
         self.server.shared_secret = None;
         self.server.client_identity = None;
         self.server.server_authentication = Some(TlsClientServerAuthentication {
+            require_crls: None,
+            require_ocsp: None,
+            require_stapled_ocsp: None,
             credentials_reference: None,
             ca_certs: None,
             ee_certs: None,
@@ -303,7 +374,8 @@ mod tests {
                 .build();
 
         assert_eq!(server.name, "cli");
-        assert_eq!(server.socket_address(), "192.0.2.10:49");
+        assert_eq!(server.address, "192.0.2.10");
+        assert_eq!(server.port, 49);
         assert_eq!(server.timeout, 5);
         assert!(!server.single_connection);
         assert!(server.shared_secret.is_none());

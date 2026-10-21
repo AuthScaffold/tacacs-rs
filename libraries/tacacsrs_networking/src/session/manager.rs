@@ -4,10 +4,11 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use tacacsrs_messages::enumerations::{TacacsMajorVersion, TacacsMinorVersion, TacacsType};
-use tacacsrs_messages::packet::{Packet, PacketTrait};
+use tacacsrs_protocol::enumerations::{TacacsMajorVersion, TacacsMinorVersion, TacacsType};
+use tacacsrs_protocol::packet::{Packet, PacketTrait};
 use tokio::sync::{Notify, mpsc, oneshot};
 
+use crate::exchange_error::{copy_protocol_failure, protocol_failure};
 use crate::single_connect::SingleConnectionState;
 
 use super::{DuplexChannel, ReservedSessionId, SessionIdAllocator, SharedFixedSession, SharedSession};
@@ -81,7 +82,7 @@ impl ExpectedResponseHeader {
             || header.tacacs_type != self.tacacs_type
             || header.seq_no != self.seq_no
         {
-            anyhow::bail!(
+            return Err(protocol_failure(anyhow::anyhow!(
                 "unexpected TACACS+ response header for session {:#x}: seq_no={}, type={}, version={:?}.{:?}; expected seq_no={}, type={}, version={:?}.{:?}",
                 header.session_id,
                 header.seq_no,
@@ -92,7 +93,7 @@ impl ExpectedResponseHeader {
                 self.tacacs_type,
                 self.major_version,
                 self.minor_version,
-            );
+            )));
         }
         Ok(())
     }
@@ -142,8 +143,7 @@ pub(crate) struct SessionManager {
     single_connection_state: Mutex<SingleConnectionState>,
 
     /// Notifies waiters when they must close the connection.
-    /// This occurs after the last session completes if the server does not
-    /// support single-connection mode.
+    /// Closure follows retirement or unsupported single-connect mode once all sessions finish.
     close_notify: Notify,
 }
 
@@ -180,10 +180,17 @@ impl SessionManager {
     }
 
     pub(crate) fn disable_new_sessions(&self) {
+        let routes = self.routes();
         self.can_accept_new_sessions.store(false, Ordering::Release);
+        if routes.is_empty() {
+            self.close_notify.notify_waiters();
+        }
     }
 
-    fn create_channel(&self) -> (DuplexChannel, u32) {
+    fn create_channel(
+        &self,
+        routes: &mut HashMap<u32, ActiveSessionEntry>,
+    ) -> (DuplexChannel, u32) {
         let reserved_session_id = self.session_id_allocator.reserve_generated();
         let session_id = reserved_session_id.get();
 
@@ -192,7 +199,7 @@ impl SessionManager {
         let duplex_channel = DuplexChannel::new(session_receiver, self.sender.clone());
 
         // Insert the new session.
-        self.routes().insert(
+        routes.insert(
             session_id,
             ActiveSessionEntry {
                 route: ActiveSessionRoute::Conversation(session_sender),
@@ -344,9 +351,11 @@ impl SessionManager {
     /// Returns an error if the connection is not accepting new sessions.
     pub(crate) fn create_session(self: &Arc<Self>) -> anyhow::Result<SharedSession> {
         // Check session creation and start negotiation in one atomic operation.
+        let mut routes = self.routes();
         self.try_begin_session()?;
 
-        let (duplex_channel, session_id) = self.create_channel();
+        let (duplex_channel, session_id) = self.create_channel(&mut routes);
+        drop(routes);
 
         log::trace!(
             target: "tacacsrs_networking::session::manager::create_session",
@@ -361,11 +370,12 @@ impl SessionManager {
         self: &Arc<Self>,
         expected: ExpectedResponseHeader,
     ) -> anyhow::Result<SharedFixedSession> {
+        let mut routes = self.routes();
         self.try_begin_session()?;
         let reservation = self.session_id_allocator.reserve_generated();
         let session_id = reservation.get();
         let (response_sender, response_receiver) = oneshot::channel();
-        self.routes().insert(
+        routes.insert(
             session_id,
             ActiveSessionEntry {
                 route: ActiveSessionRoute::Fixed {
@@ -375,6 +385,7 @@ impl SessionManager {
                 _reservation: reservation,
             },
         );
+        drop(routes);
         Ok(SharedFixedSession::new(
             session_id,
             self.sender.clone(),
@@ -395,13 +406,14 @@ impl SessionManager {
             // during this check. This prevents creation of a session between the
             // empty-registry check and the close signal.
             if duplex_channels.is_empty() {
-                let should_close = *self.connection_state() == SingleConnectionState::NotSupported;
+                let should_close = !self.can_accept_new_sessions.load(Ordering::Acquire)
+                    || *self.connection_state() == SingleConnectionState::NotSupported;
                 drop(duplex_channels);
 
                 if should_close {
                     log::info!(
                         target: "tacacsrs_networking::session::manager::remove_session",
-                        "The last session completed, and single-connection mode is not supported. Signaling connection closure"
+                        "The last session completed on a draining connection. Signaling connection closure"
                     );
                     self.close_notify.notify_waiters();
                 }
@@ -411,10 +423,23 @@ impl SessionManager {
 
     /// Waits until the connection must close.
     ///
-    /// This returns after the last session completes if the server does not
-    /// support single-connection mode.
+    /// Returns after all sessions finish on a retired or unsupported connection.
     pub(crate) async fn wait_for_close(&self) {
-        self.close_notify.notified().await;
+        loop {
+            let notified = self.close_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            {
+                let routes = self.routes();
+                if routes.is_empty()
+                    && (!self.can_accept_new_sessions.load(Ordering::Acquire)
+                        || *self.connection_state() == SingleConnectionState::NotSupported)
+                {
+                    return;
+                }
+            }
+            notified.await;
+        }
     }
 
     pub(crate) fn take_receiver(&self) -> Option<mpsc::Receiver<Packet>> {
@@ -428,8 +453,23 @@ impl SessionManager {
     ///
     /// Waiting session receivers get `None` and can stop.
     pub(crate) fn close_all_sessions(&self) {
+        self.close_all_sessions_with_error(None);
+    }
+
+    pub(crate) fn close_all_sessions_with_error(&self, error: Option<&anyhow::Error>) {
         let mut duplex_channels = self.routes();
         let session_count = duplex_channels.len();
+        if let Some(error) = error {
+            for entry in duplex_channels.values_mut() {
+                if let ActiveSessionRoute::Fixed { sender, .. } = &mut entry.route {
+                    if let (Some(protocol_error), Some(sender)) =
+                        (copy_protocol_failure(error), sender.take())
+                    {
+                        let _ = sender.send(Err(protocol_error));
+                    }
+                }
+            }
+        }
         duplex_channels.clear();
         drop(duplex_channels);
 
@@ -437,6 +477,44 @@ impl SessionManager {
             target: "tacacsrs_networking::session::manager::close_all_sessions",
             "Closed all {session_count} sessions in the session registry"
         );
+    }
+
+    pub(crate) fn reject_fixed_response(
+        &self,
+        session_id: u32,
+        error: anyhow::Error,
+    ) -> PacketDispatchError {
+        let message = format!("{error:#}");
+        let sender = {
+            let mut routes = self.routes();
+            match routes.get_mut(&session_id) {
+                Some(ActiveSessionEntry {
+                    route: ActiveSessionRoute::Fixed { sender, .. },
+                    ..
+                }) => sender.take(),
+                Some(ActiveSessionEntry {
+                    route: ActiveSessionRoute::Conversation(_),
+                    ..
+                }) => {
+                    return PacketDispatchError::ProtocolViolation {
+                        session_id,
+                        message,
+                    };
+                }
+                None => return PacketDispatchError::UnknownSession(session_id),
+            }
+        };
+
+        match sender {
+            Some(sender) => {
+                let _ = sender.send(Err(error));
+                PacketDispatchError::ProtocolViolation {
+                    session_id,
+                    message,
+                }
+            }
+            None => PacketDispatchError::SessionClosed(session_id),
+        }
     }
 
     /// # Errors
@@ -489,7 +567,7 @@ impl SessionManager {
             }
             DispatchTarget::Fixed { sender, expected } => {
                 if let Err(error) = expected.validate(&packet) {
-                    let message = error.to_string();
+                    let message = format!("{error:#}");
                     let _ = sender.send(Err(error));
                     return Err(PacketDispatchError::ProtocolViolation {
                         session_id,
@@ -508,16 +586,16 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tacacsrs_messages::enumerations::{
+    use tacacsrs_protocol::enumerations::{
         TacacsFlags, TacacsMajorVersion, TacacsMinorVersion, TacacsType,
     };
-    use tacacsrs_messages::header::Header;
+    use tacacsrs_protocol::header::Header;
 
     #[tokio::test]
     async fn test_create_channel() {
         let session_manager = SessionManager::new();
 
-        let (_, session_id) = session_manager.create_channel();
+        let (_, session_id) = session_manager.create_channel(&mut session_manager.routes());
 
         assert_ne!(session_id, 0);
     }
@@ -526,8 +604,8 @@ mod tests {
     async fn test_create_channel_generates_unique_session_ids() {
         let session_manager = SessionManager::new();
 
-        let (_, session_id) = session_manager.create_channel();
-        let (_, session_id2) = session_manager.create_channel();
+        let (_, session_id) = session_manager.create_channel(&mut session_manager.routes());
+        let (_, session_id2) = session_manager.create_channel(&mut session_manager.routes());
 
         assert_ne!(session_id, session_id2);
     }
