@@ -116,6 +116,17 @@ pub fn prepare_endpoint(
     }
     payload.retain(server.name.len())?;
     payload.retain(server.name.len())?;
+    for value in [
+        &server.source_interface,
+        &server.egress_interface,
+        &server.vrf_instance,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        payload.retain(value.len())?;
+    }
+    let binding = crate::validation::prepare_local_binding(server)?;
     let address = ServerAddress::new(&server.address, server.port)?;
     let finalize = |transport| {
         PreparedEndpoint::new(
@@ -124,6 +135,7 @@ pub fn prepare_endpoint(
             server.single_connection,
             server.obfuscation_key().map(SecretBytes::new),
             ConnectOptions::default()
+                .with_local_binding(binding)
                 .with_timeout(server.timeout_duration())
                 .with_preflight(options.preflight),
         )

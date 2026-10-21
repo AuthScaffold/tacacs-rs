@@ -188,6 +188,8 @@ module: ietf-system-tacacs-plus
        |  |  +--ro sessions?                   yang:counter64
        |  |  +--ro cert-errors?                yang:counter64
        |  |  +--ro trs:connection-successes?   yang:counter64
+       |  +--rw trs:egress-interface?          string
+       |  +--rw trs:binding-policy?            enumeration
        |  +--ro trs:diagnostics
        |  |  +--ro trs:address?                           string
        |  |  +--ro trs:port?                              uint16

@@ -178,6 +178,7 @@ fn validate_server(
     seen_endpoints: &mut HashSet<(String, u16)>,
     options: &ValidationOptions,
 ) -> anyhow::Result<()> {
+    prepare_local_binding(server)?;
     validate_choice(
         &server.name,
         "source-type",
@@ -207,6 +208,44 @@ fn validate_server(
     }
 
     Ok(())
+}
+
+pub(crate) fn prepare_local_binding(
+    server: &TacacsPlusServer,
+) -> anyhow::Result<tacacsrs_networking::LocalBinding> {
+    use tacacsrs_networking::{BindingPolicy, LocalBinding, SourceBinding};
+
+    anyhow::ensure!(
+        server.source_ip.is_none() || server.source_interface.is_none(),
+        "source-type allows only one of [source-ip, source-interface]"
+    );
+    let source = if let Some(ip) = &server.source_ip {
+        let ip: std::net::IpAddr = ip
+            .parse()
+            .map_err(|_| anyhow::anyhow!("source-ip must be an IP address"))?;
+        let ip = ip.to_canonical();
+        if let Ok(destination) = server.address.parse::<std::net::IpAddr>() {
+            anyhow::ensure!(
+                ip.is_ipv4() == destination.to_canonical().is_ipv4(),
+                "source-ip and server address must use the same address family"
+            );
+        }
+        Some(SourceBinding::Ip(ip))
+    } else {
+        server
+            .source_interface
+            .clone()
+            .map(SourceBinding::Interface)
+    };
+    LocalBinding::new(
+        source,
+        server.egress_interface.as_deref(),
+        server.vrf_instance.as_deref(),
+        match server.binding_policy {
+            crate::tacacsrs::BindingPolicy::BestEffort => BindingPolicy::BestEffort,
+            crate::tacacsrs::BindingPolicy::Strict => BindingPolicy::Strict,
+        },
+    )
 }
 
 fn validate_security_choice(

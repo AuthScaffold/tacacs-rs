@@ -510,6 +510,7 @@ pub mod tacacs_plus {
     }
 
     fn default_tacacs_plus_server_timeout() -> u16 { 5 }
+    fn default_tacacs_plus_server_binding_policy() -> tacacsrs::BindingPolicy { tacacsrs::BindingPolicy::BestEffort }
 
     /// List of TACACS+ servers used by the device.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -606,6 +607,18 @@ pub mod tacacs_plus {
         /// different server.
         #[serde(default = "default_tacacs_plus_server_timeout")]
         pub timeout: u16,
+        /// Linux interface name that forces packet egress through SO_BINDTODEVICE.
+        /// The kernel selects the source address unless source-ip or source-interface
+        /// supplies one. Unlike RFC 9950 source-interface, this leaf restricts egress.
+        /// When vrf-instance is also present, this interface must belong to that VRF.
+        #[serde(rename = "tacacsrs:egress-interface")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub egress_interface: Option<String>,
+        /// Failure policy for source, egress, and VRF constraints.
+        #[serde(rename = "tacacsrs:binding-policy")]
+        #[serde(default = "default_tacacs_plus_server_binding_policy")]
+        pub binding_policy: tacacsrs::BindingPolicy,
     }
 
     /// Choice constraints for [`TacacsPlusServer`].
@@ -1149,6 +1162,76 @@ pub mod tacacsrs {
         }
     }
 
+    /// Failure policy for source, egress, and VRF constraints.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum BindingPolicy {
+        /// Warn and retry without unavailable local constraints.
+        /// Only local resource, capability, and route errors permit fallback.
+        /// TLS verification and remote connection errors never permit fallback.
+        BestEffort,
+        /// Fail the connection when a requested local constraint is unavailable.
+        Strict,
+    }
+
+    impl BindingPolicy {
+        /// All valid values for this YANG enumeration.
+        pub const ALL: &[Self] = &[
+            Self::BestEffort,
+            Self::Strict,
+        ];
+
+        /// RFC 7951 JSON string values accepted for this YANG enumeration.
+        pub const ALLOWED_VALUES: &[&str] = &[
+            "best-effort",
+            "strict",
+        ];
+
+        /// Returns the RFC 7951 JSON string.
+        #[must_use]
+        pub fn as_rfc7951_str(&self) -> &'static str {
+            match self {
+                Self::BestEffort => "best-effort",
+                Self::Strict => "strict",
+            }
+        }
+
+        /// Parses an RFC 7951 string into this YANG enumeration.
+        #[must_use]
+        pub fn from_rfc7951_str(s: &str) -> Option<Self> {
+            match s {
+                "best-effort" => Some(Self::BestEffort),
+                "strict" => Some(Self::Strict),
+                _ => None,
+            }
+        }
+
+        /// Checks whether the given string is a valid RFC 7951 value.
+        #[must_use]
+        pub fn is_valid(s: &str) -> bool {
+            Self::from_rfc7951_str(s).is_some()
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for BindingPolicy {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+            Self::from_rfc7951_str(&s)
+                .ok_or_else(|| serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES))
+        }
+    }
+
+    impl serde::Serialize for BindingPolicy {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            serializer.serialize_str(self.as_rfc7951_str())
+        }
+    }
+
     /// Failover behavior for a local TACACS+ service.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum FailoverStrategy {
@@ -1284,6 +1367,76 @@ pub mod tacacsrs {
     }
 
     impl serde::Serialize for ProxyCredentialSource {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            serializer.serialize_str(self.as_rfc7951_str())
+        }
+    }
+
+    /// Failure policy for source, egress, and VRF constraints.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum BindingPolicy2 {
+        /// Warn and retry without unavailable local constraints.
+        /// Only local resource, capability, and route errors permit fallback.
+        /// TLS verification and remote connection errors never permit fallback.
+        BestEffort,
+        /// Fail the connection when a requested local constraint is unavailable.
+        Strict,
+    }
+
+    impl BindingPolicy2 {
+        /// All valid values for this YANG enumeration.
+        pub const ALL: &[Self] = &[
+            Self::BestEffort,
+            Self::Strict,
+        ];
+
+        /// RFC 7951 JSON string values accepted for this YANG enumeration.
+        pub const ALLOWED_VALUES: &[&str] = &[
+            "best-effort",
+            "strict",
+        ];
+
+        /// Returns the RFC 7951 JSON string.
+        #[must_use]
+        pub fn as_rfc7951_str(&self) -> &'static str {
+            match self {
+                Self::BestEffort => "best-effort",
+                Self::Strict => "strict",
+            }
+        }
+
+        /// Parses an RFC 7951 string into this YANG enumeration.
+        #[must_use]
+        pub fn from_rfc7951_str(s: &str) -> Option<Self> {
+            match s {
+                "best-effort" => Some(Self::BestEffort),
+                "strict" => Some(Self::Strict),
+                _ => None,
+            }
+        }
+
+        /// Checks whether the given string is a valid RFC 7951 value.
+        #[must_use]
+        pub fn is_valid(s: &str) -> bool {
+            Self::from_rfc7951_str(s).is_some()
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for BindingPolicy2 {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+            Self::from_rfc7951_str(&s)
+                .ok_or_else(|| serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES))
+        }
+    }
+
+    impl serde::Serialize for BindingPolicy2 {
         fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
         where
             S: serde::Serializer,

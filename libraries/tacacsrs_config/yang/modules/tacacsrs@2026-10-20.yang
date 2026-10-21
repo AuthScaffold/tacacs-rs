@@ -25,6 +25,10 @@ module tacacsrs {
   description
     "Project-owned TACACS+ configuration extensions for tacacs-rs.";
 
+  revision 2026-10-20 {
+    description "Adds explicit egress selection and local binding failure policy.";
+  }
+
   revision 2026-10-19 {
     description "Adds admission limits for candidate preparation.";
   }
@@ -50,6 +54,33 @@ module tacacsrs {
     description
       "Indicates that TLS 1.3 PSK psk_dhe_ke ClientHello supported
        group and key share parameters are configurable.";
+  }
+
+  augment "/sys:system/sys-tcs-plus:tacacs-plus/sys-tcs-plus:server" {
+    description "Local TCP binding controls for all TACACS+ transports.";
+    leaf egress-interface {
+      type string { length "1..15"; }
+      description
+        "Linux interface name that forces packet egress through SO_BINDTODEVICE.
+         The kernel selects the source address unless source-ip or source-interface
+         supplies one. Unlike RFC 9950 source-interface, this leaf restricts egress.
+         When vrf-instance is also present, this interface must belong to that VRF.";
+    }
+    leaf binding-policy {
+      type enumeration {
+        enum best-effort {
+          description
+            "Warn and retry without unavailable local constraints.
+             Only local resource, capability, and route errors permit fallback.
+             TLS verification and remote connection errors never permit fallback.";
+        }
+        enum strict {
+          description "Fail the connection when a requested local constraint is unavailable.";
+        }
+      }
+      default best-effort;
+      description "Failure policy for source, egress, and VRF constraints.";
+    }
   }
 
   typedef failover-strategy {

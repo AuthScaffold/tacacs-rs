@@ -39,6 +39,167 @@ Both `tacon` and `tacacsrs-agentd` can load TACACS+ server definitions from an R
 
 Use `--config <file>` with `tacon` or `tacacsrs-agentd` to load the configuration.
 
+## Local TCP binding
+
+Linux applies the same local binding controls to plain TCP, certificate TLS, mTLS, and PSK TLS.
+The canonical YANG server remains authoritative. Endpoint preparation does not require interfaces or routes to exist.
+Each new connection reads current interfaces and addresses. Existing connections retain their original binding.
+
+| Server leaf | Behavior |
+| --- | --- |
+| `source-ip` | Binds a concrete local IPv4 or IPv6 source address. |
+| `source-interface` | Derives a usable address from this interface, as RFC 9950 specifies. It does not force egress. |
+| `vrf-instance` | Selects a Linux VRF device and its routing table. |
+| `tacacsrs:egress-interface` | Forces egress through this Linux device with `SO_BINDTODEVICE`. |
+| `tacacsrs:binding-policy` | Selects `best-effort` or `strict`. The default is `best-effort`. |
+
+The `source-ip` and `source-interface` leaves remain mutually exclusive.
+An explicit source choice is independent of `tacacsrs:egress-interface`.
+Without a source choice, the kernel selects an address for the destination family.
+With `source-interface`, the client selects the lowest usable same-family address in numeric order.
+The client excludes tentative addresses, deprecated addresses, and addresses that fail duplicate address detection.
+It excludes IPv6 link-local addresses for non-link-local destinations.
+The client prefers the local address, not the peer address, on point-to-point interfaces.
+
+RFC `source-interface` can select a loopback address while traffic exits through another device.
+It does not select a VRF implicitly.
+In contrast, `tacacsrs:egress-interface` forces egress and lets Linux derive the VRF of that interface.
+When both interface and VRF are explicit, the interface must belong to that VRF.
+The same membership rule applies to RFC `source-interface` with an explicit VRF.
+An existing device that is not a VRF, or an interface in another VRF, causes an error in both policies.
+The client binds one device only. It never overwrites a VRF binding with an unchecked interface binding.
+
+### Named management deployment
+
+This example forces egress through `mgmt0`. The operator does not need its source IP.
+The destination uses a numeric IP. DNS and a hostname are not required.
+The example selects strict mode to prevent traffic from leaving through a different interface.
+
+```json
+{
+  "ietf-system-tacacs-plus:tacacs-plus": {
+    "server": [{
+      "name": "management",
+      "server-type": "authentication authorization accounting",
+      "address": "192.0.2.49",
+      "port": 300,
+      "server-authentication": {},
+      "tacacsrs:egress-interface": "mgmt0",
+      "tacacsrs:binding-policy": "strict",
+      "timeout": 5
+    }]
+  }
+}
+```
+
+Certificate TLS still requires a trusted server certificate with a matching IP subject alternative name.
+The egress policy does not relax TLS identity, certificate, PSK, or TACACS+ checks.
+If `mgmt0` belongs to a VRF, Linux uses that VRF.
+An optional `vrf-instance` provides an additional membership check.
+
+### Local availability and fallback
+
+`best-effort` warns before each retry that removes unavailable local constraints.
+This policy can send traffic outside the requested management interface or VRF.
+For mandatory isolation, select `strict`.
+
+- An unavailable source address removes only the source choice. Available egress and VRF constraints remain.
+- An unavailable egress device or its device-binding capability removes only the egress request.
+  An available explicit VRF and source remain in effect.
+- An unavailable VRF removes the VRF and egress requests together.
+  It also removes an interface-derived source that depends on explicit VRF membership.
+  An independent explicit source IP remains.
+- Verified local route absence removes the egress constraint first.
+  A retained explicit VRF receives its own route check on the next attempt.
+  The VRF is removed only if that independent check also fails.
+  An independent explicit source IP remains until a separate availability check fails.
+  With only a source choice left, verified route absence permits a retry without that source.
+- TCP error numbers alone never authorize fallback.
+  A fresh socket must report `ENETUNREACH`, `EHOSTUNREACH`, or `ENETDOWN` and a complete `TCP_INFO` counter of zero transmitted segments.
+  This proves a local failure before any TCP packet left that socket.
+  Remote ICMP errors follow transmitted segments and do not permit fallback.
+  Connection refusal, connection reset, and generic timeouts do not permit fallback.
+  DNS errors, host-guard errors, TLS errors, and authentication errors do not permit fallback.
+
+The client applies `SO_BINDTODEVICE` and checks the full route and resolved route for the pinned TCP flow.
+Before Linux 5.18, a VRF-member socket binding alone does not enforce physical egress.
+Linux commit [`40867d74c374`](https://github.com/torvalds/linux/commit/40867d74c374) preserves the original member during route selection.
+The full-route query uses `RTM_F_FIB_MATCH`. Every live multipath hop must use the requested member before the resolved output can pass.
+Mixed-device multipath fails without fallback, even when the resolved query selects the requested member.
+Nexthop-ID routes and incomplete full-route replies fail without fallback because they do not prove physical egress.
+IPv6 source-bearing queries do not model the socket's strict physical-device selection.
+For a different output device, source-free queries can supply physical evidence within the same policy table.
+This alternate evidence requires a source-independent pinned route.
+A source-specific pinned route through another member fails explicitly, without fallback, because physical egress is unverifiable.
+Source-free errors permit fallback only when no IPv6 policy rule has a source prefix.
+The pinned table must also lack a possible member route for the destination.
+An available member route with an inconclusive lookup produces an explicit error, not a missing-route classification.
+Source-free table differences never permit fallback.
+These checks preserve valid nonpreferred IPv6 routes without a kernel-version assumption.
+The source-specific regression runs on the current kernel. Legacy-kernel runtime behavior remains untested.
+
+For automatic selection, a short-lived local socket reserves the TCP port before the source lookup.
+The connection socket then binds that source and port before the reservation closes.
+It then checks the VRF table with that concrete source, TCP protocol, destination port, and reserved source port.
+All queries use the actual socket device, not a substituted VRF master.
+Thus, source-plus-member policy rules cannot escape the selected VRF table.
+The preliminary automatic-source query also uses the reserved port, including for VRF-master-only bindings.
+This check prevents main-table fall-through even when the VRF has no unreachable default.
+The application does not require the operator to install an unreachable default.
+
+An inconclusive route query never permits route-based fallback.
+Device type and VRF membership errors remain invalid configuration, even when a device is down.
+Without a routing constraint, an unavailable route-inspection capability retains the enforced source binding and emits a warning.
+Unknown or truncated `TCP_INFO` evidence also retains the requested constraints.
+No UDP probe stands in for TCP routing. Protocol-specific and port-specific rules apply to the real TCP socket.
+
+Every retry creates a fresh socket. Each destination permits at most four socket attempts.
+DNS resolution, destination attempts, and local fallback share the canonical TCP connection timeout.
+An enclosing request deadline can shorten this interval. Fallback does not restart either deadline.
+Malformed names, malformed source addresses, and inconsistent canonical choices always fail validation.
+Missing OS resources are connection-time availability errors, not invalid canonical configuration.
+
+### Host requirements and validation
+
+The host supplies devices, VRFs, addresses, and routes. The client never installs routes or changes network namespaces.
+Linux device names use the OS name, not a display alias. Names must contain 1–15 bytes.
+Windows direct mode remains available without local binding constraints.
+On other platforms, strict binding returns an unsupported error. Best-effort warns and retries without local binding.
+
+Native Linux Docker deployments can use `--network host`.
+The application does not require `--privileged` or `CAP_NET_ADMIN`.
+Recent Linux kernels permit the initial device binding without `CAP_NET_RAW`.
+Older kernels and capability or seccomp restrictions can reject device binding.
+These errors follow the selected binding policy. Strict deployments need the required host permission.
+
+DNS resolution still uses the process resolver. VRF-aware DNS and scoped destination addresses are not supported.
+Address-plus-port uniqueness remains unchanged. Overlapping server addresses in different VRFs are not supported.
+
+The reproducible Linux lab uses disposable user and network namespaces:
+
+```bash
+python3 libraries/tacacsrs_networking/tests/linux_binding_lab.py
+```
+
+The lab requires Python 3, `iproute2`, `nft`, `unshare`, `setpriv`, and permission to create user namespaces.
+The lab captures peer-side SYN packets to verify actual source addresses and egress for IPv4 and IPv6.
+It also covers membership, source changes, local-route fallback, missing devices, and connection refusal.
+Regression cases cover VRFs without unreachable defaults, independent egress failures, remote ICMP errors, and deadline expiry.
+They also cover source-plus-member policy rerouting, UP unused VRF members, IPv6 output mismatches, and ordinary local-address paths.
+Metric and prefix cases compare all three source choices and both policies against independent bound Rust TCP controls.
+TCP-only route rules also disagree deliberately with no-send UDP probes.
+The peer uses nftables to generate remote ICMP errors while the client retains a valid local route.
+The lab repeats read-only connection cases without effective capabilities.
+It does not change host interfaces or routes.
+
+Validation ran on Linux 6.18.33 under WSL2. SONiC 5.10 was not tested.
+VRF validation requires selected-source and table metadata, plus TCP protocol and port lookup support.
+Local routing-error classification requires the Linux `TCP_INFO.tcpi_segs_out` field and its complete ABI prefix.
+That counter exists in Linux 5.10, but the implementation checks the returned length instead of assuming a kernel version.
+QEMU 7.2 linux-user treats `SOL_TCP` replies as four-byte integers and truncates `TCP_INFO`.
+The socket regression reports this unsupported result explicitly and still exercises socket ownership transfer.
+Unsupported or inconclusive evidence does not authorize fallback.
+
 ## Parsing API
 
 For simple application code, parse the JSON and enumerate per-server entries:
