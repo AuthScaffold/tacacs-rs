@@ -381,7 +381,7 @@ After you generate the code, run the workspace formatting, clippy, build, and te
 When you open or update a pull request targeting `main`, Linux and Windows each run one platform validation job.
 Each job hydrates versions before linting, documentation checks, and tests.
 The jobs also own their toolchain caches and Cargo metadata reports.
-ARMhf, minimum-Rust, and delivery-automation checks remain separate jobs.
+ARMhf, minimum-Rust, dependency-isolation, and delivery-automation checks remain separate jobs.
 
 | Check | Description |
 |-----|-------------|
@@ -389,7 +389,7 @@ ARMhf, minimum-Rust, and delivery-automation checks remain separate jobs.
 | **Clippy** | Linting and static analysis |
 | **Test** | Run the workspace on Linux and the `tacon` package group on Windows |
 | **Default Features** | Type-check each Linux selection and Windows `tacon` independently with `cargo check` |
-| **Dependency Isolation** | Test protocol/secrets, the direct client toolkit, and IPC as separate Cargo selections in the Linux job |
+| **Dependency Isolation** | Test protocol/secrets, the direct client toolkit, and IPC without installing unrelated native dependencies |
 | **ARMhf** | Build and execute tests with QEMU, then validate ABI and startup behavior |
 | **Documentation** | Builds documentation without warnings |
 | **Coverage** | Generate and upload code coverage |
@@ -403,6 +403,9 @@ Unit and integration tests compile their required binaries.
 There is no separate product-build job.
 Default-feature checks retain configuration coverage without another binary build.
 Dependency-isolation tests prevent workspace feature unification from hiding missing requirements.
+They use separate Linux runners and caches so the full workspace's native setup cannot mask portability problems.
+Protocol/secrets and IPC do not install OpenSSL or libseccomp.
+The direct client toolkit installs OpenSSL, but not libseccomp.
 Architecture guards enforce the dependency boundaries.
 
 PRs validate source without publishing release assets.

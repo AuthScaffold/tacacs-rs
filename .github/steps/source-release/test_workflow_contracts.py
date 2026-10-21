@@ -129,7 +129,7 @@ def test_every_validation_checkout_uses_the_exact_sha():
 
 def test_platform_checks_share_one_hydrated_validation_job():
     jobs = workflow("reusable-pipeline.yml")["jobs"]
-    assert set(jobs) == {"armhf", "automation-tests", "msrv", "validation", "ci-success"}
+    assert set(jobs) == {"armhf", "automation-tests", "msrv", "validation", "dependency-isolation", "ci-success"}
     validation = jobs["validation"]
     assert "needs" not in validation
     configs = validation["strategy"]["matrix"]["config"]
@@ -164,15 +164,23 @@ def test_platform_checks_share_one_hydrated_validation_job():
     assert "cargo build" not in "\n".join(step.get("run", "") for step in steps)
 
 
-def test_isolated_dependency_tests_remain_separate_cargo_invocations():
-    steps = workflow("reusable-pipeline.yml")["jobs"]["validation"]["steps"]
-    isolated = [step for step in steps if step.get("name", "").endswith("dependencies in isolation")]
-    assert [step["run"] for step in isolated] == [
-        "cargo test --locked --all-features --target x86_64-unknown-linux-gnu -p tacacsrs-protocol -p tacacsrs-secrets",
-        "cargo test --locked --all-features --target x86_64-unknown-linux-gnu -p tacacsrs-config -p tacacsrs-networking",
-        "cargo test --locked --all-features --target x86_64-unknown-linux-gnu -p tacacsrs-ipc",
+def test_dependency_isolation_preserves_native_prerequisites_and_separate_caches():
+    job = workflow("reusable-pipeline.yml")["jobs"]["dependency-isolation"]
+    assert job["runs-on"] == "ubuntu-latest"
+    configs = job["strategy"]["matrix"]["config"]
+    assert [(config["package_args"], config["install_openssl"], config["cache_key"]) for config in configs] == [
+        ("--package tacacsrs-protocol --package tacacsrs-secrets", "false", "protocol"),
+        ("--package tacacsrs-config --package tacacsrs-networking", "true", "direct"),
+        ("--package tacacsrs-ipc", "false", "ipc"),
     ]
-    assert all(step["if"] == "runner.os == 'Linux'" for step in isolated)
+    setup = next(step for step in job["steps"] if step.get("uses") == "./.github/steps/setup-rust")
+    assert setup["with"]["install-openssl"] == "${{ matrix.config.install_openssl }}"
+    assert setup["with"]["install-libseccomp-dev"] == "false"
+    assert setup["with"]["cache-key"] == "isolated-${{ matrix.config.cache_key }}"
+    assert setup["with"]["save-if"] == "true"
+    run = job["steps"][-1]["run"]
+    assert "cargo test --locked --all-features" in run
+    assert "${{ matrix.config.package_args }}" in run
 
 
 def test_workflow_callers_use_only_supported_inputs():

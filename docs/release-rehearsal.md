@@ -92,12 +92,15 @@ Local product-container recipes and development containers remain available.
 Linux and Windows each use one platform validation job.
 Hydration precedes linting, documentation, default-feature checks, and tests in that same checkout.
 The jobs own their metadata reports and toolchain caches.
-There is no separate cache-warming, consumer-profile, or product-build job.
+There is no separate cache-warming or product-build job.
 
 Unit and integration tests compile their required binaries.
 Independent `cargo check` commands retain default-feature coverage without another full product build.
-Linux also tests protocol/secrets, the direct client toolkit, and IPC through separate Cargo commands.
+The dependency-isolation matrix tests protocol/secrets, the direct client toolkit, and IPC on separate Linux runners.
 These selections prevent workspace feature unification from hiding dependency or feature requirements.
+Separate caches and native setup also prevent full-workspace prerequisites from masking portability problems.
+Protocol/secrets and IPC do not install OpenSSL or libseccomp.
+The direct client toolkit installs OpenSSL, but not libseccomp.
 Architecture validation continues to enforce the dependency boundaries.
 ARMhf, minimum-version, and automation checks also hydrate before validation.
 An already hydrated candidate must remain unchanged by the hydration action.
