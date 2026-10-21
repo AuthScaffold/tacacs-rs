@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  group: ci-${{ github.workflow }}-${{ github.ref }}${{ github.event_name != 'push' && '-validation' || '' }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -164,6 +164,7 @@ jobs:
           needs.prepare-release.result != 'success'
         run: exit 1
 
+  # GitHub generates source downloads from the hydrated tag, not github.sha.
   release:
     name: Release Source
     runs-on: ubuntu-latest
@@ -178,7 +179,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
-      - name: Promote the validated source commit and create its release page
+      - name: Publish the hydrated tag and create its GitHub Release
         uses: ./.github/steps/source-release
         with:
           command: publish

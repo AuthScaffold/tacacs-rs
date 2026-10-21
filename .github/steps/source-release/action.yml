@@ -6,10 +6,10 @@ inputs:
     description: 'Operation: recover, prepare, or publish'
     required: true
   source:
-    description: 'Immutable source commit'
+    description: 'Triggering source commit used to verify candidate provenance'
     required: true
   candidate:
-    description: 'Previously prepared or recovered candidate SHA'
+    description: 'Signed hydrated commit SHA to validate or publish'
     default: ''
   versions:
     description: 'Computed crate versions'

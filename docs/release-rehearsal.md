@@ -24,6 +24,26 @@ Later commits have two parents: the previous release head first, then the source
 The tree comes from the current source with hydrated versions, not a merge of old release files.
 The release branch retains its history and never merges into `main`.
 
+New main pushes cancel older release runs instead of queuing another release.
+Checks within the latest run can still run in parallel.
+Manual and scheduled validation use a separate concurrency group, so they cannot cancel a release run.
+Cancellation does not undo refs that an earlier run already published.
+
+## Automatic source downloads
+
+The workflow starts on `main`, but the release does not use that triggering commit as its tag target.
+CI first creates and validates the signed hydrated commit object.
+The final publication step then atomically advances `release` and creates tags at that hydrated SHA.
+Only after this push succeeds does it create the GitHub Release for the existing tag.
+
+GitHub generates the automatic **Source code (zip)** and **Source code (tar.gz)** downloads from the tag's commit.
+These downloads therefore contain the hydrated manifests and `Cargo.lock`.
+The workflow does not create or upload an additional source archive.
+The `source` input identifies the triggering commit for provenance validation.
+The `candidate` input identifies the hydrated commit to publish.
+
+See [GitHub's release documentation](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases) for the automatic archive behavior.
+
 ## Version names
 
 Library tags retain the form `<crate>-vX.Y.Z`.

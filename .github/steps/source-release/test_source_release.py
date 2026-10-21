@@ -2,9 +2,13 @@
 
 import base64
 import copy
+import io
 import json
 import os
 import subprocess
+import tarfile
+import tomllib
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -91,6 +95,8 @@ def api(repository, monkeypatch, tmp_path):
 
     def run(args, workspace, **kwargs):
         if args[:3] == ["gh", "release", "create"]:
+            assert "--verify-tag" in args
+            release.git(remote, "rev-parse", "--verify", f"refs/tags/{args[3]}^{{commit}}")
             if state.pop("fail_page", False):
                 raise release.ReleaseError("GitHub Release creation failed")
             body = Path(args[args.index("--notes-file") + 1]).read_text()
@@ -176,6 +182,51 @@ def test_atomic_publication_recovery_and_release_page_retry(repository, api):
     assert sha in body and plan["source"] in body
     release.publish_page(checkout, recovered, sha)
     assert len(api["creates"]) == 1
+
+
+@pytest.mark.parametrize("archive_format", ["tar.gz", "zip"])
+def test_automatic_source_archives_use_the_hydrated_tag(repository, api, monkeypatch, archive_format):
+    checkout, remote, plan = repository
+    sha = prepare(repository)
+    monkeypatch.setenv("RELEASE_COMMAND", "publish")
+    monkeypatch.setenv("SOURCE_SHA", plan["source"])
+    monkeypatch.setenv("CANDIDATE_SHA", sha)
+    assert release.main() == 0
+
+    tag = plan["calver_tag"]
+    assert release.git(remote, "rev-parse", "refs/heads/main") == plan["source"]
+    assert release.git(remote, "rev-parse", "refs/heads/release") == sha
+    assert release.git(remote, "rev-parse", f"refs/tags/{tag}^{{commit}}") == sha
+    source_manifest = release.git(remote, "show", f"{plan['source']}:tacon/Cargo.toml")
+    assert tomllib.loads(source_manifest)["package"]["version"] == "0.0.0-dev"
+
+    args, _ = api["creates"][0]
+    assert args == [
+        "gh", "release", "create", tag, "--verify-tag", "--target", sha,
+        "--title", "TACACS-RS 2026.1021.0", "--notes-file", args[-1],
+    ]
+    archive = subprocess.run(
+        ["git", "archive", f"--format={archive_format}", tag],
+        cwd=remote, capture_output=True, check=True,
+    ).stdout
+    paths = ["base/Cargo.toml", "tacon/Cargo.toml", "experimental/Cargo.toml", "Cargo.lock"]
+    if archive_format == "zip":
+        with zipfile.ZipFile(io.BytesIO(archive)) as contents:
+            files = {path: contents.read(path) for path in paths}
+    else:
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as contents:
+            files = {}
+            for path in paths:
+                stream = contents.extractfile(path)
+                assert stream is not None
+                files[path] = stream.read()
+
+    for path, name in (("base/Cargo.toml", "base-lib"), ("tacon/Cargo.toml", "tacon")):
+        assert tomllib.loads(files[path].decode())["package"]["version"] == plan["versions"][name]
+    assert tomllib.loads(files["experimental/Cargo.toml"].decode())["package"]["version"] == "0.0.0-dev"
+    lock = tomllib.loads(files["Cargo.lock"].decode())
+    local_versions = {package["name"]: package["version"] for package in lock["package"] if "source" not in package}
+    assert {name: local_versions[name] for name in plan["versions"]} == plan["versions"]
 
 
 def test_page_failure_recovers_without_allocating_or_moving_refs(repository, api):

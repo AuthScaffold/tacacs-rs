@@ -48,6 +48,9 @@ Repository tags use `tacacs-rs-YYYY.MMDD.BUILD`.
 Release titles use `TACACS-RS YYYY.MMDD.BUILD`.
 Release notes include the actual version of every workspace crate and links to the source, candidate, and validation run.
 No assets are uploaded.
+GitHub creates the automatic source ZIP and TAR downloads from the existing release tag.
+That tag points to the validated hydrated commit, not the triggering source commit.
+The release branch and tags exist before GitHub Release creation starts.
 
 ## Tests
 

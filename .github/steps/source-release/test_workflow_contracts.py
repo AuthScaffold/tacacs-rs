@@ -16,11 +16,26 @@ def workflow(name):
     return yaml.load((ROOT / ".github/workflows" / name).read_text(), Loader=yaml.BaseLoader)
 
 
+def test_latest_main_push_cancels_older_release_runs():
+    data = workflow("ci.yml")
+    assert data["on"]["push"]["branches"] == ["main"]
+    concurrency = data["concurrency"]
+    assert concurrency["cancel-in-progress"] == "true"
+    assert concurrency["group"] == (
+        "ci-${{ github.workflow }}-${{ github.ref }}"
+        "${{ github.event_name != 'push' && '-validation' || '' }}"
+    )
+
+
 def test_publication_requires_the_validated_candidate():
     jobs = workflow("ci.yml")["jobs"]
     assert set(jobs["release"]["needs"]) == {"ci-success", "prepare-release"}
     assert "needs.prepare-release.result == 'success'" in jobs["release"]["if"]
     assert "needs.ci-success.result == 'success'" in jobs["release"]["if"]
+    publish = next(step for step in jobs["release"]["steps"]
+                   if step.get("uses") == "./.github/steps/source-release")
+    assert publish["with"]["command"] == "publish"
+    assert publish["with"]["candidate"] == "${{ needs.prepare-release.outputs.candidate }}"
     prepare = jobs["prepare-release"]
     for condition in ("github.event_name == 'push'", "github.repository_owner == 'AuthScaffold'",
                       "skip-release != 'true'", "has-release == 'true'"):
