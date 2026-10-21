@@ -43,7 +43,6 @@ jobs:
       checks: write
       contents: read
     with:
-      rust-test-matrix: '["stable"]'
       skip-audit-if-no-dep-changes: true
       versions: ${{ needs.compute-versions.outputs.versions || '{}' }}
     secrets: inherit

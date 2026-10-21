@@ -112,32 +112,74 @@ def test_release_policy_api_failure_is_not_release_enabled(tmp_path):
 def test_every_validation_checkout_uses_the_exact_sha():
     jobs = workflow("reusable-pipeline.yml")["jobs"]
     for job in jobs.values():
-        for step in job["steps"]:
+        for index, step in enumerate(job["steps"]):
             if step.get("uses", "").startswith("actions/checkout@"):
                 assert step["with"]["ref"] == "${{ inputs.validation-ref || github.sha }}"
+                hydration = job["steps"][index + 1]
+                assert hydration["uses"] == "./.github/steps/inject-versions"
+                assert hydration["with"] == {
+                    "versions": "${{ inputs.versions }}",
+                    "require-hydrated": "${{ inputs.require-hydrated }}",
+                }
     assert set(jobs["ci-success"]["needs"]) == set(jobs) - {"ci-success"}
     condition = jobs["ci-success"]["steps"][-1]["if"]
     for result in ("failure", "cancelled", "skipped"):
         assert f"'{result}'" in condition
-    assert len(jobs["consumer-profiles"]["strategy"]["matrix"]["config"]) == 3
 
 
-def test_build_validation_preserves_default_feature_products():
-    build = workflow("reusable-pipeline.yml")["jobs"]["build-validation"]
-    configs = build["strategy"]["matrix"]["config"]
-    assert configs == [
-        {"os": "ubuntu-latest", "target": "x86_64-unknown-linux-gnu",
-         "packages": "tacon tacacsrs-agentd tacacsrs-agent-health tacacsrs-bash-plugin"},
-        {"os": "windows-latest", "target": "x86_64-pc-windows-msvc", "packages": "tacon"},
+def test_platform_checks_share_one_hydrated_validation_job():
+    jobs = workflow("reusable-pipeline.yml")["jobs"]
+    assert set(jobs) == {"armhf", "automation-tests", "msrv", "validation", "ci-success"}
+    validation = jobs["validation"]
+    assert "needs" not in validation
+    configs = validation["strategy"]["matrix"]["config"]
+    assert [(config["os"], config["target"], config["default_packages"]) for config in configs] == [
+        ("ubuntu-latest", "x86_64-unknown-linux-gnu",
+         "tacon tacacsrs-agentd tacacsrs-agent-health tacacsrs-bash-plugin"),
+        ("windows-latest", "x86_64-pc-windows-msvc", "tacon"),
     ]
-    commands = "\n".join(step.get("run", "") for step in build["steps"])
-    assert "cargo build --locked --release" in commands
-    assert "--no-default-features" not in commands
-    assert "--all-features" not in commands
-    assert 'for package in $PACKAGES' in commands
-    assert '--package "$package"' in commands
-    required = next(step for step in build["steps"] if step.get("if") == "inputs.require-hydrated")
-    assert "git diff --exit-code" in required["run"]
+    assert configs[0]["package_args"] == "--workspace"
+    assert configs[1]["package_args"] == (
+        "--package tacon --package tacacsrs-config --package tacacsrs-protocol "
+        "--package tacacsrs-networking --package tacacsrs-secrets"
+    )
+    steps = validation["steps"]
+    uses = [step.get("uses", "") for step in steps]
+    hydrate = uses.index("./.github/steps/inject-versions")
+    for action in ("check-format", "check-unused-deps", "resolve-cargo-metadata",
+                   "run-clippy", "build-docs", "run-tests", "run-coverage", "run-miri", "run-fuzz-smoke"):
+        assert hydrate < uses.index(f"./.github/steps/{action}")
+    assert sum(use == "./.github/steps/run-tests" for use in uses) == 1
+    for step in steps:
+        if step.get("uses") in ("./.github/steps/run-clippy", "./.github/steps/build-docs", "./.github/steps/run-tests"):
+            assert step["with"]["feature-args"] == "--all-features"
+    caches = [step for step in steps if step.get("uses") == "./.github/steps/setup-rust" and step["with"].get("save-if") == "true"]
+    assert {step["with"]["cache-key"] for step in caches} == {"nightly", "stable"}
+    default_check = next(step for step in steps if step.get("name") == "Check default-feature package selections")
+    assert "cargo check --locked --release" in default_check["run"]
+    assert "--no-default-features" not in default_check["run"]
+    assert "--all-features" not in default_check["run"]
+    assert "for package in $PACKAGES" in default_check["run"]
+    assert '--package "$package"' in default_check["run"]
+    assert "cargo build" not in "\n".join(step.get("run", "") for step in steps)
+
+
+def test_isolated_dependency_tests_remain_separate_cargo_invocations():
+    steps = workflow("reusable-pipeline.yml")["jobs"]["validation"]["steps"]
+    isolated = [step for step in steps if step.get("name", "").endswith("dependencies in isolation")]
+    assert [step["run"] for step in isolated] == [
+        "cargo test --locked --all-features --target x86_64-unknown-linux-gnu -p tacacsrs-protocol -p tacacsrs-secrets",
+        "cargo test --locked --all-features --target x86_64-unknown-linux-gnu -p tacacsrs-config -p tacacsrs-networking",
+        "cargo test --locked --all-features --target x86_64-unknown-linux-gnu -p tacacsrs-ipc",
+    ]
+    assert all(step["if"] == "runner.os == 'Linux'" for step in isolated)
+
+
+def test_workflow_callers_use_only_supported_inputs():
+    supported = set(workflow("reusable-pipeline.yml")["on"]["workflow_call"]["inputs"])
+    assert "rust-test-matrix" not in supported
+    for name in ("ci.yml", "pullrequest_workflow.yml"):
+        assert set(workflow(name)["jobs"]["pipeline"]["with"]) <= supported
 
 
 def test_no_distribution_jobs_or_registry_permissions_remain():

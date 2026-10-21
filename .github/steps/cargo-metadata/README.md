@@ -9,7 +9,8 @@ inventory. Directory names and regular expressions decide nothing.
 Source releases use Cargo workspace membership, not a product registry.
 Version discovery retains the library SemVer and executable CalVer policy.
 The source-release helper uses this inventory to detect managed crates and list every crate version in release notes.
-The reusable workflow separately declares Linux and Windows build-validation selections.
+The platform validation matrix declares Linux and Windows package selections.
+Each platform job uploads its hydrated Cargo inventory.
 Architecture validation retains the resolved dependency rules and supported-core guards.
 
 ## Public API

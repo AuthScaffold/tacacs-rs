@@ -82,7 +82,7 @@ locally. If you cannot run a job, explain why:
 
 The full reusable pipeline also runs these additional checks:
 
-- Cache warming
+- Toolchain cache restore and save
 - Format check
 - Clippy
 - Docs build
@@ -95,7 +95,7 @@ The full reusable pipeline also runs these additional checks:
 - Clippy nursery
 - Miri
 - Fuzz smoke tests
-- Default-feature release-mode build validation
+- Independent default-feature compilation checks
 - AMD64 and executed ARMhf platform validation
 
 ## Workspace Architecture

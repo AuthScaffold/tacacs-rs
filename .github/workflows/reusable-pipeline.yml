@@ -4,22 +4,22 @@ on:
   workflow_call:
     inputs:
       include-fmt:
-        description: 'Run the rustfmt validation job'
+        description: 'Run rustfmt validation'
         required: false
         default: true
         type: boolean
       include-proto-compat:
-        description: 'Run the protobuf backward-compatibility validation'
+        description: 'Run protobuf backward-compatibility validation'
         required: false
         default: true
         type: boolean
       include-miri:
-        description: 'Run the Miri job'
+        description: 'Run advisory Miri validation'
         required: false
         default: true
         type: boolean
       include-fuzz:
-        description: 'Run the fuzz smoke-test job'
+        description: 'Run fuzz smoke tests'
         required: false
         default: true
         type: boolean
@@ -34,22 +34,17 @@ on:
         default: false
         type: boolean
       include-clippy-nursery:
-        description: 'Run the Clippy nursery-lint job'
+        description: 'Run advisory Clippy style lints'
         required: false
         default: true
         type: boolean
-      rust-test-matrix:
-        description: 'Deprecated. This workflow defines the test platforms. This input remains for caller compatibility.'
-        required: false
-        default: '["stable"]'
-        type: string
       proto-compat-ref:
         description: 'Git ref for protobuf backward-compatibility validation'
         required: false
         default: 'main'
         type: string
       include-outdated:
-        description: 'Run the outdated-dependency validation job'
+        description: 'Run outdated-dependency validation'
         required: false
         default: true
         type: boolean
@@ -59,7 +54,7 @@ on:
         default: false
         type: boolean
       build-release:
-        description: 'The build commands and tests use release mode'
+        description: 'Run platform unit tests in release mode'
         required: false
         default: true
         type: boolean
@@ -82,6 +77,11 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ inputs.validation-ref || github.sha }}
+      - name: Hydrate validation versions
+        uses: ./.github/steps/inject-versions
+        with:
+          versions: ${{ inputs.versions }}
+          require-hydrated: ${{ inputs.require-hydrated }}
       - name: Enable ARM subprocess execution
         run: docker run --rm --privileged tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0 --install arm
       - name: Build and execute ARMhf coverage
@@ -104,6 +104,11 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ inputs.validation-ref || github.sha }}
+      - name: Hydrate validation versions
+        uses: ./.github/steps/inject-versions
+        with:
+          versions: ${{ inputs.versions }}
+          require-hydrated: ${{ inputs.require-hydrated }}
       - uses: ./.github/steps/setup-rust
         with:
           toolchain: '1.91.0'
@@ -137,6 +142,11 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ inputs.validation-ref || github.sha }}
+      - name: Hydrate validation versions
+        uses: ./.github/steps/inject-versions
+        with:
+          versions: ${{ inputs.versions }}
+          require-hydrated: ${{ inputs.require-hydrated }}
       - name: Install the minimum Rust toolchain
         uses: ./.github/steps/setup-rust
         with:
@@ -148,66 +158,8 @@ jobs:
         shell: bash
         run: cargo check --workspace --all-targets --all-features --locked
 
-  cache-preflight:
-    name: Cache Preflight (${{ matrix.config.name }})
-    runs-on: ${{ matrix.config.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        config:
-          - name: Linux Stable
-            os: ubuntu-latest
-            toolchain: stable
-            components: clippy llvm-tools-preview
-            targets: x86_64-unknown-linux-gnu
-            cache_key: stable
-            metadata_target: x86_64-unknown-linux-gnu
-            install_libseccomp_dev: 'true'
-            install_openssl: 'true'
-          - name: Windows Stable
-            os: windows-latest
-            toolchain: stable
-            components: clippy
-            targets: x86_64-pc-windows-msvc
-            cache_key: stable
-            metadata_target: x86_64-pc-windows-msvc
-            install_libseccomp_dev: 'false'
-            install_openssl: 'true'
-          - name: Linux Nightly
-            os: ubuntu-latest
-            toolchain: nightly
-            components: rustfmt clippy miri
-            targets: x86_64-unknown-linux-gnu
-            cache_key: nightly
-            metadata_target: x86_64-unknown-linux-gnu
-            install_libseccomp_dev: 'true'
-            install_openssl: 'true'
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          ref: ${{ inputs.validation-ref || github.sha }}
-
-      - name: Install Rust and configure native caches
-        uses: ./.github/steps/setup-rust
-        with:
-          toolchain: ${{ matrix.config.toolchain }}
-          components: ${{ matrix.config.components }}
-          targets: ${{ matrix.config.targets }}
-          cache-key: ${{ matrix.config.cache_key }}
-          save-if: 'true'
-          install-libseccomp-dev: ${{ matrix.config.install_libseccomp_dev }}
-          install-openssl: ${{ matrix.config.install_openssl }}
-
-      - name: Resolve cargo metadata
-        uses: ./.github/steps/resolve-cargo-metadata
-        with:
-          metadata-target: ${{ matrix.config.metadata_target }}
-          profile: ${{ matrix.config.cache_key }}
-
-  pre-tests:
-    name: Pre-Tests (${{ matrix.config.name }})
-    needs: [cache-preflight]
-    if: ${{ !cancelled() && !failure() }}
+  validation:
+    name: Validate (${{ matrix.config.name }})
     runs-on: ${{ matrix.config.os }}
     strategy:
       fail-fast: false
@@ -216,24 +168,25 @@ jobs:
           - name: Linux GNU
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            feature_args: --all-features
-            install_libseccomp_dev: 'true'
-            install_openssl: 'true'
-            metadata_checks: 'true'
+            components: clippy llvm-tools-preview
             package_args: '--workspace'
+            default_packages: 'tacon tacacsrs-agentd tacacsrs-agent-health tacacsrs-bash-plugin'
           - name: Windows MSVC
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            feature_args: --all-features
-            install_libseccomp_dev: 'false'
-            install_openssl: 'true'
-            metadata_checks: 'false'
+            components: clippy
             package_args: '--package tacon --package tacacsrs-config --package tacacsrs-protocol --package tacacsrs-networking --package tacacsrs-secrets'
+            default_packages: 'tacon'
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ inputs.validation-ref || github.sha }}
           fetch-depth: 0
+      - name: Hydrate validation versions
+        uses: ./.github/steps/inject-versions
+        with:
+          versions: ${{ inputs.versions }}
+          require-hydrated: ${{ inputs.require-hydrated }}
 
       - name: Install nightly Rust
         uses: ./.github/steps/setup-rust
@@ -242,8 +195,7 @@ jobs:
           components: rustfmt
           targets: ${{ matrix.config.target }}
           cache-key: nightly
-          install-libseccomp-dev: ${{ matrix.config.install_libseccomp_dev }}
-          install-openssl: ${{ matrix.config.install_openssl }}
+          save-if: 'true'
 
       - name: Make sure that formatting is correct
         if: inputs.include-fmt
@@ -254,96 +206,7 @@ jobs:
         with:
           package-args: ${{ matrix.config.package_args }}
           target: ${{ matrix.config.target }}
-          feature-args: ${{ matrix.config.feature_args }}
-
-      - name: Install stable Rust
-        uses: ./.github/steps/setup-rust
-        with:
-          toolchain: stable
-          components: clippy
-          targets: ${{ matrix.config.target }}
-          cache-key: stable
-          install-libseccomp-dev: ${{ matrix.config.install_libseccomp_dev }}
-          install-openssl: ${{ matrix.config.install_openssl }}
-
-      - name: Run Clippy
-        uses: ./.github/steps/run-clippy
-        with:
-          package-args: ${{ matrix.config.package_args }}
-          target: ${{ matrix.config.target }}
-          feature-args: ${{ matrix.config.feature_args }}
-
-      - name: Run advisory Clippy style lints
-        if: inputs.include-clippy-nursery
-        uses: ./.github/steps/run-clippy
-        with:
-          package-args: ${{ matrix.config.package_args }}
-          target: ${{ matrix.config.target }}
-          feature-args: ${{ matrix.config.feature_args }}
-          lint-args: -W clippy::pedantic -W clippy::nursery
-          advisory: 'true'
-
-      - name: Build documentation
-        uses: ./.github/steps/build-docs
-        with:
-          package-args: ${{ matrix.config.package_args }}
-          target: ${{ matrix.config.target }}
-          feature-args: ${{ matrix.config.feature_args }}
-
-      - name: Run security audit
-        if: matrix.config.metadata_checks == 'true'
-        uses: ./.github/steps/security-audit
-        with:
-          skip-if-no-dep-changes: ${{ inputs.skip-audit-if-no-dep-changes }}
-
-      - name: Make sure that dependencies are current
-        if: matrix.config.metadata_checks == 'true' && inputs.include-outdated
-        uses: ./.github/steps/check-outdated
-
-      - name: Make sure that protobuf changes are backward-compatible
-        if: matrix.config.metadata_checks == 'true' && inputs.include-proto-compat
-        uses: ./.github/steps/proto-compat
-        with:
-          against-ref: ${{ inputs.proto-compat-ref }}
-          github-token: ${{ github.token }}
-
-      - name: Verify the pinned YANG artifacts (offline)
-        if: matrix.config.metadata_checks == 'true'
-        uses: ./.github/steps/verify-yang
-
-  testing:
-    name: Testing (${{ matrix.config.name }})
-    needs: [pre-tests]
-    if: ${{ !cancelled() && !failure() }}
-    runs-on: ${{ matrix.config.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        config:
-          - name: Linux GNU
-            os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            feature_args: --all-features
-            components: llvm-tools-preview
-            install_libseccomp_dev: 'true'
-            install_openssl: 'true'
-            coverage: 'true'
-            deep_checks: 'true'
-            package_args: '--workspace'
-          - name: Windows MSVC
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-            feature_args: --all-features
-            components: ''
-            install_libseccomp_dev: 'false'
-            install_openssl: 'true'
-            coverage: 'false'
-            deep_checks: 'false'
-            package_args: '--package tacon --package tacacsrs-config --package tacacsrs-protocol --package tacacsrs-networking --package tacacsrs-secrets'
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          ref: ${{ inputs.validation-ref || github.sha }}
+          feature-args: --all-features
 
       - name: Install stable Rust
         uses: ./.github/steps/setup-rust
@@ -352,156 +215,124 @@ jobs:
           components: ${{ matrix.config.components }}
           targets: ${{ matrix.config.target }}
           cache-key: stable
-          install-libseccomp-dev: ${{ matrix.config.install_libseccomp_dev }}
-          install-openssl: ${{ matrix.config.install_openssl }}
+          save-if: 'true'
+
+      - name: Resolve cargo metadata
+        uses: ./.github/steps/resolve-cargo-metadata
+        with:
+          metadata-target: ${{ matrix.config.target }}
+          profile: stable
+
+      - name: Check default-feature package selections
+        shell: bash
+        env:
+          PACKAGES: ${{ matrix.config.default_packages }}
+        run: |
+          set -euo pipefail
+          for package in $PACKAGES; do
+            cargo check --locked --release \
+              --target "${{ matrix.config.target }}" \
+              --package "$package"
+          done
+
+      - name: Run Clippy
+        uses: ./.github/steps/run-clippy
+        with:
+          package-args: ${{ matrix.config.package_args }}
+          target: ${{ matrix.config.target }}
+          feature-args: --all-features
+
+      - name: Run advisory Clippy style lints
+        if: inputs.include-clippy-nursery
+        uses: ./.github/steps/run-clippy
+        with:
+          package-args: ${{ matrix.config.package_args }}
+          target: ${{ matrix.config.target }}
+          feature-args: --all-features
+          lint-args: -W clippy::pedantic -W clippy::nursery
+          advisory: 'true'
+
+      - name: Build documentation
+        uses: ./.github/steps/build-docs
+        with:
+          package-args: ${{ matrix.config.package_args }}
+          target: ${{ matrix.config.target }}
+          feature-args: --all-features
+
+      - name: Run security audit
+        if: runner.os == 'Linux'
+        uses: ./.github/steps/security-audit
+        with:
+          skip-if-no-dep-changes: ${{ inputs.skip-audit-if-no-dep-changes }}
+
+      - name: Make sure that dependencies are current
+        if: runner.os == 'Linux' && inputs.include-outdated
+        uses: ./.github/steps/check-outdated
+
+      - name: Make sure that protobuf changes are backward-compatible
+        if: runner.os == 'Linux' && inputs.include-proto-compat
+        uses: ./.github/steps/proto-compat
+        with:
+          against-ref: ${{ inputs.proto-compat-ref }}
+          github-token: ${{ github.token }}
+
+      - name: Verify the pinned YANG artifacts (offline)
+        if: runner.os == 'Linux'
+        uses: ./.github/steps/verify-yang
+
+      - name: Test protocol dependencies in isolation
+        if: runner.os == 'Linux'
+        shell: bash
+        run: cargo test --locked --all-features --target x86_64-unknown-linux-gnu -p tacacsrs-protocol -p tacacsrs-secrets
+
+      - name: Test direct client dependencies in isolation
+        if: runner.os == 'Linux'
+        shell: bash
+        run: cargo test --locked --all-features --target x86_64-unknown-linux-gnu -p tacacsrs-config -p tacacsrs-networking
+
+      - name: Test IPC dependencies in isolation
+        if: runner.os == 'Linux'
+        shell: bash
+        run: cargo test --locked --all-features --target x86_64-unknown-linux-gnu -p tacacsrs-ipc
 
       - name: Run unit tests
         uses: ./.github/steps/run-tests
         with:
           package-args: ${{ matrix.config.package_args }}
           target: ${{ matrix.config.target }}
-          feature-args: ${{ matrix.config.feature_args }}
+          feature-args: --all-features
           build-release: ${{ inputs.build-release }}
 
       - name: Generate coverage
-        if: matrix.config.coverage == 'true'
+        if: runner.os == 'Linux'
         uses: ./.github/steps/run-coverage
 
       - name: Install nightly Rust for extended validation
-        if: matrix.config.deep_checks == 'true' && (inputs.include-miri || inputs.include-fuzz)
+        if: runner.os == 'Linux' && (inputs.include-miri || inputs.include-fuzz)
         uses: ./.github/steps/setup-rust
         with:
           toolchain: nightly
           components: miri
           cache-key: nightly
-          install-libseccomp-dev: ${{ matrix.config.install_libseccomp_dev }}
-          install-openssl: ${{ matrix.config.install_openssl }}
 
       - name: Run Miri
-        if: matrix.config.deep_checks == 'true' && inputs.include-miri
+        if: runner.os == 'Linux' && inputs.include-miri
         uses: ./.github/steps/run-miri
 
       - name: Test fuzz smoke action
-        if: matrix.config.deep_checks == 'true' && inputs.include-fuzz
+        if: runner.os == 'Linux' && inputs.include-fuzz
         shell: bash
         run: python3 .github/steps/run-fuzz-smoke/test_action.py
 
       - name: Run fuzz smoke tests
-        if: matrix.config.deep_checks == 'true' && inputs.include-fuzz
+        if: runner.os == 'Linux' && inputs.include-fuzz
         uses: ./.github/steps/run-fuzz-smoke
-
-  consumer-profiles:
-    name: Consumer Profile (${{ matrix.config.name }})
-    needs: [pre-tests]
-    if: ${{ !cancelled() && !failure() }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        config:
-          # The protocol and secrets crates must build and test with no native
-          # system dependency. OpenSSL and libseccomp are not installed.
-          - name: Protocol (no native dependencies)
-            package_args: '--package tacacsrs-protocol --package tacacsrs-secrets'
-            install_openssl: 'false'
-            install_libseccomp_dev: 'false'
-          # A direct TACACS+ client consumer uses configuration and networking.
-          # Networking needs OpenSSL, but not libseccomp or IPC.
-          - name: Direct toolkit (OpenSSL)
-            package_args: '--package tacacsrs-config --package tacacsrs-networking'
-            install_openssl: 'true'
-            install_libseccomp_dev: 'false'
-          # The local IPC crate is Linux-only through its Unix socket ownership.
-          - name: IPC (Linux)
-            package_args: '--package tacacsrs-ipc'
-            install_openssl: 'false'
-            install_libseccomp_dev: 'false'
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          ref: ${{ inputs.validation-ref || github.sha }}
-
-      - name: Install stable Rust
-        uses: ./.github/steps/setup-rust
-        with:
-          toolchain: stable
-          targets: x86_64-unknown-linux-gnu
-          cache-key: stable
-          install-libseccomp-dev: ${{ matrix.config.install_libseccomp_dev }}
-          install-openssl: ${{ matrix.config.install_openssl }}
-
-      - name: Build and test the isolated selection
-        shell: bash
-        run: |
-          cargo test \
-            ${{ matrix.config.package_args }} \
-            --target x86_64-unknown-linux-gnu \
-            --all-features \
-            --locked
-
-  build-validation:
-    name: Build Validation (${{ matrix.config.target }})
-    needs: [testing]
-    if: ${{ !cancelled() && !failure() }}
-    runs-on: ${{ matrix.config.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        config:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            packages: 'tacon tacacsrs-agentd tacacsrs-agent-health tacacsrs-bash-plugin'
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            packages: 'tacon'
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          ref: ${{ inputs.validation-ref || github.sha }}
-
-      - name: Inject versions
-        uses: ./.github/steps/inject-versions
-        with:
-          versions: ${{ inputs.versions }}
-
-      - name: Require an already hydrated release candidate
-        if: inputs.require-hydrated
-        shell: bash
-        run: git diff --exit-code -- Cargo.lock ':(glob)**/Cargo.toml'
-
-      - name: Install Rust
-        uses: ./.github/steps/setup-rust
-        with:
-          targets: ${{ matrix.config.target }}
-          cache-key: stable
-          install-libseccomp-dev: ${{ runner.os == 'Linux' }}
-          install-openssl: 'true'
-
-      - name: Build with default features and the locked dependency graph
-        shell: bash
-        env:
-          PACKAGES: ${{ matrix.config.packages }}
-        run: |
-          set -euo pipefail
-          for package in $PACKAGES; do
-            cargo build --locked --release \
-              --target "${{ matrix.config.target }}" \
-              --package "$package"
-          done
 
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
     if: always()
-    needs:
-      - armhf
-      - automation-tests
-      - msrv
-      - cache-preflight
-      - pre-tests
-      - testing
-      - consumer-profiles
-      - build-validation
+    needs: [armhf, automation-tests, msrv, validation]
     steps:
       - name: Require executed ARMhf coverage
         if: needs.armhf.result != 'success'

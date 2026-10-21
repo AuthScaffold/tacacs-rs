@@ -16,6 +16,9 @@ python .github/steps/inject-versions/hydrate_versions.py \
 ```
 
 The composite action installs this same requirements file before hydration.
+The `require-hydrated` input rejects any manifest or lockfile change to an already hydrated release candidate.
+Platform, ARMhf, minimum-version, and automation checks hydrate before validation.
+Unit tests use `--locked` so Cargo cannot repair an inconsistent prepared lockfile.
 The delivery tests install it before they import the hydrator.
 The development image carries the same version.
 A contract test compares these environments against the canonical pin.

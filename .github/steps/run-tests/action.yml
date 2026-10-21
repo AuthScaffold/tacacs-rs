@@ -38,7 +38,7 @@ runs:
           RELEASE_FLAG="--release"
         fi
 
-        cargo test \
+        cargo test --locked \
           ${{ inputs.package-args }} \
           --target "${{ inputs.target }}" \
           ${{ inputs.feature-args }} \

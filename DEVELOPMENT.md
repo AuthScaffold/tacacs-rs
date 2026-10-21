@@ -378,15 +378,18 @@ After you generate the code, run the workspace formatting, clippy, build, and te
 
 ### Pull Request Workflow
 
-When you open or update a pull request targeting `main`, these jobs run:
+When you open or update a pull request targeting `main`, Linux and Windows each run one platform validation job.
+Each job hydrates versions before linting, documentation checks, and tests.
+The jobs also own their toolchain caches and Cargo metadata reports.
+ARMhf, minimum-Rust, and delivery-automation checks remain separate jobs.
 
-| Job | Description |
+| Check | Description |
 |-----|-------------|
 | **Rustfmt** | Rust formatting validation |
 | **Clippy** | Linting and static analysis |
 | **Test** | Run the workspace on Linux and the `tacon` package group on Windows |
-| **Build** | Builds all targets |
-| **Build Validation** | Build each Linux selection and Windows `tacon` independently with default features in release mode |
+| **Default Features** | Type-check each Linux selection and Windows `tacon` independently with `cargo check` |
+| **Dependency Isolation** | Test protocol/secrets, the direct client toolkit, and IPC as separate Cargo selections in the Linux job |
 | **ARMhf** | Build and execute tests with QEMU, then validate ABI and startup behavior |
 | **Documentation** | Builds documentation without warnings |
 | **Coverage** | Generate and upload code coverage |
@@ -395,6 +398,12 @@ When you open or update a pull request targeting `main`, these jobs run:
 | **Fuzz Smoke** | Blocking libFuzzer smoke tests for the protocol parsers (Linux, nightly) |
 
 All jobs must pass before you merge the pull request.
+
+Unit and integration tests compile their required binaries.
+There is no separate product-build job.
+Default-feature checks retain configuration coverage without another binary build.
+Dependency-isolation tests prevent workspace feature unification from hiding missing requirements.
+Architecture guards enforce the dependency boundaries.
 
 PRs validate source without publishing release assets.
 CI reports are diagnostic outputs, not installation packages.
@@ -410,7 +419,7 @@ There is no product-image publishing or release archive assembly.
 
 For nonrelease changes, add a `norelease`, `no-release`, or `skip-release` label to the pull request. You can also add `[norelease]`, `[no-release]`, or `[skip-release]` to the head commit.
 
-Main branch CI still computes versions and rehearses hydration in build-validation worktrees.
+Main branch CI still computes versions and tests the hydrated validation worktrees.
 It does not create a remote candidate, advance `release`, create tags, or publish a GitHub Release.
 
 ### Release Workflow

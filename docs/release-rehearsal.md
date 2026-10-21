@@ -79,7 +79,7 @@ The reusable pipeline retains:
 - AMD64 Linux builds and executed tests.
 - ARMhf builds, executed QEMU tests, ABI validation, and startup checks.
 - Windows direct-mode builds and tests.
-- The minimum Rust version and isolated consumer profiles.
+- The minimum Rust version and isolated crate selections.
 - Formatting, Clippy, documentation, coverage, and architecture guards.
 - Dependency audit, unused/outdated dependency checks, and automation tests.
 - Protobuf compatibility, pinned YANG validation, Miri, and fuzz smoke tests.
@@ -89,6 +89,20 @@ Required jobs cannot fail, cancel, or unexpectedly skip.
 CI diagnostic artifacts remain separate from release downloads.
 Local product-container recipes and development containers remain available.
 
+Linux and Windows each use one platform validation job.
+Hydration precedes linting, documentation, default-feature checks, and tests in that same checkout.
+The jobs own their metadata reports and toolchain caches.
+There is no separate cache-warming, consumer-profile, or product-build job.
+
+Unit and integration tests compile their required binaries.
+Independent `cargo check` commands retain default-feature coverage without another full product build.
+Linux also tests protocol/secrets, the direct client toolkit, and IPC through separate Cargo commands.
+These selections prevent workspace feature unification from hiding dependency or feature requirements.
+Architecture validation continues to enforce the dependency boundaries.
+ARMhf, minimum-version, and automation checks also hydrate before validation.
+An already hydrated candidate must remain unchanged by the hydration action.
+Unit tests use `--locked` to reject an inconsistent prepared lockfile.
+
 ## Nonpublishing paths
 
 PRs compute prerelease versions for their local build validation.
@@ -97,7 +111,7 @@ A push without a version change does not force a release.
 
 To suppress publication, use a `[norelease]`, `[no-release]`, or `[skip-release]` head-commit marker.
 Matching pull request labels also suppress publication.
-CI still computes versions and rehearses hydration in the build-validation worktrees.
+CI still computes versions and tests the hydrated validation worktrees.
 It does not create a remote candidate, move `release`, create tags, or create a GitHub Release.
 
 ## Manual signed rehearsal

@@ -9,6 +9,10 @@ inputs:
       An empty object or '{}' causes no changes.
     required: false
     default: '{}'
+  require-hydrated:
+    description: 'Fail if hydration changes the checked-out commit'
+    required: false
+    default: 'false'
 
 runs:
   using: composite
@@ -23,3 +27,8 @@ runs:
         python "${{ github.action_path }}/hydrate_versions.py" \
           --workspace "${{ github.workspace }}" \
           --versions '${{ inputs.versions }}'
+
+    - name: Require an already hydrated release candidate
+      if: inputs.require-hydrated == 'true'
+      shell: bash
+      run: git diff --exit-code -- Cargo.lock ':(glob)**/Cargo.toml'
