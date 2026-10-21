@@ -1,8 +1,7 @@
 name: Run Tests
 description: >
-  Enforce the production dependency architecture and run workspace tests for a
-  target platform. The architecture check replaces the inline cargo-tree guards
-  that used to live in this action.
+  Enforce the production dependency architecture and run unit, integration, and
+  doc tests for the selected packages on a target platform.
 
 inputs:
   package-args:
@@ -30,7 +29,7 @@ runs:
         target: ${{ inputs.target }}
         all-features: 'true'
 
-    - name: Run unit tests
+    - name: Run unit, integration, and doc tests
       shell: bash
       run: |
         RELEASE_FLAG=""

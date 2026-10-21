@@ -3,6 +3,7 @@
 from pathlib import Path
 import json
 import os
+import shlex
 import subprocess
 
 import pytest
@@ -10,6 +11,18 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[3]
+WINDOWS_EXCLUDED_PACKAGES = (
+    "session-wrapper",
+    "tacacsrs-agent",
+    "tacacsrs-agent-health",
+    "tacacsrs-agent-ipc-emulator",
+    "tacacsrs-agent-ipc-emulatord",
+    "tacacsrs-agentd",
+    "tacacsrs-bash-plugin",
+    "tacacsrs-ipc",
+    "tacacsrs-sonic",
+    "tacacsrs-unix-socket",
+)
 
 
 def workflow(name):
@@ -139,10 +152,9 @@ def test_platform_checks_share_one_hydrated_validation_job():
         ("windows-latest", "x86_64-pc-windows-msvc", "tacon"),
     ]
     assert configs[0]["package_args"] == "--workspace"
-    assert configs[1]["package_args"] == (
-        "--package tacon --package tacacsrs-config --package tacacsrs-protocol "
-        "--package tacacsrs-networking --package tacacsrs-secrets"
-    )
+    assert shlex.split(configs[1]["package_args"]) == [
+        "--workspace", *(arg for name in WINDOWS_EXCLUDED_PACKAGES for arg in ("--exclude", name)),
+    ]
     steps = validation["steps"]
     uses = [step.get("uses", "") for step in steps]
     hydrate = uses.index("./.github/steps/inject-versions")
@@ -164,11 +176,12 @@ def test_platform_checks_share_one_hydrated_validation_job():
     assert "cargo build" not in "\n".join(step.get("run", "") for step in steps)
 
 
-def test_linux_test_runner_selects_the_complete_workspace(tmp_path):
+@pytest.mark.parametrize("runner", ["ubuntu-latest", "windows-latest"])
+def test_platform_test_runner_selects_the_workspace_with_only_platform_exclusions(tmp_path, runner):
     data = workflow("reusable-pipeline.yml")
     validation = data["jobs"]["validation"]
     config = next(config for config in validation["strategy"]["matrix"]["config"]
-                  if config["os"] == "ubuntu-latest")
+                  if config["os"] == runner)
     tests = next(step for step in validation["steps"]
                  if step.get("uses") == "./.github/steps/run-tests")
     inputs = dict(tests["with"])
@@ -177,7 +190,8 @@ def test_linux_test_runner_selects_the_complete_workspace(tmp_path):
     inputs["build-release"] = str(data["on"]["workflow_call"]["inputs"]["build-release"]["default"]).lower()
     action = yaml.load((ROOT / ".github/steps/run-tests/action.yml").read_text(), Loader=yaml.BaseLoader)
     assert action["runs"]["steps"][0]["uses"] == "./.github/steps/check-architecture"
-    script = next(step["run"] for step in action["runs"]["steps"] if step.get("name") == "Run unit tests")
+    script = next(step["run"] for step in action["runs"]["steps"]
+                  if step.get("name") == "Run unit, integration, and doc tests")
     for name, value in inputs.items():
         script = script.replace("${{ inputs." + name + " }}", value)
     executable = tmp_path / "cargo"
@@ -186,10 +200,46 @@ def test_linux_test_runner_selects_the_complete_workspace(tmp_path):
     output = tmp_path / "arguments"
     env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "TEST_ARGUMENTS": str(output)}
     subprocess.run(["bash", "-e", "-c", script], env=env, check=True, capture_output=True)
+    exclusions = WINDOWS_EXCLUDED_PACKAGES if runner == "windows-latest" else ()
+    target = "x86_64-pc-windows-msvc" if runner == "windows-latest" else "x86_64-unknown-linux-gnu"
     assert output.read_text().splitlines() == [
-        "test", "--locked", "--workspace", "--target", "x86_64-unknown-linux-gnu",
+        "test", "--locked", "--workspace",
+        *(arg for name in exclusions for arg in ("--exclude", name)),
+        "--target", target,
         "--all-features", "--release",
     ]
+
+
+def test_platform_selections_cover_expected_workspace_members():
+    metadata = subprocess.run(
+        ["cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"],
+        cwd=ROOT, check=True, capture_output=True, text=True,
+    )
+    metadata = json.loads(metadata.stdout)
+    members = {
+        package["name"] for package in metadata["packages"]
+        if package["id"] in metadata["workspace_members"]
+    }
+    configs = workflow("reusable-pipeline.yml")["jobs"]["validation"]["strategy"]["matrix"]["config"]
+    selected = {}
+    for config in configs:
+        args = shlex.split(config["package_args"])
+        assert args[0] == "--workspace"
+        assert all(args[index] == "--exclude" for index in range(1, len(args), 2))
+        excluded = set(args[2::2])
+        assert excluded <= members
+        selected[config["os"]] = members - excluded
+    assert selected["ubuntu-latest"] == members
+    assert selected["windows-latest"] == {
+        "tacon",
+        "tacacsrs-config",
+        "tacacsrs-credential-http",
+        "tacacsrs-credential-resolution",
+        "tacacsrs-networking",
+        "tacacsrs-protocol",
+        "tacacsrs-secrets",
+    }
+    assert selected["ubuntu-latest"] - selected["windows-latest"] == set(WINDOWS_EXCLUDED_PACKAGES)
 
 
 def test_workflow_callers_use_only_supported_inputs():

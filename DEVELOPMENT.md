@@ -387,7 +387,7 @@ ARMhf, minimum-Rust, and delivery-automation checks remain separate jobs.
 |-----|-------------|
 | **Rustfmt** | Rust formatting validation |
 | **Clippy** | Linting and static analysis |
-| **Test** | Run unit, integration, and documentation tests for the complete workspace on Linux and the supported `tacon` package group on Windows |
+| **Test** | Run unit, integration, and documentation tests for the complete workspace, with Linux-only packages excluded on Windows |
 | **Default Features** | Type-check each Linux selection and Windows `tacon` independently with `cargo check` |
 | **ARMhf** | Build and execute tests with QEMU, then validate ABI and startup behavior |
 | **Documentation** | Builds documentation without warnings |
@@ -403,6 +403,16 @@ There is no separate product-build job.
 Default-feature checks retain configuration coverage without another binary build.
 Linux uses `cargo test --locked --workspace --all-features --release`.
 This command includes experimental workspace members, not only the supported-core default members.
+Windows also selects `--workspace`, but excludes the Linux-only packages:
+
+- `session-wrapper`.
+- `tacacsrs-agent`, `tacacsrs-agentd`, and `tacacsrs-agent-health`.
+- `tacacsrs-agent-ipc-emulator` and `tacacsrs-agent-ipc-emulatord`.
+- `tacacsrs-bash-plugin`, `tacacsrs-ipc`, `tacacsrs-sonic`, and `tacacsrs-unix-socket`.
+
+The Windows selection includes `tacon` and all six portable libraries.
+This includes the credential-resolution and HTTP credential libraries, whose tests were absent from the previous explicit package selection.
+Linting, documentation, unused-dependency checks, and tests use the same platform selection.
 There is no separate job that repeats the tests for individual crate groups.
 Architecture guards enforce the dependency boundaries.
 

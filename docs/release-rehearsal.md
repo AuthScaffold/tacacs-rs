@@ -78,7 +78,7 @@ The reusable pipeline retains:
 
 - AMD64 Linux builds and executed tests.
 - ARMhf builds, executed QEMU tests, ABI validation, and startup checks.
-- Windows direct-mode builds and tests.
+- Windows direct-mode and portable-library tests.
 - The minimum Rust version and default-feature compilation checks.
 - Formatting, Clippy, documentation, coverage, and architecture guards.
 - Dependency audit, unused/outdated dependency checks, and automation tests.
@@ -98,6 +98,9 @@ Unit and integration tests compile their required binaries.
 Independent `cargo check` commands retain default-feature coverage without another full product build.
 The Linux test step selects the complete workspace with all features, including experimental members.
 It runs unit, integration, and documentation tests.
+Windows also selects the workspace, but excludes the ten Linux-only packages.
+It tests `tacon`, configuration, credential resolution, HTTP credentials, networking, protocol, and secrets.
+The platform selection also applies to linting, documentation, and unused-dependency checks.
 There is no separate job that repeats these tests for individual crate groups.
 Architecture validation continues to enforce the dependency boundaries.
 ARMhf, minimum-version, and automation checks also hydrate before validation.

@@ -81,7 +81,8 @@ def test_actual_test_runner_uses_hydrated_versions(tmp_path, build_release, drif
         lock.write_text(lock.read_text().replace('version = "0.1.0"', 'version = "0.2.0"'))
     expected_lock = lock.read_bytes()
     action = yaml.safe_load((ROOT / ".github/steps/run-tests/action.yml").read_text())
-    script = next(step["run"] for step in action["runs"]["steps"] if step.get("name") == "Run unit tests")
+    script = next(step["run"] for step in action["runs"]["steps"]
+                  if step.get("name") == "Run unit, integration, and doc tests")
     assert "cargo test --locked" in script
     host = subprocess.run(["rustc", "-vV"], env=env, check=True, capture_output=True, text=True).stdout
     host = next(line.removeprefix("host: ") for line in host.splitlines() if line.startswith("host: "))
