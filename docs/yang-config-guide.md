@@ -121,21 +121,25 @@ For mandatory isolation, select `strict`.
   Connection refusal, connection reset, and generic timeouts do not permit fallback.
   DNS errors, host-guard errors, TLS errors, and authentication errors do not permit fallback.
 
-For a physical egress device, the real TCP socket makes the authoritative per-device routing decision.
-`SO_BINDTODEVICE` enforces that device. An explicit VRF must match its verified VRF membership.
-The kernel selects an automatic source using the actual TCP protocol and reserved source port.
-This also handles nonpreferred routes and ECMP without a userspace guess about the selected hop.
-For VRF members, a separate master-device query checks the table with that source and TCP port.
-This query checks the VRF table, not the physical output interface.
-IPv6 source-bearing route-netlink queries do not model the strict-device flag of a real bound socket.
-The client therefore does not use those replies to reject or relax physical egress.
+The client applies `SO_BINDTODEVICE` and checks physical egress through a source-free TCP route query.
+Before Linux 5.18, a VRF-member socket binding alone does not enforce physical egress.
+Linux commit [`40867d74c374`](https://github.com/torvalds/linux/commit/40867d74c374) preserves the original member during route selection.
+The query must identify the requested member, or every live multipath hop must use that member.
+Mixed-device multipath without a resolved output fails without fallback.
+IPv6 source-bearing queries do not model strict physical-device selection, so they do not determine egress.
+This separation preserves valid nonpreferred IPv6 routes.
 
-For a VRF-master-only binding, the client still checks the selected routing table before TCP connect.
-It obtains and pins an automatic source, then checks the concrete source and reserved TCP port.
-This prevents a later source-based policy lookup from escaping the verified VRF path.
+For automatic selection, a short-lived local socket reserves the TCP port before the source lookup.
+The connection socket then binds that source and port before the reservation closes.
+It then checks the VRF table with that concrete source, TCP protocol, destination port, and reserved source port.
+Both queries use the actual socket device, not a substituted VRF master.
+Thus, source-plus-member policy rules cannot escape the selected VRF table.
+The preliminary automatic-source query also uses the reserved port, including for VRF-master-only bindings.
 This check prevents main-table fall-through even when the VRF has no unreachable default.
 The application does not require the operator to install an unreachable default.
+
 An inconclusive route query never permits route-based fallback.
+Device type and VRF membership errors remain invalid configuration, even when a device is down.
 Without a routing constraint, an unavailable route-inspection capability retains the enforced source binding and emits a warning.
 Unknown or truncated `TCP_INFO` evidence also retains the requested constraints.
 No UDP probe stands in for TCP routing. Protocol-specific and port-specific rules apply to the real TCP socket.
@@ -172,7 +176,7 @@ The lab requires Python 3, `iproute2`, `nft`, `unshare`, `setpriv`, and permissi
 The lab captures peer-side SYN packets to verify actual source addresses and egress for IPv4 and IPv6.
 It also covers membership, source changes, local-route fallback, missing devices, and connection refusal.
 Regression cases cover VRFs without unreachable defaults, independent egress failures, remote ICMP errors, and deadline expiry.
-They also cover source-policy rerouting, UP unused VRF members, IPv6 output mismatches, and ordinary local-address paths.
+They also cover source-plus-member policy rerouting, UP unused VRF members, IPv6 output mismatches, and ordinary local-address paths.
 Metric and prefix cases compare all three source choices and both policies against independent bound Rust TCP controls.
 TCP-only route rules also disagree deliberately with no-send UDP probes.
 The peer uses nftables to generate remote ICMP errors while the client retains a valid local route.
@@ -180,9 +184,11 @@ The lab repeats read-only connection cases without effective capabilities.
 It does not change host interfaces or routes.
 
 Validation ran on Linux 6.18.33 under WSL2. SONiC 5.10 was not tested.
-VRF-master validation requires selected-source and table metadata, plus TCP protocol and port lookup support.
+VRF validation requires selected-source and table metadata, plus TCP protocol and port lookup support.
 Local routing-error classification requires the Linux `TCP_INFO.tcpi_segs_out` field and its complete ABI prefix.
 That counter exists in Linux 5.10, but the implementation checks the returned length instead of assuming a kernel version.
+QEMU 7.2 linux-user treats `SOL_TCP` replies as four-byte integers and truncates `TCP_INFO`.
+The socket regression reports this unsupported result explicitly and still exercises socket ownership transfer.
 Unsupported or inconclusive evidence does not authorize fallback.
 
 ## Parsing API

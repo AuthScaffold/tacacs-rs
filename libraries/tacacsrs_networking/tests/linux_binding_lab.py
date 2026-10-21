@@ -95,7 +95,10 @@ table inet tacacs_binding_lab {
 
     threading.Thread(target=capture_syn, daemon=True).start()
     listeners = []
-    for family, host in [(socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")]:
+    for family, host in [
+        (socket.AF_INET, "198.51.100.49"),
+        (socket.AF_INET6, "2001:db8:ffff::49"),
+    ]:
         for port in (49490, 49491, 49492, 49493):
             listener = socket.socket(family, socket.SOCK_STREAM)
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

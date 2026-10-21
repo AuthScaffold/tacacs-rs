@@ -298,6 +298,32 @@ async fn namespace_client() {
     if std::env::var_os("TACACSRS_BINDING_LAB_READONLY").is_some() {
         return;
     }
+    for policy in [BindingPolicy::Strict, BindingPolicy::BestEffort] {
+        let invalid = LocalBinding::new(None, None, Some("down0"), policy).unwrap();
+        let error = receive("198.51.100.49:49490".parse().unwrap(), &invalid)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not a VRF"), "{error:#}");
+        assert!(error.downcast_ref::<Unavailable>().is_none());
+    }
+    ip(&["link", "set", "down0", "nomaster"]);
+    for policy in [BindingPolicy::Strict, BindingPolicy::BestEffort] {
+        for (source, egress) in [
+            (None, Some("down0")),
+            (Some(SourceBinding::Interface("down0".to_owned())), None),
+        ] {
+            let invalid = LocalBinding::new(source, egress, Some("mgmt-vrf"), policy).unwrap();
+            let warnings = warning_count();
+            let error = receive("198.51.100.49:49490".parse().unwrap(), &invalid)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("does not belong"), "{error:#}");
+            assert!(error.downcast_ref::<Unavailable>().is_none());
+            assert_eq!(warning_count(), warnings);
+        }
+    }
+    ip(&["link", "set", "down0", "master", "mgmt-vrf"]);
+    println!("PASS: down devices retain structural errors under both binding policies");
     pinned::run().await;
 
     // The usable VRF must survive an independent missing or down egress request.

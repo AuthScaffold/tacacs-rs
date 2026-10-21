@@ -27,6 +27,33 @@ pub(super) async fn run() {
         ("-6", "[2001:db8:ffff::49]:49490", "2001:db8:1::1", "2001:db8:1::1/128", "2001:db8:2::1"),
     ] {
         let destination: SocketAddr = destination.parse().unwrap();
+        // Only the real ephemeral TCP source port permits this VRF lookup.
+        ip(&[
+            family, "rule", "add", "priority", "100", "oif", "mgmt-vrf", "ipproto", "tcp", "sport",
+            &ports, "dport", "49490", "lookup", "100",
+        ]);
+        ip(&[
+            family,
+            "rule",
+            "add",
+            "priority",
+            "101",
+            "oif",
+            "mgmt-vrf",
+            "unreachable",
+        ]);
+        let warnings = warning_count();
+        for policy in [BindingPolicy::Strict, BindingPolicy::BestEffort] {
+            let binding = LocalBinding::new(None, None, Some("mgmt-vrf"), policy).unwrap();
+            assert_eq!(
+                receive(destination, &binding).await.unwrap(),
+                format!("{source} mgmt-peer\n"),
+            );
+        }
+        assert_eq!(warning_count(), warnings);
+        ip(&[family, "rule", "del", "priority", "101"]);
+        ip(&[family, "rule", "del", "priority", "100"]);
+        println!("PASS {family}: VRF automatic source selection retains the reserved TCP port");
         // The source-free query sees table 100. TCP must not choose this source
         // later and silently use the higher-priority source rule for main.
         ip(&[
@@ -60,8 +87,17 @@ pub(super) async fn run() {
                     BindingPolicy::Strict,
                 )
                 .unwrap();
-                let error = receive(destination, &binding).await.unwrap_err();
-                assert!(error.downcast_ref::<Unavailable>().is_some(), "{error:#}");
+                match receive(destination, &binding).await {
+                    Ok(observation) => {
+                        // A strict member lookup can exclude main's different
+                        // output device and retain the management route.
+                        assert_eq!(egress, Some("mgmt0"));
+                        assert_eq!(observation, format!("{source} mgmt-peer\n"));
+                    }
+                    Err(error) => {
+                        assert!(error.downcast_ref::<Unavailable>().is_some(), "{error:#}");
+                    }
+                }
             }
         }
         assert_eq!(warning_count(), warnings);
@@ -76,6 +112,62 @@ pub(super) async fn run() {
         println!(
             "PASS {family}: all source choices and TCP tuple rules retain VRF table isolation"
         );
+
+        // Match the actual socket member, not the VRF master. The main route
+        // uses the same member but a different gateway, so egress alone is not proof.
+        let gateway = if family == "-4" {
+            "192.0.2.2"
+        } else {
+            "2001:db8:1::2"
+        };
+        let prefix = if family == "-4" {
+            "198.51.100.49/32"
+        } else {
+            "2001:db8:ffff::49/128"
+        };
+        ip(&[
+            family, "route", "add", prefix, "via", gateway, "dev", "mgmt0", "metric", "5",
+        ]);
+        ip(&[
+            family,
+            "rule",
+            "add",
+            "priority",
+            "100",
+            "from",
+            source_prefix,
+            "oif",
+            "mgmt0",
+            "ipproto",
+            "tcp",
+            "sport",
+            &ports,
+            "dport",
+            "49490",
+            "lookup",
+            "main",
+        ]);
+        let warnings = warning_count();
+        for choice in [
+            None,
+            Some(SourceBinding::Ip(source.parse().unwrap())),
+            Some(SourceBinding::Interface("mgmt0".to_owned())),
+        ] {
+            for vrf in [None, Some("mgmt-vrf")] {
+                let binding =
+                    LocalBinding::new(choice.clone(), Some("mgmt0"), vrf, BindingPolicy::Strict)
+                        .unwrap();
+                let error = receive(destination, &binding).await.unwrap_err();
+                assert!(error.downcast_ref::<Unavailable>().is_some(), "{error:#}");
+                assert!(error.to_string().contains("fell through"), "{error:#}");
+            }
+        }
+        assert_eq!(warning_count(), warnings);
+        ip(&[family, "rule", "del", "priority", "100"]);
+        ip(&[
+            family, "route", "del", prefix, "dev", "mgmt0", "metric", "5",
+        ]);
+        println!("PASS {family}: actual-member source and TCP tuple rules cannot escape the VRF");
 
         for main_present in [true, false] {
             if !main_present {
@@ -181,11 +273,12 @@ pub(super) async fn run() {
             main_backend_routes("-6", false);
         }
         for source in [
-            SourceBinding::Ip("2001:db8:1::1".parse().unwrap()),
-            SourceBinding::Interface("mgmt0".to_owned()),
+            None,
+            Some(SourceBinding::Ip("2001:db8:1::1".parse().unwrap())),
+            Some(SourceBinding::Interface("mgmt0".to_owned())),
         ] {
             let binding = LocalBinding::new(
-                Some(source.clone()),
+                source.clone(),
                 Some("mgmt0"),
                 Some("mgmt-vrf"),
                 BindingPolicy::Strict,
@@ -197,14 +290,22 @@ pub(super) async fn run() {
                 .downcast_ref::<Unavailable>()
                 .is_some());
             let binding = LocalBinding::new(
-                Some(source),
+                source.clone(),
                 Some("mgmt0"),
                 Some("mgmt-vrf"),
                 BindingPolicy::BestEffort,
             )
             .unwrap();
             let warnings = warning_count();
-            assert_eq!(receive(destination, &binding).await.unwrap(), "2001:db8:1::1 vrf-peer\n");
+            let expected_source = if source.is_none() {
+                "2001:db8:6::1"
+            } else {
+                "2001:db8:1::1"
+            };
+            assert_eq!(
+                receive(destination, &binding).await.unwrap(),
+                format!("{expected_source} vrf-peer\n")
+            );
             assert_eq!(warning_count() - warnings, 1, "the VRF and compatible source must remain");
         }
         if !main_present {
@@ -224,7 +325,7 @@ pub(super) async fn run() {
         "mgmt0",
     ]);
     println!(
-        "PASS IPv6: wrong VRF member relaxed egress only and retained VRF and both source choices"
+        "PASS IPv6: wrong VRF member relaxed egress only and retained VRF for all source choices"
     );
     super::multipath::run().await;
 }

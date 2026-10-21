@@ -3,7 +3,7 @@
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 
-use anyhow::{ensure, Context};
+use anyhow::ensure;
 use futures_util::TryStreamExt;
 use rtnetlink::packet_route::address::{AddressAttribute, AddressFlags, AddressMessage};
 use rtnetlink::packet_route::link::{
@@ -75,6 +75,24 @@ async fn discover(
         }
         None => None,
     };
+    let source_link = match &binding.source {
+        Some(SourceBinding::Interface(name)) => {
+            let link = get_link(handle, name, Scope::Source).await?;
+            verify_membership(&link, vrf.as_ref())?;
+            Some(link)
+        }
+        _ => None,
+    };
+    // Invalid device types and memberships never permit fallback, even when down.
+    for (link, scope) in [
+        (vrf.as_ref(), Scope::Vrf),
+        (egress.as_ref(), Scope::Egress),
+        (source_link.as_ref(), Scope::Source),
+    ] {
+        if let Some(link) = link {
+            verify_available(link, scope)?;
+        }
+    }
     let implicit_vrf = if vrf.is_none() {
         match egress.as_ref() {
             Some(link) if is_vrf(link) => Some(link.clone()),
@@ -119,9 +137,10 @@ async fn discover(
     let vrf_table = effective_vrf.map(vrf_table).transpose()?;
     let source = match &binding.source {
         Some(SourceBinding::Ip(ip)) => Some(SocketAddr::new(*ip, 0)),
-        Some(SourceBinding::Interface(name)) => {
-            let link = get_link(handle, name, Scope::Source).await?;
-            verify_membership(&link, vrf.as_ref())?;
+        Some(SourceBinding::Interface(_)) => {
+            let link = source_link
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("source interface discovery is absent"))?;
             let addresses: Vec<_> = handle
                 .address()
                 .get()
@@ -142,8 +161,7 @@ async fn discover(
         }
         None => None,
     };
-    // SO_BINDTODEVICE stores one device. Bind the member interface, not its VRF,
-    // after membership checks. Linux then derives its associated VRF.
+    // SO_BINDTODEVICE stores one device. The policy queries use that same device.
     if let Some(device) = binding
         .egress_interface
         .as_deref()
@@ -163,77 +181,67 @@ async fn discover(
             })?;
     }
     let device = egress.as_ref().or(vrf.as_ref());
-    if device.is_some_and(|link| !is_vrf(link)) {
-        // The actual bound TCP socket performs the authoritative per-device
-        // lookup. IPv6 RTM_GETROUTE with a source does not model that lookup.
-        bind_source(socket, source, Scope::Source)?;
-        if source.is_none() {
-            let unspecified = if destination.is_ipv4() {
-                IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
-            } else {
-                IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED)
-            };
-            // Reserve the TCP port without replacing the kernel's source choice.
-            socket.bind(SocketAddr::new(unspecified, 0))?;
-        }
-        if let Some(vrf) = effective_vrf {
-            let table = vrf_table.context("VRF routing table metadata is unavailable")?;
-            let mut local = socket.local_addr()?;
-            if local.ip().is_unspecified() {
-                let selection = route::PolicyContext {
-                    vrf: Some(route::Vrf {
-                        index: device
-                            .context("egress device metadata is unavailable")?
-                            .header
-                            .index,
-                        table,
-                    }),
-                    source_scope: Scope::Source,
-                };
-                let port = local.port();
-                local = selection.select_source(handle, destination, port).await?;
-                local.set_port(port);
-            }
-            // Validate only the VRF table with the master device. The physical
-            // socket, not a source-bearing route query, enforces its egress.
-            let context = route::PolicyContext {
-                vrf: Some(route::Vrf {
-                    index: vrf.header.index,
-                    table,
-                }),
-                source_scope: Scope::Source,
-            };
-            context.verify(handle, destination, local).await?;
-        }
-        return Ok(());
-    }
     let context = route::PolicyContext {
-        vrf: device
-            .map(|link| {
-                Ok::<_, anyhow::Error>(route::Vrf {
-                    index: link.header.index,
-                    table: vrf_table.context("VRF routing table metadata is unavailable")?,
-                })
-            })
-            .transpose()?,
+        device: device.map(|link| link.header.index),
+        vrf_table,
         source_scope: if binding.source.is_some() {
             Scope::Source
         } else {
             Scope::Route
         },
     };
+    // Automatic selection needs the real TCP port before the source is known.
+    // A short-lived reusable bind reserves it until the concrete socket bind.
+    let reservation = if source.is_none() {
+        let reservation = if destination.is_ipv4() {
+            TcpSocket::new_v4()?
+        } else {
+            TcpSocket::new_v6()?
+        };
+        reservation.set_reuseaddr(true)?;
+        let unspecified = if destination.is_ipv4() {
+            IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
+        } else {
+            IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED)
+        };
+        reservation.bind(SocketAddr::new(unspecified, 0))?;
+        Some(reservation)
+    } else {
+        None
+    };
     let source = match source {
         Some(source) => source,
-        None => context.select_source(handle, destination, 0).await?,
+        None => {
+            let port = reservation
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("automatic source port reservation is absent"))?
+                .local_addr()?
+                .port();
+            let mut source = context.select_source(handle, destination, port).await?;
+            source.set_port(port);
+            socket.set_reuseaddr(true)?;
+            source
+        }
     };
     // A concrete bind prevents TCP from choosing a source and repeating policy
     // routing with inputs that differ from the verified flow.
     bind_source(socket, Some(source), context.source_scope)?;
+    if reservation.is_some() {
+        drop(reservation);
+        socket.set_reuseaddr(false)?;
+    }
     let local = socket.local_addr()?;
+    if let Some(member) = device.filter(|link| !is_vrf(link)) {
+        // Before Linux 5.18, a member binding can select another VRF member.
+        // A source-free query preserves IPv6's strict-device lookup semantics.
+        context
+            .verify_member(handle, destination, local.port(), member.header.index)
+            .await?;
+    }
     match context.verify(handle, destination, local).await {
         Ok(()) => Ok(()),
         Err(error) if error.downcast_ref::<super::Unavailable>().is_some() => Err(error),
-        Err(error) if context.vrf.is_none() => {
+        Err(error) if context.device.is_none() => {
             // The source binding remains enforceable without a route query.
             // An inconclusive query never permits route-based fallback.
             log::warn!("Local route inspection failed. Retaining the source binding without route fallback: {error}");
@@ -301,7 +309,7 @@ async fn get_link(
     name: &str,
     scope: Scope,
 ) -> anyhow::Result<LinkMessage> {
-    let link = handle
+    handle
         .link()
         .get()
         .match_name(name.to_owned())
@@ -314,14 +322,17 @@ async fn get_link(
                 scope,
                 io::Error::new(io::ErrorKind::NotFound, "local device does not exist"),
             )
-        })?;
+        })
+}
+
+fn verify_available(link: &LinkMessage, scope: Scope) -> anyhow::Result<()> {
     if !link.header.flags.contains(LinkFlags::Up) {
         return Err(unavailable(
             scope,
             io::Error::new(io::ErrorKind::NetworkDown, "local device is down"),
         ));
     }
-    Ok(link)
+    Ok(())
 }
 
 fn netlink_error(error: rtnetlink::Error) -> anyhow::Error {
