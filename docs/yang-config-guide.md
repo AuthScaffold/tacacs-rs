@@ -121,18 +121,19 @@ For mandatory isolation, select `strict`.
   Connection refusal, connection reset, and generic timeouts do not permit fallback.
   DNS errors, host-guard errors, TLS errors, and authentication errors do not permit fallback.
 
-The client applies `SO_BINDTODEVICE` and checks physical egress through a source-free TCP route query.
+The client applies `SO_BINDTODEVICE` and checks physical egress through source-free full-route and resolved TCP queries.
 Before Linux 5.18, a VRF-member socket binding alone does not enforce physical egress.
 Linux commit [`40867d74c374`](https://github.com/torvalds/linux/commit/40867d74c374) preserves the original member during route selection.
-The query must identify the requested member, or every live multipath hop must use that member.
-Mixed-device multipath without a resolved output fails without fallback.
+The full-route query uses `RTM_F_FIB_MATCH`. Every live multipath hop must use the requested member before the resolved output can pass.
+Mixed-device multipath fails without fallback, even when the resolved query selects the requested member.
+Nexthop-ID routes and incomplete full-route replies fail without fallback because they do not prove physical egress.
 IPv6 source-bearing queries do not model strict physical-device selection, so they do not determine egress.
 This separation preserves valid nonpreferred IPv6 routes.
 
 For automatic selection, a short-lived local socket reserves the TCP port before the source lookup.
 The connection socket then binds that source and port before the reservation closes.
 It then checks the VRF table with that concrete source, TCP protocol, destination port, and reserved source port.
-Both queries use the actual socket device, not a substituted VRF master.
+All queries use the actual socket device, not a substituted VRF master.
 Thus, source-plus-member policy rules cannot escape the selected VRF table.
 The preliminary automatic-source query also uses the reserved port, including for VRF-master-only bindings.
 This check prevents main-table fall-through even when the VRF has no unreachable default.

@@ -1,7 +1,7 @@
 //! Separate policy-table and physical-device checks for bound TCP sockets.
 //!
 //! The source-bearing query uses the socket's device and TCP tuple to check
-//! policy rules. A source-free query checks physical egress independently.
+//! policy rules. Source-free full-route and resolved queries check physical egress.
 //! IPv6 source-bearing queries do not model strict physical-device selection.
 
 use std::io;
@@ -16,7 +16,7 @@ use rtnetlink::packet_route::route::{
 
 use crate::binding::{unavailable, Scope};
 
-// IANA IP protocol number for TCP. Both lookups must use TCP policy rules.
+// IANA IP protocol number for TCP. All lookups must use TCP policy rules.
 const IPPROTO_TCP: u8 = 6;
 
 /// Policy inputs from the actual socket binding.
@@ -34,9 +34,15 @@ impl PolicyContext {
         local_port: u16,
         member: u32,
     ) -> anyhow::Result<()> {
-        let route = self
-            .lookup(handle, destination, unspecified_source(destination, local_port))
+        let local = unspecified_source(destination, local_port);
+        // Older kernels can ignore the member constraint during ECMP selection.
+        // A source-free hash can then differ from the pinned TCP source hash.
+        let full_route = self
+            .lookup_with_flags(handle, destination, local, RouteFlags::FibMatch)
             .await?;
+        self.verify_table_and_type(&full_route)?;
+        verify_full_egress(&full_route, member)?;
+        let route = self.lookup(handle, destination, local).await?;
         self.verify_table_and_type(&route)?;
         verify_egress(&route, member)
     }
@@ -104,6 +110,17 @@ impl PolicyContext {
         destination: SocketAddr,
         local: SocketAddr,
     ) -> anyhow::Result<RouteMessage> {
+        self.lookup_with_flags(handle, destination, local, RouteFlags::empty())
+            .await
+    }
+
+    async fn lookup_with_flags(
+        &self,
+        handle: &rtnetlink::Handle,
+        destination: SocketAddr,
+        local: SocketAddr,
+        flags: RouteFlags,
+    ) -> anyhow::Result<RouteMessage> {
         let mut message = RouteMessage::default();
         message.header.address_family = if destination.is_ipv4() {
             AddressFamily::Inet
@@ -115,7 +132,7 @@ impl PolicyContext {
         } else {
             128
         };
-        message.header.flags = RouteFlags::LookupTable;
+        message.header.flags = RouteFlags::LookupTable | flags;
         message
             .attributes
             .push(RouteAttribute::Destination(destination.ip().into()));
@@ -205,6 +222,21 @@ fn unspecified_source(destination: SocketAddr, port: u16) -> SocketAddr {
     SocketAddr::new(ip, port)
 }
 
+fn verify_full_egress(route: &RouteMessage, expected: u32) -> anyhow::Result<()> {
+    ensure!(
+        !route.header.flags.contains(RouteFlags::Cloned),
+        "FIB-match lookup returned a resolved route instead of a full route"
+    );
+    ensure!(
+        !route
+            .attributes
+            .iter()
+            .any(|attribute| matches!(attribute, RouteAttribute::NhId(_))),
+        "nexthop-ID route cannot prove the selected TCP egress"
+    );
+    verify_egress(route, expected)
+}
+
 fn verify_egress(route: &RouteMessage, expected: u32) -> anyhow::Result<()> {
     // Local delivery has no physical output interface.
     if route.header.kind == RouteType::Local {
@@ -265,6 +297,38 @@ mod tests {
     use rtnetlink::packet_route::route::RouteNextHop;
 
     use super::*;
+
+    #[test]
+    fn older_kernel_resolved_ecmp_hop_does_not_prove_full_egress() {
+        let mut resolved = RouteMessage::default();
+        resolved.header.kind = RouteType::Unicast;
+        resolved.header.flags = RouteFlags::Cloned;
+        resolved.attributes.push(RouteAttribute::Oif(7));
+        verify_egress(&resolved, 7).unwrap();
+        assert!(verify_full_egress(&resolved, 7).is_err());
+
+        let mut full = RouteMessage::default();
+        full.header.kind = RouteType::Unicast;
+        let mut member = RouteNextHop::default();
+        member.interface_index = 7;
+        let mut other = member.clone();
+        other.interface_index = 8;
+        full.attributes
+            .push(RouteAttribute::MultiPath(vec![member.clone(), other]));
+        assert!(verify_full_egress(&full, 7)
+            .unwrap_err()
+            .to_string()
+            .contains("mixed-device multipath"));
+        full.attributes = vec![RouteAttribute::MultiPath(vec![member])];
+        verify_full_egress(&full, 7).unwrap();
+        full.attributes = vec![RouteAttribute::Oif(7), RouteAttribute::NhId(42)];
+        assert!(verify_full_egress(&full, 7)
+            .unwrap_err()
+            .to_string()
+            .contains("nexthop-ID"));
+        full.attributes.clear();
+        assert!(verify_full_egress(&full, 7).is_err());
+    }
 
     #[test]
     fn older_kernel_member_rewrite_cannot_approve_another_member() {
