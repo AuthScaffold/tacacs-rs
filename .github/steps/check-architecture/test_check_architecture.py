@@ -24,17 +24,9 @@ from check_architecture import (
     validate_forbidden_guards,
     validate_rules_coverage,
     validate_workspace_edges,
-    verify_product_matrix,
 )
 
 RULES_PATH = Path(__file__).resolve().parent / "rules.json"
-
-
-def test_example_target_cannot_satisfy_a_binary_product():
-    metadata = build_metadata({"demo": []}, default_members=["demo"], targets={
-        "demo": [{"name": "demo", "kind": ["example"], "crate_types": ["bin"]}],
-    })
-    assert verify_product_matrix([{"package_name": "demo", "artifact_name": "demo", "artifact_kind": "bin"}], metadata)
 
 
 def test_unknown_resolved_dependency_kind_is_rejected():
@@ -371,93 +363,6 @@ def test_renamed_forbidden_dependency_is_still_detected(golden_edges, rules):
         build_metadata(edges, default_members=CORE_DEFAULT_MEMBERS), rules
     )
     assert any("[pure-protocol]" in error and "tokio" in error for error in errors)
-
-
-# ---------------------------------------------------------------------------
-# Product matrix verification
-# ---------------------------------------------------------------------------
-
-REAL_PRODUCTS = [
-    {"package_name": "tacon", "artifact_name": "tacon", "artifact_kind": "bin"},
-    {
-        "package_name": "tacacsrs-agentd",
-        "artifact_name": "tacacsrs-agentd",
-        "artifact_kind": "bin",
-    },
-    {
-        "package_name": "tacacsrs-agent-health",
-        "artifact_name": "tacacsrs-agent-health",
-        "artifact_kind": "bin",
-    },
-    {
-        "package_name": "tacacsrs-bash-plugin",
-        "artifact_name": "tacacsrs_bash_plugin",
-        "artifact_kind": "cdylib",
-    },
-]
-
-
-def _product_targets():
-    return {
-        "tacon": [{"kind": ["bin"], "crate_types": ["bin"], "name": "tacon"}],
-        "tacacsrs-agentd": [
-            {"kind": ["bin"], "crate_types": ["bin"], "name": "tacacsrs-agentd"}
-        ],
-        "tacacsrs-agent-health": [
-            {"kind": ["bin"], "crate_types": ["bin"], "name": "tacacsrs-agent-health"}
-        ],
-        "tacacsrs-bash-plugin": [
-            {
-                "kind": ["cdylib", "rlib"],
-                "crate_types": ["cdylib", "rlib"],
-                "name": "tacacsrs_bash_plugin",
-            }
-        ],
-    }
-
-
-@pytest.fixture()
-def product_metadata(golden_edges):
-    return build_metadata(
-        golden_edges, default_members=CORE_DEFAULT_MEMBERS, targets=_product_targets()
-    )
-
-
-def test_product_matrix_verifies_against_metadata(product_metadata):
-    assert verify_product_matrix(REAL_PRODUCTS, product_metadata) == []
-
-
-def test_product_matrix_rejects_unknown_package(product_metadata):
-    products = REAL_PRODUCTS + [
-        {"package_name": "ghost", "artifact_name": "ghost", "artifact_kind": "bin"}
-    ]
-    errors = verify_product_matrix(products, product_metadata)
-    assert any("ghost" in error for error in errors)
-
-
-def test_product_matrix_rejects_wrong_artifact_kind(product_metadata):
-    # The Bash plugin is a cdylib, not a binary.
-    products = [
-        {
-            "package_name": "tacacsrs-bash-plugin",
-            "artifact_name": "tacacsrs_bash_plugin",
-            "artifact_kind": "bin",
-        }
-    ]
-    errors = verify_product_matrix(products, product_metadata)
-    assert any("tacacsrs-bash-plugin" in error for error in errors)
-
-
-def test_product_matrix_rejects_missing_target_name(product_metadata):
-    products = [
-        {"package_name": "tacon", "artifact_name": "nope", "artifact_kind": "bin"}
-    ]
-    errors = verify_product_matrix(products, product_metadata)
-    assert any("tacon" in error and "nope" in error for error in errors)
-
-
-def test_validate_all_includes_products_when_given(product_metadata, rules):
-    assert validate_all(product_metadata, rules, products=REAL_PRODUCTS) == []
 
 
 # ---------------------------------------------------------------------------

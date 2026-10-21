@@ -256,60 +256,7 @@ def validate_forbidden_guards(metadata: dict, rules: dict) -> list:
     return errors
 
 
-def _has_product_target(pkg: dict, artifact_name: str, artifact_kind: str) -> bool:
-    """Return True when a package builds the requested artifact target.
-
-    ``bin`` requires a binary target. Any other kind requires a library target
-    of that exact crate type, for example ``cdylib``.
-    """
-    for target in pkg.get("targets", []):
-        if target.get("name") != artifact_name:
-            continue
-        kinds = set(target.get("kind", [])) | set(target.get("crate_types", []))
-        if artifact_kind == "bin":
-            if "bin" in target.get("kind", []):
-                return True
-        elif artifact_kind in kinds:
-            return True
-    return False
-
-
-def verify_product_matrix(products: Iterable[dict], metadata: dict) -> list:
-    """Verify each release product against the workspace metadata.
-
-    The caller supplies the product set. This function does not generate it.
-    Each product must name a workspace member that builds a target of the
-    requested artifact kind (``bin`` or a library crate type such as
-    ``cdylib``).
-    """
-    errors: list = []
-    packages = _index_packages(metadata)
-    members: dict = {}
-    for pkg_id in _workspace_ids(metadata):
-        pkg = packages.get(pkg_id)
-        if pkg is not None:
-            members[pkg["name"]] = pkg
-    for product in products:
-        package_name = product.get("package_name")
-        artifact_name = product.get("artifact_name")
-        artifact_kind = product.get("artifact_kind")
-        pkg = members.get(package_name)
-        if pkg is None:
-            errors.append(
-                f"product package '{package_name}' is not a workspace member"
-            )
-            continue
-        if not _has_product_target(pkg, artifact_name, artifact_kind):
-            errors.append(
-                f"product '{package_name}' has no {artifact_kind} target named "
-                f"'{artifact_name}'"
-            )
-    return errors
-
-
-def validate_all(
-    metadata: dict, rules: dict, products: Iterable[dict] | None = None
-) -> list:
+def validate_all(metadata: dict, rules: dict) -> list:
     """Run every architecture validation and return a flat list of errors."""
     resolve = metadata.get("resolve")
     if not isinstance(resolve, dict) or not isinstance(resolve.get("nodes"), list):
@@ -334,12 +281,10 @@ def validate_all(
     errors.extend(validate_rules_coverage(metadata, rules))
     errors.extend(validate_workspace_edges(metadata, rules))
     errors.extend(validate_forbidden_guards(metadata, rules))
-    if products is not None:
-        errors.extend(verify_product_matrix(products, metadata))
     return errors
 
 
-def architecture_summary(metadata: dict, rules: dict, products: Any) -> str:
+def architecture_summary(metadata: dict, rules: dict) -> str:
     """Return a short success summary."""
     members = workspace_member_names(metadata)
     edges = production_workspace_edges(metadata)
@@ -351,8 +296,6 @@ def architecture_summary(metadata: dict, rules: dict, products: Any) -> str:
         f"  production workspace edges: {edge_count}",
         f"  external dependency guards: {guard_count}",
     ]
-    if products is not None:
-        lines.append(f"  verified products: {len(list(products))}")
     return "\n".join(lines)
 
 
@@ -415,10 +358,6 @@ def main(argv: list | None = None) -> int:
         help="Path to the architecture rules JSON file.",
     )
     parser.add_argument(
-        "--products",
-        help="Path to a JSON file with the release product matrix to verify.",
-    )
-    parser.add_argument(
         "--metadata-file",
         help="Path to pre-resolved cargo metadata JSON. Bypasses the helper.",
     )
@@ -441,9 +380,7 @@ def main(argv: list | None = None) -> int:
         with open(args.metadata_report, "w", encoding="utf-8") as handle:
             json.dump(metadata, handle, indent=2, sort_keys=True)
 
-    products = _read_json_file(args.products) if args.products else None
-
-    errors = validate_all(metadata, rules, products=products)
+    errors = validate_all(metadata, rules)
 
     if errors:
         print("Architecture validation failed:", file=sys.stderr)
@@ -451,7 +388,7 @@ def main(argv: list | None = None) -> int:
             print(f"  - {error}", file=sys.stderr)
         return 1
 
-    print(architecture_summary(metadata, rules, products))
+    print(architecture_summary(metadata, rules))
     return 0
 
 

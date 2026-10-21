@@ -95,9 +95,8 @@ The full reusable pipeline also runs these additional checks:
 - Clippy nursery
 - Miri
 - Fuzz smoke tests
-- Build artifacts
-- SBOM generation
-- Linux release archives
+- Default-feature release-mode build validation
+- AMD64 and executed ARMhf platform validation
 
 ## Workspace Architecture
 
@@ -169,17 +168,22 @@ session-wrapper -> tacacsrs-ipc
 
 Manifests on `main` use `0.0.0-dev`. CI computes real versions from git tags.
 The `.github/steps/inject-versions` action hydrates the manifests and
-`Cargo.lock` before each release build.
+`Cargo.lock` before CI validates the generated source commit.
 
 - Libraries receive semver versions and tags of the form `<crate>-vX.Y.Z`.
   The compute step can run `cargo-semver-checks` and cascades dependency-aware
   version bumps.
-- Executables receive CalVer versions of the form `YYYY.MMDD.BUILD` for the
-  configured `binary-name` (default: `tacon`) and tags of the form
-  `<binary>-YYYY.MMDD.BUILD`.
+- The managed executables share CalVer versions of the form `YYYY.MMDD.BUILD`.
+  Repository tags use `tacacs-rs-YYYY.MMDD.BUILD`.
+  GitHub Release titles use `TACACS-RS YYYY.MMDD.BUILD` and list every workspace crate version.
+  Historical `tacon-*` tags remain CalVer baselines.
 - The append-only `release` branch contains the hydrated source for each release.
   Release tags point to these generated commits. Each commit records its source
   commit from `main`.
+- CI requires a GitHub-verified signature and validates the exact hydrated SHA before publication.
+  The Git Database REST API preserves the two-parent release history.
+  Releases contain source only. CI does not publish binaries or product containers.
+  See `docs/release-rehearsal.md` for candidate verification and retry rules.
 
 ## Feature Flags and Platforms
 
@@ -191,8 +195,8 @@ The `.github/steps/inject-versions` action hydrates the manifests and
   unsupported-platform fallback implementations.
 - Windows supports `tacon` direct mode and its dependency crates only.
 - Use the development container for complete workspace development on Windows.
-- Windows CI packages OpenSSL runtime DLLs with release artifacts. Linux GNU
-  release artifacts dynamically link against the system OpenSSL packages.
+- Source consumers supply the OpenSSL runtime for their target platform.
+  Local container recipes remain available without CI image publication.
 - `session-wrapper` is Linux x86_64-specific. On Windows, validate it through WSL
   with paths mapped under `/mnt/<drive>/...`.
 

@@ -50,8 +50,8 @@ The tool rejects invalid TOML, non-string package names or sources, and invalid 
 It also rejects a package with a selected name and no string version.
 These errors include the file path.
 
-The release product registry, version policy, and generated release branch remain unchanged.
-Artifact, provenance, SBOM, and no-publish rehearsal behavior also remain unchanged.
+The source-release helper reuses this hydrator to create and verify the signed candidate tree.
+Source-only delivery does not require a product registry or archive packaging.
 
 ## TOML Kit evaluation
 
@@ -148,7 +148,7 @@ PYTHONDONTWRITEBYTECODE=1 python -m pytest -p no:cacheprovider \
   .github/steps/inject-versions .github/steps/compute-versions
 ```
 
-The relevant delivery suites also cover Cargo metadata, architecture, and release manifests.
-The fixture rehearsal runs the real hydration and packaging CLIs without product compilation or publication.
-Fixture binaries and SBOM generation do not prove native product builds.
+The relevant delivery suites also cover Cargo metadata, architecture, and source releases.
+Source-release fixtures run real hydration and local Git operations without publication.
+Mocked API responses do not prove GitHub signing or native product builds.
 This tool-only change does not require unrelated Rust rebuilds.

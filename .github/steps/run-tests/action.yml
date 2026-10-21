@@ -20,39 +20,15 @@ inputs:
     description: 'Run tests in release mode'
     required: false
     default: 'false'
-  products:
-    description: >
-      JSON array of release products to verify against the workspace metadata.
-      An empty value skips product verification. The matrix is verified, not
-      generated.
-    required: false
-    default: ''
 
 runs:
   using: composite
   steps:
-    - name: Stage the product matrix for verification
-      id: products
-      if: inputs.products != ''
-      shell: bash
-      env:
-        PRODUCTS_JSON: ${{ inputs.products }}
-      run: |
-        set -euo pipefail
-        # The product matrix enters the validator through a file, not the
-        # command line, so JSON quoting cannot break the shell. The validator
-        # reads it with the standard json module and resolves the workspace with
-        # cargo metadata.
-        products_path="${RUNNER_TEMP}/architecture-products.json"
-        printf '%s' "$PRODUCTS_JSON" > "$products_path"
-        echo "path=$products_path" >> "$GITHUB_OUTPUT"
-
     - name: Enforce the production dependency architecture
       uses: ./.github/steps/check-architecture
       with:
         target: ${{ inputs.target }}
         all-features: 'true'
-        products: ${{ steps.products.outputs.path }}
 
     - name: Run unit tests
       shell: bash

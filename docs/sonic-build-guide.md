@@ -31,8 +31,10 @@ target/x86_64-unknown-linux-gnu/release/tacacsrs-agentd
 target/x86_64-unknown-linux-gnu/release/libtacacsrs_bash_plugin.so
 ```
 
-CI publishes each Linux artifact in a `.tar.gz` archive with its SBOM files.
-The SONiC repository owns the installation scripts and target paths.
+TACACS-RS releases contain source, not compiled artifacts or container images.
+Pin a `tacacs-rs-YYYY.MMDD.BUILD` tag or its hydrated commit before building.
+CI validates the exact hydrated commit before publication.
+The SONiC repository owns package builds, installation scripts, and target paths.
 
 If you are starting from Windows, run these Linux-targeted Cargo commands from
 WSL. Do not copy Windows-built binaries or libraries into SONiC.

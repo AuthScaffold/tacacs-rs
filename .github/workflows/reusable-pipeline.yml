@@ -23,21 +23,16 @@ on:
         required: false
         default: true
         type: boolean
-      include-container-build:
-        description: 'Build the container image'
+      validation-ref:
+        description: 'Immutable commit to validate. Empty selects the triggering SHA.'
         required: false
-        default: true
+        default: ''
+        type: string
+      require-hydrated:
+        description: 'Require the validated commit to contain the computed versions already'
+        required: false
+        default: false
         type: boolean
-      container-registry:
-        description: 'Container registry and namespace used for image tags, for example ghcr.io/authscaffold'
-        required: false
-        default: 'ghcr.io/authscaffold'
-        type: string
-      container-image-name:
-        description: 'Container image repository name'
-        required: false
-        default: 'tacacsrs-agentd'
-        type: string
       include-clippy-nursery:
         description: 'Run the Clippy nursery-lint job'
         required: false
@@ -77,26 +72,16 @@ on:
 permissions:
   pull-requests: read
   contents: read
-  packages: read
 
 jobs:
-  product-registry:
-    name: Release Product Registry
-    runs-on: ubuntu-latest
-    outputs:
-      products: ${{ steps.registry.outputs.products }}
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - name: Derive the validated product matrix
-        id: registry
-        uses: ./.github/steps/product-registry
-
   armhf:
     name: ARMhf Build and Tests
     runs-on: ubuntu-latest
     timeout-minutes: 100
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.validation-ref || github.sha }}
       - name: Enable ARM subprocess execution
         run: docker run --rm --privileged tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0 --install arm
       - name: Build and execute ARMhf coverage
@@ -117,6 +102,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.validation-ref || github.sha }}
       - uses: ./.github/steps/setup-rust
         with:
           toolchain: '1.91.0'
@@ -131,7 +118,7 @@ jobs:
           rustup toolchain install nightly-2025-11-23 --profile minimal
       - name: Test delivery scripts and workflow contracts
         shell: bash
-        run: python3 -m pytest .github/steps/cargo-metadata .github/steps/check-architecture .github/steps/compute-versions .github/steps/inject-versions .github/steps/release-manifest
+        run: python3 -m pytest .github/steps/cargo-metadata .github/steps/check-architecture .github/steps/compute-versions .github/steps/inject-versions .github/steps/source-release
       - name: Test API classification against real Git fixtures
         shell: bash
         run: env -u CARGO_TARGET_DIR cargo +1.91.0 test --manifest-path .github/tools/api-classifier/Cargo.toml --locked
@@ -148,6 +135,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.validation-ref || github.sha }}
       - name: Install the minimum Rust toolchain
         uses: ./.github/steps/setup-rust
         with:
@@ -195,6 +184,8 @@ jobs:
             install_openssl: 'true'
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.validation-ref || github.sha }}
 
       - name: Install Rust and configure native caches
         uses: ./.github/steps/setup-rust
@@ -241,6 +232,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
+          ref: ${{ inputs.validation-ref || github.sha }}
           fetch-depth: 0
 
       - name: Install nightly Rust
@@ -321,7 +313,7 @@ jobs:
 
   testing:
     name: Testing (${{ matrix.config.name }})
-    needs: [pre-tests, product-registry]
+    needs: [pre-tests]
     if: ${{ !cancelled() && !failure() }}
     runs-on: ${{ matrix.config.os }}
     strategy:
@@ -350,6 +342,8 @@ jobs:
             package_args: '--package tacon --package tacacsrs-config --package tacacsrs-protocol --package tacacsrs-networking --package tacacsrs-secrets'
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.validation-ref || github.sha }}
 
       - name: Install stable Rust
         uses: ./.github/steps/setup-rust
@@ -368,7 +362,6 @@ jobs:
           target: ${{ matrix.config.target }}
           feature-args: ${{ matrix.config.feature_args }}
           build-release: ${{ inputs.build-release }}
-          products: ${{ needs.product-registry.outputs.products }}
 
       - name: Generate coverage
         if: matrix.config.coverage == 'true'
@@ -425,6 +418,8 @@ jobs:
             install_libseccomp_dev: 'false'
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.validation-ref || github.sha }}
 
       - name: Install stable Rust
         uses: ./.github/steps/setup-rust
@@ -444,24 +439,35 @@ jobs:
             --all-features \
             --locked
 
-  official-build:
-    name: Official Build (${{ matrix.config.target }})
-    needs: [testing, product-registry]
+  build-validation:
+    name: Build Validation (${{ matrix.config.target }})
+    needs: [testing]
     if: ${{ !cancelled() && !failure() }}
     runs-on: ${{ matrix.config.os }}
     strategy:
       fail-fast: false
       matrix:
-        config: ${{ fromJson(needs.product-registry.outputs.products) }}
+        config:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            packages: 'tacon tacacsrs-agentd tacacsrs-agent-health tacacsrs-bash-plugin'
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            packages: 'tacon'
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          fetch-depth: 0
+          ref: ${{ inputs.validation-ref || github.sha }}
 
       - name: Inject versions
         uses: ./.github/steps/inject-versions
         with:
           versions: ${{ inputs.versions }}
+
+      - name: Require an already hydrated release candidate
+        if: inputs.require-hydrated
+        shell: bash
+        run: git diff --exit-code -- Cargo.lock ':(glob)**/Cargo.toml'
 
       - name: Install Rust
         uses: ./.github/steps/setup-rust
@@ -471,150 +477,23 @@ jobs:
           install-libseccomp-dev: ${{ runner.os == 'Linux' }}
           install-openssl: 'true'
 
-      - name: Compute package names
-        uses: ./.github/steps/compute-package-names
-        with:
-          asset-name: ${{ matrix.config.asset_name }}
-          package-name: ${{ matrix.config.package_name }}
-          artifact-name: ${{ matrix.config.artifact_name }}
-          artifact-kind: ${{ matrix.config.artifact_kind }}
-          features: ${{ matrix.config.features }}
-          build-release: ${{ inputs.build-release }}
-
-      - name: Build binary
-        uses: ./.github/steps/build-binary
-        with:
-          target: ${{ matrix.config.target }}
-          package-name: ${{ matrix.config.package_name }}
-          artifact-name: ${{ matrix.config.artifact_name }}
-          artifact-kind: ${{ matrix.config.artifact_kind }}
-
-      - name: Stage binary package
-        uses: ./.github/steps/stage-binary-package
-        with:
-          target: ${{ matrix.config.target }}
-
-      - name: Package debug symbols
-        uses: ./.github/steps/package-debug-symbols
-        with:
-          target: ${{ matrix.config.target }}
-
-      - name: Collect OpenSSL runtime DLLs
-        if: runner.os == 'Windows'
-        uses: ./.github/steps/collect-openssl-runtime
-
-      - name: Package SBOMs
-        uses: ./.github/steps/package-sboms
-        with:
-          target: ${{ matrix.config.target }}
-          package-root: ${{ matrix.config.package_root }}
-          sbom-describe: ${{ matrix.config.sbom_describe }}
-          features: ${{ matrix.config.features }}
-
-      - name: Capture build provenance
+      - name: Build with default features and the locked dependency graph
         shell: bash
         env:
-          PROVENANCE_ASSET: ${{ matrix.config.asset_name }}
-          PROVENANCE_PACKAGE_ROOT: ${{ matrix.config.package_root }}
-          PROVENANCE_TARGET: ${{ matrix.config.target }}
-          PROVENANCE_FEATURES: ${{ matrix.config.features }}
-          PROVENANCE_SOURCE: ${{ github.sha }}
-          PROVENANCE_VERSIONS: ${{ inputs.versions }}
+          PACKAGES: ${{ matrix.config.packages }}
         run: |
           set -euo pipefail
-          python .github/steps/release-manifest/build_provenance.py \
-            --workspace "$GITHUB_WORKSPACE" \
-            --package-root "$PROVENANCE_PACKAGE_ROOT" \
-            --package-dir "$PACKAGE_DIR" \
-            --upload-dir packaged \
-            --asset-name "$PROVENANCE_ASSET" \
-            --package-name "$PACKAGE_NAME" \
-            --artifact-filename "$ARTIFACT_FILENAME" \
-            --artifact-kind "$ARTIFACT_KIND" \
-            --source "$PROVENANCE_SOURCE" \
-            --target "$PROVENANCE_TARGET" \
-            --profile "$PROFILE" \
-            --features "$PROVENANCE_FEATURES" \
-            --versions-json "$PROVENANCE_VERSIONS"
-
-      - name: Create Windows archive
-        if: runner.os == 'Windows'
-        uses: ./.github/steps/create-windows-archive
-        with:
-          asset-name: ${{ matrix.config.asset_name }}
-
-      - name: Create Linux archive
-        if: runner.os == 'Linux'
-        uses: ./.github/steps/create-linux-archive
-        with:
-          asset-name: ${{ matrix.config.asset_name }}
-
-      - name: Upload packaged artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: package-${{ matrix.config.asset_name }}
-          path: packaged/*
-          retention-days: 7
-
-  container-build:
-    name: Container Build
-    needs: [testing, finalize-release-assets]
-    if: ${{ !cancelled() && !failure() && inputs.include-container-build }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: read
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-
-      - name: Build tacacsrs-agentd container image
-        uses: ./.github/steps/container-image
-        with:
-          versions: ${{ inputs.versions }}
-          registry: ${{ inputs.container-registry }}
-          image-name: ${{ inputs.container-image-name }}
-
-  finalize-release-assets:
-    name: Finalize Release Assets
-    needs: [official-build]
-    if: ${{ !cancelled() && !failure() }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-
-      - name: Download packaged artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: package-*
-          path: raw/packages
-          merge-multiple: true
-
-      - name: Stage release assets
-        uses: ./.github/steps/stage-release-assets
-
-      - name: Generate the release manifest
-        uses: ./.github/steps/release-manifest
-        with:
-          source-commit: ${{ github.sha }}
-          versions: ${{ inputs.versions }}
-          provenance-directory: raw/packages
-
-      - name: Generate checksums
-        uses: ./.github/steps/generate-checksums
-
-      - name: Upload release assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: release-assets
-          path: release/*
-          retention-days: 7
+          for package in $PACKAGES; do
+            cargo build --locked --release \
+              --target "${{ matrix.config.target }}" \
+              --package "$package"
+          done
 
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
     if: always()
     needs:
-      - product-registry
       - armhf
       - automation-tests
       - msrv
@@ -622,16 +501,11 @@ jobs:
       - pre-tests
       - testing
       - consumer-profiles
-      - official-build
-      - container-build
-      - finalize-release-assets
+      - build-validation
     steps:
-      - name: Require the validated product matrix
-        if: needs.product-registry.result != 'success'
-        run: exit 1
       - name: Require executed ARMhf coverage
         if: needs.armhf.result != 'success'
         run: exit 1
       - name: Make sure that all jobs succeeded
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
         run: exit 1
