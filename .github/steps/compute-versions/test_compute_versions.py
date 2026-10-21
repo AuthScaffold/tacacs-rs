@@ -11,7 +11,7 @@ import os
 import subprocess
 import sys
 import textwrap
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -897,6 +897,37 @@ class TestComputeLibraryVersionsApiClassification:
 # ---------------------------------------------------------------------------
 
 class TestComputeCalver:
+    def test_namespace_migration_uses_numeric_order_and_both_counters(self, tmp_workspace):
+        make_executable(tmp_workspace, "tacon", "tacon")
+        git_commit(tmp_workspace, "initial")
+        for tag in ("tacon-2026.424.9", "tacacs-rs-2026.424.10", "tacacs-rs-not-a-version"):
+            git_tag(tmp_workspace, tag)
+        (tmp_workspace / "executables/tacon/src/main.rs").write_text("fn main() { }\n")
+        git_commit(tmp_workspace, "change")
+        result = compute_calver("tacon", ["executables/"], cwd=tmp_workspace,
+                                now=datetime(2026, 4, 24, tzinfo=timezone.utc))
+        assert result.previous_tag == "tacacs-rs-2026.424.10"
+        assert result.tag == "tacacs-rs-2026.424.11"
+        prerelease = compute_prerelease_calver("tacon", cwd=tmp_workspace)
+        assert prerelease.version.startswith("2026.424.10-dev.")
+
+    def test_timestamp_is_converted_to_utc(self, tmp_workspace):
+        make_executable(tmp_workspace, "tacon", "tacon")
+        git_commit(tmp_workspace, "initial")
+        result = compute_calver("tacon", ["executables/"], cwd=tmp_workspace,
+                                now=datetime(2026, 4, 25, 1, tzinfo=timezone(timedelta(hours=10))))
+        assert result.tag == "tacacs-rs-2026.424.0"
+
+    def test_legacy_baseline_is_not_hidden_by_an_older_repository_tag(self, tmp_workspace):
+        make_executable(tmp_workspace, "tacon", "tacon")
+        git_commit(tmp_workspace, "initial")
+        git_tag(tmp_workspace, "tacon-2026.425.2")
+        git_tag(tmp_workspace, "tacacs-rs-2026.424.9")
+        result = compute_calver("tacon", ["executables/"], cwd=tmp_workspace)
+        assert result.version == "2026.425.2"
+        assert result.previous_tag == "tacon-2026.425.2"
+        assert result.tag is None
+
     def test_first_calver(self, tmp_workspace: Path) -> None:
         make_executable(tmp_workspace, "tacon", "tacon")
         make_library(tmp_workspace, "my-lib", "my_lib")
@@ -911,7 +942,7 @@ class TestComputeCalver:
         )
         assert result is not None
         assert result.version == "2026.424.0"
-        assert result.tag == "tacon-2026.424.0"
+        assert result.tag == "tacacs-rs-2026.424.0"
 
     def test_calver_increment(self, tmp_workspace: Path) -> None:
         make_executable(tmp_workspace, "tacon", "tacon")
@@ -1056,8 +1087,8 @@ class TestComputeAllVersions:
         assert result["versions"]["tacon"] == "2026.424.1"
         assert result["versions"]["tacacsrs-agentd"] == "2026.424.1"
         assert result["versions"]["tacacsrs-agent-health"] == "2026.424.1"
-        assert result["calver_tag"] == "tacon-2026.424.1"
-        assert "tacon-2026.424.1" in result["new_tags"]
+        assert result["calver_tag"] == "tacacs-rs-2026.424.1"
+        assert "tacacs-rs-2026.424.1" in result["new_tags"]
         assert result["has_release"] is True
 
     def test_full_mixed_changes(self, tmp_workspace: Path) -> None:
@@ -1434,7 +1465,7 @@ class TestRootPathWatch:
         assert result["versions"]["tacon"] == "2026.424.1"
         assert result["has_release"] is True
         assert "my-lib-v0.1.1" in result["new_tags"]
-        assert "tacon-2026.424.1" in result["new_tags"]
+        assert "tacacs-rs-2026.424.1" in result["new_tags"]
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 
+// QEMU guest startup and the HTTP/2 handshake share this readiness budget.
+const DIAGNOSTICS_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+
 struct ProcessDirectory(PathBuf);
 
 impl ProcessDirectory {
@@ -191,7 +194,7 @@ async fn diagnostics_rpc_is_read_only_and_generation_bound() {
         .arg(&endpoint)
         .spawn()
         .unwrap();
-    let client = tokio::time::timeout(Duration::from_secs(5), async {
+    let client = tokio::time::timeout(DIAGNOSTICS_STARTUP_TIMEOUT, async {
         loop {
             assert!(child.try_wait().unwrap().is_none());
             if let Ok(client) =
@@ -203,7 +206,7 @@ async fn diagnostics_rpc_is_read_only_and_generation_bound() {
         }
     })
     .await
-    .unwrap();
+    .expect("daemon diagnostics must become reachable within the startup budget");
     let first = client.statistics_json(None).await.unwrap();
     let first: serde_json::Value = serde_json::from_str(&first).unwrap();
     let root = &first["ietf-system-tacacs-plus:tacacs-plus"];

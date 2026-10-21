@@ -3,6 +3,7 @@ description: >
   Compute all crate versions from Git tags. Libraries use SemVer. The
   api-classifier tool detects breaking and additive public-API changes.
   Dependency changes propagate to dependent libraries. Executables use CalVer.
+  Repository releases use tacacs-rs CalVer tags and retain historical tacon baselines.
 
 inputs:
   binary-name:

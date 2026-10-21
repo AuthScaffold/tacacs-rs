@@ -15,7 +15,7 @@
 
 # Release
 
-- [Release Rehearsal](release-rehearsal.md)
+- [Source Release Validation](release-rehearsal.md)
 
 # Migration
 

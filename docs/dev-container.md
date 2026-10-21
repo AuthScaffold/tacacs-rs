@@ -111,7 +111,7 @@ The installation records the upstream commit in `source-revision` and removes th
 `TACPLUS_SERVER_BINARY` and `TACPLUS_LIBRARY_DIR` select this installation for the [native interoperability runner](tacplus-interop.md#devcontainer-server).
 The server does not start automatically. The runner owns temporary loopback listeners and stops them after each scenario.
 It also installs `cargo-audit`, `cargo-fuzz`, `cargo-llvm-cov`, `cargo-outdated`, `cargo-udeps`, and `mdbook`.
-The SBOM generator is pinned to `cargo-cyclonedx` 0.5.9, matching CI.
+Source-only releases do not require an archive SBOM generator.
 Buf comes from the versioned upstream container image.
 Other standalone Cargo tool versions follow their locked published releases at image-build time.
 This is a development image, not a bit-for-bit reproducible release artifact.

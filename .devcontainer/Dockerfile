@@ -42,8 +42,6 @@ RUN python3 -m venv /opt/tacacs-python \
 RUN cargo +stable install --locked --root /opt/tacacs-tools \
         cargo-audit cargo-fuzz cargo-llvm-cov cargo-outdated cargo-udeps mdbook
 
-RUN cargo +stable install cargo-cyclonedx --version 0.5.9 --locked --root /opt/tacacs-tools
-
 COPY --from=bufbuild/buf:1.47.2 /usr/local/bin/buf /usr/local/bin/buf
 
 ENV PATH="/home/vscode/.local/bin:/opt/tacacs-python/bin:/opt/tacacs-tools/bin:/opt/tacacs-test-server/sbin:${PATH}"

@@ -1,5 +1,9 @@
 # Local cargo-dist Packaging Evaluation
 
+This document records the historical binary-packaging evaluation.
+The [source-only release process](release-rehearsal.md) supersedes its decision to retain distribution packaging.
+The evaluation evidence remains unchanged.
+
 ## Decision
 
 Do not adopt cargo-dist 0.33.0 for the current release pipeline.
@@ -56,16 +60,16 @@ The executable stayed in the prototype cache. No global tool changed.
 
 ## Required Output and Configuration
 
-The [product registry](../.github/products.json) remains the only production authority for product selection.
-Its [Cargo-backed validator](../.github/steps/cargo-metadata/README.md#release-product-registry) preserves five records.
+The [product registry](https://github.com/AuthScaffold/tacacs-rs/blob/8ff903ad5085e08705b4e041da3719ed4ff038a0/.github/products.json) remains the only production authority for product selection.
+Its [Cargo-backed validator](https://github.com/AuthScaffold/tacacs-rs/blob/8ff903ad5085e08705b4e041da3719ed4ff038a0/.github/steps/cargo-metadata/README.md#release-product-registry) preserves five records.
 Those records cover four Linux products and Windows direct-mode `tacon`.
 Workspace enrollment does not select a product.
 
 Linux TAR/Gzip packages require a named root, native payload, split release symbols, JSON/XML SBOMs, and `build-provenance.json`.
 Windows ZIP packages require a named root, `tacon.exe`, a PDB, OpenSSL DLLs, JSON/XML SBOMs, and provenance.
-The [existing finalizer](../.github/steps/release-manifest/README.md) verifies source, hydrated versions, archive contents, and digests offline.
+The [existing finalizer](https://github.com/AuthScaffold/tacacs-rs/blob/8ff903ad5085e08705b4e041da3719ed4ff038a0/.github/steps/release-manifest/README.md) verifies source, hydrated versions, archive contents, and digests offline.
 It also records the YANG and protobuf schema identities.
-The [rehearsal guide](release-rehearsal.md) defines these unchanged contracts.
+The [rehearsal guide](https://github.com/AuthScaffold/tacacs-rs/blob/8ff903ad5085e08705b4e041da3719ed4ff038a0/docs/release-rehearsal.md) defines these unchanged contracts.
 
 The prototype exports committed predecessor `d3629b2ee0f78c862e7a4d8fb7558622c6f6591a` through read-only `git archive`.
 It derives disposable cargo-dist configuration from the validated registry.

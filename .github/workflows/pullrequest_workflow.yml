@@ -2,12 +2,11 @@ name: Pull Request
 
 on:
   pull_request:
-    branches: ["main", "review/yang-toolkit/**", "feature/agent-diagnostics", "fix/262-armhf", "refactor/general-iterations/**"]
+    branches: ["main"]
 
 permissions:
   pull-requests: read
   contents: read
-  packages: read
 
 # Cancel active runs for the same pull request.
 concurrency:
@@ -43,9 +42,7 @@ jobs:
       pull-requests: read
       checks: write
       contents: read
-      packages: read
     with:
-      rust-test-matrix: '["stable"]'
       skip-audit-if-no-dep-changes: true
       versions: ${{ needs.compute-versions.outputs.versions || '{}' }}
     secrets: inherit

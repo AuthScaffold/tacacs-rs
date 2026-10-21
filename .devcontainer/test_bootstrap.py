@@ -178,7 +178,7 @@ class ContainerConfigurationTests(unittest.TestCase):
         for dependency in ("pyang==2.7.1", "pytest==8.4.2", "PyYAML==6.0.3"):
             self.assertIn(dependency, dockerfile)
         self.assertIn('ENV PATH="/home/vscode/.local/bin:/opt/tacacs-python/bin:/opt/tacacs-tools/bin:/opt/tacacs-test-server/sbin:${PATH}"', dockerfile)
-        self.assertIn("cargo-cyclonedx --version 0.5.9 --locked", dockerfile)
+        self.assertNotIn("cargo-cyclonedx", dockerfile)
 
     def test_image_provides_native_test_and_release_tools(self):
         dockerfile = (self.directory / "Dockerfile").read_text(encoding="utf-8")

@@ -9,7 +9,8 @@ dependency. The script compares the current HEAD to the last release tag. This
 comparison determines the next SemVer version for each crate.
 
 The script computes CalVer (``YYYY.MMDD.BUILD``) for the configured executable
-in the ``executables/`` directory.
+in the ``executables/`` directory. Repository releases use ``tacacs-rs-`` tags.
+Historical executable tags remain CalVer baselines.
 
 The script writes JSON-encoded results to ``$GITHUB_OUTPUT``. If this variable
 is unset, the script writes the results to standard output. Downstream GitHub
@@ -312,6 +313,20 @@ def bump_breaking(major: int, minor: int, _patch: int) -> str:
 # CalVer computation
 # ---------------------------------------------------------------------------
 
+RELEASE_TAG_PREFIX = "tacacs-rs-"
+
+
+def calver_tags(binary_name: str, cwd: Path | None = None) -> dict[str, tuple[int, int, int]]:
+    """Read repository releases and historical executable releases."""
+    result = {}
+    for prefix in (RELEASE_TAG_PREFIX, f"{binary_name}-"):
+        for tag in tags_matching(prefix, cwd=cwd):
+            version = tag[len(prefix):]
+            if re.fullmatch(r"\d{4}\.\d{3,4}\.\d+", version):
+                result[tag] = tuple(int(part) for part in version.split("."))
+    return result
+
+
 def compute_calver(
     binary_name: str,
     watch_paths: Sequence[str],
@@ -325,8 +340,8 @@ def compute_calver(
     with no tag, so the version map still carries the executable at its released
     version. The result is therefore never ``None``.
     """
-    tag_prefix = f"{binary_name}-"
-    latest = latest_tag(tag_prefix, cwd=cwd)
+    tags = calver_tags(binary_name, cwd=cwd)
+    latest = max(tags, key=lambda tag: (tags[tag], tag.startswith(RELEASE_TAG_PREFIX))) if tags else None
 
     if latest is not None:
         source_ref = source_ref_for_tag(latest, cwd=cwd)
@@ -336,7 +351,7 @@ def compute_calver(
             # create no new tag.
             return VersionResult(
                 name=binary_name,
-                version=latest[len(tag_prefix):],
+                version=".".join(str(part) for part in tags[latest]),
                 tag=None,
                 reason="unchanged",
                 previous_tag=latest,
@@ -344,25 +359,18 @@ def compute_calver(
 
     if now is None:
         now = datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        raise ValueError("CalVer requires a timezone-aware timestamp")
+    now = now.astimezone(timezone.utc)
 
     year = now.year
     mmdd = now.month * 100 + now.day
 
-    build_prefix = f"{tag_prefix}{year}.{mmdd}."
-    existing = tags_matching(build_prefix, cwd=cwd)
-
-    if not existing:
-        build = 0
-    else:
-        builds = []
-        for t in existing:
-            suffix = t[len(build_prefix):]
-            if suffix.isdigit():
-                builds.append(int(suffix))
-        build = max(builds) + 1 if builds else 0
+    builds = [version[2] for version in tags.values() if version[:2] == (year, mmdd)]
+    build = max(builds) + 1 if builds else 0
 
     version = f"{year}.{mmdd}.{build}"
-    tag = f"{tag_prefix}{version}"
+    tag = f"{RELEASE_TAG_PREFIX}{version}"
 
     return VersionResult(
         name=binary_name,
@@ -428,8 +436,8 @@ def compute_prerelease_calver(
     Returns ``{latest_calver}-{label}.{N}`` or
     ``0.0.0-{label}.{N}`` if no CalVer tag exists.
     """
-    tag_prefix = f"{binary_name}-"
-    latest = latest_tag(tag_prefix, cwd=cwd)
+    tags = calver_tags(binary_name, cwd=cwd)
+    latest = max(tags, key=lambda tag: (tags[tag], tag.startswith(RELEASE_TAG_PREFIX))) if tags else None
 
     if latest is None:
         count_str = git("rev-list", "--count", "HEAD", cwd=cwd)
@@ -437,7 +445,7 @@ def compute_prerelease_calver(
         version = f"0.0.0-{pre_release_label}.{n}"
         reason = f"pre-release (no tag, {n} commits)"
     else:
-        current = latest[len(tag_prefix):]
+        current = ".".join(str(part) for part in tags[latest])
         n = commit_count_since(latest, cwd=cwd)
         version = f"{current}-{pre_release_label}.{n}"
         reason = f"pre-release ({n} commits since {current})"

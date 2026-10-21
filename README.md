@@ -45,20 +45,20 @@ For the host cutover procedure, read the [Plain TACACS+ to TACACS+ over TLS Tran
 | **tacacsrs-ipc** | Protobuf contract, reusable channel SDK, and bounded gRPC server adapter |
 | **tacon** | TACACS+ test application for AAA operations and transport modes |
 | **tacacsrs-agentd** | Daemon that hosts `tacacsrs-agent`, maintains upstream connections, and manages failover |
-| **tacacsrs-agent-ipc-emulatord** | Experimental OPA/Rego IPC emulator, excluded from supported release artifacts |
+| **tacacsrs-agent-ipc-emulatord** | Experimental OPA/Rego IPC emulator, outside the supported core |
 | **tacacsrs-config** | YANG JSON parser, validator, and local credential-bundle enumerator for `ietf-system-tacacs-plus` |
 | **tacacsrs-credential-resolution** | Provider-neutral credential plans, secret-safe material, and request-result matching |
-| **session-wrapper** | Experimental Linux seccomp authorization wrapper, excluded from supported release artifacts |
+| **session-wrapper** | Experimental Linux seccomp authorization wrapper, outside the supported core |
 
 ## Supported Core
 
 The workspace `default-members` defines the supported core. Plain `cargo build` and `cargo test` select these 14 packages.
 The internal `tacacsrs-unix-socket` package owns shared listener binding and cleanup without depending on TACACS+ or IPC.
-The release products are `tacon`, `tacacsrs-agentd`, `tacacsrs-agent-health`, and the Bash plugin.
-Windows releases contain only `tacon` direct mode. Linux GNU supports the complete core.
+New releases contain versioned source, not compiled binaries or container images.
+Windows supports `tacon` direct mode. Linux GNU supports the complete core.
 
 The session wrapper, Rego emulator library, and emulator daemon are experimental.
-They remain available for explicit builds and tests, but are not supported release artifacts:
+They remain available for explicit builds and tests, but are not part of the supported core:
 
 ```bash
 cargo build -p session-wrapper -p tacacsrs-agent-ipc-emulatord
@@ -115,8 +115,9 @@ The crate expands local credential bundles. It preserves external central refere
 - [session-wrapper README](executables/session_wrapper/README.md) — Experimental Linux seccomp session wrapper and authorization behavior
 - [Session Wrapper Deployment Guide](docs/session-wrapper.md) — SSH `ForceCommand` integration, configuration examples, security notes, troubleshooting
 - [Session Wrapper Testing](docs/session-wrapper-testing.md) — Linux smoke and integration checks for the session wrapper
-- [Building for SONiC](docs/sonic-build-guide.md) — Linux GNU artifacts for network switches
+- [Building for SONiC](docs/sonic-build-guide.md) — Build released source for network switches
 - [Development Guide](DEVELOPMENT.md) — Building, testing, CI, project structure
+- [Source Release Validation](docs/release-rehearsal.md) — Versioned source, validation gates, and release recovery
 
 ## Rust Toolchain
 
@@ -138,29 +139,26 @@ The workspace does not support musl or macOS. Use the development container for 
 
 ### Installation
 
-**From GitHub Releases:**
+Build from the tip of the `release` branch or download the source from the [latest GitHub release](https://github.com/AuthScaffold/tacacs-rs/releases/latest).
+
+To use the release branch:
 
 ```bash
-tar -xzf tacon-linux-gnu-x86_64.tar.gz
-sudo install -m 755 tacon-linux-gnu-x86_64/tacon /usr/local/bin/tacon
-```
-
-**From source:**
-
-```bash
-cargo build --release --package tacon
-sudo cp target/release/tacon /usr/local/bin/
-```
-
-The `main` branch keeps Cargo package versions at `0.0.0-dev`. To build with released version metadata, clone the generated `release` branch:
-
-```bash
-git clone https://github.com/AuthScaffold/tacacs-rs.git --branch release
+git clone --branch release --single-branch https://github.com/AuthScaffold/tacacs-rs.git
 cd tacacs-rs
-cargo build --release --package tacon
 ```
 
-Release automation adds one generated commit to `release` for each release. Release tags and submodules can pin these commits. Use `main` for development work.
+Alternatively, download **Source code (zip)** or **Source code (tar.gz)** from the latest release.
+Extract the archive.
+Then change to the extracted directory.
+
+Build the component you need.
+This Linux example builds and installs `tacon`:
+
+```bash
+cargo build --locked --release --package tacon
+sudo install -m 755 target/release/tacon /usr/local/bin/tacon
+```
 
 ### Basic Usage
 

@@ -19,7 +19,7 @@ inputs:
     required: false
     default: ''
   save-if:
-    description: 'Save the cache at the end of the job. Use true only for the warm-cache job and nightly-specific jobs.'
+    description: 'Save this job''s Rust cache at completion'
     required: false
     default: 'false'
   install-libseccomp-dev:

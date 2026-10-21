@@ -16,9 +16,6 @@ expressions do not decide workspace membership or dependency identity.
    reach the IPC crate.
 3. **Supported-core exclusion.** The production closure of the workspace default
    members must not reach the experimental crates, Rego, or libseccomp.
-4. **Product matrix verification (optional).** When a product file is supplied,
-   the validator checks that each product names a workspace member that builds a
-   target of the requested artifact kind. It does not generate the matrix.
 
 The validator uses `resolve.nodes[].deps[].dep_kinds` and the platform-filtered
 resolve graph, not the declared manifest dependency list. Only normal edges
@@ -73,9 +70,6 @@ metadata JSON instead of using the helper.
 ```bash
 # Resolve and validate for a specific target.
 python check_architecture.py --workspace . --target x86_64-unknown-linux-gnu --all-features
-
-# Also verify the release product matrix.
-python check_architecture.py --target x86_64-unknown-linux-gnu --products products.json
 
 # Validate a pre-resolved metadata file and write a plain-JSON report.
 python check_architecture.py --metadata-file metadata.json --metadata-report report.json
