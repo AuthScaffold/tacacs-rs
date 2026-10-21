@@ -493,6 +493,8 @@ fn server_type_serialize_single_flag() {
                 client_identity: None,
                 server_authentication: None,
                 vrf_instance: None,
+                egress_interface: None,
+                binding_policy: tacacsrs_config::tacacsrs::BindingPolicy::BestEffort,
             }],
         },
     };
@@ -523,6 +525,8 @@ fn server_type_serialize_two_flags() {
                 client_identity: None,
                 server_authentication: None,
                 vrf_instance: None,
+                egress_interface: None,
+                binding_policy: tacacsrs_config::tacacsrs::BindingPolicy::BestEffort,
             }],
         },
     };

@@ -230,6 +230,81 @@ struct SonicTlsServerRow {
     psk_secret_ref: String,
     psk_hash: EpskSupportedHash,
     psk_dhe_groups: Vec<PskDheKeSupportedGroup>,
+    binding: SonicBinding,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SonicBinding {
+    source_ip: Option<String>,
+    source_interface: Option<String>,
+    vrf: Option<String>,
+    egress_interface: Option<String>,
+    policy: Option<tacacsrs_config::tacacsrs::BindingPolicy>,
+}
+
+impl SonicBinding {
+    fn from_hash(hash: &SonicHash) -> anyhow::Result<Self> {
+        let field = |name| hash.get(name).filter(|value| !value.is_empty()).cloned();
+        Ok(Self {
+            source_ip: field("src_ip"),
+            source_interface: field("src_intf"),
+            vrf: parse_sonic_vrf(hash)?,
+            egress_interface: field("egress_intf"),
+            policy: parse_binding_policy(hash.get("binding_policy"))?,
+        })
+    }
+
+    fn apply(&self, server: &mut tacacsrs_config::TacacsPlusServer, global: &SonicGlobal) {
+        server.source_ip.clone_from(&self.source_ip);
+        server.source_interface = if self.source_ip.is_some() {
+            None
+        } else {
+            self.source_interface
+                .clone()
+                .or_else(|| global.src_intf.clone())
+        };
+        server.vrf_instance.clone_from(&self.vrf);
+        server.egress_interface = self
+            .egress_interface
+            .clone()
+            .or_else(|| global.egress_intf.clone());
+        server.binding_policy = self
+            .policy
+            .or(global.binding_policy)
+            .unwrap_or(tacacsrs_config::tacacsrs::BindingPolicy::BestEffort);
+    }
+}
+
+fn parse_sonic_vrf(hash: &SonicHash) -> anyhow::Result<Option<String>> {
+    let normalize = |value: &str| match value {
+        "" | "default" => None,
+        value => Some(value.to_owned()),
+    };
+    let canonical = hash
+        .get("vrf")
+        .map(|value| {
+            if !matches!(value.as_str(), "" | "default" | "mgmt") {
+                bail!("vrf must be mgmt or default");
+            }
+            Ok(normalize(value))
+        })
+        .transpose()?;
+    let alias = hash.get("vrf_name").map(|value| normalize(value));
+    if let (Some(canonical), Some(alias)) = (&canonical, &alias) {
+        anyhow::ensure!(canonical == alias, "vrf and vrf_name select different routing instances");
+    }
+    Ok(canonical.or(alias).flatten())
+}
+
+fn parse_binding_policy(
+    value: Option<&String>,
+) -> anyhow::Result<Option<tacacsrs_config::tacacsrs::BindingPolicy>> {
+    value
+        .map(|value| {
+            tacacsrs_config::tacacsrs::BindingPolicy::from_rfc7951_str(value)
+                .context("binding_policy must be best-effort or strict")
+        })
+        .transpose()
 }
 
 impl SonicTlsServerRow {
@@ -246,6 +321,12 @@ impl SonicTlsServerRow {
             "psk_hash",
             "psk_key_exchange",
             "psk_key_exchange_groups",
+            "src_ip",
+            "src_intf",
+            "vrf",
+            "vrf_name",
+            "egress_intf",
+            "binding_policy",
         ];
         let row_name = format!("TACPLUS_SERVER_TLS|{address}");
         reject_unknown_fields(&row_name, hash, FIELDS)?;
@@ -318,6 +399,7 @@ impl SonicTlsServerRow {
             psk_secret_ref,
             psk_hash,
             psk_dhe_groups,
+            binding: SonicBinding::from_hash(hash)?,
         })
     }
 
@@ -328,7 +410,7 @@ impl SonicTlsServerRow {
         }
     }
 
-    fn to_server(&self) -> tacacsrs_config::TacacsPlusServer {
+    fn to_server(&self, global: &SonicGlobal) -> tacacsrs_config::TacacsPlusServer {
         let mut server = TacacsPlusServerBuilder::new(
             sonic_server_name(&self.address),
             TacacsPlusServerType::all(),
@@ -340,6 +422,7 @@ impl SonicTlsServerRow {
         server.domain_name.clone_from(&self.domain_name);
         server.sni_enabled = Some(self.sni_enabled);
         server.single_connection = self.single_connection;
+        self.binding.apply(&mut server, global);
         server.client_identity = Some(TlsClientClientIdentity {
             credentials_reference: None,
             certificate: None,
@@ -387,7 +470,7 @@ pub fn map_sonic_tables_to_tacacs_plus(tables: &SonicTacacsTables) -> anyhow::Re
                 builder = builder.with_server(row.to_server(&parsed.global));
             }
             SonicCandidateRow::Tls(row) => {
-                builder = builder.with_server(row.to_server());
+                builder = builder.with_server(row.to_server(&parsed.global));
             }
         }
     }
@@ -480,6 +563,8 @@ struct SonicGlobal {
     timeout: Option<u16>,
     passkey: Option<String>,
     src_intf: Option<String>,
+    egress_intf: Option<String>,
+    binding_policy: Option<tacacsrs_config::tacacsrs::BindingPolicy>,
 }
 
 impl SonicGlobal {
@@ -500,6 +585,12 @@ impl SonicGlobal {
                         g.src_intf = Some(value.clone());
                     }
                 }
+                "egress_intf" => {
+                    if !value.is_empty() {
+                        g.egress_intf = Some(value.clone());
+                    }
+                }
+                "binding_policy" => g.binding_policy = parse_binding_policy(Some(value))?,
                 "use_tls" | "domain_name" | "sni_enabled" => {
                     bail!("TACPLUS|global contains unsupported TLS field '{key}'");
                 }
@@ -527,9 +618,7 @@ struct SonicServerRow {
     timeout: Option<u16>,
     passkey: Option<String>,
     single_connection: bool,
-    vrf_name: Option<String>,
-    src_ip: Option<String>,
-    src_intf: Option<String>,
+    binding: SonicBinding,
     server_type: TacacsPlusServerType,
 }
 
@@ -543,9 +632,7 @@ impl SonicServerRow {
             timeout: None,
             passkey: None,
             single_connection: false,
-            vrf_name: None,
-            src_ip: None,
-            src_intf: None,
+            binding: SonicBinding::from_hash(hash)?,
             server_type: TacacsPlusServerType::all(),
         };
 
@@ -583,21 +670,7 @@ impl SonicServerRow {
                         )
                     })?;
                 }
-                "vrf_name" => {
-                    if !value.is_empty() {
-                        row.vrf_name = Some(value.clone());
-                    }
-                }
-                "src_ip" => {
-                    if !value.is_empty() {
-                        row.src_ip = Some(value.clone());
-                    }
-                }
-                "src_intf" => {
-                    if !value.is_empty() {
-                        row.src_intf = Some(value.clone());
-                    }
-                }
+                "vrf" | "vrf_name" | "src_ip" | "src_intf" | "egress_intf" | "binding_policy" => {}
                 "server_type" => {
                     row.server_type = parse_server_type(value).with_context(|| {
                         format!("TACPLUS_SERVER|{address}.server_type='{value}'")
@@ -635,17 +708,7 @@ impl SonicServerRow {
         let mut server = builder.build();
 
         server.single_connection = self.single_connection;
-        server.vrf_instance.clone_from(&self.vrf_name);
-
-        // The YANG model does not permit both `source-ip` and
-        // `source-interface`. Use a per-server value first. Use global
-        // `src_intf` only if the row does not contain a source.
-        if self.src_ip.is_some() {
-            server.source_ip.clone_from(&self.src_ip);
-            server.source_interface = None;
-        } else if let Some(intf) = self.src_intf.as_ref().or(global.src_intf.as_ref()) {
-            server.source_interface = Some(intf.clone());
-        }
+        self.binding.apply(&mut server, global);
 
         server
     }
@@ -1393,6 +1456,133 @@ mod tests {
         .expect("mapping succeeds");
         assert_eq!(cfg.server[0].source_ip.as_deref(), Some("10.0.0.1"));
         assert_eq!(cfg.server[0].source_interface, None);
+    }
+
+    #[test]
+    fn binding_extensions_apply_to_both_tables_and_preserve_rfc_source_semantics() {
+        let mut compatibility = BTreeMap::new();
+        compatibility.insert(
+            "192.0.2.10".to_owned(),
+            h(&[
+                ("src_ip", "192.0.2.1"),
+                ("vrf_name", "mgmt-vrf"),
+                ("egress_intf", "mgmt0"),
+                ("binding_policy", "strict"),
+            ]),
+        );
+        let mut tls = BTreeMap::new();
+        let mut fields = tls_fields("48");
+        fields.insert("src_intf".to_owned(), "source0".to_owned());
+        tls.insert("tls.example.test".to_owned(), fields);
+        let config = map_sonic_tables_to_tacacs_plus(&SonicTacacsTables::with_extended_tables(
+            h(&[("egress_intf", "data0"), ("binding_policy", "best-effort")]),
+            compatibility,
+            tls,
+            SonicHash::new(),
+        ))
+        .unwrap();
+        let tls = &config.server[0];
+        assert_eq!(tls.source_interface.as_deref(), Some("source0"));
+        assert_eq!(tls.egress_interface.as_deref(), Some("data0"));
+        assert_eq!(tls.binding_policy, tacacsrs_config::tacacsrs::BindingPolicy::BestEffort);
+        let tcp = &config.server[1];
+        assert_eq!(tcp.source_ip.as_deref(), Some("192.0.2.1"));
+        assert_eq!(tcp.source_interface, None);
+        assert_eq!(tcp.egress_interface.as_deref(), Some("mgmt0"));
+        assert_eq!(tcp.vrf_instance.as_deref(), Some("mgmt-vrf"));
+        assert_eq!(tcp.binding_policy, tacacsrs_config::tacacsrs::BindingPolicy::Strict);
+    }
+
+    #[test]
+    fn sonic_vrf_and_alias_normalize_for_both_server_tables() {
+        for (canonical, alias, expected) in [
+            (None, None, None),
+            (Some("mgmt"), None, Some("mgmt")),
+            (Some("default"), None, None),
+            (Some(""), None, None),
+            (None, Some("mgmt-vrf"), Some("mgmt-vrf")),
+            (None, Some("default"), None),
+            (Some("mgmt"), Some("mgmt"), Some("mgmt")),
+            (Some("default"), Some(""), None),
+            (Some(""), Some("default"), None),
+        ] {
+            for tls in [false, true] {
+                let mut fields = if tls {
+                    tls_fields("1")
+                } else {
+                    SonicHash::new()
+                };
+                if let Some(value) = canonical {
+                    fields.insert("vrf".to_owned(), value.to_owned());
+                }
+                if let Some(value) = alias {
+                    fields.insert("vrf_name".to_owned(), value.to_owned());
+                }
+                let rows = BTreeMap::from([("192.0.2.49".to_owned(), fields)]);
+                let tables = if tls {
+                    SonicTacacsTables::with_extended_tables(
+                        SonicHash::new(),
+                        BTreeMap::new(),
+                        rows,
+                        SonicHash::new(),
+                    )
+                } else {
+                    SonicTacacsTables::new(SonicHash::new(), rows)
+                };
+                let config = map_sonic_tables_to_tacacs_plus(&tables).unwrap();
+                assert_eq!(config.server[0].vrf_instance.as_deref(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn sonic_vrf_conflicts_and_invalid_canonical_values_fail_both_tables() {
+        for (canonical, alias) in [
+            ("mgmt", Some("other-vrf")),
+            ("mgmt", Some("default")),
+            ("default", Some("mgmt")),
+            ("", Some("mgmt")),
+            ("other-vrf", None),
+        ] {
+            for tls in [false, true] {
+                let mut fields = if tls {
+                    tls_fields("1")
+                } else {
+                    SonicHash::new()
+                };
+                fields.insert("vrf".to_owned(), canonical.to_owned());
+                if let Some(value) = alias {
+                    fields.insert("vrf_name".to_owned(), value.to_owned());
+                }
+                let rows = BTreeMap::from([("192.0.2.49".to_owned(), fields)]);
+                let tables = if tls {
+                    SonicTacacsTables::with_extended_tables(
+                        SonicHash::new(),
+                        BTreeMap::new(),
+                        rows,
+                        SonicHash::new(),
+                    )
+                } else {
+                    SonicTacacsTables::new(SonicHash::new(), rows)
+                };
+                assert!(map_sonic_tables_to_tacacs_plus(&tables).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_binding_extensions_fail_mapping() {
+        for fields in [
+            h(&[("egress_intf", "bad/name")]),
+            h(&[("binding_policy", "ignore")]),
+            h(&[("src_ip", "not-an-ip")]),
+        ] {
+            let tables = SonicTacacsTables::new(
+                SonicHash::new(),
+                BTreeMap::from([("192.0.2.49".to_owned(), fields)]),
+            );
+            assert!(map_sonic_tables_to_tacacs_plus(&tables).is_err());
+        }
     }
 
     #[test]

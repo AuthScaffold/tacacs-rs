@@ -157,6 +157,12 @@ impl PreparedEndpoint {
         self.options.timeout()
     }
 
+    /// Returns the derived local TCP constraints.
+    #[must_use]
+    pub fn local_binding(&self) -> &crate::LocalBinding {
+        self.options.local_binding()
+    }
+
     /// Returns the validity interval for prepared fetched OCSP and CRL evidence.
     #[must_use]
     pub fn revocation_evidence_validity(&self) -> Option<crate::RevocationEvidenceValidity> {

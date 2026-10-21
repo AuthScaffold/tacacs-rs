@@ -10,7 +10,8 @@
 //! Hosts can attach a [`ConnectionGuard`] through [`PreparedEndpoint::with_connection_guard`].
 //! Establishment checks each resolved destination before TCP connect and checks the
 //! connected socket before TLS or TACACS+ I/O. Endpoint clones share the guard.
-//! The host owns listener state and interface discovery. Networking does not interpret YANG.
+//! The host owns listener state and guard-specific interface discovery.
+//! Networking resolves local binding resources during each connection. It does not interpret YANG.
 //!
 //! Certificate TLS validates local and peer authentication dates during each
 //! handshake. Established connections continue after those dates expire.
@@ -44,6 +45,7 @@ mod preparation_payload;
 mod establish;
 mod exchange_error;
 mod destination;
+mod binding;
 pub mod retry;
 pub mod routed;
 mod connection;
@@ -62,6 +64,7 @@ pub use codec::{PacketReadResult, PacketReader, PacketWriteResult, PacketWriter}
 pub use endpoint::{ConnectionGuard, PreparedEndpoint};
 pub use preparation_payload::{PreparationPayload, PreparationPayloadLedger};
 pub use destination::ServerAddress;
+pub use binding::{BindingPolicy, LocalBinding, SourceBinding};
 pub use transport::tls::{
     CertificateIdentity, CertificateTrust, CertificateVerification, CertificateRevocationPolicy,
     PrivateKeyEncoding, RevocationEvidenceValidity, TlsClientConfig,

@@ -71,6 +71,8 @@ fn test_server(address: &str) -> TacacsPlusServer {
         source_ip: None,
         source_interface: None,
         vrf_instance: None,
+        egress_interface: None,
+        binding_policy: tacacsrs_config::tacacsrs::BindingPolicy::BestEffort,
     }
 }
 
@@ -180,7 +182,7 @@ async fn operational_statistics_follow_published_endpoint_identity() {
     assert_eq!(state.statistics().servers[0].statistics.connection_failures, 0);
     let before_rejection = state.statistics();
     let mut invalid = server;
-    invalid.source_interface = Some("unsupported".to_owned());
+    invalid.source_interface = Some("invalid/name".to_owned());
     assert!(state.reload_servers(vec![invalid]).await.is_err());
     assert_eq!(state.statistics(), before_rejection);
     state.reload_servers(vec![]).await.unwrap();

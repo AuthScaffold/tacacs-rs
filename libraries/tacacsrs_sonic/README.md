@@ -79,17 +79,33 @@ behavior. The mapper rejects the former provisional `use_tls`, `domain_name`,
 and `sni_enabled` fields in those tables. TLS configuration belongs only in
 `TACPLUS_SERVER_TLS`.
 
-| Extension key on `TACPLUS_SERVER|<addr>` | YANG field                             |
+| Key on `TACPLUS_SERVER|<addr>` | YANG field                             |
 |------------------------------------------|----------------------------------------|
 | `single_connection`                      | `single-connection`                    |
-| `vrf_name`                               | `vrf-instance`                         |
+| `vrf`                                    | `vrf-instance` for `mgmt`, absent for `default` or empty |
+| `vrf_name`                               | Extension alias for `vrf-instance`     |
 | `src_intf` (also on `global`)            | `source-interface`                     |
 | `src_ip`                                 | `source-ip`                            |
+| `egress_intf` (also on `global`)          | `tacacsrs:egress-interface`             |
+| `binding_policy` (also on `global`)       | `tacacsrs:binding-policy`               |
 | `server_type`                            | `server-type` bitset, defaults to `all`|
 
 Unknown compatibility keys remain tolerated for existing SONiC deployments,
 but the mapper never logs their values. TLS and forwarder tables are strict
 because unknown fields there can change security behavior.
+
+Both server tables accept `vrf`, `vrf_name`, `src_ip`, `src_intf`, `egress_intf`, and `binding_policy`.
+The upstream SONiC `vrf` key accepts `mgmt` or `default`. Empty values also select no VRF.
+The extension alias `vrf_name` supports other Linux VRF names. Its `default` and empty values also select no VRF.
+If both keys exist, their normalized selections must match. Conflicting selections reject the snapshot.
+These rules apply to both the compatibility and TLS tables.
+The [upstream SONiC model](https://github.com/sonic-net/sonic-buildimage/blob/master/src/sonic-yang-models/yang-models/sonic-system-tacacs.yang)
+defines the canonical `vrf` key that `config tacacs add --use-mgmt-vrf` writes.
+`src_intf` selects a source address, not the egress path.
+For named management egress and automatic source selection, set `egress_intf` to the Linux device name.
+Omit `src_ip` and `src_intf` for kernel source selection.
+Per-server values override global values. `binding_policy` accepts `best-effort` (default) or `strict`.
+See [local TCP binding](../../docs/yang-config-guide.md#local-tcp-binding) for fallback scope and Linux requirements.
 
 ## Credential provider
 
