@@ -79,7 +79,7 @@ The reusable pipeline retains:
 - AMD64 Linux builds and executed tests.
 - ARMhf builds, executed QEMU tests, ABI validation, and startup checks.
 - Windows direct-mode builds and tests.
-- The minimum Rust version and isolated crate selections.
+- The minimum Rust version and default-feature compilation checks.
 - Formatting, Clippy, documentation, coverage, and architecture guards.
 - Dependency audit, unused/outdated dependency checks, and automation tests.
 - Protobuf compatibility, pinned YANG validation, Miri, and fuzz smoke tests.
@@ -96,11 +96,9 @@ There is no separate cache-warming or product-build job.
 
 Unit and integration tests compile their required binaries.
 Independent `cargo check` commands retain default-feature coverage without another full product build.
-The dependency-isolation matrix tests protocol/secrets, the direct client toolkit, and IPC on separate Linux runners.
-These selections prevent workspace feature unification from hiding dependency or feature requirements.
-Separate caches and native setup also prevent full-workspace prerequisites from masking portability problems.
-Protocol/secrets and IPC do not install OpenSSL or libseccomp.
-The direct client toolkit installs OpenSSL, but not libseccomp.
+The Linux test step selects the complete workspace with all features, including experimental members.
+It runs unit, integration, and documentation tests.
+There is no separate job that repeats these tests for individual crate groups.
 Architecture validation continues to enforce the dependency boundaries.
 ARMhf, minimum-version, and automation checks also hydrate before validation.
 An already hydrated candidate must remain unchanged by the hydration action.

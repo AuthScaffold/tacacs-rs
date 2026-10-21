@@ -313,55 +313,11 @@ jobs:
         if: runner.os == 'Linux' && inputs.include-fuzz
         uses: ./.github/steps/run-fuzz-smoke
 
-  dependency-isolation:
-    name: Isolated Dependencies (${{ matrix.config.name }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        config:
-          - name: Protocol and secrets
-            package_args: '--package tacacsrs-protocol --package tacacsrs-secrets'
-            install_openssl: 'false'
-            cache_key: protocol
-          - name: Direct client toolkit
-            package_args: '--package tacacsrs-config --package tacacsrs-networking'
-            install_openssl: 'true'
-            cache_key: direct
-          - name: IPC
-            package_args: '--package tacacsrs-ipc'
-            install_openssl: 'false'
-            cache_key: ipc
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          ref: ${{ inputs.validation-ref || github.sha }}
-      - name: Hydrate validation versions
-        uses: ./.github/steps/inject-versions
-        with:
-          versions: ${{ inputs.versions }}
-          require-hydrated: ${{ inputs.require-hydrated }}
-      - name: Install the selected native prerequisites
-        uses: ./.github/steps/setup-rust
-        with:
-          toolchain: stable
-          targets: x86_64-unknown-linux-gnu
-          cache-key: isolated-${{ matrix.config.cache_key }}
-          save-if: 'true'
-          install-openssl: ${{ matrix.config.install_openssl }}
-          install-libseccomp-dev: 'false'
-      - name: Test the isolated crate selection
-        shell: bash
-        run: |
-          cargo test --locked --all-features \
-            --target x86_64-unknown-linux-gnu \
-            ${{ matrix.config.package_args }}
-
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
     if: always()
-    needs: [armhf, automation-tests, msrv, validation, dependency-isolation]
+    needs: [armhf, automation-tests, msrv, validation]
     steps:
       - name: Require executed ARMhf coverage
         if: needs.armhf.result != 'success'

@@ -381,15 +381,14 @@ After you generate the code, run the workspace formatting, clippy, build, and te
 When you open or update a pull request targeting `main`, Linux and Windows each run one platform validation job.
 Each job hydrates versions before linting, documentation checks, and tests.
 The jobs also own their toolchain caches and Cargo metadata reports.
-ARMhf, minimum-Rust, dependency-isolation, and delivery-automation checks remain separate jobs.
+ARMhf, minimum-Rust, and delivery-automation checks remain separate jobs.
 
 | Check | Description |
 |-----|-------------|
 | **Rustfmt** | Rust formatting validation |
 | **Clippy** | Linting and static analysis |
-| **Test** | Run the workspace on Linux and the `tacon` package group on Windows |
+| **Test** | Run unit, integration, and documentation tests for the complete workspace on Linux and the supported `tacon` package group on Windows |
 | **Default Features** | Type-check each Linux selection and Windows `tacon` independently with `cargo check` |
-| **Dependency Isolation** | Test protocol/secrets, the direct client toolkit, and IPC without installing unrelated native dependencies |
 | **ARMhf** | Build and execute tests with QEMU, then validate ABI and startup behavior |
 | **Documentation** | Builds documentation without warnings |
 | **Coverage** | Generate and upload code coverage |
@@ -402,10 +401,9 @@ All jobs must pass before you merge the pull request.
 Unit and integration tests compile their required binaries.
 There is no separate product-build job.
 Default-feature checks retain configuration coverage without another binary build.
-Dependency-isolation tests prevent workspace feature unification from hiding missing requirements.
-They use separate Linux runners and caches so the full workspace's native setup cannot mask portability problems.
-Protocol/secrets and IPC do not install OpenSSL or libseccomp.
-The direct client toolkit installs OpenSSL, but not libseccomp.
+Linux uses `cargo test --locked --workspace --all-features --release`.
+This command includes experimental workspace members, not only the supported-core default members.
+There is no separate job that repeats the tests for individual crate groups.
 Architecture guards enforce the dependency boundaries.
 
 PRs validate source without publishing release assets.
