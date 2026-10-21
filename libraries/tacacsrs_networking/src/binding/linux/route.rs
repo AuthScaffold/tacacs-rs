@@ -1,8 +1,8 @@
 //! Separate policy-table and physical-device checks for bound TCP sockets.
 //!
 //! The source-bearing query uses the socket's device and TCP tuple to check
-//! policy rules. Source-free full-route and resolved queries check physical egress.
-//! IPv6 source-bearing queries do not model strict physical-device selection.
+//! policy rules and physical egress. IPv6 source-free queries can supplement
+//! physical evidence, but cannot override the pinned flow's policy table.
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -31,20 +31,123 @@ impl PolicyContext {
         &self,
         handle: &rtnetlink::Handle,
         destination: SocketAddr,
-        local_port: u16,
+        local: SocketAddr,
         member: u32,
     ) -> anyhow::Result<()> {
-        let local = unspecified_source(destination, local_port);
-        // Older kernels can ignore the member constraint during ECMP selection.
-        // A source-free hash can then differ from the pinned TCP source hash.
         let full_route = self
             .lookup_with_flags(handle, destination, local, RouteFlags::FibMatch)
             .await?;
         self.verify_table_and_type(&full_route)?;
-        verify_full_egress(&full_route, member)?;
         let route = self.lookup(handle, destination, local).await?;
         self.verify_table_and_type(&route)?;
-        verify_egress(&route, member)
+        let error = match verify_full_egress(&full_route, member) {
+            Ok(()) => return verify_egress(&route, member),
+            Err(error) if destination.is_ipv4() => return Err(error),
+            Err(error) => error,
+        };
+        // Ambiguous ECMP and incomplete replies never become alternate evidence.
+        if error
+            .downcast_ref::<crate::binding::Unavailable>()
+            .is_none()
+        {
+            return Err(error);
+        }
+        Self::verify_source_independent(&full_route)?;
+        // A source-bearing IPv6 query lacks the socket's strict-device flag.
+        // Source-free evidence is useful only within the pinned policy table.
+        let local = unspecified_source(destination, local.port());
+        let physical = match self
+            .lookup_with_flags(handle, destination, local, RouteFlags::FibMatch)
+            .await
+        {
+            Ok(route) => route,
+            Err(error) => {
+                return Err(Self::source_free_error(
+                    handle,
+                    error,
+                    destination,
+                    &full_route,
+                    member,
+                )
+                .await);
+            }
+        };
+        ensure!(
+            route_table(&physical) == route_table(&full_route),
+            "IPv6 physical egress is unverifiable across source-dependent policy tables"
+        );
+        self.verify_table_and_type(&physical)?;
+        verify_full_egress(&physical, member)?;
+        let resolved = self
+            .lookup(handle, destination, local)
+            .await
+            .map_err(|error| anyhow::anyhow!("IPv6 physical egress is unverifiable: {error}"))?;
+        ensure!(
+            route_table(&resolved) == route_table(&full_route),
+            "IPv6 physical egress is unverifiable across source-dependent policy tables"
+        );
+        verify_egress(&resolved, member)
+    }
+
+    fn verify_source_independent(route: &RouteMessage) -> anyhow::Result<()> {
+        ensure!(
+            route.header.source_prefix_length == 0,
+            "IPv6 source-specific route cannot prove the requested physical egress"
+        );
+        Ok(())
+    }
+
+    async fn source_free_error(
+        handle: &rtnetlink::Handle,
+        error: anyhow::Error,
+        destination: SocketAddr,
+        pinned: &RouteMessage,
+        member: u32,
+    ) -> anyhow::Error {
+        // Without source rules, the two queries have identical policy inputs.
+        // Otherwise, source-free absence does not prove absence for the TCP flow.
+        match handle
+            .rule()
+            .get(rtnetlink::IpVersion::V6)
+            .execute()
+            .try_collect::<Vec<_>>()
+            .await
+        {
+            Ok(rules) if rules.iter().all(|rule| rule.header.src_len == 0) => {}
+            _ => {
+                return anyhow::anyhow!(
+                    "IPv6 physical egress is unverifiable with source-dependent policy: {error}"
+                )
+            }
+        }
+        // A legacy member rewrite can also cause a source-free lookup error.
+        // Do not call that a missing route when a member route exists.
+        let mut request = RouteMessage::default();
+        request.header.address_family = AddressFamily::Inet6;
+        match handle
+            .route()
+            .get(request)
+            .execute()
+            .try_collect::<Vec<_>>()
+            .await
+        {
+            Ok(routes)
+                if !routes.iter().any(|route| {
+                    route_table(route) == route_table(pinned)
+                        && ipv6_destination_matches(route, destination.ip())
+                        && verify_egress(route, member).err().is_none_or(|error| {
+                            error
+                                .downcast_ref::<crate::binding::Unavailable>()
+                                .is_none()
+                        })
+                }) =>
+            {
+                error
+            }
+            _ => anyhow::anyhow!(
+                "IPv6 physical egress is unverifiable despite an available member route: {error}"
+            ),
+        }
     }
 
     pub(super) async fn select_source(
@@ -183,14 +286,7 @@ impl PolicyContext {
     }
 
     fn verify_table_and_type(&self, route: &RouteMessage) -> anyhow::Result<()> {
-        let table = route
-            .attributes
-            .iter()
-            .find_map(|attribute| match attribute {
-                RouteAttribute::Table(table) => Some(*table),
-                _ => None,
-            })
-            .unwrap_or(u32::from(route.header.table));
+        let table = route_table(route);
         if self.vrf_table.is_some_and(|expected| table != expected) {
             return Err(unavailable(
                 Scope::Route,
@@ -211,6 +307,37 @@ impl PolicyContext {
         }
         Ok(())
     }
+}
+
+fn route_table(route: &RouteMessage) -> u32 {
+    route
+        .attributes
+        .iter()
+        .find_map(|attribute| match attribute {
+            RouteAttribute::Table(table) => Some(*table),
+            _ => None,
+        })
+        .unwrap_or(u32::from(route.header.table))
+}
+
+fn ipv6_destination_matches(route: &RouteMessage, destination: IpAddr) -> bool {
+    let IpAddr::V6(destination) = destination else {
+        return true;
+    };
+    let length = route.header.destination_prefix_length;
+    if length == 0 || length > 128 {
+        return true;
+    }
+    route
+        .attributes
+        .iter()
+        .find_map(|attribute| match attribute {
+            RouteAttribute::Destination(RouteAddress::Inet6(prefix)) => Some(
+                u128::from(*prefix) >> (128 - length) == u128::from(destination) >> (128 - length),
+            ),
+            _ => None,
+        })
+        .unwrap_or(true)
 }
 
 fn unspecified_source(destination: SocketAddr, port: u16) -> SocketAddr {
@@ -297,6 +424,30 @@ mod tests {
     use rtnetlink::packet_route::route::RouteNextHop;
 
     use super::*;
+
+    #[test]
+    fn source_specific_alternate_member_is_not_source_free_evidence() {
+        let mut pinned = RouteMessage::default();
+        pinned.header.kind = RouteType::Unicast;
+        pinned.header.table = 100;
+        pinned.header.source_prefix_length = 64;
+        pinned.attributes = vec![
+            RouteAttribute::Source("2001:db8:1::".parse::<Ipv6Addr>().unwrap().into()),
+            RouteAttribute::Oif(8),
+        ];
+        let mut source_free = pinned.clone();
+        source_free.header.source_prefix_length = 0;
+        source_free.attributes = vec![RouteAttribute::Oif(7)];
+        verify_full_egress(&source_free, 7).unwrap();
+        assert!(verify_full_egress(&pinned, 7).is_err());
+        let error = PolicyContext::verify_source_independent(&pinned).unwrap_err();
+        assert!(error.to_string().contains("source-specific route"));
+        assert!(error
+            .downcast_ref::<crate::binding::Unavailable>()
+            .is_none());
+        PolicyContext::verify_source_independent(&source_free).unwrap();
+        verify_full_egress(&pinned, 8).unwrap();
+    }
 
     #[test]
     fn older_kernel_resolved_ecmp_hop_does_not_prove_full_egress() {

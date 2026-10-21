@@ -128,6 +128,69 @@ pub(super) async fn run() {
         ip(&[
             family, "route", "add", prefix, "via", gateway, "dev", "mgmt0", "metric", "5",
         ]);
+        // The pinned source selects the VRF. The source-free flow selects main.
+        for main_present in [true, false] {
+            ip(&[
+                family,
+                "rule",
+                "add",
+                "priority",
+                "98",
+                "from",
+                source_prefix,
+                "oif",
+                "mgmt0",
+                "lookup",
+                "100",
+            ]);
+            ip(&[
+                family, "rule", "add", "priority", "99", "oif", "mgmt0", "lookup", "main",
+            ]);
+            ip(&[
+                family,
+                "rule",
+                "add",
+                "priority",
+                "100",
+                "oif",
+                "mgmt0",
+                "unreachable",
+            ]);
+            if !main_present {
+                ip(&[
+                    family, "route", "del", prefix, "dev", "mgmt0", "metric", "5",
+                ]);
+            }
+            let warnings = warning_count();
+            for choice in [
+                SourceBinding::Ip(source.parse().unwrap()),
+                SourceBinding::Interface("mgmt0".to_owned()),
+            ] {
+                for policy in [BindingPolicy::Strict, BindingPolicy::BestEffort] {
+                    let binding = LocalBinding::new(
+                        Some(choice.clone()),
+                        Some("mgmt0"),
+                        Some("mgmt-vrf"),
+                        policy,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        receive(destination, &binding).await.unwrap(),
+                        format!("{source} mgmt-peer\n")
+                    );
+                }
+            }
+            assert_eq!(warning_count(), warnings);
+            ip(&[family, "rule", "del", "priority", "100"]);
+            ip(&[family, "rule", "del", "priority", "99"]);
+            ip(&[family, "rule", "del", "priority", "98"]);
+            if !main_present {
+                ip(&[
+                    family, "route", "add", prefix, "via", gateway, "dev", "mgmt0", "metric", "5",
+                ]);
+            }
+        }
+        println!("PASS {family}: explicit and interface sources retain from-plus-oif policy without fallback");
         ip(&[
             family,
             "rule",
@@ -214,6 +277,46 @@ pub(super) async fn run() {
     }
 
     let destination: SocketAddr = "[2001:db8:ffff::49]:49490".parse().unwrap();
+    ip(&[
+        "-6",
+        "route",
+        "add",
+        "table",
+        "100",
+        "2001:db8:ffff::49/128",
+        "from",
+        "2001:db8:1::/64",
+        "via",
+        "2001:db8:6::2",
+        "dev",
+        "vrf-alt0",
+    ]);
+    for choice in [
+        SourceBinding::Ip("2001:db8:1::1".parse().unwrap()),
+        SourceBinding::Interface("mgmt0".to_owned()),
+    ] {
+        for policy in [BindingPolicy::Strict, BindingPolicy::BestEffort] {
+            let binding =
+                LocalBinding::new(Some(choice.clone()), Some("mgmt0"), Some("mgmt-vrf"), policy)
+                    .unwrap();
+            let warnings = warning_count();
+            let error = receive(destination, &binding).await.unwrap_err();
+            assert!(error.to_string().contains("source-specific route"), "{error:#}");
+            assert!(error.downcast_ref::<Unavailable>().is_none(), "{error:#}");
+            assert_eq!(warning_count(), warnings);
+        }
+    }
+    ip(&[
+        "-6",
+        "route",
+        "del",
+        "table",
+        "100",
+        "2001:db8:ffff::49/128",
+        "from",
+        "2001:db8:1::/64",
+    ]);
+    println!("PASS IPv6: source-specific alternate member never escapes or permits fallback");
     // A source-bearing IPv6 route query can return data0 despite RTA_OIF.
     main_backend_routes("-6", false);
     ip(&[

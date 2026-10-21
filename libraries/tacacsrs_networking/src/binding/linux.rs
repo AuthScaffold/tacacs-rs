@@ -232,10 +232,8 @@ async fn discover(
     }
     let local = socket.local_addr()?;
     if let Some(member) = device.filter(|link| !is_vrf(link)) {
-        // Before Linux 5.18, a member binding can select another VRF member.
-        // A source-free query preserves IPv6's strict-device lookup semantics.
         context
-            .verify_member(handle, destination, local.port(), member.header.index)
+            .verify_member(handle, destination, local, member.header.index)
             .await?;
     }
     match context.verify(handle, destination, local).await {

@@ -121,14 +121,22 @@ For mandatory isolation, select `strict`.
   Connection refusal, connection reset, and generic timeouts do not permit fallback.
   DNS errors, host-guard errors, TLS errors, and authentication errors do not permit fallback.
 
-The client applies `SO_BINDTODEVICE` and checks physical egress through source-free full-route and resolved TCP queries.
+The client applies `SO_BINDTODEVICE` and checks the full route and resolved route for the pinned TCP flow.
 Before Linux 5.18, a VRF-member socket binding alone does not enforce physical egress.
 Linux commit [`40867d74c374`](https://github.com/torvalds/linux/commit/40867d74c374) preserves the original member during route selection.
 The full-route query uses `RTM_F_FIB_MATCH`. Every live multipath hop must use the requested member before the resolved output can pass.
 Mixed-device multipath fails without fallback, even when the resolved query selects the requested member.
 Nexthop-ID routes and incomplete full-route replies fail without fallback because they do not prove physical egress.
-IPv6 source-bearing queries do not model strict physical-device selection, so they do not determine egress.
-This separation preserves valid nonpreferred IPv6 routes.
+IPv6 source-bearing queries do not model the socket's strict physical-device selection.
+For a different output device, source-free queries can supply physical evidence within the same policy table.
+This alternate evidence requires a source-independent pinned route.
+A source-specific pinned route through another member fails explicitly, without fallback, because physical egress is unverifiable.
+Source-free errors permit fallback only when no IPv6 policy rule has a source prefix.
+The pinned table must also lack a possible member route for the destination.
+An available member route with an inconclusive lookup produces an explicit error, not a missing-route classification.
+Source-free table differences never permit fallback.
+These checks preserve valid nonpreferred IPv6 routes without a kernel-version assumption.
+The source-specific regression runs on the current kernel. Legacy-kernel runtime behavior remains untested.
 
 For automatic selection, a short-lived local socket reserves the TCP port before the source lookup.
 The connection socket then binds that source and port before the reservation closes.
