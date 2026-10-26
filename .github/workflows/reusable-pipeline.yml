@@ -128,7 +128,7 @@ jobs:
         shell: bash
         run: env -u CARGO_TARGET_DIR cargo +1.91.0 test --manifest-path .github/tools/api-classifier/Cargo.toml --locked
       - name: Install dependency auditor
-        uses: taiki-e/install-action@7be9fd86bd1707236395105d6e9329dd1511a7e1 # v2.79.0
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-audit
       - name: Audit API classifier dependencies
