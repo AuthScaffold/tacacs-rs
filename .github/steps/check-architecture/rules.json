@@ -1,5 +1,5 @@
 {
-  "description": "Architecture rules for the tacacs-rs workspace. The allowlist names the production (normal) workspace-to-workspace edges that Cargo may resolve. The guards preserve the external and transitive dependency boundaries that previously lived inline in .github/steps/run-tests/action.yml. Rules track the 17 real workspace packages, not any proposed renames.",
+  "description": "Architecture rules for the tacacs-rs workspace. The allowlist names the production workspace edges that Cargo can resolve. The guards preserve external and transitive dependency boundaries. Rules track the real workspace packages.",
   "allowed_workspace_edges": {
     "tacacsrs-secrets": [],
     "tacacsrs-unix-socket": [],
@@ -30,6 +30,11 @@
     "tacacsrs-sonic": [
       "tacacsrs-config",
       "tacacsrs-credential-resolution"
+    ],
+    "tacacsrs-kubesonic": [
+      "tacacsrs-config",
+      "tacacsrs-credential-resolution",
+      "tacacsrs-secrets"
     ],
     "tacacsrs-agent": [
       "tacacsrs-config",
@@ -67,7 +72,8 @@
       "tacacsrs-networking",
       "tacacsrs-protocol",
       "tacacsrs-secrets",
-      "tacacsrs-sonic"
+      "tacacsrs-sonic",
+      "tacacsrs-kubesonic"
     ],
     "tacacsrs-agent-health": [
       "tacacsrs-ipc"
@@ -78,6 +84,21 @@
     ]
   },
   "forbidden_dependency_guards": [
+    {
+      "name": "kubesonic-adapter",
+      "description": "Keep the KubeSONiC adapter independent of daemon lifecycle and IPC hosting.",
+      "roots": [
+        "tacacsrs-kubesonic"
+      ],
+      "forbidden": [
+        "clap",
+        "tonic",
+        "prost",
+        "tacacsrs-agent",
+        "tacacsrs-ipc",
+        "tacacsrs-sonic"
+      ]
+    },
     {
       "name": "pure-protocol",
       "description": "Check pure protocol dependencies. The protocol package stays free of async runtime, TLS, IPC, store, and higher-layer workspace code.",

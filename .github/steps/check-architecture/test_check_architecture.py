@@ -39,7 +39,7 @@ def test_unknown_resolved_dependency_kind_is_rejected():
 def test_incomplete_metadata_cannot_pass(metadata):
     assert validate_all(metadata, {"allowed_workspace_edges": {}})
 
-# The 14 supported-core default members, as in the root Cargo.toml.
+# Supported-core default members, as in the root Cargo.toml.
 CORE_DEFAULT_MEMBERS = [
     "tacacsrs-protocol",
     "tacacsrs-secrets",
@@ -51,6 +51,7 @@ CORE_DEFAULT_MEMBERS = [
     "tacacsrs-credential-resolution",
     "tacacsrs-credential-http",
     "tacacsrs-sonic",
+    "tacacsrs-kubesonic",
     "tacacsrs-bash-plugin",
     "tacon",
     "tacacsrs-agentd",
@@ -189,8 +190,8 @@ def test_golden_metadata_passes(golden_metadata, rules):
     assert validate_all(golden_metadata, rules) == []
 
 
-def test_rules_cover_seventeen_packages(rules):
-    assert len(rules["allowed_workspace_edges"]) == 17
+def test_rules_cover_eighteen_packages(rules):
+    assert len(rules["allowed_workspace_edges"]) == 18
 
 
 # ---------------------------------------------------------------------------
