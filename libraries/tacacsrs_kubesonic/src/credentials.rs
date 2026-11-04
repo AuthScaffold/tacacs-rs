@@ -318,6 +318,61 @@ impl CredentialChangeSource for MountedCredentials {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn notifications_follow_rotated_targets_without_periodic_refresh() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let first = root.join("first.pem");
+        let second = root.join("second.pem");
+        let current = root.join("current.pem");
+        let ca_file = root.join("ca.pem");
+        let trust = root.join("trust");
+        std::fs::create_dir(&trust).unwrap();
+        std::fs::write(&first, "first").unwrap();
+        std::fs::write(&second, "second").unwrap();
+        std::fs::write(&ca_file, "ca").unwrap();
+        std::os::unix::fs::symlink(&first, &current).unwrap();
+        let mut settings = crate::environment::Environment::parse(Default::default())
+            .unwrap()
+            .credentials;
+        settings.certificate = current.clone();
+        settings.key = current.clone();
+        settings.ca_file = ca_file;
+        settings.ca_directory = trust.clone();
+        settings.debounce = std::time::Duration::from_millis(10);
+        settings.reconcile_interval = std::time::Duration::from_secs(60);
+        let mut stream = MountedCredentials::new(settings).subscribe().await.unwrap();
+        assert!(matches!(stream.next().await, Some(CredentialChangeEvent::Recovered)));
+        std::fs::write(root.join("unrelated.log"), "not a credential").unwrap();
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(50), stream.next())
+            .await
+            .is_err());
+
+        let replacement = root.join("next.pem");
+        std::os::unix::fs::symlink(&second, &replacement).unwrap();
+        std::fs::rename(replacement, &current).unwrap();
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+                .await
+                .unwrap(),
+            Some(CredentialChangeEvent::Changed(_))
+        ));
+        std::fs::write(&second, "changed target").unwrap();
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+                .await
+                .unwrap(),
+            Some(CredentialChangeEvent::Changed(_))
+        ));
+        std::fs::write(trust.join("012abcde.0"), "changed trust").unwrap();
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+                .await
+                .unwrap(),
+            Some(CredentialChangeEvent::Changed(_))
+        ));
+    }
+
     #[test]
     fn trust_directory_matches_openssl_certificate_hash_names() {
         assert!(hashed_certificate_name("12abcdef.0"));
