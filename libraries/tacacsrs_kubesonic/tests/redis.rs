@@ -154,3 +154,17 @@ async fn registration_owns_only_complete_unchanged_rows() {
     registration.cleanup().await.unwrap();
     assert!(!redis.command::<bool>(redis::cmd("EXISTS").arg(key)).await);
 }
+
+#[tokio::test]
+#[ignore = "requires redis-server"]
+async fn uncertain_registration_cannot_report_successful_cleanup() {
+    let redis = Redis::start().await;
+    let mut settings = redis.settings.clone();
+    settings.command_timeout = Duration::from_millis(20);
+    let mut registration = LoopbackRegistration::new(settings, 32, 5049);
+    redis
+        .command::<()>(redis::cmd("CLIENT").arg("PAUSE").arg(500).arg("WRITE"))
+        .await;
+    assert!(registration.reconcile(true).await.is_err());
+    assert!(registration.cleanup().await.is_err());
+}

@@ -109,22 +109,22 @@ pub(crate) async fn run_registration(
     };
     let mut initialized = false;
     loop {
+        if cancellation.is_cancelled() {
+            break;
+        }
         let ready = health.borrow_and_update().is_readiness_serving();
         let operation = async {
             if !initialized {
                 registrar.row.remove_stale().await?;
                 initialized = true;
             }
+            if cancellation.is_cancelled() {
+                return Ok(());
+            }
             registrar.row.reconcile(ready).await
         };
-        tokio::select! {
-            biased;
-            () = cancellation.cancelled() => break,
-            result = operation => {
-                if result.is_err() {
-                    log::warn!("Loopback registration is unavailable; retrying");
-                }
-            }
+        if operation.await.is_err() {
+            log::warn!("Loopback registration is unavailable; retrying");
         }
         tokio::select! {
             biased;

@@ -12,6 +12,7 @@ pub struct LoopbackRegistration {
     priority: u16,
     port: u16,
     owned: bool,
+    uncertain: bool,
 }
 
 impl LoopbackRegistration {
@@ -23,6 +24,7 @@ impl LoopbackRegistration {
             priority,
             port,
             owned: false,
+            uncertain: false,
         }
     }
 
@@ -53,10 +55,12 @@ impl LoopbackRegistration {
     pub async fn reconcile(&mut self, ready: bool) -> anyhow::Result<()> {
         let exists: bool = self.command(redis::cmd("EXISTS").arg(KEY)).await?;
         if exists {
+            anyhow::ensure!(!self.uncertain, "A previous loopback registration outcome is unknown");
             return Ok(());
         }
         self.owned = false;
         if ready {
+            self.uncertain = true;
             self.owned = self
                 .command(
                     redis::cmd("EVAL")
@@ -67,6 +71,7 @@ impl LoopbackRegistration {
                         .arg(self.priority),
                 )
                 .await?;
+            self.uncertain = false;
             if self.owned {
                 log::info!("Registered ready loopback proxy");
             } else {
@@ -81,6 +86,10 @@ impl LoopbackRegistration {
     /// # Errors
     /// Returns an error when ConfigDB cannot complete cleanup.
     pub async fn cleanup(&mut self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.uncertain,
+            "Cannot confirm ownership after an uncertain loopback registration"
+        );
         if self.owned {
             let removed: bool = self
                 .command(
