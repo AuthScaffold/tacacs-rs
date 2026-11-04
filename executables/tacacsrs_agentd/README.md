@@ -21,7 +21,7 @@ tacacsrs-agent-health \
     --timeout-seconds 2
 ```
 
-Use `--host-integration none` in containers. `auto` selects systemd only when `NOTIFY_SOCKET` is present. Explicit `systemd` requires the notification socket and helper, sends `READY=1` once, and sends `STOPPING=1` before listener drain.
+Outside KubeSONiC mode, use `--host-integration none` in containers. KubeSONiC defaults `AAAAGENT_PROCESS_HOST_INTEGRATION` to `none`. `auto` selects systemd only when `NOTIFY_SOCKET` is present. Explicit `systemd` requires the notification socket and helper, sends `READY=1` once, and sends `STOPPING=1` before listener drain.
 
 The daemon supervises SONiC ConfigDB startup and notification subscriptions.
 In SONiC mode, it loads the forwarder profile before binding listeners. It retries unavailable configuration with capped backoff.
@@ -39,8 +39,7 @@ The independent `PolicySupervisor` submits canonical policy through `apply_polic
 Host integration, configuration supervision, and serving remain critical peers under one shutdown budget.
 The [agent embedding guide](../../libraries/tacacsrs_agent/README.md#embedding) documents the public contract and removed reload variants.
 
-Use `--runtime-policy <FILE>` to load live failover strategies and request
-limits. The daemon keeps the last-known-good policy after an invalid update.
+Outside KubeSONiC mode, use `--runtime-policy <FILE>` to load live failover strategies and request limits. The daemon keeps the last-known-good policy after an invalid update. KubeSONiC uses the startup `AAAAGENT_POLICY_` inputs instead.
 
 Set `shutdown-timeout-seconds` in that canonical policy resource to bound graceful service and peer cleanup. Its default is 30 seconds; zero is invalid.
 The daemon captures the applied value once when cleanup begins. Later policy updates do not renew the deadline.
@@ -49,11 +48,11 @@ Systemd notifications use owned asynchronous child processes, so a stalled helpe
 
 ## Operational Statistics
 
-Use `--statistics-file FILE` for private, atomically replaced read-only YANG statistics once per second.
-The report identifies the runtime generation and each counter epoch. It never includes credentials or command data.
-Unchanged endpoints retain counters across reloads; replacements start a new counter lifetime.
-The last report remains after shutdown. Check process health before treating it as current.
-See [operational statistics](../../docs/tacacsrs-agentd.md#operational-statistics) for counter semantics and failure behavior.
+Outside KubeSONiC mode, use `--statistics-file FILE` for private, atomically replaced read-only YANG statistics once per second. In KubeSONiC mode, use `AAAAGENT_PROCESS_STATISTICS_FILE` instead of that flag.
+
+The report identifies the runtime generation and each counter epoch. It never includes credentials or command data. Unchanged endpoints retain counters across reloads. Replacements start a new counter lifetime. The last report remains after shutdown.
+
+Before you use the last report as current data, verify process health. See [operational statistics](../../docs/tacacsrs-agentd.md#operational-statistics) for counter semantics and failure behavior.
 
 ## Optional Profiling
 
@@ -91,6 +90,8 @@ fallback.
 ## TLS Client Certificates and Keys
 
 When the upstream TACACS+ server requires the daemon to present a TLS client identity, use `--client-certificate` and `--client-key` with `--use-tls`.
+
+KubeSONiC uses `AAAAGENT_TLS_CLIENT_CERTIFICATE` and `AAAAGENT_TLS_CLIENT_KEY` instead of these flags. Its key path defaults to the certificate path.
 
 - Provide both flags together.
 - Both files can be PEM or DER. The daemon detects PEM input and converts it to DER before it builds the runtime connection configuration.
