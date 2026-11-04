@@ -82,17 +82,6 @@ pub(crate) struct ExponentialBackoff {
     maximum: Duration,
 }
 
-impl ExponentialBackoff {
-    /// Creates production datastore retry timing.
-    #[must_use]
-    pub(crate) const fn production() -> Self {
-        Self {
-            initial: Duration::from_millis(250),
-            maximum: Duration::from_secs(30),
-        }
-    }
-}
-
 impl RetryBackoff for ExponentialBackoff {
     fn delay(&self, attempt: u32) -> Duration {
         let exponent = attempt.saturating_sub(1).min(16);
@@ -139,12 +128,16 @@ impl ConfigSupervisor {
         health: RuntimeHealthPublisher,
         config_filter: Arc<dyn TacacsPlusFilter>,
     ) -> Self {
+        let policy = datastore.runtime_policy();
         Self::with_backoff(
             datastore,
             service,
             health,
             config_filter,
-            Arc::new(ExponentialBackoff::production()),
+            Arc::new(ExponentialBackoff {
+                initial: policy.retry_initial(),
+                maximum: policy.retry_max(),
+            }),
         )
     }
 

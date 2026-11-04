@@ -4,6 +4,12 @@
 
 For full deployment and failover guidance, see [../../docs/tacacsrs-agentd.md](../../docs/tacacsrs-agentd.md).
 
+## KubeSONiC containers
+
+Use `tacacsrs-agentd --kubesonic` for the environment-only KubeSONiC profile. It reads existing server rows without requiring SONiC forwarder or TLS tables. All supported runtime controls use grouped `AAAAGENT_` variables. Server and credential updates use native supervision without child-process restarts.
+
+The profile defaults to both local services, mounted kubelet identity, explicit mounted CA trust, and disabled loopback registration. See the [KubeSONiC guide](../../libraries/tacacsrs_kubesonic/README.md) for the full input inventory, clear-list policy, registration ownership, and migration rules.
+
 ## Health and Host Integration
 
 When the Client API is enabled, its existing endpoint also serves standard `grpc.health.v1.Health` names for startup, liveness, readiness, the overall empty name, and `tacacsrs.agent.v1.TacacsAgent`. Use the separate `tacacsrs-agent-health` executable:

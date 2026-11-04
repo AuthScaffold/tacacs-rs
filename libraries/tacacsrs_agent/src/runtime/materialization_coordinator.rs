@@ -164,6 +164,8 @@ impl PublishedMaterial {
 
 struct CoordinatorState {
     desired_source: Option<Arc<TacacsPlus>>,
+    accepted_source: Option<Arc<TacacsPlus>>,
+    retain_source: bool,
     desired_runtime: DesiredRuntime,
     published: PublishedMaterial,
     revision: MaterializationRevision,
@@ -176,6 +178,8 @@ impl Default for CoordinatorState {
     fn default() -> Self {
         Self {
             desired_source: None,
+            accepted_source: None,
+            retain_source: false,
             desired_runtime: DesiredRuntime::Unfiltered(
                 DependencyKnowledge::Known(BTreeMap::new()),
             ),
@@ -185,6 +189,18 @@ impl Default for CoordinatorState {
             source_admission: None,
             pending_refresh: false,
         }
+    }
+}
+
+impl CoordinatorState {
+    fn admit(&mut self, source: Arc<TacacsPlus>, admission: CandidateAdmission) -> SourceRevision {
+        self.revision.source.advance();
+        self.desired_source = Some(source);
+        self.source_admission = Some(admission);
+        self.pending_refresh = false;
+        self.desired_runtime = DesiredRuntime::Unfiltered(DependencyKnowledge::Unknown);
+        self.source_current = true;
+        self.revision.source
     }
 }
 
@@ -320,20 +336,34 @@ impl MaterializationCoordinator {
         .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn admit_source_at(
         &self,
         source: Arc<TacacsPlus>,
         admission: CandidateAdmission,
     ) -> SourceRevision {
         let mut state = self.state.lock().await;
-        state.revision.source.advance();
-        state.desired_source = Some(source);
-        state.source_admission = Some(admission);
-        state.pending_refresh = false;
-        state.desired_runtime = DesiredRuntime::Unfiltered(DependencyKnowledge::Unknown);
-        state.source_current = true;
+        let revision = state.admit(source, admission);
         self.revision_updates.send_replace(state.revision);
-        state.revision.source
+        revision
+    }
+
+    pub(crate) async fn admit_observation_at(
+        &self,
+        source: Arc<TacacsPlus>,
+        admission: CandidateAdmission,
+        policy: tacacsrs_config::source::EmptyServerPolicy,
+    ) -> Option<(Arc<TacacsPlus>, SourceRevision)> {
+        let mut state = self.state.lock().await;
+        state.retain_source = policy == tacacsrs_config::source::EmptyServerPolicy::Retain;
+        let source = if state.retain_source && source.server.is_empty() {
+            state.accepted_source.clone()?
+        } else {
+            source
+        };
+        let revision = state.admit(source.clone(), admission);
+        self.revision_updates.send_replace(state.revision);
+        Some((source, revision))
     }
 
     pub(crate) async fn reject_source(
@@ -731,8 +761,9 @@ impl MaterializationCoordinator {
                 index.entry(key).or_default().extend(names);
             }
         }
-        let candidates = match self.resolver.as_deref() {
-            Some(resolver) => {
+        let candidates = match (servers.is_empty(), self.resolver.as_deref()) {
+            (true, _) => Vec::new(),
+            (false, Some(resolver)) => {
                 let resolver = CandidateResolver {
                     coordinator: self,
                     attempt: &attempt,
@@ -751,7 +782,7 @@ impl MaterializationCoordinator {
                     ))
                     .await??
             }
-            None => servers
+            (false, None) => servers
                 .into_iter()
                 .map(MaterializedServer::unbounded)
                 .collect(),
@@ -906,6 +937,10 @@ impl MaterializationCoordinator {
                     revision: state.revision,
                     credential_references,
                 }));
+                state.accepted_source = state
+                    .retain_source
+                    .then(|| state.desired_source.clone())
+                    .flatten();
                 Some(MaterializationCommit {
                     revision: state.revision,
                     source_current: state.source_current,

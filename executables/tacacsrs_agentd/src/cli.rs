@@ -68,7 +68,7 @@ fn proxy_credential_source_parser(
 #[command(group(
     ArgGroup::new("config-source")
         .required(true)
-        .args(["config", "server_addresses", "sonic"])
+        .args(["config", "server_addresses", "sonic", "kubesonic"])
 ))]
 pub(crate) struct Cli {
     /// Host process-manager integration mode.
@@ -127,6 +127,10 @@ pub(crate) struct Cli {
     /// Get TACACS+ and local forwarder configuration from `SONiC` `ConfigDB`.
     #[arg(long)]
     pub(crate) sonic: bool,
+
+    /// Use KubeSONiC ConfigDB and AAAAGENT_ environment inputs.
+    #[arg(long)]
+    pub(crate) kubesonic: bool,
 
     /// Override the `SONiC` `ConfigDB` Redis connection URL (default:
     /// `unix:///var/run/redis/redis.sock?db=4`).
