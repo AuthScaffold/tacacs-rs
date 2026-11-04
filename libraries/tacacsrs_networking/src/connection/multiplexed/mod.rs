@@ -3,6 +3,8 @@
 //! This module drives a confirmed single-connection transport and manages the
 //! lifecycle of multiple TACACS+ sessions over it.
 //!
+//! An idle peer can close a connection between packets. The runtime retires that connection without a shutdown error. EOF during an active session or a partial packet remains an error.
+//!
 //! # Architecture
 //!
 //! The connection handler separates these functions:
@@ -18,7 +20,7 @@
 use std::sync::{Arc, OnceLock};
 
 use anyhow::Context;
-use tokio::io::{AsyncRead, AsyncWrite, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 use tacacsrs_secrets::SecretBytes;
 use crate::connection::task::DriverTask;
 
@@ -120,9 +122,7 @@ impl MultiplexedConnection {
             let cleanup = SessionCleanup(Arc::clone(&self.session_manager));
             DriverTask::spawn(async move {
                 let _cleanup = cleanup;
-                runtime
-                    .handle_connection_with_halves(BufReader::new(reader), writer)
-                    .await
+                runtime.handle_connection_with_halves(reader, writer).await
             })
         });
     }
@@ -157,13 +157,14 @@ impl MultiplexedConnection {
 impl ConnectionRuntime {
     async fn handle_connection_with_halves<R, W>(
         &self,
-        mut reader: R,
+        reader: R,
         mut writer: W,
     ) -> anyhow::Result<()>
     where
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send,
     {
+        let mut reader = BufReader::new(reader);
         self.handle_connection_halves(&mut reader, &mut writer)
             .await
     }
@@ -174,7 +175,7 @@ impl ConnectionRuntime {
         writer: &mut W,
     ) -> anyhow::Result<()>
     where
-        R: AsyncRead + Unpin + Send,
+        R: AsyncBufRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send,
     {
         let receiver = self
@@ -250,7 +251,7 @@ impl ConnectionRuntime {
     /// owning TacacsClient clears the cache on the next create_session
     /// and renegotiates unless the connection state is already NotSupported
     /// ```
-    async fn read_handler<R: AsyncRead + Unpin + Send>(
+    async fn read_handler<R: AsyncBufRead + Unpin + Send>(
         &self,
         reader: &mut R,
     ) -> anyhow::Result<()> {
@@ -266,9 +267,22 @@ impl ConnectionRuntime {
                     return Ok(());
                 }
 
-                result = self.packet_reader.read_packet(reader) => result
+                result = async {
+                    match reader.fill_buf().await {
+                        Ok([]) if self.session_manager.retire_if_idle() => None,
+                        Ok(_) => Some(self.packet_reader.read_packet(reader).await),
+                        Err(error) => {
+                            self.packet_reader.record_io_error(&error);
+                            Some(PacketReadResult::HeaderReadError(error))
+                        }
+                    }
+                } => result
             };
 
+            let Some(read_result) = read_result else {
+                log::info!("The upstream peer closed its idle TACACS+ connection");
+                return Ok(());
+            };
             let packet = match read_result {
                 PacketReadResult::Success(packet) => packet,
                 PacketReadResult::HeaderReadError(error) => {

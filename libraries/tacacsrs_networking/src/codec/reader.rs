@@ -60,6 +60,12 @@ impl PacketReader {
         self.counters = counters;
         self
     }
+
+    pub(crate) fn record_io_error(&self, error: &std::io::Error) {
+        if let Some(counters) = &self.counters {
+            counters.io_error(error, false);
+        }
+    }
 }
 
 impl PacketReader {
@@ -72,7 +78,7 @@ impl PacketReader {
         if let Some(counters) = &self.counters {
             match &result {
                 PacketReadResult::HeaderReadError(error)
-                | PacketReadResult::BodyReadError { error, .. } => counters.io_error(error, false),
+                | PacketReadResult::BodyReadError { error, .. } => self.record_io_error(error),
                 PacketReadResult::Success(_) => {}
                 _ => counters.disconnect_reason(crate::DisconnectReason::MalformedPacket),
             }
