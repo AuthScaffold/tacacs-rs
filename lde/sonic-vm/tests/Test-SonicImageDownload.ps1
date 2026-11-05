@@ -5,13 +5,14 @@
     Loads only the image functions from sonic-vm.ps1.
     Uses mocked build metadata and a small compressed image fixture.
 .EXAMPLE
-    pwsh -NoLogo -NoProfile -File ./lde/sonic-vm/Test-SonicImageDownload.ps1
+    pwsh -NoLogo -NoProfile -File ./lde/sonic-vm/tests/Test-SonicImageDownload.ps1
 #>
 [CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
-$manager = Join-Path $PSScriptRoot 'sonic-vm.ps1'
+$helperDirectory = Split-Path $PSScriptRoot -Parent
+$manager = Join-Path $helperDirectory 'sonic-vm.ps1'
 $temporaryDirectory = Join-Path ([IO.Path]::GetTempPath()) "sonic-image-tests-$([Guid]::NewGuid().ToString('N'))"
 $testContext = @{
     assertions = 0

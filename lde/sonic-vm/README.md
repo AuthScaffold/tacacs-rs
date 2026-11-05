@@ -550,13 +550,13 @@ Start with the exact error and the current VM state. Do not delete disks, reset 
 
 ## Run the helper regression tests
 
-Two regression helpers cover the VM manager without starting a guest. [Test-SonicImageDownload.ps1](Test-SonicImageDownload.ps1) uses mocked build metadata and a small compressed image fixture to check latest-build selection, cached images, explicit overrides, and errors. [Test-SonicTacacsManagement.ps1](Test-SonicTacacsManagement.ps1) replaces SSH and native SONiC commands with local fixtures to check the TACACS+ actions, including validation, warnings, secret handling, result verification, and save behavior.
+The two regression helpers in [tests/](tests/) cover the VM manager without starting a guest. [Test-SonicImageDownload.ps1](tests/Test-SonicImageDownload.ps1) uses mocked build metadata and a small compressed image fixture to check latest-build selection, cached images, explicit overrides, and errors. [Test-SonicTacacsManagement.ps1](tests/Test-SonicTacacsManagement.ps1) replaces SSH and native SONiC commands with local fixtures to check the TACACS+ actions, including validation, warnings, secret handling, result verification, and save behavior.
 
 Use PowerShell 7 to run both tests; the TACACS+ tests also need Bash and Python 3. Neither helper needs Pester or access to the build API. From the helper folder, run:
 
 ```powershell
-pwsh -NoLogo -NoProfile -File .\Test-SonicImageDownload.ps1
-pwsh -NoLogo -NoProfile -File .\Test-SonicTacacsManagement.ps1
+pwsh -NoLogo -NoProfile -File .\tests\Test-SonicImageDownload.ps1
+pwsh -NoLogo -NoProfile -File .\tests\Test-SonicTacacsManagement.ps1
 ```
 
 A successful run prints the number of assertions that passed. These local tests do not replace checking the commands against the SONiC image used for your development work.

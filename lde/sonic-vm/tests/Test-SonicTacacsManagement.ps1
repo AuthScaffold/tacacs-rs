@@ -6,18 +6,19 @@
     Replaces SSH with a local Bash runner and temporary SONiC command fixtures.
     The tests do not change guest configuration or VM lifecycle state.
 .EXAMPLE
-    pwsh -NoLogo -NoProfile -File ./lde/sonic-vm/Test-SonicTacacsManagement.ps1
+    pwsh -NoLogo -NoProfile -File ./lde/sonic-vm/tests/Test-SonicTacacsManagement.ps1
 #>
 [CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
-. $PSScriptRoot\SonicVm.Common.ps1
+$helperDirectory = Split-Path $PSScriptRoot -Parent
+. (Join-Path $helperDirectory 'SonicVm.Common.ps1')
 
 Test-SonicRequiredCommand bash
 Test-SonicRequiredCommand python3
 
-$manager = Join-Path $PSScriptRoot 'sonic-vm.ps1'
+$manager = Join-Path $helperDirectory 'sonic-vm.ps1'
 $temporaryDirectory = Join-Path ([IO.Path]::GetTempPath()) "sonic-tacacs-tests-$([Guid]::NewGuid().ToString('N'))"
 $originalPath = $env:PATH
 $originalStatePath = $env:SONIC_TACACS_TEST_STATE
