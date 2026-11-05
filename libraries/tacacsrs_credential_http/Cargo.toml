@@ -1,6 +1,6 @@
 [package]
 name = "tacacsrs-credential-http"
-version = "0.1.0"
+version = "0.1.1"
 description = "Bounded HTTP retrieval of explicitly configured TACACS+ CRL evidence."
 edition.workspace = true
 rust-version.workspace = true
