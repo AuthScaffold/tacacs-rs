@@ -1,7 +1,7 @@
 #![doc = include_str!("../README.md")]
 
-#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
-compile_error!("tacacsrs-ipc supports Linux GNU only");
+#[cfg(not(all(target_os = "linux", any(target_env = "gnu", target_env = "musl"))))]
+compile_error!("tacacsrs-ipc supports Linux GNU or musl only");
 
 /// Local gRPC client helpers for communication with the central TACACS+ service.
 ///

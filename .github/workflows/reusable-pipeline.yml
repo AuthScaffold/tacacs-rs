@@ -186,6 +186,7 @@ jobs:
               --exclude tacacsrs-bash-plugin
               --exclude tacacsrs-ipc
               --exclude tacacsrs-sonic
+              --exclude tacacsrs-kubesonic
               --exclude tacacsrs-unix-socket
             default_packages: 'tacon'
     steps:

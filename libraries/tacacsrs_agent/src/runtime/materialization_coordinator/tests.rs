@@ -209,6 +209,89 @@ fn known(reference: &str) -> CredentialChangeScope {
 }
 
 #[tokio::test]
+async fn empty_retention_uses_published_source_and_fences_late_replacements() {
+    use tacacsrs_config::source::EmptyServerPolicy;
+    let coordinator = MaterializationCoordinator::new(
+        resolver(&[
+            ("object-a", b"valid-material-long-enough"),
+            ("object-b", b"other-valid-material-long-enough"),
+        ]),
+        ValidationOptions::default(),
+    );
+    let service = service();
+    let admission =
+        || CandidateAdmission::new(crate::config::RuntimeCandidateLimits::default()).unwrap();
+    assert!(coordinator
+        .admit_observation_at(Arc::new(TacacsPlus::empty()), admission(), EmptyServerPolicy::Retain)
+        .await
+        .is_none());
+    let first = source("object-a", "192.0.2.20");
+    let (_, revision) = coordinator
+        .admit_observation_at(Arc::new(first.clone()), admission(), EmptyServerPolicy::Retain)
+        .await
+        .unwrap();
+    let attempt = coordinator
+        .accept_filtered_source(revision, first.clone(), PreparedProxyPolicy::unobfuscated())
+        .await
+        .unwrap();
+    coordinator
+        .publish(coordinator.materialize(attempt).await.unwrap(), &service)
+        .await
+        .unwrap();
+
+    let replacement = source("object-b", "192.0.2.21");
+    let (_, revision) = coordinator
+        .admit_observation_at(Arc::new(replacement.clone()), admission(), EmptyServerPolicy::Retain)
+        .await
+        .unwrap();
+    let attempt = coordinator
+        .accept_filtered_source(revision, replacement, PreparedProxyPolicy::unobfuscated())
+        .await
+        .unwrap();
+    let late = coordinator.materialize(attempt).await.unwrap();
+    let (retained, revision) = coordinator
+        .admit_observation_at(Arc::new(TacacsPlus::empty()), admission(), EmptyServerPolicy::Retain)
+        .await
+        .unwrap();
+    assert_eq!(retained.as_ref(), &first);
+    assert!(matches!(
+        coordinator.publish(late, &service).await.unwrap(),
+        PublicationOutcome::Superseded
+    ));
+    let attempt = coordinator
+        .accept_filtered_source(
+            revision,
+            retained.as_ref().clone(),
+            PreparedProxyPolicy::unobfuscated(),
+        )
+        .await
+        .unwrap();
+    coordinator
+        .publish(coordinator.materialize(attempt).await.unwrap(), &service)
+        .await
+        .unwrap();
+    assert!(coordinator.refresh_credentials().await.is_some());
+    let (clear, revision) = coordinator
+        .admit_observation_at(Arc::new(TacacsPlus::empty()), admission(), EmptyServerPolicy::Clear)
+        .await
+        .unwrap();
+    assert!(clear.server.is_empty());
+    let attempt = coordinator
+        .accept_filtered_source(
+            revision,
+            clear.as_ref().clone(),
+            PreparedProxyPolicy::unobfuscated(),
+        )
+        .await
+        .unwrap();
+    coordinator
+        .publish(coordinator.materialize(attempt).await.unwrap(), &service)
+        .await
+        .unwrap();
+    assert!(coordinator.active_servers().await.is_empty());
+}
+
+#[tokio::test]
 async fn empty_filtered_source_publishes_a_known_empty_catalog() {
     let coordinator = MaterializationCoordinator::without_resolver(ValidationOptions::default());
     let service = service();

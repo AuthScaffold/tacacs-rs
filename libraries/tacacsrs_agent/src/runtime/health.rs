@@ -88,6 +88,8 @@ pub enum UpstreamAvailability {
 /// Typed reason for a live process to operate in a degraded state.
 #[derive(Debug, Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 pub enum DegradationReason {
+    /// A valid empty source intentionally retains the last published server list.
+    RetainedAfterClear,
     /// The runtime cannot reach the datastore.
     DatastoreUnavailable,
     /// The runtime retained an older known-good datastore snapshot.

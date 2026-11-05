@@ -17,6 +17,7 @@
 
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures_core::Stream;
@@ -180,6 +181,15 @@ pub enum ChangeNotificationMode {
     Continuous,
 }
 
+/// Behavior after a valid empty source.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum EmptyServerPolicy {
+    /// Apply the empty canonical source.
+    Clear,
+    /// Keep the last successfully published canonical source.
+    Retain,
+}
+
 /// Runtime behavior declared by a [`ConfigDatastore`] instance.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct DatastoreRuntimePolicy {
@@ -187,6 +197,12 @@ pub struct DatastoreRuntimePolicy {
     pub initial_load: InitialLoadPolicy,
     /// Change-notification behavior.
     pub change_notifications: ChangeNotificationMode,
+    /// Behavior after a valid empty source.
+    pub empty_servers: EmptyServerPolicy,
+    /// Initial delay for source observation recovery.
+    retry_initial: Duration,
+    /// Maximum delay for source observation recovery.
+    retry_max: Duration,
 }
 
 impl DatastoreRuntimePolicy {
@@ -199,7 +215,51 @@ impl DatastoreRuntimePolicy {
         Self {
             initial_load,
             change_notifications,
+            empty_servers: EmptyServerPolicy::Clear,
+            retry_initial: Duration::from_millis(250),
+            retry_max: Duration::from_secs(30),
         }
+    }
+
+    /// Selects empty-source behavior.
+    #[must_use]
+    pub const fn with_empty_servers(mut self, policy: EmptyServerPolicy) -> Self {
+        self.empty_servers = policy;
+        self
+    }
+
+    /// Returns the initial source-recovery delay.
+    #[must_use]
+    pub const fn retry_initial(self) -> Duration {
+        self.retry_initial
+    }
+
+    /// Returns the maximum source-recovery delay.
+    #[must_use]
+    pub const fn retry_max(self) -> Duration {
+        self.retry_max
+    }
+
+    /// Sets bounded source-recovery backoff.
+    ///
+    /// # Errors
+    /// Returns an error for zero, reversed, or unsupported delays.
+    pub fn with_retry_backoff(
+        mut self,
+        initial: Duration,
+        maximum: Duration,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            !initial.is_zero() && initial <= maximum,
+            "Source retry delays must be positive and ordered"
+        );
+        anyhow::ensure!(
+            std::time::Instant::now().checked_add(maximum).is_some(),
+            "Source retry delay exceeds the clock range"
+        );
+        self.retry_initial = initial;
+        self.retry_max = maximum;
+        Ok(self)
     }
 }
 

@@ -17,6 +17,8 @@
 //! handshake. Established connections continue after those dates expire.
 //! Independent OCSP and CRL freshness can still close a transport.
 //!
+//! On 32-bit musl, use musl 1.2 or later and compile dependencies with `--cfg=libc_unstable_musl_v1_2` in `RUSTFLAGS`. This selects the 64-bit time ABI required by modern system OpenSSL.
+//!
 //! Prepare security once, then finalize an endpoint without resolving DNS:
 //!
 //! ```
@@ -35,6 +37,12 @@
 //! assert_eq!(endpoint.address().port(), 300);
 //! # anyhow::Ok(())
 //! ```
+
+#[cfg(all(target_os = "linux", target_env = "musl", target_pointer_width = "32"))]
+const _: () = assert!(
+    std::mem::size_of::<libc::time_t>() == 8,
+    "32-bit musl requires musl 1.2+ and RUSTFLAGS=--cfg=libc_unstable_musl_v1_2 for the OpenSSL time ABI"
+);
 
 mod client;
 pub mod admission;

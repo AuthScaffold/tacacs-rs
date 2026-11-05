@@ -5,7 +5,7 @@ RUN dpkg --add-architecture armhf \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         gcc-arm-linux-gnueabihf libc6-dev-armhf-cross libssl-dev:armhf \
-        libssl-dev pkg-config protobuf-compiler procps python3 qemu-user \
+        libssl-dev pkg-config protobuf-compiler procps python3 qemu-user redis-server openssl \
     && rm -rf /var/lib/apt/lists/* \
     && rustup target add armv7-unknown-linux-gnueabihf
 
@@ -29,6 +29,7 @@ COPY lde/containers/config/certificates lde/containers/config/certificates
 RUN rm -f libraries/tacacsrs_networking/examples/samples/client.*
 COPY lde/containers/config/certificates/client.* libraries/tacacsrs_networking/examples/samples/
 COPY .github/steps/armhf .github/steps/armhf
+COPY .github/steps/kubesonic .github/steps/kubesonic
 
 FROM tools AS verify
 RUN --mount=type=cache,id=tacacsrs-armhf-registry,target=/usr/local/cargo/registry \

@@ -14,6 +14,61 @@ use crate::codec::{PacketReadResult, PacketReader};
 use crate::exchange_error::ProtocolFailure;
 use crate::session::{ClientConversation, ExpectedResponseHeader, PacketDispatchError};
 
+async fn wait_for_driver(connection: &MultiplexedConnection) {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !connection.driver_finished() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn clean_idle_peer_close_is_successful_retirement() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+    let (client, peer) = tokio::io::duplex(256);
+    let (reader, writer) = tokio::io::split(client);
+    connection.run_with_halves(reader, writer);
+    drop(peer);
+    wait_for_driver(&connection).await;
+    assert!(connection.create_session().is_err());
+    connection
+        .close_and_join(crate::RequestDeadline::after(Duration::from_secs(1)).unwrap())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn peer_close_with_an_active_session_remains_an_error() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+    let session = connection.create_session().unwrap();
+    let (client, peer) = tokio::io::duplex(256);
+    let (reader, writer) = tokio::io::split(client);
+    connection.run_with_halves(reader, writer);
+    drop(peer);
+    assert!(session.receive_packet().await.is_err());
+    assert!(connection
+        .close_and_join(crate::RequestDeadline::after(Duration::from_secs(1)).unwrap())
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn partial_idle_header_is_not_a_clean_peer_close() {
+    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+    let (client, mut peer) = tokio::io::duplex(256);
+    let (reader, writer) = tokio::io::split(client);
+    connection.run_with_halves(reader, writer);
+    peer.write_all(&[0xc0]).await.unwrap();
+    drop(peer);
+    wait_for_driver(&connection).await;
+    assert!(connection
+        .close_and_join(crate::RequestDeadline::after(Duration::from_secs(1)).unwrap())
+        .await
+        .is_err());
+}
+
 fn conversation_packet(session_id: u32, seq_no: u8) -> Packet {
     Packet::new(
         Header {

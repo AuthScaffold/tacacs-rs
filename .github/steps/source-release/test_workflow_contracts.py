@@ -21,6 +21,7 @@ WINDOWS_EXCLUDED_PACKAGES = (
     "tacacsrs-bash-plugin",
     "tacacsrs-ipc",
     "tacacsrs-sonic",
+    "tacacsrs-kubesonic",
     "tacacsrs-unix-socket",
 )
 

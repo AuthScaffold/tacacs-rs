@@ -2317,6 +2317,7 @@ dependencies = [
  "clap",
  "clap_mangen",
  "console-subscriber",
+ "env_filter",
  "env_logger",
  "foreign-types",
  "futures-util",
@@ -2332,6 +2333,7 @@ dependencies = [
  "tacacsrs-credential-http",
  "tacacsrs-credential-resolution",
  "tacacsrs-ipc",
+ "tacacsrs-kubesonic",
  "tacacsrs-networking",
  "tacacsrs-protocol",
  "tacacsrs-secrets",
@@ -2429,6 +2431,28 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "tower",
+]
+
+[[package]]
+name = "tacacsrs-kubesonic"
+version = "0.0.0-dev"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "futures-util",
+ "libc",
+ "log",
+ "notify",
+ "redis",
+ "rustls-pki-types",
+ "serde_json",
+ "tacacsrs-config",
+ "tacacsrs-credential-resolution",
+ "tacacsrs-secrets",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "zeroize",
 ]
 
 [[package]]

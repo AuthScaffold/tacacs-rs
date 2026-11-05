@@ -169,7 +169,13 @@ fn build_datastore(
 /// # Errors
 /// Returns an error if the datastore, listeners, runtime policy, credential
 /// providers, or client service cannot be prepared.
-pub(crate) async fn prepare_service(cli: Cli) -> anyhow::Result<PreparedService> {
+pub(crate) async fn prepare_service(
+    cli: Cli,
+    environment: Option<tacacsrs_kubesonic::environment::Environment>,
+) -> anyhow::Result<PreparedService> {
+    if let Some(environment) = environment {
+        return crate::kubesonic::prepare(environment).await;
+    }
     let statistics_file = match &cli.statistics_file {
         Some(path) => {
             let mut protected = Vec::new();
@@ -267,6 +273,7 @@ pub(crate) async fn prepare_service(cli: Cli) -> anyhow::Result<PreparedService>
         host_integration,
         policy_observation,
         statistics_file,
+        loopback: None,
     })
 }
 

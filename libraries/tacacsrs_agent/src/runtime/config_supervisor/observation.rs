@@ -34,8 +34,9 @@ impl ConfigSupervisor {
                         let admission = CandidateAdmission::new(self.service.candidate_limits());
                         drop(candidate.take());
                         if let Ok(admission) = admission {
-                            let revision = self.materialization_coordinator.admit_source_at(Arc::clone(&change.config), admission).await;
-                            candidate = Some(Box::pin(self.prepare_observation(change.config, revision, admission)));
+                            if let Some((source, revision)) = self.admit_observation(change.config, admission).await {
+                                candidate = Some(Box::pin(self.prepare_observation(source, revision, admission)));
+                            }
                         } else {
                             self.materialization_coordinator.reject_observation(&self.health).await;
                         }
@@ -146,12 +147,32 @@ impl ConfigSupervisor {
         candidate: Arc<TacacsPlus>,
     ) -> Result<PublicationOutcome, ()> {
         let admission = CandidateAdmission::new(self.service.candidate_limits()).map_err(|_| ())?;
-        let revision = self
-            .materialization_coordinator
-            .admit_source_at(Arc::clone(&candidate), admission)
-            .await;
+        let (candidate, revision) = self
+            .admit_observation(candidate, admission)
+            .await
+            .ok_or(())?;
         self.prepare_observation(candidate, revision, admission)
             .await
+    }
+
+    async fn admit_observation(
+        &self,
+        source: Arc<TacacsPlus>,
+        admission: CandidateAdmission,
+    ) -> Option<(Arc<TacacsPlus>, crate::SourceRevision)> {
+        let policy = self.datastore.runtime_policy().empty_servers;
+        let retained = source.server.is_empty()
+            && policy == tacacsrs_config::source::EmptyServerPolicy::Retain;
+        let selected = self
+            .materialization_coordinator
+            .admit_observation_at(source, admission, policy)
+            .await;
+        if selected.is_none() {
+            log::warn!("Datastore has no upstreams or previously published source; waiting for configuration");
+        }
+        self.health
+            .set_degraded(DegradationReason::RetainedAfterClear, retained && selected.is_some());
+        selected
     }
 
     async fn prepare_observation(

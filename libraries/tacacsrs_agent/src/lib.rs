@@ -1,7 +1,7 @@
 #![doc = include_str!("../README.md")]
 
-#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
-compile_error!("tacacsrs-agent supports Linux GNU only");
+#[cfg(not(all(target_os = "linux", any(target_env = "gnu", target_env = "musl"))))]
+compile_error!("tacacsrs-agent supports Linux GNU or musl only");
 
 /// Public configuration for the agent runtime.
 pub mod config;

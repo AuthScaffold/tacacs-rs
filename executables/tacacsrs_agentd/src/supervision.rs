@@ -37,6 +37,7 @@ pub(crate) struct PreparedService {
     pub(crate) host_integration: HostIntegration,
     pub(crate) policy_observation: Option<FilePolicyObservation>,
     pub(crate) statistics_file: Option<statistics::StatisticsFile>,
+    pub(crate) loopback: Option<crate::kubesonic::Registrar>,
 }
 
 impl PreparedService {
@@ -50,6 +51,7 @@ impl PreparedService {
             host_integration,
             policy_observation,
             statistics_file,
+            loopback,
         } = self;
         let (credential_resolver, credential_change_source) = credential_provider;
         let datastore_policy = datastore.runtime_policy();
@@ -82,6 +84,11 @@ impl PreparedService {
             let statistics_service = service.clone();
             let health = health.subscribe();
             tokio::spawn(async move {
+                let registration = crate::kubesonic::run_registration(
+                    loopback,
+                    health.clone(),
+                    cancellation.clone(),
+                );
                 let reporting = async {
                     if let Some(file) = statistics_file {
                         file.run(statistics_service, cancellation.clone()).await
@@ -90,7 +97,11 @@ impl PreparedService {
                         Ok(())
                     }
                 };
-                tokio::try_join!(host_integration.run(health, cancellation.clone()), reporting)?;
+                tokio::try_join!(
+                    host_integration.run(health, cancellation.clone()),
+                    reporting,
+                    registration
+                )?;
                 Ok(())
             })
         };
@@ -277,6 +288,7 @@ fn supervisor_exit_to_fatal_error(
 /// Returns a startup, supervision, or cleanup error after the application drains.
 pub(crate) async fn run_until(
     cli: Cli,
+    environment: Option<tacacsrs_kubesonic::environment::Environment>,
     stop: impl std::future::Future<Output = anyhow::Result<()>>,
 ) -> anyhow::Result<()> {
     let cancellation = CancellationToken::new();
@@ -285,7 +297,7 @@ pub(crate) async fn run_until(
         let prepared = tokio::select! {
             biased;
             () = cancellation.cancelled() => return Ok(()),
-            prepared = prepare_service(cli) => prepared?,
+            prepared = prepare_service(cli, environment) => prepared?,
         };
         prepared.run(cancellation.clone()).await
     };
