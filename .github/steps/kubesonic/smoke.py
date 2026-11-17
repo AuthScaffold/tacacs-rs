@@ -59,21 +59,20 @@ class Fixture:
             self.port = listener.getsockname()[1]
         self.environment = {
             key: value for key, value in os.environ.items()
-            if not key.startswith("AAAAGENT_")
-            and key not in {"SSL_CERT_FILE", "SSL_CERT_DIR", "RUST_LOG", "RUST_LOG_STYLE"}
+            if not key.startswith("TACACSD_")
         }
         self.environment.update({
-            "AAAAGENT_CONFIGDB_SOCKET": str(self.socket),
-            "AAAAGENT_CONFIGDB_WATCH_RECONCILE_INTERVAL_SECONDS": "1",
-            "AAAAGENT_TLS_CLIENT_CERTIFICATE": str(directory / "client.pem"),
-            "AAAAGENT_TLS_CA_FILE": str(directory / "ca.pem"),
-            "AAAAGENT_TLS_CA_DIRECTORY": str(directory / "trust"),
-            "AAAAGENT_SERVICES_CLIENT_API_ENDPOINT": str(self.api),
-            "AAAAGENT_SERVICES_TACACS_PROXY_ENDPOINT": f"127.0.0.1:{self.port}",
-            "AAAAGENT_PROCESS_STATISTICS_FILE": str(self.statistics),
-            "AAAAGENT_POLICY_SHUTDOWN_TIMEOUT_SECONDS": "5",
-            "AAAAGENT_LOOPBACK_RETRY_INTERVAL_SECONDS": "1",
-            "AAAAGENT_LOG_STYLE": "never",
+            "TACACSD_CONFIGDB_SOCKET": str(self.socket),
+            "TACACSD_CONFIGDB_WATCH_RECONCILE_INTERVAL_SECONDS": "1",
+            "TACACSD_TLS_CLIENT_CERTIFICATE": str(directory / "client.pem"),
+            "TACACSD_TLS_CA_FILE": str(directory / "ca.pem"),
+            "TACACSD_TLS_CA_DIRECTORY": str(directory / "trust"),
+            "TACACSD_SERVICES_CLIENT_API_ENDPOINT": str(self.api),
+            "TACACSD_SERVICES_TACACS_PROXY_ENDPOINT": f"127.0.0.1:{self.port}",
+            "TACACSD_PROCESS_STATISTICS_FILE": str(self.statistics),
+            "TACACSD_POLICY_SHUTDOWN_TIMEOUT_SECONDS": "5",
+            "TACACSD_LOOPBACK_RETRY_INTERVAL_SECONDS": "1",
+            "TACACSD_LOG_STYLE": "never",
         })
         (directory / "trust").mkdir()
         def openssl(*arguments):
@@ -167,7 +166,7 @@ class Fixture:
         assert not self.api.exists()
 
         self.redis_command("HSET", key, "tcp_port", 449)
-        self.start_agent(AAAAGENT_CONFIGDB_EMPTY_SERVER_POLICY="clear")
+        self.start_agent(TACACSD_CONFIGDB_EMPTY_SERVER_POLICY="clear")
         wait(lambda: self.health("readiness"), "Clear-mode initial publication")
         self.redis_command("DEL", key)
         wait(lambda: not self.health("readiness"), "Clear-mode readiness withdrawal")
@@ -178,7 +177,7 @@ class Fixture:
         assert self.agent.returncode == 0
 
         loopback = "TACPLUS_SERVER|127.0.0.1"
-        self.start_agent(AAAAGENT_LOOPBACK_REGISTRATION_ENABLED="true")
+        self.start_agent(TACACSD_LOOPBACK_REGISTRATION_ENABLED="true")
         wait(lambda: self.redis_command("HGET", loopback, "tcp_port") == str(self.port),
              "Ready registration at configured port")
         self.redis_command("DEL", loopback)

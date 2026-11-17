@@ -1,4 +1,4 @@
-//! Validated, startup-only `AAAAGENT_` inputs.
+//! Validated, startup-only `TACACSD_` inputs.
 //!
 //! Parsing does not read files, connect to Redis, or change the process environment.
 //! Canonical validators own policy and listener constraints.
@@ -15,7 +15,7 @@ use tacacsrs_config::local_services::parse_local_services;
 use tacacsrs_config::policy::parse_runtime_policy;
 use tacacsrs_config::tacacsrs::{LocalServices, RuntimePolicy};
 
-const PREFIX: &str = "AAAAGENT_";
+const PREFIX: &str = "TACACSD_";
 
 pub use tacacsrs_config::source::EmptyServerPolicy;
 
@@ -219,7 +219,7 @@ impl Environment {
             let Some(name) = name.to_str() else {
                 continue;
             };
-            if name.starts_with(PREFIX) || LEGACY.contains(&name) {
+            if name.starts_with(PREFIX) {
                 values.insert(
                     name.to_owned(),
                     value
@@ -233,17 +233,11 @@ impl Environment {
 
     /// Normalizes a captured environment into canonical configuration.
     ///
-    /// Unrelated variables are ignored. Renamed application variables are rejected.
+    /// Only documented `TACACSD_` inputs are accepted. Unrelated variables are ignored.
     ///
     /// # Errors
     /// Returns an error for invalid values or unsupported application inputs.
     pub fn parse(values: BTreeMap<String, String>) -> anyhow::Result<Self> {
-        for legacy in LEGACY {
-            ensure!(
-                !values.contains_key(*legacy),
-                "{legacy} was renamed; use the documented AAAAGENT_ input"
-            );
-        }
         let mut inputs = Inputs(
             values
                 .into_iter()
@@ -251,21 +245,21 @@ impl Environment {
                 .collect(),
         );
         let socket = PathBuf::from(inputs.text("CONFIGDB_SOCKET", "/var/run/redis/redis.sock")?);
-        ensure!(socket.is_absolute(), "AAAAGENT_CONFIGDB_SOCKET must be absolute");
+        ensure!(socket.is_absolute(), "TACACSD_CONFIGDB_SOCKET must be absolute");
         let database = i64::try_from(inputs.number("CONFIGDB_DATABASE", 4)?)
-            .context("AAAAGENT_CONFIGDB_DATABASE exceeds the database range")?;
+            .context("TACACSD_CONFIGDB_DATABASE exceeds the database range")?;
         let empty_servers = match inputs
             .text("CONFIGDB_EMPTY_SERVER_POLICY", "retain")?
             .as_str()
         {
             "retain" => EmptyServerPolicy::Retain,
             "clear" => EmptyServerPolicy::Clear,
-            _ => bail!("AAAAGENT_CONFIGDB_EMPTY_SERVER_POLICY must be retain or clear"),
+            _ => bail!("TACACSD_CONFIGDB_EMPTY_SERVER_POLICY must be retain or clear"),
         };
         let upstream_timeout_seconds = u16::try_from(
             inputs.positive("UPSTREAM_CONNECT_TIMEOUT_SECONDS", 5)?,
         )
-        .context("AAAAGENT_UPSTREAM_CONNECT_TIMEOUT_SECONDS exceeds the server timeout range")?;
+        .context("TACACSD_UPSTREAM_CONNECT_TIMEOUT_SECONDS exceeds the server timeout range")?;
         let source = SourceSettings {
             socket,
             database,
@@ -332,24 +326,24 @@ impl Environment {
                 .context("Loopback priority exceeds the integer range")?,
             retry_interval: inputs.duration("LOOPBACK_RETRY_INTERVAL_SECONDS", 5, false)?,
         };
-        ensure!(loopback.priority <= 64, "AAAAGENT_LOOPBACK_PRIORITY must be in 1..=64");
+        ensure!(loopback.priority <= 64, "TACACSD_LOOPBACK_PRIORITY must be in 1..=64");
         let worker_threads = usize::try_from(inputs.positive("PROCESS_WORKER_THREADS", 1)?)
             .context("Worker count exceeds the platform range")?;
         let host_integration = inputs.text("PROCESS_HOST_INTEGRATION", "none")?;
         ensure!(
             ["none", "auto", "systemd"].contains(&host_integration.as_str()),
-            "AAAAGENT_PROCESS_HOST_INTEGRATION must be none, auto, or systemd"
+            "TACACSD_PROCESS_HOST_INTEGRATION must be none, auto, or systemd"
         );
         let log_style = inputs.text("LOG_STYLE", "auto")?;
         ensure!(
             ["auto", "always", "never"].contains(&log_style.as_str()),
-            "AAAAGENT_LOG_STYLE must be auto, always, or never"
+            "TACACSD_LOG_STYLE must be auto, always, or never"
         );
         let statistics_file = inputs
             .take("PROCESS_STATISTICS_FILE")
             .map(|value| {
                 let path = PathBuf::from(value);
-                ensure!(path.is_absolute(), "AAAAGENT_PROCESS_STATISTICS_FILE must be absolute");
+                ensure!(path.is_absolute(), "TACACSD_PROCESS_STATISTICS_FILE must be absolute");
                 Ok(path)
             })
             .transpose()?;
@@ -367,7 +361,7 @@ impl Environment {
         services.insert("unix-socket-mode".into(), json!(0o666));
         let explicit_proxy = inputs
             .0
-            .contains_key("AAAAGENT_SERVICES_TACACS_PROXY_ENDPOINT");
+            .contains_key("TACACSD_SERVICES_TACACS_PROXY_ENDPOINT");
         for &(field, kind) in SERVICE_FIELDS {
             inputs.canonical("SERVICES", &mut services, field, kind)?;
         }
@@ -379,9 +373,7 @@ impl Environment {
             &json!({"tacacsrs:local-services": services}),
         )?)
         .map_err(|_| {
-            anyhow::anyhow!(
-                "AAAAGENT_SERVICES_ inputs violate canonical local-services constraints"
-            )
+            anyhow::anyhow!("TACACSD_SERVICES_ inputs violate canonical local-services constraints")
         })?;
         if loopback.enabled {
             let endpoint = local_services
@@ -395,7 +387,7 @@ impl Environment {
         }
         let runtime_policy = policy(&mut inputs)?;
         if let Some((name, _)) = inputs.0.first_key_value() {
-            bail!("Unknown or renamed application input: {name}");
+            bail!("Unknown application input: {name}");
         }
         Ok(Self {
             source,
@@ -438,21 +430,9 @@ fn policy(inputs: &mut Inputs) -> anyhow::Result<RuntimePolicy> {
         }
     }
     parse_runtime_policy(&serde_json::to_vec(&json!({"tacacsrs:runtime-policy": policy}))?).map_err(
-        |_| anyhow::anyhow!("AAAAGENT_POLICY_ inputs violate canonical runtime-policy constraints"),
+        |_| anyhow::anyhow!("TACACSD_POLICY_ inputs violate canonical runtime-policy constraints"),
     )
 }
-
-const LEGACY: &[&str] = &[
-    "AAAAGENT_REDIS_SOCKET",
-    "AAAAGENT_CLIENT_CERTIFICATE",
-    "AAAAGENT_CLIENT_KEY",
-    "AAAAGENT_REGISTER_LOOPBACK",
-    "AAAAGENT_EMPTY_SERVER_POLICY",
-    "SSL_CERT_FILE",
-    "SSL_CERT_DIR",
-    "RUST_LOG",
-    "RUST_LOG_STYLE",
-];
 
 #[cfg(test)]
 mod tests {
@@ -499,10 +479,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_and_renamed_inputs_without_values() {
+    fn rejects_invalid_and_unknown_inputs_without_values() {
         for (key, value) in [
             ("TYPO", "private-sentinel"),
-            ("REGISTER_LOOPBACK", "private-sentinel"),
             ("LOOPBACK_REGISTRATION_ENABLED", ""),
             ("LOOPBACK_REGISTRATION_ENABLED", "TRUE"),
             ("POLICY_SHUTDOWN_TIMEOUT_SECONDS", "0"),
@@ -514,6 +493,25 @@ mod tests {
             let error = parse(&[(key, value)]).unwrap_err();
             assert!(!format!("{error:#}").contains("private-sentinel"));
         }
+    }
+
+    #[test]
+    fn unrelated_environment_inputs_do_not_override_the_profile() {
+        let input = Environment::parse(BTreeMap::from([
+            ("SSL_CERT_FILE".into(), "/unrelated/ca.pem".into()),
+            ("SSL_CERT_DIR".into(), "/unrelated/trust".into()),
+            ("RUST_LOG".into(), "unrelated-log-filter".into()),
+            ("RUST_LOG_STYLE".into(), "unrelated-log-style".into()),
+            ("AAAAGENT_TLS_CA_FILE".into(), "/unrelated/old-ca.pem".into()),
+            ("AAAAGENT_LOG_FILTER".into(), "unrelated-old-log-filter".into()),
+            ("TACACSD_TLS_CA_FILE".into(), "/mounted/ca.pem".into()),
+            ("TACACSD_LOG_FILTER".into(), "debug".into()),
+        ]))
+        .unwrap();
+        assert_eq!(input.credentials.ca_file, PathBuf::from("/mounted/ca.pem"));
+        assert_eq!(input.credentials.ca_directory, PathBuf::from("/etc/ssl/certs"));
+        assert_eq!(input.process.log_filter, "debug");
+        assert_eq!(input.process.log_style, "auto");
     }
 
     #[test]
@@ -547,7 +545,7 @@ mod tests {
         }
         collect(
             serde_json::to_value(&policy).unwrap().as_object().unwrap(),
-            "AAAAGENT_POLICY",
+            "TACACSD_POLICY",
             &mut values,
         );
         assert_eq!(Environment::parse(values).unwrap().runtime_policy, policy);
@@ -577,7 +575,7 @@ mod tests {
                     .map_or_else(|| value.to_string(), str::to_owned)
             };
             values.insert(
-                format!("AAAAGENT_SERVICES_{}", field.replace('-', "_").to_uppercase()),
+                format!("TACACSD_SERVICES_{}", field.replace('-', "_").to_uppercase()),
                 value,
             );
         }

@@ -1,7 +1,7 @@
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
-use clap::{ArgGroup, Parser, ValueEnum};
+use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, ValueEnum};
 use clap::builder::TypedValueParser as _;
 use tacacsrs_config::PskDheKeSupportedGroup;
 use tacacsrs_config::tacacsrs::ProxyCredentialSource;
@@ -61,16 +61,9 @@ fn proxy_credential_source_parser(
 }
 
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Parser)]
-#[command(name = "tacacsrs-agentd", version, author)]
-#[command(about = "Central TACACS+ client service for local consumers")]
+#[derive(Debug, Args)]
 #[command(group(ArgGroup::new("ipc-endpoint").args(["listen_endpoint"]))) ]
-#[command(group(
-    ArgGroup::new("config-source")
-        .required(true)
-        .args(["config", "server_addresses", "sonic", "kubesonic"])
-))]
-pub(crate) struct Cli {
+pub(crate) struct CommonArgs {
     /// Host process-manager integration mode.
     #[arg(long, value_enum, default_value_t)]
     pub(crate) host_integration: HostIntegrationMode,
@@ -81,7 +74,6 @@ pub(crate) struct Cli {
         "client_certificate", "client_key",
         "insecure_disable_certificate_verification",
         "dedicated",
-        "sonic", "sonic_redis_url", "sonic_redis_db",
     ])]
     pub(crate) config: Option<PathBuf>,
 
@@ -116,31 +108,13 @@ pub(crate) struct Cli {
 
     /// Startup YANG JSON file containing a tacacsrs:local-services resource.
     #[arg(long, value_name = "FILE", conflicts_with_all = [
-        "listen_endpoint", "proxy_endpoint", "service_mode", "socket_mode", "sonic", "proxy_credential_source",
+        "listen_endpoint", "proxy_endpoint", "service_mode", "socket_mode", "proxy_credential_source",
     ])]
     pub(crate) local_services: Option<PathBuf>,
 
     /// Ordered list of TACACS+ upstream servers. The first server is preferred.
-    #[arg(long = "server-addr", conflicts_with_all = ["sonic", "sonic_redis_url", "sonic_redis_db"])]
+    #[arg(long = "server-addr")]
     pub(crate) server_addresses: Vec<String>,
-
-    /// Get TACACS+ and local forwarder configuration from `SONiC` `ConfigDB`.
-    #[arg(long)]
-    pub(crate) sonic: bool,
-
-    /// Use KubeSONiC ConfigDB and AAAAGENT_ environment inputs.
-    #[arg(long)]
-    pub(crate) kubesonic: bool,
-
-    /// Override the `SONiC` `ConfigDB` Redis connection URL (default:
-    /// `unix:///var/run/redis/redis.sock?db=4`).
-    #[arg(long, value_name = "URL", requires = "sonic")]
-    pub(crate) sonic_redis_url: Option<String>,
-
-    /// Override the `SONiC` `ConfigDB` Redis database index used for keyspace
-    /// notifications (default: `4`).
-    #[arg(long, value_name = "INDEX", requires = "sonic")]
-    pub(crate) sonic_redis_db: Option<i64>,
 
     /// Local IPC endpoint. Use a Unix domain socket path on Linux (default: /run/tacacs/tacacs.sock).
     #[arg(long)]
@@ -151,7 +125,7 @@ pub(crate) struct Cli {
     pub(crate) proxy_endpoint: Option<String>,
 
     /// Shared secret expected from raw TACACS+ proxy clients.
-    #[arg(long, value_name = "SECRET", requires = "proxy_endpoint", conflicts_with = "sonic",
+    #[arg(long, value_name = "SECRET", requires = "proxy_endpoint",
         value_parser = clap::builder::NonEmptyStringValueParser::new().map(tacacsrs_secrets::SecretString::new))]
     pub(crate) proxy_shared_secret: Option<tacacsrs_secrets::SecretString>,
 
@@ -195,7 +169,7 @@ pub(crate) struct Cli {
     pub(crate) connect_timeout_seconds: u64,
 
     /// Use a dedicated upstream connection per request instead of TACACS+ single-connection mode.
-    #[arg(long, requires = "server_addresses", conflicts_with = "sonic")]
+    #[arg(long, requires = "server_addresses")]
     pub(crate) dedicated: bool,
 
     /// Number of Tokio worker threads.
@@ -232,3 +206,67 @@ pub(crate) struct Cli {
     )]
     pub(crate) psk_key_exchange_groups: Vec<PskDheKeSupportedGroup>,
 }
+
+pub(crate) struct Cli {
+    common: CommonArgs,
+    pub(crate) matches: clap::ArgMatches,
+}
+
+impl std::fmt::Debug for Cli {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.common.fmt(formatter)
+    }
+}
+
+impl std::ops::Deref for Cli {
+    type Target = CommonArgs;
+    fn deref(&self) -> &Self::Target {
+        &self.common
+    }
+}
+
+impl std::ops::DerefMut for Cli {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.common
+    }
+}
+
+macro_rules! source_arguments {
+    ($($source:ident => ($selector:literal, $configure:expr)),+ $(,)?) => {
+        pub(crate) fn configure_sources(mut command: clap::Command) -> clap::Command {
+            $(command = ($configure)(command);)+
+            command.group(ArgGroup::new("config-source").required(true).args([$($selector),+]))
+        }
+    };
+}
+crate::source_registry::registered_sources!(source_arguments);
+
+impl CommandFactory for Cli {
+    fn command() -> clap::Command {
+        configure_sources(CommonArgs::augment_args(
+            clap::Command::new("tacacsrs-agentd")
+                .version(env!("CARGO_PKG_VERSION"))
+                .author(env!("CARGO_PKG_AUTHORS"))
+                .about("Central TACACS+ client service for local consumers"),
+        ))
+    }
+    fn command_for_update() -> clap::Command {
+        Self::command()
+    }
+}
+
+impl FromArgMatches for Cli {
+    fn from_arg_matches(matches: &clap::ArgMatches) -> Result<Self, clap::Error> {
+        Ok(Self {
+            common: CommonArgs::from_arg_matches(matches)?,
+            matches: matches.clone(),
+        })
+    }
+    fn update_from_arg_matches(&mut self, matches: &clap::ArgMatches) -> Result<(), clap::Error> {
+        self.common.update_from_arg_matches(matches)?;
+        self.matches = matches.clone();
+        Ok(())
+    }
+}
+
+impl Parser for Cli {}

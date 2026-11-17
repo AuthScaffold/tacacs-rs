@@ -319,6 +319,53 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn watches_each_identity_and_ca_file_for_writes_and_replacements() {
+        for selected in 0..3 {
+            for replace in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let root = directory.path();
+                let mut files = Vec::new();
+                for name in ["certificate", "key", "ca"] {
+                    let parent = root.join(name);
+                    std::fs::create_dir(&parent).unwrap();
+                    let path = parent.join("current.pem");
+                    std::fs::write(&path, "original").unwrap();
+                    files.push(path);
+                }
+                let trust = root.join("trust");
+                std::fs::create_dir(&trust).unwrap();
+                let mut settings = crate::environment::Environment::parse(Default::default())
+                    .unwrap()
+                    .credentials;
+                settings.certificate = files[0].clone();
+                settings.key = files[1].clone();
+                settings.ca_file = files[2].clone();
+                settings.ca_directory = trust;
+                settings.debounce = std::time::Duration::from_millis(10);
+                settings.reconcile_interval = std::time::Duration::from_secs(60);
+                let mut stream = MountedCredentials::new(settings).subscribe().await.unwrap();
+                assert!(matches!(stream.next().await, Some(CredentialChangeEvent::Recovered)));
+                if replace {
+                    let next = root.join("replacement.pem");
+                    std::fs::write(&next, "replacement").unwrap();
+                    std::fs::rename(next, &files[selected]).unwrap();
+                } else {
+                    std::fs::write(&files[selected], "updated").unwrap();
+                }
+                assert!(
+                    matches!(
+                        tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+                            .await
+                            .unwrap(),
+                        Some(CredentialChangeEvent::Changed(_))
+                    ),
+                    "No notification for file {selected} (replacement: {replace})"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn notifications_follow_rotated_targets_without_periodic_refresh() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();

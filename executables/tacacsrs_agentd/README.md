@@ -6,9 +6,29 @@ For full deployment and failover guidance, see [../../docs/tacacsrs-agentd.md](.
 
 ## KubeSONiC containers
 
-Use `tacacsrs-agentd --kubesonic` for the environment-only KubeSONiC profile. It reads existing server rows without requiring SONiC forwarder or TLS tables. All supported runtime controls use grouped `AAAAGENT_` variables. Server and credential updates use native supervision without child-process restarts.
+Use `tacacsrs-agentd --kubesonic` for the environment-only KubeSONiC profile. It reads existing server rows without requiring SONiC forwarder or TLS tables. All supported runtime controls use grouped `TACACSD_` variables. Server and credential updates use native supervision without child-process restarts.
 
 The profile defaults to both local services, mounted kubelet identity, explicit mounted CA trust, and disabled loopback registration. See the [KubeSONiC guide](../../libraries/tacacsrs_kubesonic/README.md) for the full input inventory, clear-list policy, registration ownership, and migration rules.
+
+## Source registration and ownership
+
+The [source registry](src/source_registry.rs) lists inline CLI, YANG file, SONiC, and KubeSONiC profiles. That list supplies runtime factories, source selectors, and arguments for the generated man page. All profiles use the same [service construction path](src/startup.rs).
+
+A profile parses its startup inputs before Tokio starts. It supplies process controls, protected input paths, and canonical runtime policy. Its asynchronous factory supplies a datastore, optional credential providers, canonical local services, and optional managed host services. The application does not select providers by concrete type.
+
+To add a source:
+
+1. Implement a profile module under [profiles](src/profiles/).
+2. Add its selector, CLI arguments, and module name to the source registry.
+3. If the source requires a separate crate, add its dependency to the manifest.
+
+The profile factory returns provider components, not a constructed agent. Keep vendor parsing and I/O in the provider crate. Keep executable argument handling in the registration adapter.
+
+Datastore observation owns the baseline, notifications, and any background workers. Observation must start before the baseline read. Cancelling an observation poll must preserve pending work. Dropping the session must stop notification delivery and cancel its workers. Credential providers use their independent change-source contract, so credential refresh does not depend on ConfigDB changes.
+
+Use the [managed host-service interface](src/host_service.rs) for side effects that require runtime health or shutdown cleanup. KubeSONiC loopback registration implements that interface. Each service runs as a named critical peer with shared cancellation. An unexpected exit or panic stops the application and drains the remaining peers.
+
+All peers share one shutdown deadline. A host service must finish its cleanup before it returns after cancellation. At the deadline, the host aborts and joins pending tasks and reports an error. Providers must not leave detached workers or child processes outside their ownership.
 
 ## Health and Host Integration
 
@@ -21,7 +41,7 @@ tacacsrs-agent-health \
     --timeout-seconds 2
 ```
 
-Outside KubeSONiC mode, use `--host-integration none` in containers. KubeSONiC defaults `AAAAGENT_PROCESS_HOST_INTEGRATION` to `none`. `auto` selects systemd only when `NOTIFY_SOCKET` is present. Explicit `systemd` requires the notification socket and helper, sends `READY=1` once, and sends `STOPPING=1` before listener drain.
+Outside KubeSONiC mode, use `--host-integration none` in containers. KubeSONiC defaults `TACACSD_PROCESS_HOST_INTEGRATION` to `none`. `auto` selects systemd only when `NOTIFY_SOCKET` is present. Explicit `systemd` requires the notification socket and helper, sends `READY=1` once, and sends `STOPPING=1` before listener drain.
 
 The daemon supervises SONiC ConfigDB startup and notification subscriptions.
 In SONiC mode, it loads the forwarder profile before binding listeners. It retries unavailable configuration with capped backoff.
@@ -32,14 +52,11 @@ Either signal cancels startup or requests listener drain through the signal-free
 An unavailable bootstrap dependency does not prevent signal handling. Requested shutdown exits successfully after cleanup.
 Unexpected host or configuration task exit is fatal, but the daemon still requests service drain and joins its other tasks.
 
-Startup uses one `TacacsClientService::new` path with no upstream source in its startup controls.
-The private `PreparedService` owner creates one retained `ConfigSupervisor` for initial preparation and all later server updates.
-Fail-fast preparation completes before listeners bind. Cancellation before serving does not bind listeners.
-The independent `PolicySupervisor` submits canonical policy through `apply_policy_candidate`.
-Host integration, configuration supervision, and serving remain critical peers under one shutdown budget.
-The [agent embedding guide](../../libraries/tacacsrs_agent/README.md#embedding) documents the public contract and removed reload variants.
+Startup uses one `TacacsClientService::new` path with no upstream source in its startup controls. The private `PreparedService` owner creates one retained `ConfigSupervisor` for initial preparation and all later server updates. Fail-fast preparation completes before listeners bind. Cancellation before serving does not bind listeners.
 
-Outside KubeSONiC mode, use `--runtime-policy <FILE>` to load live failover strategies and request limits. The daemon keeps the last-known-good policy after an invalid update. KubeSONiC uses the startup `AAAAGENT_POLICY_` inputs instead.
+The independent `PolicySupervisor` submits canonical policy through `apply_policy_candidate`. Host integration, configuration supervision, registered host services, and serving remain critical peers under one shutdown budget. The [agent embedding guide](../../libraries/tacacsrs_agent/README.md#embedding) documents the public contract and removed reload variants.
+
+Outside KubeSONiC mode, use `--runtime-policy <FILE>` to load live failover strategies and request limits. The daemon keeps the last-known-good policy after an invalid update. KubeSONiC uses the startup `TACACSD_POLICY_` inputs instead.
 
 Set `shutdown-timeout-seconds` in that canonical policy resource to bound graceful service and peer cleanup. Its default is 30 seconds; zero is invalid.
 The daemon captures the applied value once when cleanup begins. Later policy updates do not renew the deadline.
@@ -48,7 +65,7 @@ Systemd notifications use owned asynchronous child processes, so a stalled helpe
 
 ## Operational Statistics
 
-Outside KubeSONiC mode, use `--statistics-file FILE` for private, atomically replaced read-only YANG statistics once per second. In KubeSONiC mode, use `AAAAGENT_PROCESS_STATISTICS_FILE` instead of that flag.
+Outside KubeSONiC mode, use `--statistics-file FILE` for private, atomically replaced read-only YANG statistics once per second. In KubeSONiC mode, use `TACACSD_PROCESS_STATISTICS_FILE` instead of that flag.
 
 The report identifies the runtime generation and each counter epoch. It never includes credentials or command data. Unchanged endpoints retain counters across reloads. Replacements start a new counter lifetime. The last report remains after shutdown.
 
@@ -91,7 +108,7 @@ fallback.
 
 When the upstream TACACS+ server requires the daemon to present a TLS client identity, use `--client-certificate` and `--client-key` with `--use-tls`.
 
-KubeSONiC uses `AAAAGENT_TLS_CLIENT_CERTIFICATE` and `AAAAGENT_TLS_CLIENT_KEY` instead of these flags. Its key path defaults to the certificate path.
+KubeSONiC uses `TACACSD_TLS_CLIENT_CERTIFICATE` and `TACACSD_TLS_CLIENT_KEY` instead of these flags. Its key path defaults to the certificate path.
 
 - Provide both flags together.
 - Both files can be PEM or DER. The daemon detects PEM input and converts it to DER before it builds the runtime connection configuration.

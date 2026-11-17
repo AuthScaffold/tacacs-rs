@@ -3,7 +3,7 @@
 //! [`run_until`] drives one host stop future and the application together. It
 //! builds the service through [`crate::startup::prepare_service`], then
 //! [`PreparedService::run`] starts the service, host integration, and the
-//! configuration supervisor as peers. [`supervise_tasks`] observes those peers,
+//! configuration supervisor as peers. [`supervise_registered_tasks`] observes those peers,
 //! applies one shutdown budget, and joins every task before it returns.
 //!
 //! This module composes the agent runtime. It does not route requests or
@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use futures_util::{future::BoxFuture, stream::FuturesUnordered, FutureExt, StreamExt};
 use tokio_util::sync::CancellationToken;
 
 use tacacsrs_agent::runtime::{ConfigSupervisor, PolicySupervisor, TacacsPlusFilter};
@@ -20,12 +21,13 @@ use tacacsrs_agent::{RuntimeHealthPublisher, RuntimeLifecycle, TacacsClientServi
 use tacacsrs_config::source::policy::FilePolicyObservation;
 use tacacsrs_config::source::{ConfigDatastore, InitialLoadPolicy};
 
-use crate::cli::Cli;
 use crate::client_api_listener;
 use crate::credential_provider::CredentialProvider;
 use crate::host_integration::HostIntegration;
 use crate::startup::prepare_service;
 use crate::statistics;
+use crate::host_service::{HostContext, HostService};
+use crate::profiles::SelectedProfile;
 
 /// Startup-composed runtime that the host supervises until shutdown.
 pub(crate) struct PreparedService {
@@ -37,7 +39,7 @@ pub(crate) struct PreparedService {
     pub(crate) host_integration: HostIntegration,
     pub(crate) policy_observation: Option<FilePolicyObservation>,
     pub(crate) statistics_file: Option<statistics::StatisticsFile>,
-    pub(crate) loopback: Option<crate::kubesonic::Registrar>,
+    pub(crate) host_services: Vec<Box<dyn HostService>>,
 }
 
 impl PreparedService {
@@ -51,7 +53,7 @@ impl PreparedService {
             host_integration,
             policy_observation,
             statistics_file,
-            loopback,
+            host_services,
         } = self;
         let (credential_resolver, credential_change_source) = credential_provider;
         let datastore_policy = datastore.runtime_policy();
@@ -84,11 +86,6 @@ impl PreparedService {
             let statistics_service = service.clone();
             let health = health.subscribe();
             tokio::spawn(async move {
-                let registration = crate::kubesonic::run_registration(
-                    loopback,
-                    health.clone(),
-                    cancellation.clone(),
-                );
                 let reporting = async {
                     if let Some(file) = statistics_file {
                         file.run(statistics_service, cancellation.clone()).await
@@ -97,11 +94,7 @@ impl PreparedService {
                         Ok(())
                     }
                 };
-                tokio::try_join!(
-                    host_integration.run(health, cancellation.clone()),
-                    reporting,
-                    registration
-                )?;
+                tokio::try_join!(host_integration.run(health, cancellation.clone()), reporting)?;
                 Ok(())
             })
         };
@@ -129,12 +122,22 @@ impl PreparedService {
                 }
             })
         };
+        let mut peers = vec![
+            NamedTask::new("Host integration", host_task),
+            NamedTask::new("Configuration supervisor", supervisor_task),
+        ];
+        for host_service in host_services {
+            let context = HostContext {
+                health: health.subscribe(),
+                cancellation: cancellation.clone(),
+            };
+            peers.push(NamedTask::host_service(host_service, context));
+        }
 
         let client_api_listeners = client_api_listener::client_api_listeners(&service);
-        supervise_tasks(
+        supervise_registered_tasks(
             service.serve_until(cancellation.cancelled(), client_api_listeners),
-            host_task,
-            supervisor_task,
+            peers,
             cancellation.clone(),
             health,
             || service.shutdown_timeout(),
@@ -143,51 +146,28 @@ impl PreparedService {
     }
 }
 
-/// Coordinates the service, host integration, and configuration supervisor as
-/// peers so that an unexpected exit of any one of them is observed immediately.
-///
-/// The configuration supervisor is critical. If it returns, errors, or panics
-/// while the service still serves requests, the runtime keeps serving stale
-/// configuration. This is fatal.
-async fn supervise_tasks(
+/// Coordinates named critical peers under one shutdown deadline.
+async fn supervise_registered_tasks(
     service_future: impl std::future::Future<Output = anyhow::Result<()>>,
-    mut host_task: tokio::task::JoinHandle<anyhow::Result<()>>,
-    mut supervisor_task: tokio::task::JoinHandle<anyhow::Result<()>>,
+    tasks: Vec<NamedTask>,
     cancellation: CancellationToken,
     health: RuntimeHealthPublisher,
     shutdown_timeout: impl FnOnce() -> Duration,
 ) -> anyhow::Result<()> {
-    let _tasks = PeerTasks {
-        cancellation: cancellation.clone(),
-        host: host_task.abort_handle(),
-        supervisor: supervisor_task.abort_handle(),
-    };
+    let mut peers = PeerTasks::new(tasks, cancellation.clone());
     let mut service_future = Box::pin(service_future);
 
     let mut service_completed = false;
     let mut peer_failed = false;
-    let mut host_task_completed = false;
-    let mut supervisor_task_completed = false;
     let mut service_result = tokio::select! {
         biased;
         () = cancellation.cancelled() => Ok(()),
         result = &mut service_future => { service_completed = true; result },
-        result = &mut host_task => {
-            host_task_completed = true;
-            peer_failed = true;
-            health.set_lifecycle(RuntimeLifecycle::Failed);
-            match result {
-                Ok(Ok(())) => Err(anyhow::anyhow!("Host integration stopped unexpectedly")),
-                Ok(Err(error)) => Err(error.context("Host integration failed")),
-                Err(error) => Err(anyhow::Error::new(error).context("Host integration task failed")),
-            }
-        }
-        result = &mut supervisor_task => {
-            supervisor_task_completed = true;
+        Some((name, result)) = peers.pending.next() => {
             peer_failed = true;
             // Publish a typed failure without embedding the underlying configuration or credential error.
             health.set_lifecycle(RuntimeLifecycle::Failed);
-            Err(supervisor_exit_to_fatal_error(result))
+            Err(peer_exit_to_fatal_error(name, result))
         }
     };
 
@@ -202,30 +182,20 @@ async fn supervise_tasks(
         };
     cancellation.cancel();
     let cleanup = async {
-        if !service_completed {
-            let result = (&mut service_future).await;
-            if service_result.is_ok() {
-                service_result = result;
-            }
-        }
-        if !supervisor_task_completed {
-            let result = (&mut supervisor_task)
-                .await
-                .context("Configuration supervisor task failed")
-                .and_then(std::convert::identity);
-            supervisor_task_completed = true;
-            peer_failed |= result.is_err();
-            if service_result.is_ok() {
-                service_result = result;
-            }
-        }
-        if !host_task_completed {
-            let result = (&mut host_task)
-                .await
-                .context("Host integration task failed")
-                .and_then(std::convert::identity);
-            host_task_completed = true;
-            peer_failed |= result.is_err();
+        while !service_completed || !peers.pending.is_empty() {
+            let result = tokio::select! {
+                biased;
+                result = &mut service_future, if !service_completed => {
+                    service_completed = true;
+                    result
+                }
+                Some((name, result)) = peers.pending.next() => {
+                    let result = result.with_context(|| format!("{name} task panicked"))
+                        .and_then(std::convert::identity);
+                    peer_failed |= result.is_err();
+                    result
+                }
+            };
             if service_result.is_ok() {
                 service_result = result;
             }
@@ -234,14 +204,8 @@ async fn supervise_tasks(
     if tokio::time::timeout_at(deadline, cleanup).await.is_err() {
         health.set_lifecycle(RuntimeLifecycle::Failed);
         drop(service_future);
-        host_task.abort();
-        supervisor_task.abort();
-        if !host_task_completed {
-            let _ = host_task.await;
-        }
-        if !supervisor_task_completed {
-            let _ = supervisor_task.await;
-        }
+        peers.abort_all();
+        while peers.pending.next().await.is_some() {}
         return service_result.and(Err(anyhow::anyhow!("Shutdown deadline elapsed")));
     }
 
@@ -251,30 +215,72 @@ async fn supervise_tasks(
     service_result
 }
 
+pub(crate) struct NamedTask {
+    name: &'static str,
+    handle: tokio::task::JoinHandle<anyhow::Result<()>>,
+}
+
+impl NamedTask {
+    fn host_service(service: Box<dyn HostService>, context: HostContext) -> Self {
+        Self::new(service.name(), tokio::spawn(service.run(context)))
+    }
+
+    pub(crate) fn new(
+        name: &'static str,
+        handle: tokio::task::JoinHandle<anyhow::Result<()>>,
+    ) -> Self {
+        Self { name, handle }
+    }
+}
+
+type PeerOutcome = (&'static str, Result<anyhow::Result<()>, tokio::task::JoinError>);
+
 struct PeerTasks {
     cancellation: CancellationToken,
-    host: tokio::task::AbortHandle,
-    supervisor: tokio::task::AbortHandle,
+    aborts: Vec<tokio::task::AbortHandle>,
+    pending: FuturesUnordered<BoxFuture<'static, PeerOutcome>>,
+}
+
+impl PeerTasks {
+    fn new(tasks: Vec<NamedTask>, cancellation: CancellationToken) -> Self {
+        let aborts = tasks
+            .iter()
+            .map(|task| task.handle.abort_handle())
+            .collect();
+        let pending = tasks
+            .into_iter()
+            .map(|task| async move { (task.name, task.handle.await) }.boxed())
+            .collect();
+        Self {
+            cancellation,
+            aborts,
+            pending,
+        }
+    }
+
+    fn abort_all(&self) {
+        for task in &self.aborts {
+            task.abort();
+        }
+    }
 }
 
 impl Drop for PeerTasks {
     fn drop(&mut self) {
         self.cancellation.cancel();
-        self.host.abort();
-        self.supervisor.abort();
+        self.abort_all();
     }
 }
 
 /// Classifies an unexpected configuration-supervisor task outcome as a fatal error.
-fn supervisor_exit_to_fatal_error(
+fn peer_exit_to_fatal_error(
+    name: &'static str,
     result: Result<anyhow::Result<()>, tokio::task::JoinError>,
 ) -> anyhow::Error {
     match result {
-        Ok(Ok(())) => anyhow::anyhow!("Configuration supervisor stopped unexpectedly"),
-        Ok(Err(error)) => error.context("Configuration supervisor failed"),
-        Err(join_error) => {
-            anyhow::Error::new(join_error).context("Configuration supervisor task panicked")
-        }
+        Ok(Ok(())) => anyhow::anyhow!("{name} stopped unexpectedly"),
+        Ok(Err(error)) => error.context(format!("{name} failed")),
+        Err(join_error) => anyhow::Error::new(join_error).context(format!("{name} task panicked")),
     }
 }
 
@@ -287,8 +293,7 @@ fn supervisor_exit_to_fatal_error(
 /// # Errors
 /// Returns a startup, supervision, or cleanup error after the application drains.
 pub(crate) async fn run_until(
-    cli: Cli,
-    environment: Option<tacacsrs_kubesonic::environment::Environment>,
+    profile: SelectedProfile,
     stop: impl std::future::Future<Output = anyhow::Result<()>>,
 ) -> anyhow::Result<()> {
     let cancellation = CancellationToken::new();
@@ -297,7 +302,7 @@ pub(crate) async fn run_until(
         let prepared = tokio::select! {
             biased;
             () = cancellation.cancelled() => return Ok(()),
-            prepared = prepare_service(cli, environment) => prepared?,
+            prepared = prepare_service(profile) => prepared?,
         };
         prepared.run(cancellation.clone()).await
     };
@@ -314,13 +319,184 @@ pub(crate) async fn run_until(
 }
 
 #[cfg(test)]
+async fn supervise_tasks(
+    service: impl std::future::Future<Output = anyhow::Result<()>>,
+    host: tokio::task::JoinHandle<anyhow::Result<()>>,
+    supervisor: tokio::task::JoinHandle<anyhow::Result<()>>,
+    cancellation: CancellationToken,
+    health: RuntimeHealthPublisher,
+    shutdown_timeout: impl FnOnce() -> Duration,
+) -> anyhow::Result<()> {
+    supervise_registered_tasks(
+        service,
+        vec![
+            NamedTask::new("Host integration", host),
+            NamedTask::new("Configuration supervisor", supervisor),
+        ],
+        cancellation,
+        health,
+        shutdown_timeout,
+    )
+    .await
+}
+
+#[cfg(test)]
 mod supervision_tests {
     use std::future;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use std::time::Duration;
 
     use tacacsrs_agent::{EnabledServices, RuntimeHealthPublisher, RuntimeLifecycle};
     use tokio_util::sync::CancellationToken;
 
-    use super::supervisor_exit_to_fatal_error;
+    use crate::host_service::{HostContext, HostService};
+    use super::{NamedTask, supervise_registered_tasks};
+
+    struct RegisteredService {
+        name: &'static str,
+        fail: bool,
+        cleanup: Arc<AtomicBool>,
+        delay: Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl HostService for RegisteredService {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        async fn run(self: Box<Self>, context: HostContext) -> anyhow::Result<()> {
+            if self.fail {
+                anyhow::bail!("registered service failure");
+            }
+            context.cancellation.cancelled().await;
+            tokio::time::sleep(self.delay).await;
+            self.cleanup.store(true, Ordering::Release);
+            Ok(())
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn registered_service_failure_cancels_and_joins_every_peer() {
+        let cancellation = CancellationToken::new();
+        let health = health();
+        let cleaned = Arc::new(AtomicBool::new(false));
+        let mut tasks = vec![
+            NamedTask::new("Host integration", wait_for_cancel(cancellation.clone())),
+            NamedTask::new("Configuration supervisor", wait_for_cancel(cancellation.clone())),
+        ];
+        for service in [
+            RegisteredService {
+                name: "Fixture worker",
+                fail: false,
+                cleanup: cleaned.clone(),
+                delay: Duration::from_secs(1),
+            },
+            RegisteredService {
+                name: "Fixture registrar",
+                fail: true,
+                cleanup: Arc::new(AtomicBool::new(false)),
+                delay: Duration::ZERO,
+            },
+        ] {
+            tasks.push(NamedTask::host_service(
+                Box::new(service),
+                HostContext {
+                    health: health.subscribe(),
+                    cancellation: cancellation.clone(),
+                },
+            ));
+        }
+        let started = tokio::time::Instant::now();
+        let error = supervise_registered_tasks(
+            service_until_cancel(cancellation.clone()),
+            tasks,
+            cancellation.clone(),
+            health.clone(),
+            || Duration::from_secs(2),
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("Fixture registrar failed"));
+        assert!(cleaned.load(Ordering::Acquire));
+        assert!(cancellation.is_cancelled());
+        assert_eq!(started.elapsed(), Duration::from_secs(1));
+        assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Failed);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn slow_registered_service_cannot_extend_the_captured_shutdown_budget() {
+        let cancellation = CancellationToken::new();
+        let health = health();
+        let cleaned = Arc::new(AtomicBool::new(false));
+        let slow = NamedTask::host_service(
+            Box::new(RegisteredService {
+                name: "Slow fixture",
+                fail: false,
+                cleanup: cleaned.clone(),
+                delay: Duration::from_secs(60),
+            }),
+            HostContext {
+                health: health.subscribe(),
+                cancellation: cancellation.clone(),
+            },
+        );
+        let finished = slow.handle.abort_handle();
+        let tasks = vec![
+            NamedTask::new("Host integration", wait_for_cancel(cancellation.clone())),
+            NamedTask::new("Configuration supervisor", wait_for_cancel(cancellation.clone())),
+            slow,
+        ];
+        cancellation.cancel();
+        let started = tokio::time::Instant::now();
+        let error = supervise_registered_tasks(
+            future::ready(Ok(())),
+            tasks,
+            cancellation,
+            health.clone(),
+            || Duration::from_secs(2),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("Shutdown deadline elapsed"));
+        assert_eq!(started.elapsed(), Duration::from_secs(2));
+        assert!(finished.is_finished());
+        assert!(!cleaned.load(Ordering::Acquire));
+        assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Failed);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cleanup_errors_remain_primary_while_a_listener_stalls() {
+        let cancellation = CancellationToken::new();
+        let child = cancellation.clone();
+        let cleanup = NamedTask::new(
+            "Fixture cleanup",
+            tokio::spawn(async move {
+                child.cancelled().await;
+                Err(anyhow::anyhow!("registration cleanup failed"))
+            }),
+        );
+        cancellation.cancel();
+        let error = supervise_registered_tasks(
+            future::pending(),
+            vec![cleanup],
+            cancellation,
+            health(),
+            || Duration::from_secs(2),
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("registration cleanup failed"));
+    }
+
+    fn supervisor_exit_to_fatal_error(
+        result: Result<anyhow::Result<()>, tokio::task::JoinError>,
+    ) -> anyhow::Error {
+        super::peer_exit_to_fatal_error("Configuration supervisor", result)
+    }
 
     async fn supervise_tasks(
         service: impl std::future::Future<Output = anyhow::Result<()>>,

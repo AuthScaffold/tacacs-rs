@@ -35,6 +35,10 @@ pub struct ServerRow {
 }
 
 /// Recognizes loopbacks that cannot be upstreams.
+///
+/// The KubeSONiC profile excludes every loopback host, regardless of port.
+/// Shared runtime guards also compare destinations with the bound proxy endpoint,
+/// including resolved addresses and the connected peer.
 #[must_use]
 pub fn is_loopback(address: &str) -> bool {
     let literal = address.split_once('%').map_or(address, |(ip, _)| ip);
@@ -336,6 +340,42 @@ mod tests {
     use std::collections::BTreeMap;
     use crate::environment::Environment;
     use super::*;
+
+    #[test]
+    fn profile_omits_loopback_hosts_on_every_port() {
+        let settings = Environment::parse(BTreeMap::new()).unwrap().source;
+        for port in ["49", "449"] {
+            let rows = [
+                "127.0.0.1",
+                "127.0.0.2",
+                "::1",
+                "::ffff:127.0.0.1",
+                "LOCALHOST.",
+            ]
+            .into_iter()
+            .chain(["192.0.2.1", "server.example"])
+            .map(|address| ServerRow {
+                address: address.to_owned(),
+                port: Some(port.to_owned()),
+                priority: None,
+                valid_hash: true,
+            })
+            .collect();
+            let source = map_rows(rows, &settings).unwrap();
+            assert_eq!(
+                source
+                    .server
+                    .iter()
+                    .map(|server| server.address.as_str())
+                    .collect::<Vec<_>>(),
+                ["192.0.2.1", "server.example"],
+            );
+            assert!(source
+                .server
+                .iter()
+                .all(|server| server.port.to_string() == port));
+        }
+    }
 
     #[test]
     fn rows_preserve_order_identity_and_profile_references() {
