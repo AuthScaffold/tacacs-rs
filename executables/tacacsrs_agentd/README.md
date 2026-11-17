@@ -14,7 +14,7 @@ The profile defaults to both local services, mounted kubelet identity, explicit 
 
 The [source registry](src/source_registry.rs) lists inline CLI, YANG file, SONiC, and KubeSONiC profiles. That list supplies runtime factories, source selectors, and arguments for the generated man page. All profiles use the same [service construction path](src/startup.rs).
 
-A profile parses its startup inputs before Tokio starts. It supplies process controls, protected input paths, and canonical runtime policy. Its asynchronous factory supplies a datastore, optional credential providers, canonical local services, and optional managed host services. The application does not select providers by concrete type.
+A profile parses its startup inputs before Tokio starts. It supplies process controls, protected input paths, and canonical runtime policy. Its asynchronous factory returns a [`SourceBundle`](../../libraries/tacacsrs_provider/README.md) with a datastore, credential capabilities, canonical local services, and inert companions. Provider crates own discovery and source-specific assembly. The application does not select providers by concrete type.
 
 To add a source:
 
@@ -26,9 +26,9 @@ The profile factory returns provider components, not a constructed agent. Keep v
 
 Datastore observation owns the baseline, notifications, and any background workers. Observation must start before the baseline read. Cancelling an observation poll must preserve pending work. Dropping the session must stop notification delivery and cancel its workers. Credential providers use their independent change-source contract, so credential refresh does not depend on ConfigDB changes.
 
-Use the [managed host-service interface](src/host_service.rs) for side effects that require runtime health or shutdown cleanup. KubeSONiC loopback registration implements that interface. Each service runs as a named critical peer with shared cancellation. An unexpected exit or panic stops the application and drains the remaining peers.
+Use the [`Companion` interface](../../libraries/tacacsrs_provider/src/companion.rs) for provider side effects that require readiness or shutdown cleanup. KubeSONiC owns its loopback registrar and implements that interface. Each companion runs as a named critical peer with shared cancellation. An unexpected exit or panic stops the application and drains the remaining peers.
 
-All peers share one shutdown deadline. A host service must finish its cleanup before it returns after cancellation. At the deadline, the host aborts and joins pending tasks and reports an error. Providers must not leave detached workers or child processes outside their ownership.
+All peers share one captured shutdown budget with domain drain. A companion must finish its cleanup before it returns after cancellation. At the deadline, the agent aborts and joins pending peers and awaits the domain's forced listener and upstream cleanup. Forced cancellation can interrupt external cleanup. Providers must not leave detached workers or child processes outside their ownership. Datastore and credential observations retain their own drop-based worker cancellation contracts.
 
 ## Health and Host Integration
 
@@ -52,9 +52,9 @@ Either signal cancels startup or requests listener drain through the signal-free
 An unavailable bootstrap dependency does not prevent signal handling. Requested shutdown exits successfully after cleanup.
 Unexpected host or configuration task exit is fatal, but the daemon still requests service drain and joins its other tasks.
 
-Startup uses one `TacacsClientService::new` path with no upstream source in its startup controls. The private `PreparedService` owner creates one retained `ConfigSupervisor` for initial preparation and all later server updates. Fail-fast preparation completes before listeners bind. Cancellation before serving does not bind listeners.
+Startup uses the agent-owned `AgentRuntime`. It constructs the service and retains one `ConfigSupervisor` for initial preparation and all later server updates. Fail-fast preparation completes before listeners bind or companions start. Cancellation before serving does not bind listeners.
 
-The independent `PolicySupervisor` submits canonical policy through `apply_policy_candidate`. Host integration, configuration supervision, registered host services, and serving remain critical peers under one shutdown budget. The [agent embedding guide](../../libraries/tacacsrs_agent/README.md#embedding) documents the public contract and removed reload variants.
+The independent `PolicySupervisor` submits canonical policy through `apply_policy_candidate`. Host integration, statistics export, configuration supervision, and companions run as separately named peers. Agentd retains process controls, signal handling, and IPC adaptation. The [agent embedding guide](../../libraries/tacacsrs_agent/README.md#embedding) documents the runtime contract.
 
 Outside KubeSONiC mode, use `--runtime-policy <FILE>` to load live failover strategies and request limits. The daemon keeps the last-known-good policy after an invalid update. KubeSONiC uses the startup `TACACSD_POLICY_` inputs instead.
 

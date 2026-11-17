@@ -27,7 +27,7 @@ timeout --signal=TERM --kill-after=30s 40m \
     cargo test --locked \
         -p tacacsrs-agentd -p tacacsrs-agent-health -p tacon \
         -p tacacsrs-networking -p tacacsrs-config -p tacacsrs-agent \
-        -p tacacsrs-sonic -p tacacsrs-kubesonic -p tacacsrs-ipc -p tacacsrs-agent-ipc-emulator \
+        -p tacacsrs-sonic -p tacacsrs-kubesonic -p tacacsrs-provider -p tacacsrs-ipc -p tacacsrs-agent-ipc-emulator \
         -- --test-threads=2
 
 echo "==> Release binary ABI and execution"

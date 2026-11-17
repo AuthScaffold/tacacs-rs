@@ -18,7 +18,13 @@ mod request_tracker;
 mod revision;
 #[cfg(test)]
 mod server_catalog;
-mod shutdown;
+pub(crate) mod shutdown;
+mod application;
+mod application_tasks;
+mod source_filter;
+
+pub use application::{AgentRuntime, RuntimeInputs, PolicyInput};
+pub use application_tasks::{PeerContext, RuntimePeer};
 
 pub use client_service::{DiagnosticsHandle, ListenerSettings, TacacsClientService};
 pub use config_filter::{FilteredTacacsPlus, NoopTacacsPlusFilter, TacacsPlusFilter};

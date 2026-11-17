@@ -17,6 +17,7 @@ redis = { version = "1.2", default-features = false, features = ["aio", "tokio-c
 rustix = { version = "1.1.4", features = ["fs"] }
 tacacsrs-config = { path = "../tacacsrs_config" }
 tacacsrs-credential-resolution = { path = "../tacacsrs_credential_resolution" }
+tacacsrs-provider = { path = "../tacacsrs_provider" }
 tokio = { version = "1.52.3", features = ["sync", "macros", "rt", "time"] }
 tokio-stream = { version = "0.1" }
 zeroize = "1.9.0"

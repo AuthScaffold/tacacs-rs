@@ -9,6 +9,9 @@ use tacacsrs_config::source::{ConfigChangeEvent, ConfigDatastore};
 use tacacsrs_kubesonic::datastore::KubeSonicConfigDb;
 use tacacsrs_kubesonic::environment::{Environment, SourceSettings};
 use tacacsrs_kubesonic::registration::LoopbackRegistration;
+use tacacsrs_provider::CompanionContext;
+use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 struct Redis {
     child: Child,
@@ -167,4 +170,76 @@ async fn uncertain_registration_cannot_report_successful_cleanup() {
         .await;
     assert!(registration.reconcile(true).await.is_err());
     assert!(registration.cleanup().await.is_err());
+}
+
+#[tokio::test]
+#[ignore = "requires redis-server"]
+async fn companion_waits_for_readiness_and_cleans_up_its_row() {
+    let redis = Redis::start().await;
+    let key = "TACPLUS_SERVER|127.0.0.1";
+    redis
+        .command::<()>(redis::cmd("HSET").arg(key).arg("old").arg("value"))
+        .await;
+    let mut input = Environment::parse(BTreeMap::new()).unwrap();
+    input.source = redis.settings.clone();
+    input.loopback.enabled = true;
+    input.loopback.retry_interval = Duration::from_millis(25);
+    let mut bundle = tacacsrs_kubesonic::prepare(input).unwrap();
+    assert!(redis.command::<bool>(redis::cmd("EXISTS").arg(key)).await);
+    let (sender, receiver) = watch::channel(false);
+    let cancellation = CancellationToken::new();
+    let companion = bundle.companions.pop().unwrap();
+    let handle = tokio::spawn(companion.run(CompanionContext {
+        ready: receiver,
+        cancellation: cancellation.clone(),
+    }));
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while redis.command::<bool>(redis::cmd("EXISTS").arg(key)).await {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    sender.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !redis.command::<bool>(redis::cmd("EXISTS").arg(key)).await {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    sender.send(false).unwrap();
+    tokio::time::sleep(Duration::from_millis(75)).await;
+    assert!(redis.command::<bool>(redis::cmd("EXISTS").arg(key)).await);
+    cancellation.cancel();
+    handle.await.unwrap().unwrap();
+    assert!(!redis.command::<bool>(redis::cmd("EXISTS").arg(key)).await);
+}
+
+#[tokio::test]
+#[ignore = "requires redis-server"]
+async fn cancelled_companion_does_not_remove_stale_row() {
+    let redis = Redis::start().await;
+    let key = "TACPLUS_SERVER|127.0.0.1";
+    redis
+        .command::<()>(redis::cmd("HSET").arg(key).arg("old").arg("value"))
+        .await;
+    let mut input = Environment::parse(BTreeMap::new()).unwrap();
+    input.source = redis.settings.clone();
+    input.loopback.enabled = true;
+    let mut bundle = tacacsrs_kubesonic::prepare(input).unwrap();
+    let (_sender, ready) = watch::channel(false);
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    bundle
+        .companions
+        .pop()
+        .unwrap()
+        .run(CompanionContext {
+            ready,
+            cancellation,
+        })
+        .await
+        .unwrap();
+    assert!(redis.command::<bool>(redis::cmd("EXISTS").arg(key)).await);
 }

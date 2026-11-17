@@ -8,11 +8,12 @@ use tacacsrs_config::input::{
 use tacacsrs_config::source::CliFileDatastore;
 use tacacsrs_config::input::{CliPskInputs, PskKeyExchangeMode, PskKeyMaterial};
 use tacacsrs_config::tacacsrs::LocalServices;
+use tacacsrs_provider::{CredentialProvider, SourceBundle};
 
 use crate::cli::{Cli, PskKeyExchange};
 use crate::credential_provider;
 use crate::local_services;
-use super::{SelectedProfile, SourceComponents};
+use super::SelectedProfile;
 
 fn cli_datastore_input_from_cli(cli: &Cli) -> CliDatastoreInput {
     let timeout = u16::try_from(cli.connect_timeout_seconds).unwrap_or(u16::MAX);
@@ -66,11 +67,11 @@ fn cli_psk_inputs(cli: &Cli) -> Option<CliPskInputs> {
 
 pub(crate) fn parse(cli: Cli) -> anyhow::Result<SelectedProfile> {
     Ok(SelectedProfile::from_cli(cli, |cli| async move {
-        Ok(SourceComponents {
+        Ok(SourceBundle {
             datastore: Arc::new(CliFileDatastore::new(cli_datastore_input_from_cli(&cli))),
-            credentials: credential_provider::build(&cli, (None, None)).await?,
+            credentials: credential_provider::build(&cli, CredentialProvider::none()).await?,
             local_services: local_services::load(&cli, LocalServices::default()).await?,
-            host_services: Vec::new(),
+            companions: Vec::new(),
         })
     }))
 }

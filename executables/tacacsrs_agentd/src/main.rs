@@ -8,18 +8,15 @@ use clap::Parser;
 
 mod cli;
 mod client_api_listener;
-mod config_filter;
 mod credential_provider;
 mod host_integration;
 mod local_services;
 mod signals;
 mod startup;
 mod statistics;
-mod supervision;
 mod source_registry;
 mod profiles;
 mod process;
-mod host_service;
 
 use crate::cli::Cli;
 
@@ -42,5 +39,5 @@ fn main() -> anyhow::Result<()> {
 
 async fn run(profile: profiles::SelectedProfile) -> anyhow::Result<()> {
     let signals = signals::ProcessSignals::register()?;
-    supervision::run_until(profile, signals.wait()).await
+    startup::run_until(profile, signals.wait()).await
 }

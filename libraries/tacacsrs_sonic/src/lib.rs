@@ -7,6 +7,7 @@ compile_error!("tacacsrs-sonic supports Linux GNU or musl only");
 mod datastore;
 pub mod mapping;
 mod provider;
+mod source;
 pub mod store;
 
 pub use datastore::SonicConfigDb;
@@ -18,6 +19,7 @@ pub use provider::{
     SonicCredentialInitializationError, SonicCredentialPolicy, SonicCredentialResolver,
     SonicCredentialRoots,
 };
+pub use source::{credentials, wait_for_forwarder};
 pub use store::{
     DEFAULT_REDIS_URL, SonicConnection, TACPLUS_FORWARDER_TABLE, TACPLUS_GLOBAL_TABLE,
     SonicCredentialChangeSource, TACPLUS_SERVER_TABLE, TACPLUS_SERVER_TLS_TABLE,

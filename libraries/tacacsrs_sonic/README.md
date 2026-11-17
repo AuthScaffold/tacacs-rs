@@ -44,6 +44,7 @@ One-shot `load()` remains available for non-observing callers.
 ## Forwarder Ownership
 
 `SonicForwarderSettings::local_services` normalizes the validated forwarder row into generated `LocalServices`.
+`wait_for_forwarder` retries discovery until ConfigDB returns a valid row. Dropping its future stops discovery.
 The SONiC profile enables both services and selects `local-proxy-row` credentials.
 Generated YANG defaults supply the client API path and socket permissions.
 The optional ConfigDB listener port still defaults to 49 as a SONiC input rule. The canonical resource contains the explicit endpoint.
@@ -113,6 +114,8 @@ See [local TCP binding](../../docs/yang-config-guide.md#local-tcp-binding) for f
 `CredentialResolver` contract for version-1 EPSKs. Production resolves opaque
 IDs beneath `/etc/sonic/tacacs/credentials/epsk`. Callers inject the target
 `aaaagent` group ID through `SonicCredentialPolicy::production`.
+
+`credentials` creates the resolver and the optional change source from a `SonicConnection`.
 
 The Linux provider pre-opens a root-owned `0750` directory without following a
 symlink. It opens each grammar-validated one-segment ID relative to that

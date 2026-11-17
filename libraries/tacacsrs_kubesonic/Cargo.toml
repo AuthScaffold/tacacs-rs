@@ -19,6 +19,7 @@ rustls-pki-types = "1.14.1"
 serde_json = "1"
 tacacsrs-config = { path = "../tacacsrs_config" }
 tacacsrs-credential-resolution = { path = "../tacacsrs_credential_resolution" }
+tacacsrs-provider = { path = "../tacacsrs_provider" }
 tacacsrs-secrets = { path = "../tacacsrs_secrets" }
 tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
 tokio-stream = "0.1"
@@ -27,6 +28,7 @@ zeroize = "1.9.0"
 [dev-dependencies]
 tempfile = "3.27.0"
 tokio = { version = "1.52.3", features = ["test-util"] }
+tokio-util = "0.7"
 
 [lints]
 workspace = true

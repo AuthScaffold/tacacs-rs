@@ -1,4 +1,4 @@
-//! Runtime TACACS+ configuration filters composed by the daemon entry point.
+//! Configuration filters derived from the runtime's canonical listeners.
 
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, ensure};
 use futures_util::future::{BoxFuture, FutureExt};
-use tacacsrs_agent::runtime::{FilteredTacacsPlus, NoopTacacsPlusFilter, TacacsPlusFilter};
+use crate::runtime::{FilteredTacacsPlus, NoopTacacsPlusFilter, TacacsPlusFilter};
 use tacacsrs_config::local_services::{prepare_local_services, ListenerEndpoint};
 use tacacsrs_config::proxy_policy::prepare_proxy_policy;
 use tacacsrs_config::tacacsrs::LocalServices;
@@ -206,7 +206,7 @@ mod tests {
     use std::sync::Arc;
     use tacacsrs_config::tacacsrs::{LocalServices, ProxyCredentialSource};
     use tacacsrs_config::proxy_policy::prepare_proxy_policy;
-    use tacacsrs_agent::{EnabledServices, PreparedProxyPolicy};
+    use crate::{EnabledServices, PreparedProxyPolicy};
     use tacacsrs_ipc::IpcEndpoint;
     use tacacsrs_config::TacacsPlusServerType;
     use tacacsrs_config::{
@@ -322,35 +322,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sonic_local_row_survives_mapping_until_runtime_credential_preparation() {
-        use std::collections::BTreeMap;
-        use tacacsrs_sonic::{SonicTacacsTables, map_sonic_tables_to_tacacs_plus};
-
-        let hash = |values: &[(&str, &str)]| {
-            values
-                .iter()
-                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-                .collect()
-        };
-        let tables = SonicTacacsTables::with_extended_tables(
-            BTreeMap::new(),
-            BTreeMap::from([
-                (
-                    "127.0.0.1".to_owned(),
-                    hash(&[("priority", "64"), ("passkey", "local-test-key")]),
-                ),
-                (
-                    "192.0.2.20".to_owned(),
-                    hash(&[("priority", "16"), ("passkey", "remote-test-key")]),
-                ),
-            ]),
-            BTreeMap::new(),
-            hash(&[
-                ("local_listen_address", "127.0.0.1"),
-                ("local_listen_port", "49"),
-            ]),
-        );
-        let canonical = map_sonic_tables_to_tacacs_plus(&tables).unwrap();
+    async fn local_row_supplies_proxy_credentials_without_mutating_canonical_source() {
+        let canonical = test_config_from_host_ports_and_secrets(&[
+            ("127.0.0.1", 49, Some("local-test-key")),
+            ("192.0.2.20", 49, Some("remote-test-key")),
+        ]);
         assert_eq!(canonical.server.len(), 2);
         let original = canonical.clone();
         let filter = ProxySelfLoopFilter::new("127.0.0.1:49".parse().unwrap());

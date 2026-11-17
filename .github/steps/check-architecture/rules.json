@@ -27,13 +27,19 @@
       "tacacsrs-protocol",
       "tacacsrs-secrets"
     ],
-    "tacacsrs-sonic": [
+    "tacacsrs-provider": [
       "tacacsrs-config",
       "tacacsrs-credential-resolution"
+    ],
+    "tacacsrs-sonic": [
+      "tacacsrs-config",
+      "tacacsrs-credential-resolution",
+      "tacacsrs-provider"
     ],
     "tacacsrs-kubesonic": [
       "tacacsrs-config",
       "tacacsrs-credential-resolution",
+      "tacacsrs-provider",
       "tacacsrs-secrets"
     ],
     "tacacsrs-agent": [
@@ -41,6 +47,7 @@
       "tacacsrs-credential-resolution",
       "tacacsrs-networking",
       "tacacsrs-protocol",
+      "tacacsrs-provider",
       "tacacsrs-secrets",
       "tacacsrs-unix-socket"
     ],
@@ -67,10 +74,10 @@
       "tacacsrs-agent",
       "tacacsrs-config",
       "tacacsrs-credential-http",
-      "tacacsrs-credential-resolution",
       "tacacsrs-ipc",
       "tacacsrs-networking",
       "tacacsrs-protocol",
+      "tacacsrs-provider",
       "tacacsrs-secrets",
       "tacacsrs-sonic",
       "tacacsrs-kubesonic"
@@ -84,6 +91,23 @@
     ]
   },
   "forbidden_dependency_guards": [
+    {
+      "name": "provider-interface",
+      "description": "Keep shared provider contracts independent of providers, process setup, and IPC hosting.",
+      "roots": [
+        "tacacsrs-provider"
+      ],
+      "forbidden": [
+        "clap",
+        "tonic",
+        "prost",
+        "redis",
+        "tacacsrs-agent",
+        "tacacsrs-ipc",
+        "tacacsrs-sonic",
+        "tacacsrs-kubesonic"
+      ]
+    },
     {
       "name": "kubesonic-adapter",
       "description": "Keep the KubeSONiC adapter independent of daemon lifecycle and IPC hosting.",

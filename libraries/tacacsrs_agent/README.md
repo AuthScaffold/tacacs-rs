@@ -12,6 +12,47 @@ The agent has no production dependency on IPC bindings or tonic.
 
 ## Embedding
 
+`AgentRuntime` owns source-driven construction, initial loading, configuration and policy supervision, companions, and shutdown. Providers supply a [`SourceBundle`](../tacacsrs_provider/README.md). The host supplies process services through `RuntimePeer` and transport adapters through `RuntimeListenerService`.
+
+`AgentRuntime::prepare` validates canonical local services and loads the initial policy. It starts no companions and binds no listeners. Its cancellable future owns local resources. `run_until` enforces fail-fast initial loading before it starts peers or listeners.
+
+```rust,no_run
+use std::sync::Arc;
+use tacacsrs_agent::{AgentRuntime, PolicyInput, RuntimeInputs};
+use tacacsrs_config::source::StaticDatastore;
+use tacacsrs_config::tacacsrs::LocalServices;
+use tacacsrs_config::TacacsPlus;
+use tacacsrs_networking::CertificateVerification;
+use tacacsrs_provider::{CredentialProvider, SourceBundle};
+
+async fn run(source: TacacsPlus, stop: tokio_util::sync::CancellationToken) -> anyhow::Result<()> {
+    let runtime = AgentRuntime::prepare(RuntimeInputs {
+        source: SourceBundle {
+            datastore: Arc::new(StaticDatastore::new(source)),
+            credentials: CredentialProvider::none(),
+            local_services: LocalServices {
+                client_api_enabled: false,
+                tacacs_proxy_enabled: true,
+                tacacs_proxy_endpoint: Some("127.0.0.1:9049".to_owned()),
+                ..Default::default()
+            },
+            companions: Vec::new(),
+        },
+        policy: PolicyInput::Canonical(Default::default()),
+        certificate_verification: CertificateVerification::Required,
+    }).await?;
+    runtime.run_until(stop.cancelled(), Vec::new(), Vec::new()).await
+}
+```
+
+The agent runs critical peers in a named task set. Unexpected completion, error, or panic stops the application. Companions receive readiness directly from health publication, without a bridge task. Process peers receive the full read-only health stream.
+
+The first shutdown caller captures overall and request deadlines from one instant and the active policy. Request drain can finish earlier but cannot extend the overall deadline. The host never drops domain cleanup at the peer deadline. It aborts remaining peers, joins them, and awaits the domain's forced listener and upstream cleanup. Cleanup errors retain useful context.
+
+Observation implementations keep their documented cancellation contracts. Dropping an observation cancels its workers but does not necessarily join them. Blocking native work cannot be forcibly interrupted.
+
+### Low-level service API
+
 `TacacsClientService::new` validates startup controls and creates an empty runtime.
 `ServiceConfig` contains no upstream source. The canonical `ConfigDatastore` owns that source.
 Create one `ConfigSupervisor` per service. Retain it from initialization through shutdown.
@@ -42,89 +83,7 @@ The public construction and update surface changed as follows:
 | `apply_policy_candidate` | Retained; admission fences validation and publication |
 
 No compatibility aliases remain. Diagnostic handles, domain operations, listener settings, `serve_until`, and `close_and_join` remain public.
-The host owns signals, listener adapters, and task supervision. A stopped runtime cannot restart.
-This example uses the built-in raw proxy. A client API host injects its `RuntimeListenerService` adapters instead.
-
-```rust,no_run
-use std::sync::Arc;
-
-use anyhow::Context;
-use tokio_util::sync::CancellationToken;
-
-use tacacsrs_agent::{RuntimeHealthPublisher, RuntimePolicy, ServiceConfig, TacacsClientService};
-use tacacsrs_agent::runtime::{ConfigSupervisor, NoopTacacsPlusFilter};
-use tacacsrs_config::TacacsPlus;
-use tacacsrs_config::source::{ConfigDatastore, StaticDatastore};
-use tacacsrs_config::tacacsrs::LocalServices;
-use tacacsrs_networking::{CertificateVerification, RequestDeadline};
-
-async fn run(source: TacacsPlus, stop: CancellationToken) -> anyhow::Result<()> {
-  let datastore = Arc::new(StaticDatastore::new(source));
-  let local_services = LocalServices {
-    client_api_enabled: false,
-    tacacs_proxy_enabled: true,
-    tacacs_proxy_endpoint: Some("127.0.0.1:0".to_owned()),
-    ..Default::default()
-  };
-  let config = ServiceConfig {
-    local_services: local_services.clone(),
-    validation_options: datastore.validation_options(),
-    runtime_policy: RuntimePolicy::default(),
-    certificate_verification: CertificateVerification::Required,
-  };
-  let health = RuntimeHealthPublisher::new(config.enabled_services());
-  let service = Arc::new(TacacsClientService::new(config, health.clone())?);
-  let mut supervisor = ConfigSupervisor::new(
-    datastore,
-    service.clone(),
-    health,
-    Arc::new(NoopTacacsPlusFilter::new(local_services)),
-  );
-  let initialized = supervisor.initialize_until(stop.cancelled()).await;
-  if initialized.is_err() || stop.is_cancelled() {
-    let deadline = RequestDeadline::after(service.shutdown_timeout())?;
-    return initialized.and(service.close_and_join(deadline).await);
-  }
-  let peers = async {
-    tokio::join!(
-      async {
-        let result = supervisor.run_until(stop.cancelled()).await;
-        let requested = stop.is_cancelled();
-        stop.cancel();
-        if requested { result } else {
-          result.and(Err(anyhow::anyhow!("Configuration supervisor stopped unexpectedly")))
-        }
-      },
-      async {
-        let result = service.serve_until(stop.cancelled(), Vec::new()).await;
-        stop.cancel();
-        result
-      },
-    )
-  };
-  tokio::pin!(peers);
-  let completed = tokio::select! {
-    biased;
-    () = stop.cancelled() => None,
-    result = &mut peers => Some(result),
-  };
-  stop.cancel();
-  let deadline = RequestDeadline::after(service.shutdown_timeout())?;
-  let (source_result, service_result) = match completed {
-    Some(result) => result,
-    None => tokio::time::timeout_at(deadline.expires_at(), peers)
-      .await.context("Shutdown deadline elapsed")?,
-  };
-  let cleanup = service.close_and_join(deadline).await;
-  source_result.and(service_result).and(cleanup)
-}
-```
-
-The host cancels `stop` when it receives its terminal shutdown request.
-Initialization completes before listeners bind. An already-cancelled host or failed initialization never binds listeners.
-Peer failure also cancels the shared stop token. Cleanup uses one captured shutdown budget.
-Deadline expiry cancels owned futures and returns an error. Native work cannot be forcibly interrupted.
-Use a continuously observed datastore for live server updates. `StaticDatastore` supplies one immutable baseline.
+The low-level host owns signals, listener adapters, and task supervision. A stopped runtime cannot restart. Prefer `AgentRuntime` when the host needs the complete source lifecycle. Use a continuously observed datastore for live server updates. `StaticDatastore` supplies one immutable baseline.
 
 ## Design goals
 

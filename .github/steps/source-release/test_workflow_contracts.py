@@ -238,6 +238,7 @@ def test_platform_selections_cover_expected_workspace_members():
         "tacacsrs-credential-resolution",
         "tacacsrs-networking",
         "tacacsrs-protocol",
+        "tacacsrs-provider",
         "tacacsrs-secrets",
     }
     assert selected["ubuntu-latest"] - selected["windows-latest"] == set(WINDOWS_EXCLUDED_PACKAGES)

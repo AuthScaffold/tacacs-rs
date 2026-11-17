@@ -298,6 +298,7 @@ impl RuntimeHealthSnapshot {
 #[derive(Debug, Clone)]
 pub struct RuntimeHealthPublisher {
     sender: watch::Sender<RuntimeHealthSnapshot>,
+    readiness: watch::Sender<bool>,
 }
 
 impl RuntimeHealthPublisher {
@@ -325,13 +326,20 @@ impl RuntimeHealthPublisher {
         };
         let (sender, _) = watch::channel(initial);
 
-        Self { sender }
+        let (readiness, _) = watch::channel(false);
+        Self { sender, readiness }
     }
 
     /// Subscribes to the current snapshot and subsequent transitions.
     #[must_use]
     pub fn subscribe(&self) -> watch::Receiver<RuntimeHealthSnapshot> {
         self.sender.subscribe()
+    }
+
+    /// Subscribes to readiness without exposing agent-specific health types.
+    #[must_use]
+    pub fn subscribe_readiness(&self) -> watch::Receiver<bool> {
+        self.readiness.subscribe()
     }
 
     /// Returns a copy of the current snapshot without a subscription.
@@ -573,7 +581,7 @@ impl RuntimeHealthPublisher {
 
     fn update(&self, mutation: impl FnOnce(&mut RuntimeHealthSnapshot)) {
         let mut mutation = Some(mutation);
-        self.sender.send_if_modified(move |snapshot| {
+        self.sender.send_if_modified(|snapshot| {
             let previous = snapshot.clone();
             mutation.take().expect("the health mutation must run once")(snapshot);
             if snapshot.lifecycle == RuntimeLifecycle::Starting
@@ -582,6 +590,12 @@ impl RuntimeHealthPublisher {
             {
                 snapshot.lifecycle = RuntimeLifecycle::Serving;
             }
+            let ready = snapshot.is_readiness_serving();
+            self.readiness.send_if_modified(|value| {
+                let changed = *value != ready;
+                *value = ready;
+                changed
+            });
             *snapshot != previous
         });
     }

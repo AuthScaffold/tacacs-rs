@@ -5,17 +5,15 @@
 
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use futures_util::future::{BoxFuture, FutureExt};
 
-use tacacsrs_config::source::ConfigDatastore;
-use tacacsrs_config::tacacsrs::{LocalServices, RuntimePolicy};
+use tacacsrs_config::tacacsrs::RuntimePolicy;
 use tacacsrs_networking::CertificateVerification;
+pub(crate) use tacacsrs_agent::PolicyInput as PolicySource;
+use tacacsrs_provider::SourceBundle;
 
 use crate::cli::Cli;
-use crate::credential_provider::CredentialProvider;
-use crate::host_service::HostService;
 use crate::process::ProcessOptions;
 
 pub(crate) struct Registration {
@@ -49,32 +47,20 @@ fn select_registered(cli: Cli, registrations: &[Registration]) -> anyhow::Result
     (registration.parse)(cli)
 }
 
-pub(crate) enum PolicySource {
-    Canonical(RuntimePolicy),
-    File(PathBuf),
-}
-
 pub(crate) struct SelectedProfile {
     pub(crate) process: ProcessOptions,
     pub(crate) statistics_file: Option<PathBuf>,
     pub(crate) protected_inputs: Vec<PathBuf>,
     pub(crate) policy: PolicySource,
     pub(crate) certificate_verification: CertificateVerification,
-    pub(crate) prepare: BoxFuture<'static, anyhow::Result<SourceComponents>>,
-}
-
-pub(crate) struct SourceComponents {
-    pub(crate) datastore: Arc<dyn ConfigDatastore>,
-    pub(crate) credentials: CredentialProvider,
-    pub(crate) local_services: LocalServices,
-    pub(crate) host_services: Vec<Box<dyn HostService>>,
+    pub(crate) prepare: BoxFuture<'static, anyhow::Result<SourceBundle>>,
 }
 
 impl SelectedProfile {
     pub(crate) fn from_cli<F, Fut>(cli: Cli, prepare: F) -> Self
     where
         F: FnOnce(Cli) -> Fut,
-        Fut: Future<Output = anyhow::Result<SourceComponents>> + Send + 'static,
+        Fut: Future<Output = anyhow::Result<SourceBundle>> + Send + 'static,
     {
         let mut protected_inputs = Vec::new();
         protected_inputs.extend(
@@ -125,6 +111,7 @@ impl SelectedProfile {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::time::Duration;
 
     use async_trait::async_trait;
@@ -133,7 +120,9 @@ mod tests {
     use tokio::task::JoinHandle;
     use tokio_util::sync::CancellationToken;
 
-    use tacacsrs_agent::runtime::ConfigSupervisor;
+    use tacacsrs_config::source::ConfigDatastore;
+    use tacacsrs_config::tacacsrs::LocalServices;
+    use tacacsrs_provider::CredentialProvider;
     use tacacsrs_config::{
         TacacsPlus, TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType,
     };
@@ -217,11 +206,16 @@ mod tests {
     async fn added_registration_drives_background_notifications_through_shared_startup() {
         fn parse(cli: Cli) -> anyhow::Result<SelectedProfile> {
             Ok(SelectedProfile::from_cli(cli, |_| async {
-                Ok(SourceComponents {
+                Ok(SourceBundle {
                     datastore: Arc::new(NotificationSource),
-                    credentials: (None, None),
-                    local_services: LocalServices::default(),
-                    host_services: Vec::new(),
+                    credentials: CredentialProvider::none(),
+                    local_services: LocalServices {
+                        client_api_enabled: false,
+                        tacacs_proxy_enabled: true,
+                        tacacs_proxy_endpoint: Some("127.0.0.1:0".to_owned()),
+                        ..LocalServices::default()
+                    },
+                    companions: Vec::new(),
                 })
             }))
         }
@@ -240,23 +234,19 @@ mod tests {
         .unwrap();
         let profile =
             select_registered(Cli::from_arg_matches(&matches).unwrap(), &[registration]).unwrap();
-        let prepared = crate::startup::prepare_service(profile).await.unwrap();
-        let mut supervisor = ConfigSupervisor::new(
-            prepared.datastore,
-            prepared.service.clone(),
-            prepared.health,
-            prepared.config_filter,
-        );
-        supervisor
-            .initialize_until(std::future::pending())
-            .await
-            .unwrap();
-        assert_eq!(prepared.service.server_count(), 1);
+        let (runtime, peers) = crate::startup::prepare_service(profile).await.unwrap();
+        let service = runtime.service().clone();
         let cancellation = CancellationToken::new();
         let stop = cancellation.clone();
-        let monitor = tokio::spawn(async move { supervisor.run_until(stop.cancelled()).await });
+        let monitor =
+            tokio::spawn(
+                async move { runtime.run_until(stop.cancelled(), Vec::new(), peers).await },
+            );
         tokio::time::timeout(Duration::from_secs(2), async {
-            while prepared.service.server_count() != 0 {
+            while service.server_count() != 1 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            while service.server_count() != 0 {
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
         })
@@ -264,13 +254,6 @@ mod tests {
         .expect("Registered notification must update the native catalog");
         cancellation.cancel();
         monitor.await.unwrap().unwrap();
-        prepared
-            .service
-            .close_and_join(
-                tacacsrs_networking::RequestDeadline::after(Duration::from_secs(1)).unwrap(),
-            )
-            .await
-            .unwrap();
     }
 
     #[test]
@@ -327,11 +310,11 @@ mod tests {
         let profile = SelectedProfile::from_cli(cli, |_| async move {
             let _owner = owner;
             entered.send(()).unwrap();
-            std::future::pending::<anyhow::Result<SourceComponents>>().await
+            std::future::pending::<anyhow::Result<SourceBundle>>().await
         });
         let cancellation = CancellationToken::new();
         let stop = cancellation.clone();
-        let task = tokio::spawn(crate::supervision::run_until(profile, async move {
+        let task = tokio::spawn(crate::startup::run_until(profile, async move {
             stop.cancelled().await;
             Ok(())
         }));

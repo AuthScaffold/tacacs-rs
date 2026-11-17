@@ -1,20 +1,49 @@
-//! Shared construction from registered, canonical profile inputs.
+//! Process adapters composed around the source-driven agent runtime.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
-use anyhow::Context;
+use tokio_util::sync::CancellationToken;
 
-use tacacsrs_agent::{RuntimeHealthPublisher, RuntimePolicy, ServiceConfig, TacacsClientService};
-use tacacsrs_config::source::policy::{PolicyChange, PolicyFile, PolicyObservation};
+use tacacsrs_agent::{AgentRuntime, RuntimeInputs, RuntimePeer};
+use tacacsrs_config::local_services::ListenerEndpoint;
 
-use crate::config_filter::config_filter_from_local_services;
+use crate::client_api_listener;
 use crate::host_integration::HostIntegration;
-use crate::profiles::{PolicySource, SelectedProfile};
+use crate::profiles::SelectedProfile;
 use crate::statistics::StatisticsFile;
-use crate::supervision::PreparedService;
 
-pub(crate) async fn prepare_service(profile: SelectedProfile) -> anyhow::Result<PreparedService> {
+pub(crate) async fn run_until(
+    profile: SelectedProfile,
+    stop: impl std::future::Future<Output = anyhow::Result<()>>,
+) -> anyhow::Result<()> {
+    let cancellation = CancellationToken::new();
+    let _cancel_on_drop = cancellation.clone().drop_guard();
+    let application = async {
+        let prepared = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => return Ok(()),
+            prepared = prepare_service(profile) => prepared?,
+        };
+        let (runtime, peers) = prepared;
+        let listeners = client_api_listener::client_api_listeners(runtime.service());
+        runtime
+            .run_until(cancellation.cancelled(), listeners, peers)
+            .await
+    };
+    tokio::pin!(application);
+    tokio::select! {
+        biased;
+        signal = stop => {
+            cancellation.cancel();
+            signal.and(application.await)
+        },
+        result = &mut application => result,
+    }
+}
+
+pub(crate) async fn prepare_service(
+    profile: SelectedProfile,
+) -> anyhow::Result<(AgentRuntime, Vec<RuntimePeer>)> {
     let statistics_file = match profile.statistics_file {
         Some(path) => Some(
             StatisticsFile::new(
@@ -30,51 +59,29 @@ pub(crate) async fn prepare_service(profile: SelectedProfile) -> anyhow::Result<
         None => None,
     };
     let host_integration = HostIntegration::from_environment(profile.process.host_integration)?;
-    let components = profile.prepare.await?;
-    let prepared =
-        tacacsrs_config::local_services::prepare_local_services(&components.local_services)?;
+    let runtime = AgentRuntime::prepare(RuntimeInputs {
+        source: profile.prepare.await?,
+        policy: profile.policy,
+        certificate_verification: profile.certificate_verification,
+    })
+    .await?;
+    let prepared = runtime.prepared_local_services();
     if let Some(statistics) = &statistics_file {
         if let Some(path) = prepared.client_api() {
             statistics.protect_listener(path).await?;
         }
-        if let Some(tacacsrs_config::local_services::ListenerEndpoint::Unix(path)) =
-            prepared.tacacs_proxy()
-        {
+        if let Some(ListenerEndpoint::Unix(path)) = prepared.tacacs_proxy() {
             statistics.protect_listener(path).await?;
         }
     }
-    let (runtime_policy, policy_observation) = match profile.policy {
-        PolicySource::Canonical(policy) => (RuntimePolicy::try_from(&policy)?, None),
-        PolicySource::File(path) => {
-            let source = PolicyFile::new(&path)?;
-            let mut observation = source.observe().await?;
-            let Some(PolicyChange::Changed(policy)) = observation.next().await? else {
-                anyhow::bail!("Initial runtime policy was rejected");
-            };
-            (RuntimePolicy::try_from(policy.as_ref())?, Some(observation))
-        }
-    };
-    let config_filter = config_filter_from_local_services(&components.local_services)?;
-    let config = ServiceConfig {
-        local_services: components.local_services,
-        validation_options: components.datastore.validation_options(),
-        runtime_policy,
-        certificate_verification: profile.certificate_verification,
-    };
-    let health = RuntimeHealthPublisher::new(config.enabled_services());
-    let service = Arc::new(
-        TacacsClientService::new(config, health.clone())
-            .context("Failed to build TACACS+ client service configuration")?,
-    );
-    Ok(PreparedService {
-        datastore: components.datastore,
-        service,
-        health,
-        config_filter,
-        credential_provider: components.credentials,
-        host_integration,
-        policy_observation,
-        statistics_file,
-        host_services: components.host_services,
-    })
+    let mut peers = vec![RuntimePeer::new("Host integration", move |context| {
+        host_integration.run(context.health, context.cancellation)
+    })];
+    if let Some(file) = statistics_file {
+        let service = runtime.service().clone();
+        peers.push(RuntimePeer::new("Operational statistics", move |context| {
+            file.run(service, context.cancellation)
+        }));
+    }
+    Ok((runtime, peers))
 }

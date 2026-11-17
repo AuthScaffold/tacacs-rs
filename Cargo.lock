@@ -2241,6 +2241,7 @@ dependencies = [
  "tacacsrs-ipc",
  "tacacsrs-networking",
  "tacacsrs-protocol",
+ "tacacsrs-provider",
  "tacacsrs-secrets",
  "tacacsrs-unix-socket",
  "tokio",
@@ -2310,7 +2311,6 @@ dependencies = [
  "env_logger",
  "foreign-types",
  "futures-util",
- "if-addrs",
  "log",
  "openssl",
  "openssl-sys",
@@ -2325,6 +2325,7 @@ dependencies = [
  "tacacsrs-kubesonic",
  "tacacsrs-networking",
  "tacacsrs-protocol",
+ "tacacsrs-provider",
  "tacacsrs-secrets",
  "tacacsrs-sonic",
  "tokio",
@@ -2437,10 +2438,12 @@ dependencies = [
  "serde_json",
  "tacacsrs-config",
  "tacacsrs-credential-resolution",
+ "tacacsrs-provider",
  "tacacsrs-secrets",
  "tempfile",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "zeroize",
 ]
 
@@ -2480,6 +2483,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tacacsrs-provider"
+version = "0.0.0-dev"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "tacacsrs-config",
+ "tacacsrs-credential-resolution",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "tacacsrs-secrets"
 version = "0.0.0-dev"
 dependencies = [
@@ -2505,6 +2520,7 @@ dependencies = [
  "serde_json",
  "tacacsrs-config",
  "tacacsrs-credential-resolution",
+ "tacacsrs-provider",
  "tempfile",
  "tokio",
  "tokio-stream",

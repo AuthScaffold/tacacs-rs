@@ -17,6 +17,7 @@ log = "0.4.30"
 rand = "0.10.0"
 tacacsrs-unix-socket = { path = "../tacacsrs_unix_socket" }
 tacacsrs-config = { path = "../tacacsrs_config" }
+tacacsrs-provider = { path = "../tacacsrs_provider" }
 tacacsrs-credential-resolution = { path = "../tacacsrs_credential_resolution" }
 tacacsrs-protocol = { path = "../tacacsrs_protocol" }
 tacacsrs-networking = { path = "../tacacsrs_networking" }

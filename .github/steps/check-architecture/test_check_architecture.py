@@ -190,8 +190,8 @@ def test_golden_metadata_passes(golden_metadata, rules):
     assert validate_all(golden_metadata, rules) == []
 
 
-def test_rules_cover_eighteen_packages(rules):
-    assert len(rules["allowed_workspace_edges"]) == 18
+def test_rules_cover_nineteen_packages(rules):
+    assert len(rules["allowed_workspace_edges"]) == 19
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +291,9 @@ def test_linux_only_edge_is_allowed_when_present(golden_edges, rules):
         ("tacacsrs-credential-resolution", "openssl", "provider-neutral-credentials"),
         ("tacacsrs-networking", "tonic", "schema-free-networking"),
         ("tacacsrs-config", "clap", "configuration-adapter"),
+        ("tacacsrs-provider", "redis", "provider-interface"),
+        ("tacacsrs-provider", "clap", "provider-interface"),
+        ("tacacsrs-provider", "tonic", "provider-interface"),
         ("tacacsrs-agent", "tonic", "ipc-independent-agent"),
         ("tacacsrs-ipc", "redis", "runtime-independent-ipc"),
         ("tacacsrs-unix-socket", "openssl", "unix-socket-leaf"),

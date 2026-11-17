@@ -8,7 +8,7 @@ Start the daemon with `tacacsrs-agentd --kubesonic`. Configure runtime behavior 
 
 The environment adapter creates canonical `LocalServices` and `RuntimePolicy` values. It also creates typed source, credential, and process inputs. It does not construct CLI arguments or maintain another server configuration model.
 
-The daemon registers this profile through its [source registry](../../executables/tacacsrs_agentd/src/source_registry.rs). Shared startup constructs the agent from the profile's components. The datastore owns Redis observation, and the credential provider owns file observation. Optional loopback registration runs through the daemon's generic host-service interface.
+The daemon registers this profile through its [source registry](../../executables/tacacsrs_agentd/src/source_registry.rs). The library prepares the source bundle without external mutation. The datastore owns Redis observation, and the credential provider owns file observation. The optional loopback registrar runs as a managed companion after startup.
 
 The read-only datastore loads only `TACPLUS_SERVER|*`. It reads `tcp_port` (default `49`) and `priority` (default `1`, range `1..=64`). Higher priorities come first. Endpoint text breaks ties. Other row fields do not configure this profile.
 
@@ -145,7 +145,7 @@ CAUTION: If unconditional startup loopback removal is unacceptable, keep registr
 
 After local readiness succeeds, an atomic comparison creates the row only while it remains absent. Cleanup removes only an owned row with exactly the registered fields. External edits remain intact. Missing rows can be repaired after readiness succeeds.
 
-Upstream errors and clear-list readiness changes do not erase an existing row. Shutdown attempts owned-row cleanup within the shared host deadline. An interrupted or uncertain Redis write can leave a row for the next opt-in startup cleanup.
+Upstream errors and clear-list readiness changes do not erase an existing row. Shutdown attempts owned-row cleanup within the shared host deadline. The runtime can abort cleanup at that deadline. An interrupted or uncertain Redis write can leave a row for the next opt-in startup cleanup.
 
 ## Validation
 

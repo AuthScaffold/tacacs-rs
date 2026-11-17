@@ -42,6 +42,7 @@ For the host cutover procedure, read the [Plain TACACS+ to TACACS+ over TLS Tran
 |-----------|-------------|
 | **tacacsrs-protocol** | Pure wire types, logical operations, exchange descriptions, and conversation validation |
 | **tacacsrs-agent** | Configuration supervision, routed operations, health, shutdown, and raw TACACS+ proxy |
+| **tacacsrs-provider** | Canonical source bundles, credential capabilities, and provider-owned companion contracts |
 | **tacacsrs-ipc** | Protobuf contract, reusable channel SDK, and bounded gRPC server adapter |
 | **tacon** | TACACS+ test application for AAA operations and transport modes |
 | **tacacsrs-agentd** | Daemon that hosts `tacacsrs-agent`, maintains upstream connections, and manages failover |
@@ -52,7 +53,7 @@ For the host cutover procedure, read the [Plain TACACS+ to TACACS+ over TLS Tran
 
 ## Supported Core
 
-The workspace `default-members` defines the supported core. Plain `cargo build` and `cargo test` select these 14 packages.
+The workspace `default-members` defines the supported core. Plain `cargo build` and `cargo test` select these packages.
 The internal `tacacsrs-unix-socket` package owns shared listener binding and cleanup without depending on TACACS+ or IPC.
 New releases contain versioned source, not compiled binaries or container images.
 Windows supports `tacon` direct mode. Linux GNU supports the complete core.
@@ -94,6 +95,8 @@ tacacsrs-config ───────► tacacsrs-credential-resolution
 ```
 
 `tacacsrs-protocol` owns the shared operation model for direct and IPC consumers. It has no networking, TLS, YANG, or protobuf dependency.
+
+`tacacsrs-provider` depends on configuration and credential contracts. SONiC and KubeSONiC produce its source bundles. The agent consumes those bundles and owns application initialization, supervision, health, and shared-deadline shutdown. Provider companions receive readiness and cancellation without depending on the agent.
 
 `tacacsrs-config` is the entry point for RFC 7951 YANG JSON parsing. It owns the generated `ietf-system-tacacs-plus` Rust types and validates YANG constraints.
 

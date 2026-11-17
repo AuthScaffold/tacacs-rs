@@ -1,0 +1,19 @@
+[package]
+name = "tacacsrs-provider"
+description = "Source and companion contracts for the TACACS+ agent."
+version = "0.0.0-dev"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+tacacsrs-config = { path = "../tacacsrs_config" }
+tacacsrs-credential-resolution = { path = "../tacacsrs_credential_resolution" }
+tokio = { version = "1.52.3", features = ["sync"] }
+tokio-util = "0.7.18"
+
+[lints]
+workspace = true

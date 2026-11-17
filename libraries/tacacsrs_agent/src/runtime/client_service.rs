@@ -133,6 +133,9 @@ impl DiagnosticsHandle {
 }
 
 impl TacacsClientService {
+    pub(crate) fn shutdown_deadlines(&self) -> anyhow::Result<super::shutdown::ShutdownDeadlines> {
+        self.runtime.manager.shutdown_deadlines()
+    }
     /// Returns a read-only handle to the current published generation.
     #[must_use]
     pub fn diagnostics_handle(&self) -> DiagnosticsHandle {

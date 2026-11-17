@@ -9,12 +9,9 @@ use tokio::io::AsyncReadExt;
 use tacacsrs_credential_http::{
     EvidenceFetchLimits, HttpEvidenceResolver, HttpCrlSource, HttpOcspSource,
 };
-use tacacsrs_credential_resolution::{CredentialChangeSource, CredentialResolver};
+use tacacsrs_provider::CredentialProvider;
 
 use crate::cli::Cli;
-
-pub(crate) type CredentialProvider =
-    (Option<Arc<dyn CredentialResolver>>, Option<Arc<dyn CredentialChangeSource>>);
 
 async fn crl_sources(cli: &Cli) -> anyhow::Result<Vec<HttpCrlSource>> {
     let mut locations = BTreeMap::<&str, Vec<&str>>::new();
@@ -107,16 +104,18 @@ pub(crate) async fn build(
 ) -> anyhow::Result<CredentialProvider> {
     let sources = crl_sources(cli).await?;
     let ocsp = ocsp_sources(cli).await?;
-    let (mut resolver, change_source) = base;
     if !sources.is_empty() || !ocsp.is_empty() {
-        let mut http = HttpEvidenceResolver::new(sources, EvidenceFetchLimits::default())?
+        let http = HttpEvidenceResolver::new(sources, EvidenceFetchLimits::default())?
             .with_ocsp_sources(ocsp)?;
-        if let Some(fallback) = resolver.take() {
-            http = http.with_fallback(fallback);
-        }
-        resolver = Some(Arc::new(http));
+        return Ok(base.layer(|fallback| {
+            let http = match fallback {
+                Some(fallback) => http.with_fallback(fallback),
+                None => http,
+            };
+            Arc::new(http)
+        }));
     }
-    Ok((resolver, change_source))
+    Ok(base)
 }
 
 #[cfg(test)]
@@ -154,7 +153,12 @@ mod tests {
             "https://example.test/issuer.crl",
         ])
         .unwrap();
-        assert!(build(&cli, (None, None)).await.unwrap().0.is_some());
+        assert!(build(&cli, CredentialProvider::none())
+            .await
+            .unwrap()
+            .into_parts()
+            .0
+            .is_some());
         let duplicate = Cli::try_parse_from([
             "agentd",
             "--server-addr",
@@ -167,7 +171,7 @@ mod tests {
             "https://example.test/root.crl",
         ])
         .unwrap();
-        assert!(build(&duplicate, (None, None)).await.is_err());
+        assert!(build(&duplicate, CredentialProvider::none()).await.is_err());
         for url in [
             "file:///etc/private",
             "http://user:secret@example.test/crl",
@@ -181,7 +185,7 @@ mod tests {
                 url,
             ])
             .unwrap();
-            let error = build(&cli, (None, None)).await.err().unwrap();
+            let error = build(&cli, CredentialProvider::none()).await.err().unwrap();
             assert!(!format!("{error:#}").contains(url));
             assert!(!format!("{error:#}").contains("private-reference"));
         }
@@ -193,7 +197,10 @@ mod tests {
     #[tokio::test]
     async fn provider_is_optional_and_composes_with_sonic() {
         let direct = Cli::try_parse_from(["agentd", "--server-addr", "127.0.0.1"]).unwrap();
-        let (resolver, changes) = build(&direct, (None, None)).await.unwrap();
+        let (resolver, changes) = build(&direct, CredentialProvider::none())
+            .await
+            .unwrap()
+            .into_parts();
         assert!(resolver.is_none() && changes.is_none());
         for extra in [
             vec![],
@@ -202,7 +209,8 @@ mod tests {
             let cli = Cli::try_parse_from(["agentd", "--sonic"].into_iter().chain(extra)).unwrap();
             let (resolver, changes) = build(&cli, crate::profiles::sonic::credentials(&cli))
                 .await
-                .unwrap();
+                .unwrap()
+                .into_parts();
             assert!(resolver.is_some() && changes.is_some());
         }
     }

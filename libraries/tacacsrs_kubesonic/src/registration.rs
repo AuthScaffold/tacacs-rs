@@ -1,10 +1,69 @@
 //! Optional atomic loopback-row registration, separate from read-only discovery.
 
+use std::time::Duration;
+
 use anyhow::Context;
+
+use tacacsrs_provider::{Companion, CompanionContext};
 
 use crate::environment::SourceSettings;
 
 const KEY: &str = "TACPLUS_SERVER|127.0.0.1";
+
+pub(crate) struct Registrar {
+    row: LoopbackRegistration,
+    retry: Duration,
+}
+
+impl Registrar {
+    pub(crate) fn new(row: LoopbackRegistration, retry: Duration) -> Self {
+        Self { row, retry }
+    }
+}
+
+#[async_trait::async_trait]
+impl Companion for Registrar {
+    fn name(&self) -> &'static str {
+        "Loopback registration"
+    }
+
+    async fn run(mut self: Box<Self>, context: CompanionContext) -> anyhow::Result<()> {
+        let CompanionContext {
+            mut ready,
+            cancellation,
+        } = context;
+        let mut initialized = false;
+        loop {
+            if cancellation.is_cancelled() {
+                break;
+            }
+            let is_ready = *ready.borrow_and_update();
+            let operation = async {
+                if !initialized {
+                    self.row.remove_stale().await?;
+                    initialized = true;
+                }
+                if cancellation.is_cancelled() {
+                    return Ok(());
+                }
+                self.row.reconcile(is_ready).await
+            };
+            if operation.await.is_err() {
+                log::warn!("Loopback registration is unavailable; retrying");
+            }
+            tokio::select! {
+                biased;
+                () = cancellation.cancelled() => break,
+                changed = ready.changed() => { changed.context("Runtime health publisher stopped")?; }
+                () = tokio::time::sleep(self.retry) => {}
+            }
+        }
+        self.row
+            .cleanup()
+            .await
+            .context("Failed to clean up the owned loopback row")
+    }
+}
 
 /// Owns only a loopback row that this instance successfully created.
 pub struct LoopbackRegistration {

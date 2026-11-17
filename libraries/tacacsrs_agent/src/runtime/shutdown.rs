@@ -14,6 +14,13 @@ use tokio::sync::watch;
 
 use super::{ListenerState, RuntimeHealthPublisher, RuntimeLifecycle, RuntimeService};
 
+/// Absolute shutdown budgets captured together by the first shutdown caller.
+#[derive(Clone, Copy)]
+pub(crate) struct ShutdownDeadlines {
+    pub(crate) overall: tacacsrs_networking::RequestDeadline,
+    pub(crate) requests: tacacsrs_networking::RequestDeadline,
+}
+
 /// Broadcasts one ordered shutdown transition to all runtime tasks.
 #[derive(Debug, Clone)]
 pub(crate) struct ShutdownCoordinator {

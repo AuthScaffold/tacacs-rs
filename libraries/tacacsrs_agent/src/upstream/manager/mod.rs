@@ -55,6 +55,8 @@ pub(crate) struct UpstreamManager<
     Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
 > {
     closed: std::sync::atomic::AtomicBool,
+    shutdown_deadlines:
+        std::sync::OnceLock<Result<crate::runtime::shutdown::ShutdownDeadlines, &'static str>>,
     /// Serializes catalog preparation and the snapshot swap. It is the inner
     /// lock, held after the service publication lock.
     catalog_reload_lock: tokio::sync::Mutex<()>,
@@ -171,6 +173,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         );
         Ok(Self {
             closed: std::sync::atomic::AtomicBool::new(false),
+            shutdown_deadlines: std::sync::OnceLock::new(),
             catalog_reload_lock: tokio::sync::Mutex::new(()),
             active_snapshot: StdRwLock::new(Arc::new(RuntimeRoutingSnapshot {
                 generation: 0,
@@ -321,15 +324,37 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
     }
 
     pub(crate) fn shutdown_deadline(&self) -> anyhow::Result<tacacsrs_networking::RequestDeadline> {
-        let runtime = self.current_runtime();
-        let requests = OperationKind::ALL
-            .into_iter()
-            .map(|operation| runtime.runtime_policy.limits(operation).request_timeout())
-            .max()
-            .unwrap_or_default();
-        tacacsrs_networking::RequestDeadline::after(
-            requests.min(runtime.runtime_policy.shutdown_timeout()),
-        )
+        Ok(self.shutdown_deadlines()?.requests)
+    }
+
+    pub(crate) fn shutdown_deadlines(
+        &self,
+    ) -> anyhow::Result<crate::runtime::shutdown::ShutdownDeadlines> {
+        self.shutdown_deadlines
+            .get_or_init(|| {
+                let runtime = self.current_runtime();
+                let timeout = runtime.runtime_policy.shutdown_timeout();
+                let requests = OperationKind::ALL
+                    .into_iter()
+                    .map(|operation| runtime.runtime_policy.limits(operation).request_timeout())
+                    .max()
+                    .unwrap_or_default()
+                    .min(timeout);
+                let now = tokio::time::Instant::now();
+                Ok(crate::runtime::shutdown::ShutdownDeadlines {
+                    overall: tacacsrs_networking::RequestDeadline::at(
+                        now.checked_add(timeout)
+                            .ok_or("Shutdown budget exceeds the clock range")?,
+                    ),
+                    requests: tacacsrs_networking::RequestDeadline::at(
+                        now.checked_add(requests)
+                            .ok_or("Shutdown budget exceeds the clock range")?,
+                    ),
+                })
+            })
+            .as_ref()
+            .copied()
+            .map_err(|message| anyhow::anyhow!("{message}"))
     }
 
     pub(crate) fn close(&self) {

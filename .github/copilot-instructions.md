@@ -109,17 +109,22 @@ tacacsrs-networking -> tacacsrs-protocol, tacacsrs-secrets
 tacacsrs-credential-resolution -> tacacsrs-secrets
 tacacsrs-config -> tacacsrs-networking, tacacsrs-protocol,
                    tacacsrs-credential-resolution, tacacsrs-secrets
-tacacsrs-sonic -> tacacsrs-config, tacacsrs-credential-resolution, tacacsrs-secrets
+tacacsrs-provider -> tacacsrs-config, tacacsrs-credential-resolution
+tacacsrs-sonic -> tacacsrs-config, tacacsrs-credential-resolution, tacacsrs-provider
+tacacsrs-kubesonic -> tacacsrs-config, tacacsrs-credential-resolution,
+                      tacacsrs-provider, tacacsrs-secrets
 tacacsrs-credential-http -> tacacsrs-credential-resolution, tacacsrs-secrets
 tacacsrs-ipc -> tacacsrs-protocol, tacacsrs-secrets, tacacsrs-unix-socket
 tacacsrs-agent -> tacacsrs-config, tacacsrs-protocol, tacacsrs-networking,
-                  tacacsrs-credential-resolution, tacacsrs-secrets, tacacsrs-unix-socket
+                  tacacsrs-credential-resolution, tacacsrs-provider,
+                  tacacsrs-secrets, tacacsrs-unix-socket
 tacacsrs-agent-ipc-emulator -> tacacsrs-ipc
 tacacsrs-bash-plugin -> tacacsrs-ipc
 
 tacon -> tacacsrs-ipc (Linux only), tacacsrs-config, tacacsrs-protocol, tacacsrs-networking
 tacacsrs-agentd -> tacacsrs-agent, tacacsrs-ipc, tacacsrs-config,
-                   tacacsrs-credential-http, tacacsrs-sonic
+                   tacacsrs-credential-http, tacacsrs-provider,
+                   tacacsrs-sonic, tacacsrs-kubesonic
 tacacsrs-agent-health -> tacacsrs-ipc
 tacacsrs-agent-ipc-emulatord -> tacacsrs-ipc, tacacsrs-agent-ipc-emulator
 session-wrapper -> tacacsrs-ipc
