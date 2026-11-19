@@ -207,19 +207,9 @@ Rejected updates retain the previous upstream set and downstream credentials, ev
 Before the first valid generation, the proxy rejects connections without reading packets. It never substitutes unobfuscated traffic for unresolved credentials.
 Upstream failover does not change downstream credentials. Source preparation publishes valid credential and upstream changes together.
 
-TACACS+ has no general in-band request to drain an established single-connect connection. Clearing the single-connect flag after negotiation has no effect. In this proxy, a TACACS+ `ERROR` is session-scoped and does not close the downstream connection.
+If the proxy returns an `ERROR`, only the affected downstream session ends. Other sessions can continue on the same downstream connection. The [failover strategies](#failover-strategies) determine whether the proxy retries the request or returns an `ERROR` to the client.
 
-When no server completes a request, the proxy sends a local `ERROR` reply for that session. This failure includes an unreachable server, a dropped or truncated upstream reply, and an expired request deadline. RFC 8907 section 4.4 tells the client to treat `ERROR` like an unreachable server and to try its next server. The failure of one session does not close the downstream connection or the other sessions that it multiplexes.
-
-A downstream client that closes its connection at a packet boundary ends normally, and the daemon logs this event at the info level.
-
-An explicit upstream `ERROR` on the first request is safe to replay. With `ordered-safe-retry`, the proxy closes that upstream session and tries the next eligible server. If another server succeeds, the downstream client receives that result instead of the first `ERROR`. The default `deferred-failover` strategy returns the `ERROR` for the current session and moves the next session to the fallback route. An `ERROR` after a continuing authentication session is pinned does not retry another server.
-
-With both strategies, an upstream `ERROR` affects only the operation type that received it. The proxy stops new sessions on that server's connection for the operation, lets established sessions finish, and then closes the connection. New sessions of that operation use the next eligible server. The other operation types continue to use their current server.
-
-To retire a downstream connection, the server must close the TCP transport. Close idle connections when possible because closing a connection with active sessions interrupts those sessions.
-
-A server can enforce its own drain by returning `ERROR` for new sessions, finishing sessions that are already active, and then closing TCP. A routing client can send those rejected new sessions to another server. The `ERROR` does not tell the client to stop creating sessions. The server must continue to reject new sessions until it closes the connection.
+TACACS+ has no general in-band request to drain a single-connect connection. Clearing the single-connect flag after negotiation has no effect. A server can reject new sessions with `ERROR` until active sessions finish, then close the TCP connection. A downstream client can also close its connection. If it closes at a packet boundary, the daemon logs a normal disconnect at the info level.
 
 ### Upstream Encryption
 
@@ -382,19 +372,13 @@ Atomic replacement prevents partial reports but does not make filesystem I/O har
 | `-vvv` | Debug |
 | `-vvvv` | Trace |
 
-## Failover Behavior
+## Failover behavior
 
-The server configuration order sets the preference order. Each operation uses
-only servers that declare support for that operation.
+The routed client tracks failures separately for authentication, authorization, and accounting on each server. Each operation uses the eligible servers in configuration order. IPC and proxy requests share the active route for that operation. With single-connect, the client can reuse one upstream connection per server for each operation.
 
-Authentication, authorization, and accounting have independent routing
-cursors. IPC and proxy requests share the cursor for a given operation.
+A refused connection, a dropped connection, a truncated reply, or an upstream `ERROR` opens the circuit for that server and operation. The routed client removes the cached connection. If the failed server was active, new sessions of that operation use the next eligible server. For example, an authorization `ERROR` leaves authentication and accounting on their current routes. A downstream disconnect alone does not mark the upstream server as failed.
 
-Each server has a separate connection for each operation. Therefore, an
-authorization connection failure does not close authentication or accounting
-sessions.
-
-### State Transitions
+### State transitions
 
 ```
 preferred route
@@ -415,27 +399,22 @@ allow one real operation as a recovery trial
       +-- failure --> reopen the circuit
 ```
 
-The recovery interval controls only how long a healthy server is preferred over a failed one. When every eligible server for an operation has an open circuit, the daemon tries those servers in route order without waiting. Therefore, one fault on the only server does not block that operation for the recovery interval. Concurrent requests share one connection attempt for each server, so this fallback does not cause a connection storm.
+If every eligible server for an operation has an open circuit, the routed client tries those servers in route order without waiting. Even the only eligible server can serve the next request immediately. The recovery interval (30 seconds by default) applies to trials of a failed server while another server is available. Concurrent requests for a given server and operation share one connection attempt.
 
-A request records a server failure only when the server fails or the request deadline expires. A downstream client that disconnects or cancels a request does not change server health.
+### Failover strategies
 
-### Failover Strategies
+Under [RFC 8907 section 4.4](https://www.rfc-editor.org/rfc/rfc8907#section-4.4), an `ERROR` status means the server did not finish the request. The client must treat the server as unreachable and can try a backup. A denial is a completed decision and leaves the route unchanged.
 
-The default strategy is `deferred-failover`. The current request returns its
-failure. The next request uses the next eligible server.
+The `tacacs-proxy-failover-strategy` policy controls how the proxy handles the first packet of a session:
 
-The `ordered-safe-retry` strategy can try the next eligible server during the
-current request. These replay rules always apply:
+- `deferred-failover` (default) makes one attempt and forwards an upstream `ERROR` to the downstream client. If a backup is available, the next session of that operation uses it. If the whole server fails, each operation still using it encounters a failed request of its own before it switches servers.
+- `ordered-safe-retry` retries the first packet on the next eligible server after an upstream `ERROR`. It also permits a retry after proven non-delivery. If the backup succeeds, the client receives its reply. If the final attempt returns an `ERROR`, the proxy forwards that reply. The proxy stops after an unknown outcome because replay can duplicate accounting records or affect audit or lockout state.
 
-- A denial is a valid response and does not cause failover.
-- A server `ERROR` reply can use the next server.
-- Unknown authentication, authorization, and accounting outcomes stop the current request without another attempt.
-- Proven-unsent failures can use the next server within the configured attempt budget.
-- A continuing authentication session stays on the server that sent its first valid reply.
+After an authentication challenge, the session stays on the server that sent the challenge. Under either strategy, the proxy forwards a later `ERROR` and moves new authentication sessions to the next eligible server. If the proxy has no upstream reply to forward, it sends a local `ERROR` for that session. Examples include an unreachable server, a lost reply, or an expired request deadline.
 
-This changes earlier `ordered-safe-retry` behavior, which could replay uncertain authentication and authorization requests.
-Those operations can affect audit or lockout state, so their unknown outcomes now remain failures with no automatic replay.
-The default deferred strategy is unchanged. No uncertain-outcome replay opt-in is currently exposed.
+For a connection-related `ERROR` in single-connect mode, section 4.4 requires the connection to refuse new sessions. Established sessions can finish, then the connection must close. The proxy retires the shared upstream connection on any `ERROR`, even on the first packet. The connection stops accepting new sessions and closes once active sessions finish. If the connector takes more than one second to initiate retirement, the routed client forces closure. Sessions that have already started to drain have no separate one-second cutoff.
+
+[RFC 8907 section 3.6](https://www.rfc-editor.org/rfc/rfc8907#section-3.6) also calls for `ERROR` for an unsupported or unrecognized option. The status alone cannot distinguish this case from a server fault. One such request can therefore move its operation to a backup. If it has only one eligible server, the next request can use that server immediately.
 
 ### Preferred Server Recovery
 

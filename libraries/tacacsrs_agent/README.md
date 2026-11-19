@@ -259,6 +259,8 @@ tacacsrs_agent
 
 ## Failover ownership
 
+The [daemon failover guide](../../docs/tacacsrs-agentd.md#failover-behavior) explains which sessions move to a backup and which reply the proxy sends to the client.
+
 `config::RuntimePolicy` projects canonical service policy into a `FailoverPlan` attempt budget.
 `tacacsrs_networking::retry` applies the conservative replay rules and owns the retry loop.
 The networking `routed` module owns endpoint catalogs, operation identities, circuits, reconnect serialization, and lifecycle state.

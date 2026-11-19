@@ -6,6 +6,11 @@
 //! clients. Clone an [`Endpoint`] to preserve its cache identity; construct a
 //! new endpoint when any prepared input or eligibility changes.
 //!
+//! Report a TACACS+ `ERROR` through [`BoundEndpoint::note_failure`] even after the
+//! first reply. A failure opens the circuit for that endpoint and operation and
+//! retires its cached connection. Other operations keep their routes and connections.
+//! [`crate::retry`] determines whether the current request can use another endpoint.
+//!
 //! Use [`BoundEndpoint::connection`] for typed exchanges or raw conversations.
 //! Report outcomes through the binding, not through a newly published catalog.
 //! Arm [`BoundEndpoint::observe_failure`] only during upstream I/O, with the
