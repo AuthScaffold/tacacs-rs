@@ -10,6 +10,10 @@
 //! The fixture can also send malformed replies: wrong session identifiers,
 //! wrong sequence numbers, invalid headers, oversized lengths, unknown
 //! statuses, and bodies that use the wrong shared secret.
+//!
+//! [`Upstream::start_tls`] serves the same behavior over TLS 1.3. Packets then
+//! use the cleartext framing of RFC 9887 and the fixture records failed
+//! handshakes. The fixture also records the source address of each connection.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -17,6 +21,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use openssl::ssl::{Ssl, SslContext};
 use tacacsrs_networking::{PacketReadResult, PacketReader, PacketWriteResult, PacketWriter};
 use tacacsrs_protocol::accounting::reply::AccountingReply;
 use tacacsrs_protocol::accounting::request::AccountingRequest;
@@ -35,7 +40,7 @@ use tacacsrs_protocol::enumerations::{
 };
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
 use tacacsrs_secrets::SecretBytes;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -161,6 +166,11 @@ impl PerKind {
 
 struct State {
     mode: SingleConnect,
+    /// Obfuscation key. TLS connections use cleartext packets and no key.
+    key: Option<SecretBytes>,
+    tls: Option<SslContext>,
+    peers: Mutex<Vec<SocketAddr>>,
+    handshake_failures: AtomicU64,
     plan: Mutex<Plan>,
     received: PerKind,
     injected: [PerKind; 10],
@@ -188,7 +198,13 @@ impl Drop for Upstream {
 impl Upstream {
     pub(crate) async fn start(mode: SingleConnect) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        Self::serve(mode, listener)
+        Self::serve(mode, listener, None)
+    }
+
+    /// Starts a fixture that accepts only TLS connections that `context` allows.
+    pub(crate) async fn start_tls(mode: SingleConnect, context: SslContext) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        Self::serve(mode, listener, Some(context))
     }
 
     /// Starts a fixture on a fixed address, for example to restart a server.
@@ -199,7 +215,7 @@ impl Upstream {
         let mut attempts = 0;
         loop {
             match TcpListener::bind(address).await {
-                Ok(listener) => return Self::serve(mode, listener),
+                Ok(listener) => return Self::serve(mode, listener, None),
                 Err(error) => {
                     attempts += 1;
                     assert!(attempts < 100, "could not bind {address} again: {error}");
@@ -209,10 +225,14 @@ impl Upstream {
         }
     }
 
-    fn serve(mode: SingleConnect, listener: TcpListener) -> Self {
+    fn serve(mode: SingleConnect, listener: TcpListener, tls: Option<SslContext>) -> Self {
         let address = listener.local_addr().unwrap();
         let state = Arc::new(State {
             mode,
+            key: tls.is_none().then(key),
+            tls,
+            peers: Mutex::new(Vec::new()),
+            handshake_failures: AtomicU64::new(0),
             plan: Mutex::new(healthy()),
             received: PerKind::default(),
             injected: Default::default(),
@@ -259,6 +279,10 @@ impl Upstream {
         self.state.connections.load(Ordering::SeqCst)
     }
 
+    pub(crate) fn mode(&self) -> SingleConnect {
+        self.state.mode
+    }
+
     pub(crate) fn open_connections(&self) -> usize {
         self.state.open_connections.load(Ordering::SeqCst)
     }
@@ -274,6 +298,16 @@ impl Upstream {
     pub(crate) fn max_in_flight(&self, kind: Kind) -> usize {
         self.state.max_in_flight[kind as usize].load(Ordering::SeqCst)
     }
+
+    /// Returns the source address of every accepted TCP connection.
+    pub(crate) fn peers(&self) -> Vec<SocketAddr> {
+        self.state.peers.lock().unwrap().clone()
+    }
+
+    /// Returns the number of TLS handshakes that failed.
+    pub(crate) fn handshake_failures(&self) -> u64 {
+        self.state.handshake_failures.load(Ordering::SeqCst)
+    }
 }
 
 async fn accept_loop(listener: TcpListener, state: Arc<State>, stop: CancellationToken) {
@@ -282,11 +316,30 @@ async fn accept_loop(listener: TcpListener, state: Arc<State>, stop: Cancellatio
             () = stop.cancelled() => return,
             accepted = listener.accept() => accepted,
         };
-        let Ok((stream, _peer)) = accepted else {
+        let Ok((stream, peer)) = accepted else {
             continue;
         };
         state.connections.fetch_add(1, Ordering::SeqCst);
-        tokio::spawn(serve_connection(stream, Arc::clone(&state), stop.child_token()));
+        state.peers.lock().unwrap().push(peer);
+        let connection = stop.child_token();
+        let Some(context) = state.tls.clone() else {
+            tokio::spawn(serve_connection(stream, Arc::clone(&state), connection));
+            continue;
+        };
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            let mut stream =
+                tokio_openssl::SslStream::new(Ssl::new(&context).unwrap(), stream).unwrap();
+            let accepted = tokio::select! {
+                () = connection.cancelled() => return,
+                accepted = Pin::new(&mut stream).accept() => accepted,
+            };
+            if accepted.is_err() {
+                state.handshake_failures.fetch_add(1, Ordering::SeqCst);
+                return;
+            }
+            serve_connection(stream, state, connection).await;
+        });
     }
 }
 
@@ -326,20 +379,19 @@ impl Drop for InFlight {
     }
 }
 
-async fn serve_connection(
-    stream: tokio::net::TcpStream,
-    state: Arc<State>,
-    connection: CancellationToken,
-) {
+async fn serve_connection<Stream>(stream: Stream, state: Arc<State>, connection: CancellationToken)
+where
+    Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     state.open_connections.fetch_add(1, Ordering::SeqCst);
     let _open = OpenConnection(Arc::clone(&state));
-    let (mut reader, mut writer) = stream.into_split();
+    let (mut reader, mut writer) = tokio::io::split(stream);
     let (output, mut outputs) = mpsc::unbounded_channel::<Output>();
 
     let writer_task = {
         let connection = connection.clone();
+        let packet_writer = PacketWriter::new(state.key.clone());
         async move {
-            let packet_writer = PacketWriter::new(Some(key()));
             loop {
                 let next = tokio::select! {
                     () = connection.cancelled() => break,
@@ -369,7 +421,7 @@ async fn serve_connection(
     let reader_task = {
         let connection = connection.clone();
         async move {
-            let packet_reader = PacketReader::new(Some(key()));
+            let packet_reader = PacketReader::new(state.key.clone());
             let logins = Logins::default();
             let mut single_connect = false;
             let mut first = true;
@@ -486,9 +538,7 @@ async fn respond(
         }
         Fault::Hang => connection.cancelled().await,
         Fault::PartialHeader => {
-            let bytes = reply(false)
-                .to_obfuscated(UPSTREAM_KEY.as_bytes())
-                .to_bytes();
+            let bytes = wire(&state, reply(false));
             let _sent = output.send(Output::Raw(bytes[..6].to_vec()));
             connection.cancelled().await;
         }
@@ -516,9 +566,7 @@ async fn respond(
             let _sent = output.send(Output::Packet(packet));
         }
         Fault::OversizedLength | Fault::BadHeader => {
-            let mut bytes = reply(false)
-                .to_obfuscated(UPSTREAM_KEY.as_bytes())
-                .to_bytes();
+            let mut bytes = wire(&state, reply(false));
             bytes.truncate(12);
             if fault == Fault::OversizedLength {
                 bytes[8..12].copy_from_slice(&u32::MAX.to_be_bytes());
@@ -540,6 +588,14 @@ async fn respond(
 
 fn key() -> SecretBytes {
     SecretBytes::new(UPSTREAM_KEY.as_bytes().to_vec())
+}
+
+/// Encodes `packet` as the connection would send it.
+fn wire(state: &State, packet: Packet) -> Vec<u8> {
+    match &state.key {
+        Some(key) => packet.to_obfuscated(key.expose_secret()).to_bytes(),
+        None => packet.to_bytes(),
+    }
 }
 
 fn request_user(request: &Packet, logins: &Logins) -> String {

@@ -123,6 +123,7 @@ where
     let mut session_tasks = JoinSet::new();
 
     let result = loop {
+        let sessions_in_flight = !session_tasks.is_empty();
         tokio::select! {
             biased;
             writer_result = &mut writer_task => {
@@ -153,7 +154,7 @@ where
                     }
                 }
             }
-            packet_result = downstream.next_packet() => {
+            packet_result = downstream.next_packet(sessions_in_flight) => {
                 let received = match packet_result {
                     Ok(Some(packet)) => packet,
                     Ok(None) => {
@@ -310,7 +311,7 @@ where
     })?;
 
     loop {
-        let downstream_packet = match downstream.next_packet().await {
+        let downstream_packet = match downstream.next_packet(false).await {
             Ok(Some(packet)) => packet,
             Ok(None) => return Ok(()),
             Err(error) => return Err(error),
@@ -1264,6 +1265,94 @@ mod tests {
             .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
 
         proxy_task.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn multiplexed_proxy_waits_past_read_timeout_for_in_flight_replies() {
+        let upstream_id = 0x5555_6666;
+        let reply_body = accounting_reply_body(TacacsAccountingStatus::TacPlusAcctStatusSuccess);
+        let provider = Arc::new(FakeConversationProvider::new(vec![FakeProxySession::new(
+            upstream_id,
+            vec![test_packet(
+                TacacsType::TacPlusAccounting,
+                upstream_id,
+                reply_body,
+            )],
+        )
+        .with_reply_delay(Duration::from_secs(3))]));
+        let (proxy_stream, mut client_stream) = tokio::io::duplex(4096);
+        let proxy_task = tokio::spawn(proxy_multiplexed_connection(
+            proxy_stream,
+            Duration::from_secs(1),
+            None,
+            Arc::clone(&provider),
+        ));
+        let request = |session_id| {
+            test_packet_with_sequence(
+                TacacsType::TacPlusAccounting,
+                session_id,
+                1,
+                TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+                b"request".to_vec(),
+            )
+        };
+
+        write_packet(&mut client_stream, &request(0x1111_2222)).await;
+        let reply = read_packet(&mut client_stream).await;
+        assert_eq!(reply.header().session_id, 0x1111_2222);
+
+        // With no session in flight, the read timeout limits idle time again.
+        let started = tokio::time::Instant::now();
+        let result = proxy_task.await.unwrap();
+        assert!(matches!(result, Err(ProxyConnectionError::Downstream(_))));
+        assert!(started.elapsed() <= Duration::from_secs(1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn multiplexed_proxy_bounds_a_partial_frame_while_sessions_are_in_flight() {
+        let upstream_id = 0x5555_6666;
+        let provider = Arc::new(FakeConversationProvider::new(vec![FakeProxySession::new(
+            upstream_id,
+            vec![],
+        )
+        .with_reply_delay(Duration::from_secs(20))]));
+        let (proxy_stream, mut client_stream) = tokio::io::duplex(4096);
+        let proxy_task = tokio::spawn(proxy_multiplexed_connection(
+            proxy_stream,
+            Duration::from_secs(1),
+            None,
+            Arc::clone(&provider),
+        ));
+        let request = |session_id| {
+            test_packet_with_sequence(
+                TacacsType::TacPlusAccounting,
+                session_id,
+                1,
+                TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+                b"request".to_vec(),
+            )
+            .to_bytes()
+        };
+
+        client_stream
+            .write_all(&request(0x1111_2222))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let started = tokio::time::Instant::now();
+        client_stream
+            .write_all(&request(0x3333_4444)[..6])
+            .await
+            .unwrap();
+
+        let result = proxy_task.await.unwrap();
+        let Err(ProxyConnectionError::Downstream(error)) = result else {
+            panic!("a stalled partial frame must close the connection");
+        };
+        assert!(error
+            .to_string()
+            .contains("No downstream TACACS+ packet arrived"));
+        assert!(started.elapsed() <= Duration::from_secs(1));
     }
 
     #[tokio::test]

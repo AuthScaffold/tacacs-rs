@@ -163,6 +163,7 @@ Proxy mode preserves TACACS+ packet bodies while managing session routing:
 - Each downstream session owns one sequential upstream conversation with independent sequence validation.
 - Different sessions can receive replies out of request order. One downstream writer serializes the resulting packets onto the TCP stream.
 - Per-session input and connection reply queues are bounded to apply backpressure.
+- The downstream read timeout equals the largest configured server timeout. The proxy closes an idle downstream connection when no packet arrives within this timeout. While any session on the connection waits for an upstream reply, the idle timeout does not apply, so a slow upstream server does not cause the proxy to drop the client. A packet that has started to arrive must always complete within the timeout.
 - Packet bodies are forwarded unchanged. The proxy rewrites only session IDs and the locally advertised single-connect flag.
 - The proxy advertises single-connect support based on its own downstream multiplexer, not the selected upstream server's flag.
 - The downstream client and proxy negotiate single-connect mode in the first request and reply. Later packets can omit the flag without ending connection reuse.
@@ -305,7 +306,7 @@ Readiness reports configuration availability, not a completed upstream certifica
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--connect-timeout-seconds <SECS>` | `5` | Timeout for upstream TACACS+ connections |
+| `--connect-timeout-seconds <SECS>` | `5` | Timeout for upstream TACACS+ connections. It bounds the TCP connect and the TLS or PSK handshake together. |
 | `--runtime-policy <FILE>` | none | Optional live JSON policy for failover and request limits |
 | `--upstream-watchdog-interval-seconds <SECS>` | none (disabled) | Interval between upstream watchdog probes. See [Host Integration](#host-integration). |
 
@@ -380,7 +381,7 @@ Each operation (authentication, authorization, or accounting) has its own active
 
 A closed circuit lets a server receive new sessions. A failed connection attempt, an upstream `ERROR`, or a timeout during an upstream exchange opens the circuit for that operation only. If the failed server was active, the operation's route advances one position. After an `ERROR` or a timeout, the shared connection stays open, because the other operations can still be healthy on that server. A downstream disconnect alone leaves the circuit unchanged.
 
-A lost connection or a truncated reply is a transport fault. The routed client discards the shared connection for all operations. If the connection already completed a valid exchange for any operation, the circuit stays closed. The next session of each operation reconnects to the same server, and the operations share the new connection. The session that was in progress on the lost connection fails. The circuit opens only if the reconnect fails, the server times out, or the server returns `ERROR`. A transport fault on a connection that has not completed a valid exchange opens the circuit, so a server that accepts connections and then drops them cannot keep traffic.
+A lost connection or a truncated reply is a transport fault. The routed client discards the shared connection for all operations. If the connection already completed a valid exchange for any operation, the circuit stays closed. The next session of each operation reconnects to the same server, and the operations share the new connection. The session that was in progress on the lost connection fails. The circuit opens only if the reconnect fails, the server times out, or the server returns `ERROR`. A transport fault on a connection that has not completed a valid exchange opens the circuit, so a server that accepts connections and then drops them cannot keep traffic. This rule also applies when another session has already replaced the failed connection. The late report does not close the replacement connection. It opens the circuit for its operation unless the failed connection or a newer connection to the same server has completed a valid exchange.
 
 For each new binding, the routed client tries each eligible server at most once across three passes:
 

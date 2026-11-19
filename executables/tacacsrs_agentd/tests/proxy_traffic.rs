@@ -17,6 +17,9 @@ mod upstream;
 #[path = "proxy_traffic/coverage.rs"]
 mod coverage;
 
+#[path = "proxy_traffic/transport.rs"]
+mod transport;
+
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -99,6 +102,9 @@ struct Options {
     /// YANG JSON server configuration for `--config`. It replaces the
     /// `--server-addr`, `--shared-secret`, and `--dedicated` options.
     config: Option<serde_json::Value>,
+    /// Value of `--service-mode`. `both` also serves the IPC client API at
+    /// [`Daemon::socket`].
+    service_mode: &'static str,
 }
 
 impl Default for Options {
@@ -109,12 +115,19 @@ impl Default for Options {
             policy: serde_json::json!({}),
             backup_servers: Vec::new(),
             config: None,
+            service_mode: "tacacs-proxy",
         }
     }
 }
 
 const LISTENER_LOG_TARGET: &str = "tacacsrs_agent::services::tacacs_proxy::listener::tcp";
 const LISTENER_MESSAGE: &str = "The TACACS+ proxy listener accepts clients on TCP ";
+const PUBLICATION_LOG_TARGET: &str = "tacacsrs_agent::upstream::manager::publication";
+/// The daemon logs one of these messages when it publishes the first server set.
+const PUBLICATION_MESSAGES: [&str; 2] = [
+    "Reloaded the TACACS+ server set: ",
+    "Reloaded an empty TACACS+ server set",
+];
 
 struct Daemon {
     child: Child,
@@ -150,16 +163,17 @@ impl Daemon {
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             // Set `PROXY_TRAFFIC_LOG=debug` to see more daemon output on failure.
-            // The tests read the bound proxy port from this info message.
+            // The tests read the bound proxy port and the first server set
+            // publication from these info messages.
             .env(
                 "RUST_LOG",
                 format!(
-                    "{},{LISTENER_LOG_TARGET}=info",
+                    "{},{LISTENER_LOG_TARGET}=info,{PUBLICATION_LOG_TARGET}=info",
                     std::env::var("PROXY_TRAFFIC_LOG").unwrap_or_else(|_| "warn".to_owned())
                 ),
             )
             .arg("-v")
-            .args(["--service-mode", "tacacs-proxy"])
+            .args(["--service-mode", options.service_mode])
             // Port 0 lets the kernel select a free port without a race.
             .args(["--proxy-endpoint", "127.0.0.1:0"])
             .args(["--proxy-shared-secret", DOWNSTREAM_KEY])
@@ -220,7 +234,15 @@ impl Daemon {
             if let Some(status) = self.child.try_wait().unwrap() {
                 panic!("daemon exited during startup ({status}): {}", self.log());
             }
-            if let Some(address) = self.bound_address() {
+            // The listener can accept clients before the configuration source
+            // publishes the first server set. Requests in that window get a
+            // local ERROR, so the tests wait for both.
+            let published = self.log().lines().any(|line| {
+                PUBLICATION_MESSAGES
+                    .iter()
+                    .any(|message| line.contains(message))
+            });
+            if let Some(address) = self.bound_address().filter(|_| published) {
                 self.port = address.port();
                 TcpStream::connect(address).await.unwrap();
                 return;
@@ -240,6 +262,11 @@ impl Daemon {
             let (_, address) = line.split_once(LISTENER_MESSAGE)?;
             address.trim().parse().ok()
         })
+    }
+
+    /// Returns the path of the IPC client API socket.
+    fn socket(&self) -> PathBuf {
+        self.directory.0.join("agent.sock")
     }
 
     /// Replaces the `--config` file atomically, as an operator tool would.
@@ -922,6 +949,14 @@ async fn hanging_authorization_is_bounded_and_isolated_on_dedicated_clients() {
 
 async fn broken_upstream_case(fault: Fault, mode: SingleConnect) {
     let upstream = Upstream::start(mode).await;
+    broken_upstream_run(&upstream, fault, None).await;
+}
+
+/// Injects `fault` into every fourth request and checks bounds and recovery.
+///
+/// `config` replaces the plain-TCP command-line server options. Servers in
+/// `config` must use a 1-second timeout.
+async fn broken_upstream_run(upstream: &Upstream, fault: Fault, config: Option<serde_json::Value>) {
     let mut daemon = Daemon::start(
         upstream.address(),
         Options {
@@ -931,6 +966,7 @@ async fn broken_upstream_case(fault: Fault, mode: SingleConnect) {
                 "authorization": { "request-timeout-seconds": 2 },
                 "accounting": { "request-timeout-seconds": 2 },
             })),
+            config,
             ..Options::default()
         },
     )
@@ -971,7 +1007,12 @@ async fn broken_upstream_case(fault: Fault, mode: SingleConnect) {
     assert_recovers(daemon.port, false).await;
     // A single-connect upstream connection may stay open, so allow slack.
     daemon.wait_fds_at_most(baseline_fds + 2).await;
-    wait_until("upstream fixture handlers to finish", || upstream.in_flight() == 0).await;
+    if fault == Fault::Hang && upstream.mode() == SingleConnect::Accept {
+        // The server still holds the hung sessions. The shared connection stays usable.
+        assert_eq!(upstream.open_connections(), 1);
+    } else {
+        wait_until("upstream fixture handlers to finish", || upstream.in_flight() == 0).await;
+    }
     daemon.stop().await;
 }
 

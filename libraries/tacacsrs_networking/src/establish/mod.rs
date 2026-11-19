@@ -47,7 +47,7 @@ pub enum ConnectPreflight {
     AccountingWatchdog,
 }
 
-/// TCP connection timeout, local binding, and optional TACACS+ preflight.
+/// Connection timeout, local binding, and optional TACACS+ preflight.
 ///
 /// Certificate verification belongs to TLS preparation, not execution controls.
 ///
@@ -58,8 +58,9 @@ pub enum ConnectPreflight {
 #[derive(Debug, Clone, Default)]
 pub struct ConnectOptions {
     binding: crate::LocalBinding,
-    /// Connection timeout. When `None`, no timeout is applied to the TCP
-    /// connection phase. Callers must apply other timeouts.
+    /// Connection timeout. It bounds the TCP connect and the TLS or PSK
+    /// handshake together. When `None`, no timeout is applied to connection
+    /// setup. Callers must apply other timeouts.
     timeout: Option<Duration>,
     /// Optional preflight operation performed by `TacacsClient::connect_prepared`.
     preflight: ConnectPreflight,
@@ -81,7 +82,11 @@ impl ConnectOptions {
         self.timeout
     }
 
-    /// Returns options with the TCP connect timeout set to `timeout`.
+    /// Returns options with the connection timeout set to `timeout`.
+    ///
+    /// The timeout bounds the TCP connect and the TLS or PSK handshake
+    /// together. A server that accepts TCP and then stalls the handshake
+    /// therefore fails within `timeout`, and failover can try another server.
     #[must_use]
     pub const fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
@@ -105,8 +110,9 @@ impl ConnectOptions {
 /// # Errors
 ///
 /// Returns an error if:
-/// - TCP connection fails or times out
+/// - TCP connection fails
 /// - the prepared backend fails to complete its handshake
+/// - the TCP connect and handshake together exceed the connection timeout
 #[cfg(test)]
 pub(crate) async fn establish_stream(endpoint: &PreparedEndpoint) -> Result<BoxedTransport> {
     establish_stream_until(endpoint, None).await
@@ -176,13 +182,31 @@ async fn establish_transport_inner(
     attempt: &mut crate::statistics::ConnectionAttempt,
 ) -> Result<BoxedTransport> {
     let address = endpoint.address();
-    let options = &endpoint.options;
-
-    let security_label = endpoint.security_label();
+    let timeout = endpoint.options.timeout;
     log::debug!(
-        "Connecting to TACACS+ server {address} (security: {security_label}, timeout: {:?})",
-        options.timeout,
+        "Connecting to TACACS+ server {address} (security: {}, timeout: {timeout:?})",
+        endpoint.security_label(),
     );
+    let connection = connect_and_handshake(endpoint, attempt);
+    match timeout {
+        Some(duration) => tokio::time::timeout(duration, connection)
+            .await
+            .with_context(|| {
+                format!(
+                    "Connection to TACACS+ server {address} did not complete within {duration:?}"
+                )
+            })?,
+        None => connection.await,
+    }
+}
+
+/// Opens TCP and completes the prepared handshake, without a timeout.
+async fn connect_and_handshake(
+    endpoint: &PreparedEndpoint,
+    attempt: &mut crate::statistics::ConnectionAttempt,
+) -> Result<BoxedTransport> {
+    let address = endpoint.address();
+    let options = &endpoint.options;
 
     let certificate_tls_guard =
         matches!(&endpoint.transport, PreparedTransport::Tls(_)).then(|| {
@@ -195,17 +219,9 @@ async fn establish_transport_inner(
         .as_ref()
         .map(|guard| guard as &dyn ConnectionGuard)
         .or(endpoint.connection_guard.as_deref());
-    let tcp_stream = match options.timeout {
-        Some(dur) => {
-            tokio::time::timeout(dur, connect_tcp(address, connection_guard, &options.binding))
-                .await
-                .with_context(|| format!("Connection to TACACS+ server {address} timed out"))?
-                .with_context(|| format!("Failed to establish TCP connection to {address}"))?
-        }
-        None => connect_tcp(address, connection_guard, &options.binding)
-            .await
-            .with_context(|| format!("Failed to establish TCP connection to {address}"))?,
-    };
+    let tcp_stream = connect_tcp(address, connection_guard, &options.binding)
+        .await
+        .with_context(|| format!("Failed to establish TCP connection to {address}"))?;
 
     log::debug!("TCP connection to {address} established");
     attempt.connected();
@@ -293,5 +309,42 @@ mod tests {
             "unexpected setup error: {error:#}"
         );
         assert!(!peer.await.unwrap().is_empty(), "TLS must start before evidence expiry");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn connect_timeout_bounds_a_stalled_tls_handshake() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = PreparedEndpoint::new(
+            listener.local_addr().unwrap().try_into().unwrap(),
+            PreparedTransport::Tls(
+                crate::TlsClientConfig::prepare(
+                    "localhost",
+                    None,
+                    crate::CertificateTrust::Platform,
+                    None,
+                    crate::CertificateVerification::DisabledForDevelopment,
+                )
+                .unwrap(),
+            ),
+            false,
+            None,
+            ConnectOptions::default().with_timeout(Duration::from_secs(1)),
+        );
+        // The peer accepts TCP and never answers the ClientHello.
+        let peer = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut received = Vec::new();
+            stream.read_to_end(&mut received).await.unwrap();
+            received
+        });
+        let started = tokio::time::Instant::now();
+        let error = match establish_stream(&endpoint).await {
+            Ok(_) => panic!("setup completed without a TLS handshake"),
+            Err(error) => error,
+        };
+        assert_eq!(started.elapsed(), Duration::from_secs(1));
+        assert!(error.is::<tokio::time::error::Elapsed>(), "unexpected setup error: {error:#}");
+        assert_eq!(endpoint.counters().snapshot().connection_timeouts, 1);
+        assert!(!peer.await.unwrap().is_empty(), "TLS must start before the timeout");
     }
 }

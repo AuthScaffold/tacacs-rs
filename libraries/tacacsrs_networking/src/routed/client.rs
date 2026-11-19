@@ -506,13 +506,19 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
 
     /// Applies one failure report to the operation circuit and the shared connection.
     ///
-    /// Reports for a connection generation that was already replaced are
-    /// ignored. A server failure opens the operation's circuit and advances
-    /// its route, but keeps the shared connection for other operations. A
-    /// transport failure detaches the shared connection. If that connection
-    /// completed a valid exchange, the circuit stays closed, so the next
-    /// binding reconnects to the same endpoint. Otherwise, the transport
-    /// failure also opens the operation's circuit.
+    /// A server failure opens the operation's circuit and advances its route,
+    /// but keeps the shared connection for other operations. A transport
+    /// failure detaches the shared connection. If that connection completed a
+    /// valid exchange, the circuit stays closed, so the next binding
+    /// reconnects to the same endpoint. Otherwise, the transport failure also
+    /// opens the operation's circuit.
+    ///
+    /// A report for a connection generation that was already replaced never
+    /// detaches the newer connection. A stale server failure changes nothing.
+    /// A stale transport failure still opens the operation's circuit if no
+    /// connection from the failed generation onward completed a valid
+    /// exchange, because no connection to the endpoint has worked since that
+    /// attempt.
     ///
     /// The circuit changes only if no other outcome changed it after
     /// `revision`, so a stale report cannot undo a newer recovery.
@@ -530,21 +536,30 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
                 .connection
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let proven_generation = slot.proven_generation.load(Ordering::Acquire);
             if failed_generation != slot.connection_generation.load(Ordering::Acquire) {
-                return None;
-            }
-            match kind {
-                FailureKind::Server => (None, true),
-                FailureKind::Transport => {
-                    let proven =
-                        slot.proven_generation.load(Ordering::Acquire) == failed_generation;
-                    if proven {
-                        log::info!(
-                            "The connection to {} failed after valid exchanges; the next request reconnects",
-                            slot.endpoint.prepared().address()
-                        );
+                // A newer connection replaced the failed one. An unproven
+                // failure still shows that this operation could not use the
+                // endpoint, unless the failed or a newer connection completed
+                // a valid exchange. Without this rule, concurrent reconnects
+                // by other operations hide the failure, and a retry selects
+                // the same failing endpoint again.
+                let disproved =
+                    proven_generation != u64::MAX && proven_generation >= failed_generation;
+                (None, kind == FailureKind::Transport && !disproved)
+            } else {
+                match kind {
+                    FailureKind::Server => (None, true),
+                    FailureKind::Transport => {
+                        let proven = proven_generation == failed_generation;
+                        if proven {
+                            log::info!(
+                                "The connection to {} failed after valid exchanges; the next request reconnects",
+                                slot.endpoint.prepared().address()
+                            );
+                        }
+                        (cache.take().map(|cached| cached.connection), !proven)
                     }
-                    (cache.take().map(|cached| cached.connection), !proven)
                 }
             }
         };
@@ -1573,6 +1588,57 @@ mod tests {
         assert!(!Arc::ptr_eq(next[0].connection(), authorization.connection()));
         assert!(Arc::ptr_eq(next[0].connection(), next[2].connection()));
         assert_eq!(client.connector.attempts.load(Ordering::Acquire), 2);
+    }
+
+    #[tokio::test]
+    async fn stale_unproven_transport_failure_still_moves_the_operation() {
+        let client = distinct_pair();
+        let deadline = || crate::RequestDeadline::after(Duration::from_secs(60)).unwrap();
+        let authentication = client
+            .bind(OperationKind::Authentication, HOLD)
+            .await
+            .unwrap();
+        let accounting = client.bind(OperationKind::Accounting, HOLD).await.unwrap();
+        // The first connection never works. Accounting fails first, and
+        // authorization reconnects before the authentication report arrives.
+        accounting.observe_failure(deadline()).fail();
+        let reconnected = client
+            .bind(OperationKind::Authorization, HOLD)
+            .await
+            .unwrap();
+        assert_eq!(reconnected.endpoint().name(), "primary");
+        authentication.observe_failure(deadline()).fail();
+
+        let retried = client
+            .bind(OperationKind::Authentication, HOLD)
+            .await
+            .unwrap();
+        assert_eq!(retried.endpoint().name(), "secondary");
+        let current = client
+            .bind(OperationKind::Authorization, HOLD)
+            .await
+            .unwrap();
+        assert!(Arc::ptr_eq(current.connection(), reconnected.connection()));
+
+        // A stale failure does not move an operation after a newer
+        // connection to the endpoint has worked.
+        let stale = client
+            .bind(OperationKind::Authorization, HOLD)
+            .await
+            .unwrap();
+        current.note_success().await;
+        current.observe_failure(deadline()).fail();
+        let replacement = client
+            .bind(OperationKind::Authorization, HOLD)
+            .await
+            .unwrap();
+        assert_eq!(replacement.endpoint().name(), "primary");
+        stale.observe_failure(deadline()).fail();
+        let after_stale = client
+            .bind(OperationKind::Authorization, HOLD)
+            .await
+            .unwrap();
+        assert_eq!(after_stale.endpoint().name(), "primary");
     }
 
     #[tokio::test]
