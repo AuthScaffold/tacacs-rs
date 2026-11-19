@@ -292,7 +292,8 @@ This contract uses existing inline and source-row material. It does not add a ne
 `source::ConfigDatastore` supplies canonical YANG snapshots through `load` and change events through `observe`.
 Every accepted change contains the complete snapshot. Consumers can use its delta, but the delta does not replace authoritative configuration.
 `source::StaticDatastore` holds one caller-validated snapshot and returns an empty observation stream.
-The source contract also carries validation options and the change-notification policy. An unavailable initial snapshot is never fatal for the agent. The agent retries it.
+The source contract also carries validation options and the change-notification behavior in `SourceBehavior`. `SourceBehavior` is not the YANG `tacacsrs:runtime-policy` container. An unavailable initial snapshot is never fatal for the agent. The agent retries it.
+A change can also carry the `tacacsrs:local-services` and `tacacsrs:runtime-policy` sections that the source owns. `None` keeps the active value of a section. A source that owns a section sends a value with every change.
 
 `input::CliDatastoreInput` accepts parsed executable inputs without depending on clap.
 `input::tacacs_plus_from_cli_input` converts those inputs into a validated YANG snapshot through the canonical builders and validation rules.

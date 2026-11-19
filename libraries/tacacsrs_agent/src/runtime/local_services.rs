@@ -11,8 +11,7 @@ use anyhow::Context;
 use tacacsrs_config::local_services::{prepare_local_services, PreparedLocalServices};
 use tacacsrs_config::tacacsrs::LocalServices;
 use tacacsrs_provider::LocalServicesOverlay;
-use tokio::sync::watch;
-
+use super::config_view::{ConfigPublisher, LocalServicesView};
 use super::proxy_loop_guard::{ProxyGuardTarget, ProxyLoopGuard};
 
 /// Local services with their prepared bind targets.
@@ -53,31 +52,10 @@ impl ActiveLocalServices {
     }
 }
 
-/// A read-only view of the active local services.
-///
-/// Each clone sees each publication. A component reads the current value or
-/// waits for the next change.
-#[derive(Debug, Clone)]
-pub struct LocalServicesView {
-    receiver: watch::Receiver<Arc<ActiveLocalServices>>,
-}
-
-impl LocalServicesView {
-    /// Returns the active local services.
-    #[must_use]
-    pub fn current(&self) -> Arc<ActiveLocalServices> {
-        Arc::clone(&self.receiver.borrow())
-    }
-
-    pub(crate) fn subscribe(&self) -> watch::Receiver<Arc<ActiveLocalServices>> {
-        self.receiver.clone()
-    }
-}
-
 /// Owns the active local services and the overlays of the runtime.
 pub(crate) struct LocalServicesState {
     overlays: Vec<Arc<dyn LocalServicesOverlay>>,
-    sender: watch::Sender<Arc<ActiveLocalServices>>,
+    publisher: ConfigPublisher<ActiveLocalServices>,
     proxy_loop_guard: ProxyLoopGuard,
 }
 
@@ -87,10 +65,9 @@ impl LocalServicesState {
         overlays: Vec<Arc<dyn LocalServicesOverlay>>,
     ) -> Self {
         let proxy_loop_guard = ProxyLoopGuard::with_target(initial.proxy_guard_target());
-        let (sender, _) = watch::channel(Arc::new(initial));
         Self {
             overlays,
-            sender,
+            publisher: ConfigPublisher::new(Arc::new(initial)),
             proxy_loop_guard,
         }
     }
@@ -100,13 +77,11 @@ impl LocalServicesState {
     }
 
     pub(crate) fn view(&self) -> LocalServicesView {
-        LocalServicesView {
-            receiver: self.sender.subscribe(),
-        }
+        self.publisher.view()
     }
 
     pub(crate) fn current(&self) -> Arc<ActiveLocalServices> {
-        Arc::clone(&self.sender.borrow())
+        self.publisher.current()
     }
 
     /// Applies the overlays in order and prepares the result.
@@ -127,14 +102,9 @@ impl LocalServicesState {
     ///
     /// The proxy loop guard receives the new target before the listeners do.
     pub(crate) fn publish(&self, next: Arc<ActiveLocalServices>) {
-        self.sender.send_if_modified(|current| {
-            if **current == *next {
-                return false;
-            }
+        self.publisher.publish_with(next, |next| {
             self.proxy_loop_guard.configure(next.proxy_guard_target());
             log::info!("The runtime applies new local services");
-            *current = next;
-            true
         });
     }
 }

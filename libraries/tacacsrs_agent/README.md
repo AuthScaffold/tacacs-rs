@@ -73,6 +73,7 @@ A component can inject these values. The host supplies them after it prepares th
 - `TacacsProxyAccess` gives the TACACS+ proxy listener.
 - `UpstreamProbe` sends one accounting `WATCHDOG` record and publishes the result to runtime health.
 - `LocalServicesView` gives the active local services. Each change of the local services is visible to each clone.
+- `RuntimePolicyView` gives the accepted runtime policy as validated values. Each applied policy change is visible to each clone.
 - `ApplicationReadiness` is a health check that is healthy when the agent is ready.
 - `ApplicationLifetime` stops the application. `stop` gives a successful exit. `stop_with_error` gives a failed exit with the first recorded error.
 
@@ -182,6 +183,7 @@ Give `NoopTacacsPlusFilter::new` the `LocalServices` value of the service.
 Server updates use the retained datastore observation and supervisor.
 `apply_policy_candidate` is the only public policy-update method. It accepts canonical YANG policy, not prepared values.
 `PolicySupervisor` uses that same method for an independent policy observation.
+A datastore change can also carry a runtime policy. Both paths use the same policy revision fence and publish through `RuntimePolicyView`. The most recent applied policy wins. Configure one owner for the runtime policy.
 Server updates preserve applied policy. Policy updates preserve the server catalog, counter epochs, and materialization metadata.
 
 The public construction and update surface changed as follows:
@@ -663,6 +665,19 @@ A listener failure cancels its siblings and uses the same cleanup path.
 ### Live local services
 
 A source can give new `tacacsrs:local-services` values in `ConfigChange::local_services`. The configuration supervisor applies the local services overlays and prepares the value with each candidate. An invalid value rejects the candidate, and the active listeners stay. A change without local services keeps the active value. The runtime publishes the new local services after the server set, through `LocalServicesView`.
+
+### Configuration views
+
+Each live configuration section has a `ConfigView<T>`. A view gives the value that the runtime accepted, and never a rejected value. `current()` returns the accepted value. `subscribe()` returns a `tokio::sync::watch` receiver that waits for the next accepted value. The host registers each view in the dependency container, so a component takes the view as a dependency.
+
+| View | Section | Value |
+| --- | --- | --- |
+| `LocalServicesView` | `tacacsrs:local-services` | `ActiveLocalServices`: the canonical value after the overlays, and the prepared bind targets. |
+| `RuntimePolicyView` | `tacacsrs:runtime-policy` | `RuntimePolicy`: the validated policy with durations and failover strategies. |
+
+A source can give a new `tacacsrs:runtime-policy` value in `ConfigChange::runtime_policy`. The configuration supervisor validates the value with the candidate. An invalid value rejects the whole candidate, and the active policy stays. A change without a runtime policy keeps the active policy. The runtime applies the new policy after the server set and before the local services.
+
+A component that needs a section takes its view and builds its own prepared values from the accepted value. Request deadlines, failover, the shutdown budget, and the credential and source timers already read the active policy at the time of use.
 
 Each standard listener runs a reconciler for its service. The reconciler selects one of three states: disabled, pending an endpoint, or ready with a bind target. For a new target, the reconciler binds the new instance first. Then it stops the old instance, which drains its own connections. If the two targets use the same socket, the reconciler stops the old instance first. A bind failure keeps the old instance. The reconciler tries again after 1 s, with a delay that doubles up to 30 s. An error from a bound instance stops the runtime.
 

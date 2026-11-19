@@ -8,6 +8,7 @@
 mod client_service;
 mod config_filter;
 mod config_supervisor;
+mod config_view;
 mod health;
 mod health_view;
 mod listener_reconciler;
@@ -15,6 +16,7 @@ mod listener_service;
 mod local_services;
 mod materialization_coordinator;
 pub(crate) mod candidate_preparation;
+mod candidate_sections;
 mod policy_supervisor;
 mod proxy_loop_guard;
 mod revision;
@@ -51,7 +53,10 @@ pub(crate) use server_catalog::enumerate_supported_servers;
 pub(crate) use listener_reconciler::{
     endpoints_conflict, reconcile, BindSignal, DesiredListener, ListenerInstances,
 };
-pub use local_services::{ActiveLocalServices, LocalServicesView};
+pub use config_view::{ConfigView, LocalServicesView, RuntimePolicyView};
+pub(crate) use config_view::ConfigPublisher;
+pub use local_services::ActiveLocalServices;
+pub(crate) use candidate_sections::CandidateSections;
 pub(crate) use local_services::LocalServicesState;
 pub(crate) use proxy_loop_guard::{ProxyLoopGuard, ProxyListenerBinding};
 pub use shutdown::{ListenerRegistration, ShutdownReceiver};

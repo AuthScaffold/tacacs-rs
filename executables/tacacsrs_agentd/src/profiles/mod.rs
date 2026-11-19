@@ -161,7 +161,7 @@ mod tests {
     };
     use tacacsrs_config::source::{
         ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigDelta, ConfigObservation,
-        DatastoreRuntimePolicy,
+        SourceBehavior,
     };
 
     use super::*;
@@ -211,6 +211,7 @@ mod tests {
                     let config = Arc::new(source);
                     sender
                         .send(ConfigChangeEvent::Changed(ConfigChange {
+                            runtime_policy: None,
                             local_services: None,
                             delta: ConfigDelta::diff(None, &config),
                             config,
@@ -223,8 +224,8 @@ mod tests {
             });
             Ok(Box::new(NotificationSession { changes, worker }))
         }
-        fn runtime_policy(&self) -> DatastoreRuntimePolicy {
-            DatastoreRuntimePolicy::new(ChangeNotificationMode::Continuous)
+        fn behavior(&self) -> SourceBehavior {
+            SourceBehavior::new(ChangeNotificationMode::Continuous)
         }
         async fn load(&self) -> anyhow::Result<TacacsPlus> {
             Ok(snapshot())

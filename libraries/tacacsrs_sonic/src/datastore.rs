@@ -14,7 +14,7 @@ use tacacsrs_config::tacacsrs::LocalServices;
 use tacacsrs_config::{TacacsPlus, ValidationOptions, ValidationRelaxation};
 use tacacsrs_config::source::{
     ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigDatastore, ConfigDelta,
-    ConfigObservation, DatastoreRuntimePolicy,
+    ConfigObservation, SourceBehavior,
 };
 
 use crate::{
@@ -78,8 +78,8 @@ impl ConfigDatastore for SonicConfigDb {
         ))
     }
 
-    fn runtime_policy(&self) -> DatastoreRuntimePolicy {
-        DatastoreRuntimePolicy::new(ChangeNotificationMode::Continuous)
+    fn behavior(&self) -> SourceBehavior {
+        SourceBehavior::new(ChangeNotificationMode::Continuous)
     }
 
     fn validation_options(&self) -> ValidationOptions {
@@ -262,6 +262,7 @@ impl SonicObservation {
         self.previous_local_services.clone_from(&local_services);
         Ok(change.map(|change| {
             ConfigChangeEvent::Changed(ConfigChange {
+                runtime_policy: None,
                 local_services,
                 ..change
             })
@@ -283,6 +284,7 @@ fn config_change(
     (is_baseline || forced || !delta.is_empty()).then_some(ConfigChange {
         config: snapshot,
         delta,
+        runtime_policy: None,
         local_services: None,
     })
 }
@@ -466,10 +468,7 @@ mod tests {
     fn runtime_policy_retries_and_maintains_continuous_notifications() {
         let datastore = SonicConfigDb::new(SonicConnection::default());
 
-        assert_eq!(
-            datastore.runtime_policy(),
-            DatastoreRuntimePolicy::new(ChangeNotificationMode::Continuous)
-        );
+        assert_eq!(datastore.behavior(), SourceBehavior::new(ChangeNotificationMode::Continuous));
     }
 
     #[tokio::test]

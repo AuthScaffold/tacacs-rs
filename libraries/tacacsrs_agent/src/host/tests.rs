@@ -424,8 +424,11 @@ struct FailingCheck;
 #[dill::scope(dill::Singleton)]
 #[dill::interface(dyn StartupCheck)]
 impl FailingCheck {
-    fn new(local_services: Arc<crate::LocalServicesView>) -> Self {
-        drop(local_services);
+    fn new(
+        local_services: Arc<crate::LocalServicesView>,
+        runtime_policy: Arc<crate::RuntimePolicyView>,
+    ) -> Self {
+        drop((local_services, runtime_policy));
         Self
     }
 }
@@ -500,8 +503,8 @@ impl tacacsrs_config::source::ConfigDatastore for ChangeDatastore {
         "change fixture"
     }
 
-    fn runtime_policy(&self) -> tacacsrs_config::source::DatastoreRuntimePolicy {
-        tacacsrs_config::source::DatastoreRuntimePolicy::new(
+    fn behavior(&self) -> tacacsrs_config::source::SourceBehavior {
+        tacacsrs_config::source::SourceBehavior::new(
             tacacsrs_config::source::ChangeNotificationMode::Continuous,
         )
     }
@@ -597,6 +600,7 @@ async fn a_datastore_change_moves_the_client_api_socket() {
         sender
             .send(tacacsrs_config::source::ConfigChangeEvent::Changed(
                 tacacsrs_config::source::ConfigChange {
+                    runtime_policy: None,
                     local_services: Some(Arc::new(client_api_only(&second))),
                     delta: tacacsrs_config::source::ConfigDelta::diff(None, &config),
                     config: Arc::clone(&config),

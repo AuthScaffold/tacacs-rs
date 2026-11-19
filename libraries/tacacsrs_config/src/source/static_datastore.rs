@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use crate::TacacsPlus;
 use super::{
     ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigDatastore, ConfigDelta,
-    ConfigObservation, DatastoreRuntimePolicy,
+    ConfigObservation, SourceBehavior,
 };
 
 struct StaticObservation(Option<Arc<TacacsPlus>>);
@@ -25,6 +25,7 @@ impl ConfigObservation for StaticObservation {
             ConfigChangeEvent::Changed(ConfigChange {
                 delta: ConfigDelta::diff(None, &config),
                 config,
+                runtime_policy: None,
                 local_services: None,
             })
         }))
@@ -66,8 +67,8 @@ impl ConfigDatastore for StaticDatastore {
         Ok(Box::new(StaticObservation(Some(self.config.clone()))))
     }
 
-    fn runtime_policy(&self) -> DatastoreRuntimePolicy {
-        DatastoreRuntimePolicy::new(ChangeNotificationMode::None)
+    fn behavior(&self) -> SourceBehavior {
+        SourceBehavior::new(ChangeNotificationMode::None)
     }
 
     async fn load(&self) -> anyhow::Result<TacacsPlus> {
@@ -101,10 +102,7 @@ mod tests {
         let loaded = store.load().await.expect("load must succeed");
         assert_eq!(loaded.server.len(), 1);
         assert_eq!(store.label(), "static");
-        assert_eq!(
-            store.runtime_policy(),
-            DatastoreRuntimePolicy::new(ChangeNotificationMode::None)
-        );
+        assert_eq!(store.behavior(), SourceBehavior::new(ChangeNotificationMode::None));
 
         let mut observation = store.observe().await.unwrap();
         let Some(ConfigChangeEvent::Changed(baseline)) = observation.next().await.unwrap() else {

@@ -18,6 +18,7 @@ use tacacsrs_provider::SourceBundle;
 use crate::{RuntimeHealthPublisher, RuntimePolicy, ServiceConfig, TacacsClientService};
 use super::{
     ConfigSupervisor, LocalServicesView, PolicySupervisor, RuntimeHealth, RuntimeListenerService,
+    RuntimePolicyView,
 };
 use super::application_tasks::{CriticalTasks, supervise};
 use super::source_filter::ProxySelfLoopFilter;
@@ -125,6 +126,12 @@ impl AgentRuntime {
     #[must_use]
     pub fn local_services(&self) -> LocalServicesView {
         self.service.local_services()
+    }
+
+    /// Returns a view of the accepted runtime policy.
+    #[must_use]
+    pub fn runtime_policy(&self) -> RuntimePolicyView {
+        self.service.runtime_policy()
     }
 
     /// Runs the supervisors, listeners, and hosted services until shutdown.

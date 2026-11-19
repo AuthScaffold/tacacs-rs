@@ -128,7 +128,7 @@ impl ConfigSupervisor {
         health: RuntimeHealthPublisher,
         config_filter: Arc<dyn TacacsPlusFilter>,
     ) -> Self {
-        let policy = datastore.runtime_policy();
+        let policy = datastore.behavior();
         Self::with_backoff(
             datastore,
             service,
@@ -355,7 +355,7 @@ impl ConfigSupervisor {
     }
 
     fn initial_rejection_is_final(&self) -> bool {
-        if self.datastore.runtime_policy().change_notifications != ChangeNotificationMode::None {
+        if self.datastore.behavior().change_notifications != ChangeNotificationMode::None {
             return false;
         }
         let snapshot = self.health.snapshot();

@@ -263,6 +263,15 @@ impl TacacsClientService {
         self.runtime.local_services.view()
     }
 
+    /// Returns a view of the accepted runtime policy.
+    ///
+    /// The view changes after a datastore change or a policy file change
+    /// applies a new runtime policy.
+    #[must_use]
+    pub fn runtime_policy(&self) -> super::RuntimePolicyView {
+        self.runtime.runtime_policy.view()
+    }
+
     /// Applies the overlays to the local services of a datastore change and
     /// prepares the result.
     pub(crate) fn prepare_local_services_candidate(
@@ -277,9 +286,27 @@ impl TacacsClientService {
         self.runtime.local_services.current()
     }
 
-    /// Publishes new local services to the listeners.
-    pub(crate) fn publish_local_services(&self, local: Arc<super::ActiveLocalServices>) {
-        self.runtime.local_services.publish(local);
+    /// Publishes the configuration sections of an accepted datastore change.
+    ///
+    /// The runtime policy applies first. Then the listeners see the new local
+    /// services. A newer policy from another source supersedes this policy.
+    pub(crate) async fn publish_sections(&self, sections: &super::CandidateSections) {
+        if let Some(policy) = &sections.runtime_policy {
+            let update = match self.runtime.manager.admit_policy() {
+                Ok(revision) => {
+                    self.runtime
+                        .publish_policy(revision, RuntimePolicy::clone(policy))
+                        .await
+                }
+                Err(error) => Err(error),
+            };
+            if let Err(error) = update {
+                log::debug!("The runtime policy was not applied: {error:#}");
+            }
+        }
+        self.runtime
+            .local_services
+            .publish(Arc::clone(&sections.local_services));
     }
 
     /// Applies an observed canonical policy or records a source rejection.

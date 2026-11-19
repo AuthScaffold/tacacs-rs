@@ -9,7 +9,7 @@ use tokio_stream::StreamExt;
 
 use tacacsrs_config::source::{
     ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigDatastore, ConfigDelta,
-    ConfigObservation, DatastoreRuntimePolicy, StaticDatastore,
+    ConfigObservation, SourceBehavior, StaticDatastore,
 };
 use tacacsrs_config::tacacsrs::LocalServices;
 use tacacsrs_config::{TacacsPlus, TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType};
@@ -386,8 +386,8 @@ impl ConfigDatastore for Bootstrap {
     fn label(&self) -> &'static str {
         "bootstrap-fixture"
     }
-    fn runtime_policy(&self) -> DatastoreRuntimePolicy {
-        DatastoreRuntimePolicy::new(ChangeNotificationMode::None)
+    fn behavior(&self) -> SourceBehavior {
+        SourceBehavior::new(ChangeNotificationMode::None)
     }
     async fn load(&self) -> anyhow::Result<TacacsPlus> {
         unreachable!()
@@ -460,8 +460,8 @@ impl ConfigDatastore for Notifications {
     fn label(&self) -> &'static str {
         "notification-fixture"
     }
-    fn runtime_policy(&self) -> DatastoreRuntimePolicy {
-        DatastoreRuntimePolicy::new(ChangeNotificationMode::Continuous)
+    fn behavior(&self) -> SourceBehavior {
+        SourceBehavior::new(ChangeNotificationMode::Continuous)
     }
     async fn load(&self) -> anyhow::Result<TacacsPlus> {
         unreachable!()
@@ -498,6 +498,7 @@ async fn provider_notifications_credentials_and_hosted_service_use_the_same_runt
     let change = |source| {
         let config = Arc::new(source);
         ConfigChangeEvent::Changed(ConfigChange {
+            runtime_policy: None,
             local_services: None,
             delta: ConfigDelta::diff(None, &config),
             config,
@@ -603,6 +604,7 @@ async fn datastore_local_services_move_the_proxy_and_reject_invalid_values() {
     );
     let change = |local_services: LocalServices| {
         ConfigChangeEvent::Changed(ConfigChange {
+            runtime_policy: None,
             local_services: Some(Arc::new(local_services)),
             delta: ConfigDelta::diff(None, &servers),
             config: Arc::clone(&servers),
@@ -677,6 +679,7 @@ async fn a_local_proxy_row_proxy_applies_servers_while_it_waits_for_an_endpoint(
     let change = |servers: TacacsPlus, endpoint: Option<String>| {
         let servers = Arc::new(servers);
         ConfigChangeEvent::Changed(ConfigChange {
+            runtime_policy: None,
             local_services: Some(Arc::new(LocalServices {
                 proxy_credential_source: ProxyCredentialSource::LocalProxyRow,
                 ..proxy_only(endpoint)
@@ -726,6 +729,118 @@ async fn a_local_proxy_row_proxy_applies_servers_while_it_waits_for_an_endpoint(
             .unwrap();
         eventually("the proxy must bind after the local proxy row arrives", move || accepts(port))
             .await;
+    };
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        runtime.run_until(stop, vec![listener], Vec::new()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri does not support TCP listeners.
+async fn datastore_runtime_policy_publishes_to_the_view_and_rejects_invalid_values() {
+    use tacacsrs_config::tacacsrs::RuntimePolicy as CanonicalPolicy;
+
+    let (sender, receiver) = mpsc::channel(4);
+    let servers = Arc::new(
+        TacacsPlusBuilder::new()
+            .with_server_builder(
+                TacacsPlusServerBuilder::new(
+                    "fixture",
+                    TacacsPlusServerType::all(),
+                    "192.0.2.10",
+                    49,
+                )
+                .with_shared_secret("test-key"),
+            )
+            .build()
+            .unwrap(),
+    );
+    let change = |runtime_policy: Option<CanonicalPolicy>| {
+        ConfigChangeEvent::Changed(ConfigChange {
+            runtime_policy: runtime_policy.map(Arc::new),
+            local_services: None,
+            delta: ConfigDelta::diff(None, &servers),
+            config: Arc::clone(&servers),
+        })
+    };
+    let mut source = bundle();
+    source.local_services = proxy_only(None);
+    source.datastore = Arc::new(Notifications(tokio::sync::Mutex::new(Some(receiver))));
+    let runtime = runtime(source).await;
+    let health = runtime.health().clone();
+    let view = runtime.runtime_policy();
+    let listener = runtime.service().tacacs_proxy_listener();
+    assert_eq!(view.current().shutdown_timeout(), Duration::from_secs(2));
+    let initial = health.snapshot().applied_policy_revision();
+
+    let stop = async {
+        let mut policies = view.subscribe();
+        policies.borrow_and_update();
+        let mut changes = health.subscribe();
+        sender
+            .send(change(Some(CanonicalPolicy {
+                shutdown_timeout_seconds: 7,
+                ..CanonicalPolicy::default()
+            })))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), policies.changed())
+            .await
+            .expect("the view must see the new policy")
+            .unwrap();
+        assert_eq!(view.current().shutdown_timeout(), Duration::from_secs(7));
+        let applied = tokio::time::timeout(
+            Duration::from_secs(5),
+            changes.wait_for(|snapshot| snapshot.applied_policy_revision() != initial),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .applied_policy_revision();
+
+        sender
+            .send(change(Some(CanonicalPolicy {
+                shutdown_timeout_seconds: 0,
+                ..CanonicalPolicy::default()
+            })))
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            changes.wait_for(|snapshot| {
+                snapshot
+                    .degradation_reasons()
+                    .contains(&DegradationReason::CandidateConfigurationRejected)
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(view.current().shutdown_timeout(), Duration::from_secs(7));
+        assert_eq!(health.snapshot().applied_policy_revision(), applied);
+
+        sender.send(change(None)).await.unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            changes.wait_for(|snapshot| {
+                !snapshot
+                    .degradation_reasons()
+                    .contains(&DegradationReason::CandidateConfigurationRejected)
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            view.current().shutdown_timeout(),
+            Duration::from_secs(7),
+            "a change without a policy must keep the applied policy"
+        );
+        assert!(!policies.has_changed().unwrap());
     };
     tokio::time::timeout(
         Duration::from_secs(10),

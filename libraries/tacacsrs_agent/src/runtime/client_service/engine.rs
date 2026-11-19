@@ -22,8 +22,8 @@ use tokio::task::JoinSet;
 
 use crate::config::{PreparedProxyPolicy, RuntimePolicy, ServiceConfig};
 use crate::runtime::{
-    ActiveLocalServices, LocalServicesState, ProxyLoopGuard, RuntimeHealthPublisher,
-    RuntimeListenerService, ShutdownCoordinator,
+    ActiveLocalServices, ConfigPublisher, LocalServicesState, ProxyLoopGuard,
+    RuntimeHealthPublisher, RuntimeListenerService, ShutdownCoordinator,
 };
 #[cfg(test)]
 use crate::runtime::enumerate_supported_servers;
@@ -45,6 +45,8 @@ pub(crate) struct ServiceRuntime<
     pub(super) config: ServiceConfig,
     /// Active local services, their overlays, and the proxy loop guard.
     pub(super) local_services: LocalServicesState,
+    /// The accepted runtime policy for components.
+    pub(super) runtime_policy: ConfigPublisher<RuntimePolicy>,
     /// Shared upstream manager. It owns the routing catalog, failover, and
     /// generation-aware health publication.
     pub(super) manager: Arc<UpstreamManager<Connector>>,
@@ -182,6 +184,7 @@ where
         manager.publish_initial_health(configuration_applied);
 
         Ok(Self {
+            runtime_policy: ConfigPublisher::new(Arc::new(config.runtime_policy.clone())),
             config,
             local_services,
             manager,
@@ -237,7 +240,14 @@ where
         runtime_policy: RuntimePolicy,
     ) -> anyhow::Result<crate::runtime::PolicyUpdate> {
         let _reload_guard = self.reload_publication_lock.lock().await;
-        self.manager.publish_policy(revision, runtime_policy)
+        let accepted = Arc::new(runtime_policy.clone());
+        let update = self.manager.publish_policy(revision, runtime_policy)?;
+        if matches!(update, crate::runtime::PolicyUpdate::Applied(_)) {
+            self.runtime_policy.publish_with(accepted, |_| {
+                log::info!("The runtime applies a new runtime policy");
+            });
+        }
+        Ok(update)
     }
 
     #[cfg(test)]

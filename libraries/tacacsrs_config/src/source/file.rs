@@ -24,7 +24,7 @@ use super::directory_watch::DirectoryWatch;
 use super::file_observation::{FileObservationState, ObservationContext};
 use super::{
     ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigDatastore, ConfigDelta,
-    ConfigObservation, DatastoreRuntimePolicy,
+    ConfigObservation, SourceBehavior,
 };
 
 /// File-backed datastore for CLI-supplied TACACS+ configuration inputs.
@@ -139,14 +139,14 @@ impl ConfigDatastore for CliFileDatastore {
         Ok(Box::new(self.open_observation().await?))
     }
 
-    fn runtime_policy(&self) -> DatastoreRuntimePolicy {
+    fn behavior(&self) -> SourceBehavior {
         let change_notifications = if self.input.watched_paths().is_empty() {
             ChangeNotificationMode::None
         } else {
             ChangeNotificationMode::Continuous
         };
 
-        DatastoreRuntimePolicy::new(change_notifications)
+        SourceBehavior::new(change_notifications)
     }
 
     fn validation_options(&self) -> crate::ValidationOptions {
@@ -189,6 +189,7 @@ impl ConfigObservation for FileObservation {
             ConfigChangeEvent::Changed(ConfigChange {
                 config: snapshot,
                 delta,
+                runtime_policy: None,
                 local_services: None,
             })
         } else {
@@ -774,20 +775,14 @@ mod tests {
             },
             "cli",
         ));
-        assert_eq!(
-            inline.runtime_policy(),
-            DatastoreRuntimePolicy::new(ChangeNotificationMode::None)
-        );
+        assert_eq!(inline.behavior(), SourceBehavior::new(ChangeNotificationMode::None));
 
         let path = temp_config(&config("192.0.2.10"));
         let file = CliFileDatastore::new(CliDatastoreInput::new(
             CliConfigSource::YangFile { path: path.clone() },
             "file",
         ));
-        assert_eq!(
-            file.runtime_policy(),
-            DatastoreRuntimePolicy::new(ChangeNotificationMode::Continuous)
-        );
+        assert_eq!(file.behavior(), SourceBehavior::new(ChangeNotificationMode::Continuous));
         fs::remove_file(path).ok();
     }
 

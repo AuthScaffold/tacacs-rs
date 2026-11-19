@@ -32,9 +32,9 @@ pub use config::{
 };
 pub use upstream::OperationKind;
 pub use runtime::{
-    ActiveLocalServices, AgentReadinessCheck, AgentRuntime, LocalServicesView, RuntimeInputs,
-    PolicyInput, DiagnosticsHandle, PolicyRevision, PolicyUpdate, CredentialRevision,
-    MaterializationRevision, SourceRevision, DatastoreState, DegradationReason,
+    ActiveLocalServices, AgentReadinessCheck, AgentRuntime, ConfigView, LocalServicesView,
+    RuntimePolicyView, RuntimeInputs, PolicyInput, DiagnosticsHandle, PolicyRevision, PolicyUpdate,
+    CredentialRevision, MaterializationRevision, SourceRevision, DatastoreState, DegradationReason,
     ListenerRegistration, ListenerSettings, ListenerState, RuntimeHealth, RuntimeHealthPublisher,
     RuntimeGeneration, RuntimeHealthSnapshot, RuntimeLifecycle, RuntimeListenerService,
     RuntimeService, ShutdownReceiver, TacacsClientService, UpstreamAvailability,

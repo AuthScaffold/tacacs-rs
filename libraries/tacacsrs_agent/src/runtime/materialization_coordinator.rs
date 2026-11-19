@@ -60,8 +60,8 @@ impl DependencyKnowledge {
 struct FilteredSource {
     source: Arc<TacacsPlus>,
     proxy_policy: PreparedProxyPolicy,
-    /// Local services that the publication of this source activates.
-    local_services: Option<Arc<crate::runtime::ActiveLocalServices>>,
+    /// Sections that the publication of this source activates.
+    sections: Option<Arc<crate::runtime::CandidateSections>>,
     dependencies: DependencyKnowledge,
 }
 
@@ -235,7 +235,7 @@ pub(crate) struct PreparedMaterialization {
     candidates: Vec<(MaterializedServer, super::CredentialLifetime)>,
     runtime_source: Arc<TacacsPlus>,
     proxy_policy: PreparedProxyPolicy,
-    local_services: Option<Arc<crate::runtime::ActiveLocalServices>>,
+    sections: Option<Arc<crate::runtime::CandidateSections>>,
     preparation: Arc<Preparation>,
 }
 
@@ -421,7 +421,7 @@ impl MaterializationCoordinator {
         revision: SourceRevision,
         runtime_source: TacacsPlus,
         proxy_policy: PreparedProxyPolicy,
-        local_services: Option<Arc<crate::runtime::ActiveLocalServices>>,
+        sections: Option<Arc<crate::runtime::CandidateSections>>,
     ) -> Option<MaterializationAttempt> {
         let runtime_source = Arc::new(runtime_source);
         #[cfg(test)]
@@ -437,7 +437,7 @@ impl MaterializationCoordinator {
         state.desired_runtime = DesiredRuntime::Filtered(FilteredSource {
             source: Arc::clone(&runtime_source),
             proxy_policy,
-            local_services,
+            sections,
             dependencies: DependencyKnowledge::Unknown,
         });
         Some(MaterializationAttempt {
@@ -687,7 +687,7 @@ impl MaterializationCoordinator {
         preparation: Arc<Preparation>,
     ) -> anyhow::Result<PreparedMaterialization> {
         self.check_attempt(&attempt).await?;
-        let (runtime_source, proxy_policy, local_services, active_servers, selected_servers) = {
+        let (runtime_source, proxy_policy, sections, active_servers, selected_servers) = {
             let state = attempt.admission.run(self.state.lock()).await?;
             let projection = state
                 .desired_runtime
@@ -696,7 +696,7 @@ impl MaterializationCoordinator {
             (
                 Arc::clone(&projection.source),
                 projection.proxy_policy.clone(),
-                projection.local_services.clone(),
+                projection.sections.clone(),
                 state.published.servers().to_vec(),
                 selected_server_names(
                     &attempt.selection,
@@ -808,7 +808,7 @@ impl MaterializationCoordinator {
             candidates,
             runtime_source,
             proxy_policy,
-            local_services,
+            sections,
             preparation,
         })
     }
@@ -913,7 +913,7 @@ impl MaterializationCoordinator {
             next_active.push(server);
         }
         drop(candidate_by_name);
-        let local_services = prepared.local_services;
+        let sections = prepared.sections;
         drop(prepared.runtime_source);
         drop(active_by_name);
         drop(published);
@@ -961,8 +961,8 @@ impl MaterializationCoordinator {
                 })
             }))
             .await?;
-        if let Some(local_services) = local_services {
-            service.publish_local_services(local_services);
+        if let Some(sections) = sections {
+            service.publish_sections(&sections).await;
         }
         Ok(PublicationOutcome::Published)
     }

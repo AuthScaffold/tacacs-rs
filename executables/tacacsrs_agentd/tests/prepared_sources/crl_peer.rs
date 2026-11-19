@@ -42,6 +42,7 @@ impl tacacsrs_config::source::ConfigObservation for SourceObservation {
         Ok(Some(ConfigChangeEvent::Changed(ConfigChange {
             config,
             delta,
+            runtime_policy: None,
             local_services: None,
         })))
     }
@@ -60,9 +61,9 @@ impl tacacsrs_config::source::ConfigDatastore for ObservedSource {
         Ok(self.0.borrow().as_ref().clone())
     }
 
-    fn runtime_policy(&self) -> tacacsrs_config::source::DatastoreRuntimePolicy {
-        use tacacsrs_config::source::{ChangeNotificationMode, DatastoreRuntimePolicy};
-        DatastoreRuntimePolicy::new(ChangeNotificationMode::Continuous)
+    fn behavior(&self) -> tacacsrs_config::source::SourceBehavior {
+        use tacacsrs_config::source::{ChangeNotificationMode, SourceBehavior};
+        SourceBehavior::new(ChangeNotificationMode::Continuous)
     }
 
     fn label(&self) -> &'static str {

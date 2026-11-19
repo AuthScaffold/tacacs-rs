@@ -15,7 +15,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use tokio_util::sync::CancellationToken;
 
-use crate::runtime::LocalServicesView;
+use crate::runtime::{LocalServicesView, RuntimePolicyView};
 use crate::{
     AgentReadinessCheck, AgentRuntime, DiagnosticsHandle, PolicyInput, RuntimeHealth,
     RuntimeInputs, UpstreamProbe,
@@ -44,7 +44,7 @@ pub use roles::{ClientApiAccess, ListenerFactory, StartupCheck, TacacsProxyAcces
 /// Components can inject these deferred values. The host supplies them after
 /// it prepares the agent runtime: [`DiagnosticsHandle`], [`RuntimeHealth`],
 /// [`ClientApiAccess`], [`TacacsProxyAccess`], [`UpstreamProbe`],
-/// [`LocalServicesView`], [`ApplicationReadiness`], and
+/// [`LocalServicesView`], [`RuntimePolicyView`], [`ApplicationReadiness`], and
 /// [`ApplicationLifetime`].
 ///
 /// # Errors
@@ -66,6 +66,7 @@ pub fn declare(composition: &mut Composition) -> anyhow::Result<()> {
     composition.deferred::<TacacsProxyAccess>()?;
     composition.deferred::<UpstreamProbe>()?;
     composition.deferred::<LocalServicesView>()?;
+    composition.deferred::<RuntimePolicyView>()?;
     composition.deferred::<ApplicationReadiness>()?;
     composition.deferred::<ApplicationLifetime>()?;
     Ok(())
@@ -110,6 +111,7 @@ impl PreparedHost {
         graph.supply(Arc::new(TacacsProxyAccess::new(Arc::clone(service))))?;
         graph.supply(Arc::new(service.upstream_probe()))?;
         graph.supply(Arc::new(runtime.local_services()))?;
+        graph.supply(Arc::new(runtime.runtime_policy()))?;
         graph.supply(Arc::new(ApplicationReadiness::new(AgentReadinessCheck::new(
             runtime.health(),
         ))))?;

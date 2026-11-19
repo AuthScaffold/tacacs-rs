@@ -19,7 +19,7 @@ use tacacsrs_config::{
 use tacacsrs_config::keystore::EndEntityCertWithKeyCentralKeystoreReference;
 use tacacsrs_config::source::{
     ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigDatastore, ConfigDelta,
-    ConfigObservation, DatastoreRuntimePolicy,
+    ConfigObservation, SourceBehavior,
 };
 
 use crate::credentials::{CA_REFERENCE, IDENTITY_REFERENCE};
@@ -193,7 +193,7 @@ return rows
 /// Read-only KubeSONiC datastore.
 pub struct KubeSonicConfigDb {
     settings: SourceSettings,
-    policy: DatastoreRuntimePolicy,
+    policy: SourceBehavior,
 }
 
 impl KubeSonicConfigDb {
@@ -202,7 +202,7 @@ impl KubeSonicConfigDb {
     /// # Errors
     /// Returns an error for invalid retry delays.
     pub fn new(settings: SourceSettings) -> anyhow::Result<Self> {
-        let policy = DatastoreRuntimePolicy::new(ChangeNotificationMode::Continuous)
+        let policy = SourceBehavior::new(ChangeNotificationMode::Continuous)
             .with_empty_servers(settings.empty_servers)
             .with_retry_backoff(settings.retry_initial, settings.retry_max)?;
         Ok(Self { settings, policy })
@@ -211,7 +211,7 @@ impl KubeSonicConfigDb {
 
 #[async_trait]
 impl ConfigDatastore for KubeSonicConfigDb {
-    fn runtime_policy(&self) -> DatastoreRuntimePolicy {
+    fn behavior(&self) -> SourceBehavior {
         self.policy
     }
     fn label(&self) -> &'static str {
@@ -321,6 +321,7 @@ impl ConfigObservation for Observation {
                     return Ok(Some(ConfigChangeEvent::Changed(ConfigChange {
                         config,
                         delta,
+                        runtime_policy: None,
                         local_services: None,
                     })));
                 }

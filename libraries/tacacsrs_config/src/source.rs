@@ -25,7 +25,7 @@ use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use tokio_stream::StreamExt;
 
-use crate::tacacsrs::LocalServices;
+use crate::tacacsrs::{LocalServices, RuntimePolicy};
 use crate::{TacacsPlus, ValidationOptions};
 
 pub(crate) mod directory_watch;
@@ -130,6 +130,13 @@ pub struct ConfigChange {
     /// runtime then keeps its current local services. A source that owns the
     /// local services sends a value with every change.
     pub local_services: Option<Arc<LocalServices>>,
+    /// Runtime policy that this source owns.
+    ///
+    /// `None` means that the source does not own the runtime policy. The
+    /// runtime then keeps its current policy. A source that owns the runtime
+    /// policy sends a value with every change. An invalid value rejects the
+    /// whole change.
+    pub runtime_policy: Option<Arc<RuntimePolicy>>,
 }
 
 /// Typed event emitted by a datastore change subscription.
@@ -180,9 +187,12 @@ pub enum EmptyServerPolicy {
     Retain,
 }
 
-/// Runtime behavior declared by a [`ConfigDatastore`] instance.
+/// Supervision behavior that a [`ConfigDatastore`] instance declares.
+///
+/// This type is not the YANG `tacacsrs:runtime-policy` container. A source
+/// sends that container in [`ConfigChange::runtime_policy`].
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct DatastoreRuntimePolicy {
+pub struct SourceBehavior {
     /// Change-notification behavior.
     pub change_notifications: ChangeNotificationMode,
     /// Behavior after a valid empty source.
@@ -193,8 +203,8 @@ pub struct DatastoreRuntimePolicy {
     retry_max: Duration,
 }
 
-impl DatastoreRuntimePolicy {
-    /// Creates a datastore runtime policy.
+impl SourceBehavior {
+    /// Creates the source behavior with the default empty-source and retry behavior.
     #[must_use]
     pub const fn new(change_notifications: ChangeNotificationMode) -> Self {
         Self {
@@ -268,7 +278,7 @@ pub trait ConfigDatastore: Send + Sync + 'static {
     /// A file-backed datastore can be immutable when it has no referenced
     /// paths. It requires continuous monitoring when configuration depends on
     /// files.
-    fn runtime_policy(&self) -> DatastoreRuntimePolicy;
+    fn behavior(&self) -> SourceBehavior;
 
     /// Returns the validation policy already used to accept source snapshots.
     ///
@@ -312,6 +322,7 @@ pub fn watch_to_change_stream(
         let change = ConfigChange {
             config: Arc::clone(&snapshot),
             delta,
+            runtime_policy: None,
             local_services: None,
         };
         previous = Some(snapshot);
