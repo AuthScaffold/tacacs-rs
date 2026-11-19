@@ -9,8 +9,9 @@
 //!       +-- failure -> retain known good ------+-> health stale/unavailable
 //! ```
 //!
-//! Datastore policy determines whether an initial failure is fatal and whether
-//! an observation must be continuously restored. Each session supplies a
+//! An initial load failure is never fatal. The supervisor retries with backoff
+//! and health reports the datastore as loading or unavailable. Datastore policy
+//! determines whether an observation must be continuously restored. Each session supplies a
 //! baseline after observation starts. Generation and health publication is
 //! atomic: the service reload commits the generation, catalog, and health in one
 //! step through the upstream manager publication controller.
@@ -50,7 +51,6 @@ use tacacsrs_credential_resolution::{
 };
 use tacacsrs_config::source::{
     ChangeNotificationMode, ConfigChangeEvent, ConfigDatastore, ConfigObservation,
-    InitialLoadPolicy,
 };
 
 use crate::{DatastoreState, DegradationReason, RuntimeHealthPublisher, TacacsClientService};
@@ -168,13 +168,17 @@ impl ConfigSupervisor {
         self
     }
 
-    /// Applies initial configuration before listeners start, unless `stop` completes.
+    /// Waits until the first configuration publishes, unless `stop` completes.
     ///
-    /// A later [`Self::run_until`] call preserves this initialization and starts
-    /// both configuration and credential supervision.
+    /// Load failures do not end this wait. The supervisor retries with backoff
+    /// and health reports the datastore state. A later [`Self::run_until`] call
+    /// preserves this initialization and starts both configuration and
+    /// credential supervision. The agent runtime does not call this method.
+    /// Embedding hosts and tests can use it to apply a baseline first.
     ///
     /// # Errors
-    /// Returns a sanitized error when provider configuration or fail-fast preparation fails.
+    /// Returns an error when the provider configuration is invalid or the
+    /// service is closed.
     pub async fn initialize_until(
         &mut self,
         stop: impl Future<Output = ()> + Send,
@@ -203,7 +207,8 @@ impl ConfigSupervisor {
     /// lock acquisition, and retry waits. This method installs no signal handlers.
     ///
     /// # Errors
-    /// Returns an error when provider configuration or fail-fast initialization fails.
+    /// Returns an error when the provider configuration is invalid or the
+    /// service closes during the initial load.
     pub async fn run_until(mut self, stop: impl Future<Output = ()> + Send) -> anyhow::Result<()> {
         self.validate_provider()?;
         if !self.initialized {
@@ -218,7 +223,7 @@ impl ConfigSupervisor {
         }
     }
 
-    fn validate_provider(&self) -> anyhow::Result<()> {
+    pub(crate) fn validate_provider(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.credential_change_source.is_none()
                 || self.materialization_coordinator.has_resolver(),
@@ -293,18 +298,26 @@ impl ConfigSupervisor {
         }
     }
 
-    /// Loads and applies the initial snapshot according to datastore policy.
+    /// Loads and applies the initial snapshot. Retries until it publishes.
+    ///
+    /// A datastore without change notifications cannot correct a rejected
+    /// configuration. For this datastore, a rejection is final unless a
+    /// credential resolver failed. A resolver can recover later, so a resolver
+    /// failure still retries. A datastore read error also retries. The supervisor then sets
+    /// [`DegradationReason::SourceConfigurationInvalid`] and waits for
+    /// cancellation without a retry.
     ///
     /// # Errors
     ///
-    /// Returns a sanitized error when a fail-fast datastore cannot supply a
-    /// valid candidate. Cancellation is a successful shutdown outcome.
+    /// Returns an error when the service is closed. Cancellation is a
+    /// successful shutdown outcome.
     async fn load_initial(&self, cancellation: &CancellationToken) -> anyhow::Result<()> {
-        let policy = self.datastore.runtime_policy().initial_load;
         let mut attempt = 0u32;
+        // Report Loading once. A retry keeps the Unavailable state of the
+        // failed attempt, so health does not alternate between the two states.
+        self.health.set_datastore(DatastoreState::Loading);
 
         loop {
-            self.health.set_datastore(DatastoreState::Loading);
             let result = tokio::select! {
                 () = cancellation.cancelled() => return Ok(()),
                 result = self.load_and_apply() => result,
@@ -315,15 +328,19 @@ impl ConfigSupervisor {
                     return Ok(());
                 }
                 Ok(PublicationOutcome::Superseded) => {}
-                Err(()) if policy == InitialLoadPolicy::FailFast => {
-                    self.observation.lock().await.take();
-                    anyhow::bail!(
-                        "Datastore '{}' did not supply a valid initial configuration",
-                        self.datastore.label(),
-                    );
-                }
                 Err(()) => {
                     self.observation.lock().await.take();
+                    self.service.ensure_open()?;
+                    if self.initial_rejection_is_final() {
+                        log::error!(
+                            "Datastore '{}' initial configuration is invalid. The datastore has no change notifications, so the daemon stops its retries.",
+                            self.datastore.label(),
+                        );
+                        self.health
+                            .set_degraded(DegradationReason::SourceConfigurationInvalid, true);
+                        cancellation.cancelled().await;
+                        return Ok(());
+                    }
                     attempt = attempt.saturating_add(1);
                     log::warn!(
                         "Datastore '{}' initial configuration is unavailable. The daemon retries.",
@@ -337,11 +354,24 @@ impl ConfigSupervisor {
         }
     }
 
+    fn initial_rejection_is_final(&self) -> bool {
+        if self.datastore.runtime_policy().change_notifications != ChangeNotificationMode::None {
+            return false;
+        }
+        let snapshot = self.health.snapshot();
+        let reasons = snapshot.degradation_reasons();
+        // A resolver can recover from a credential failure. Without a
+        // resolver, a materialization failure is a configuration error.
+        reasons.contains(&DegradationReason::CandidateConfigurationRejected)
+            && !(self.materialization_coordinator.has_resolver()
+                && reasons.contains(&DegradationReason::CredentialResolutionFailed))
+    }
+
     /// Runs the initial load and then maintains notifications until canceled.
     ///
     /// # Errors
     ///
-    /// Returns an error only when fail-fast initial loading fails.
+    /// Returns an error only when the service closes during the initial load.
     async fn run(&self, cancellation: &CancellationToken) -> anyhow::Result<()> {
         if !self.initialized {
             self.load_initial(cancellation).await?;

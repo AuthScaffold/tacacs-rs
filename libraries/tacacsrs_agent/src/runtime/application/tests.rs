@@ -1,5 +1,5 @@
-use std::future;
-use std::sync::Arc;
+use std::future::{self, Future};
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -9,7 +9,7 @@ use tokio_stream::StreamExt;
 
 use tacacsrs_config::source::{
     ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigDatastore, ConfigDelta,
-    ConfigObservation, DatastoreRuntimePolicy, InitialLoadPolicy, StaticDatastore,
+    ConfigObservation, DatastoreRuntimePolicy, StaticDatastore,
 };
 use tacacsrs_config::tacacsrs::LocalServices;
 use tacacsrs_config::{TacacsPlus, TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType};
@@ -17,9 +17,10 @@ use tacacsrs_credential_resolution::{
     CredentialChangeError, CredentialChangeEvent, CredentialChangeSource, CredentialChangeStream,
     FakeCredentialResolver,
 };
+use tacacsrs_lifecycle::{HostedService, ShutdownSignal};
 use tacacsrs_provider::CredentialProvider;
 
-use crate::{ListenerRegistration, RuntimeLifecycle, RuntimeService, ShutdownReceiver};
+use crate::{DatastoreState, ListenerRegistration, RuntimeLifecycle, RuntimeService, ShutdownReceiver};
 use super::*;
 
 enum ListenerMode {
@@ -76,7 +77,6 @@ fn bundle() -> SourceBundle {
         datastore: Arc::new(StaticDatastore::new(TacacsPlus::empty())),
         credentials: CredentialProvider::none(),
         local_services: LocalServices::default(),
-        companions: Vec::new(),
     }
 }
 
@@ -93,6 +93,43 @@ async fn runtime(source: SourceBundle) -> AgentRuntime {
     .unwrap()
 }
 
+struct Fixture<F> {
+    name: &'static str,
+    run: Mutex<Option<F>>,
+}
+
+#[async_trait]
+impl<F, Fut> HostedService for Fixture<F>
+where
+    F: FnOnce(ShutdownSignal) -> Fut + Send + 'static,
+    Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+{
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    async fn run(self: Arc<Self>, shutdown: ShutdownSignal) -> anyhow::Result<()> {
+        let run = self
+            .run
+            .lock()
+            .unwrap()
+            .take()
+            .expect("The host runs each fixture once");
+        run(shutdown).await
+    }
+}
+
+fn hosted<F, Fut>(name: &'static str, run: F) -> Arc<dyn HostedService>
+where
+    F: FnOnce(ShutdownSignal) -> Fut + Send + 'static,
+    Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+{
+    Arc::new(Fixture {
+        name,
+        run: Mutex::new(Some(run)),
+    })
+}
+
 struct Dropped(Arc<AtomicBool>);
 
 impl Drop for Dropped {
@@ -102,40 +139,40 @@ impl Drop for Dropped {
 }
 
 #[tokio::test(start_paused = true)]
-async fn domain_and_peer_cleanup_share_one_deadline_and_finish_before_return() {
+async fn domain_and_service_cleanup_share_one_deadline_and_finish_before_return() {
     let runtime = runtime(bundle()).await;
     let service = runtime.service().clone();
     let health = runtime.health().clone();
     let (listener, listener_dropped) = listener(ListenerMode::Stall);
-    let peer_dropped = Arc::new(AtomicBool::new(false));
-    let guard = Dropped(peer_dropped.clone());
-    let peer = RuntimePeer::new("Stalled peer", move |_| async move {
+    let service_dropped = Arc::new(AtomicBool::new(false));
+    let guard = Dropped(service_dropped.clone());
+    let hosted_service = hosted("Stalled service", move |_| async move {
         let _guard = guard;
         future::pending().await
     });
     let started = tokio::time::Instant::now();
     let error = runtime
-        .run_until(tokio::time::sleep(Duration::from_secs(1)), vec![listener], vec![peer])
+        .run_until(tokio::time::sleep(Duration::from_secs(1)), vec![listener], vec![hosted_service])
         .await
         .unwrap_err();
     assert!(error.to_string().contains("Shutdown deadline elapsed"));
     assert_eq!(started.elapsed(), Duration::from_secs(3));
     assert!(listener_dropped.load(Ordering::Acquire));
-    assert!(peer_dropped.load(Ordering::Acquire));
+    assert!(service_dropped.load(Ordering::Acquire));
     assert!(service.ensure_open().is_err());
     assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Failed);
 }
 
 #[tokio::test(start_paused = true)]
-async fn listener_failure_starts_peer_cleanup_without_a_second_budget() {
+async fn listener_failure_starts_service_cleanup_without_a_second_budget() {
     let runtime = runtime(bundle()).await;
     let service = runtime.service().clone();
     let (failed, _) = listener(ListenerMode::Fail);
     let (stalled, dropped) = listener(ListenerMode::Stall);
-    let peer = RuntimePeer::new("Stalled peer", |_| future::pending());
+    let hosted_service = hosted("Stalled service", |_| future::pending());
     let started = tokio::time::Instant::now();
     let error = runtime
-        .run_until(future::pending(), vec![failed, stalled], vec![peer])
+        .run_until(future::pending(), vec![failed, stalled], vec![hosted_service])
         .await
         .unwrap_err();
     assert!(format!("{error:#}").contains("fixture listener failed"));
@@ -156,12 +193,12 @@ async fn critical_return_error_and_panic_are_named_and_join_siblings() {
         let health = runtime.health().clone();
         let finished = Arc::new(AtomicBool::new(false));
         let recorded = finished.clone();
-        let sibling = RuntimePeer::new("Sibling", move |context| async move {
-            context.cancellation.cancelled().await;
+        let sibling = hosted("Sibling", move |shutdown| async move {
+            shutdown.requested().await;
             recorded.store(true, Ordering::Release);
             Ok(())
         });
-        let failure = RuntimePeer::new("Critical fixture", move |_| async move {
+        let failure = hosted("Critical fixture", move |_| async move {
             match mode {
                 0 => Ok(()),
                 1 => anyhow::bail!("fixture error"),
@@ -184,12 +221,12 @@ async fn critical_return_error_and_panic_are_named_and_join_siblings() {
 async fn cleanup_error_survives_forced_domain_drain() {
     let runtime = runtime(bundle()).await;
     let (listener, dropped) = listener(ListenerMode::Stall);
-    let peer = RuntimePeer::new("Cleanup fixture", |context| async move {
-        context.cancellation.cancelled().await;
+    let hosted_service = hosted("Cleanup fixture", |shutdown| async move {
+        shutdown.requested().await;
         anyhow::bail!("fixture cleanup failed");
     });
     let error = runtime
-        .run_until(tokio::time::sleep(Duration::from_secs(1)), vec![listener], vec![peer])
+        .run_until(tokio::time::sleep(Duration::from_secs(1)), vec![listener], vec![hosted_service])
         .await
         .unwrap_err();
     assert!(format!("{error:#}").contains("fixture cleanup failed"));
@@ -197,26 +234,27 @@ async fn cleanup_error_survives_forced_domain_drain() {
 }
 
 #[tokio::test]
-async fn dropping_application_cancels_owned_peers() {
+async fn dropping_application_cancels_owned_services() {
     let runtime = runtime(bundle()).await;
     let dropped = Arc::new(AtomicBool::new(false));
     let guard = Dropped(dropped.clone());
     let (sender, receiver) = tokio::sync::oneshot::channel();
-    let peer = RuntimePeer::new("Owned fixture", move |context| async move {
+    let hosted_service = hosted("Owned fixture", move |shutdown| async move {
         let _guard = guard;
-        sender.send(context.cancellation).unwrap();
+        sender.send(shutdown).unwrap();
         future::pending().await
     });
     let (listener, _) = listener(ListenerMode::Drain);
     let cancellation = {
-        let application = runtime.run_until(future::pending(), vec![listener], vec![peer]);
+        let application =
+            runtime.run_until(future::pending(), vec![listener], vec![hosted_service]);
         tokio::pin!(application);
         tokio::select! {
             result = &mut application => panic!("Application returned before drop: {result:?}"),
             cancellation = receiver => cancellation.unwrap(),
         }
     };
-    assert!(cancellation.is_cancelled());
+    assert!(cancellation.is_requested());
     tokio::time::timeout(Duration::from_secs(1), async {
         while !dropped.load(Ordering::Acquire) {
             tokio::task::yield_now().await;
@@ -227,21 +265,25 @@ async fn dropping_application_cancels_owned_peers() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn cooperative_peers_allow_normal_and_forced_listener_cleanup() {
+async fn cooperative_services_allow_normal_and_forced_listener_cleanup() {
     for mode in [ListenerMode::Drain, ListenerMode::Stall] {
         let runtime = runtime(bundle()).await;
         let health = runtime.health().clone();
         let service = runtime.service().clone();
         let finished = Arc::new(AtomicBool::new(false));
         let recorded = finished.clone();
-        let peer = RuntimePeer::new("Cooperative fixture", move |context| async move {
-            context.cancellation.cancelled().await;
+        let hosted_service = hosted("Cooperative fixture", move |shutdown| async move {
+            shutdown.requested().await;
             recorded.store(true, Ordering::Release);
             Ok(())
         });
         let (listener, dropped) = listener(mode);
         runtime
-            .run_until(tokio::time::sleep(Duration::from_secs(1)), vec![listener], vec![peer])
+            .run_until(
+                tokio::time::sleep(Duration::from_secs(1)),
+                vec![listener],
+                vec![hosted_service],
+            )
             .await
             .unwrap();
         assert!(finished.load(Ordering::Acquire));
@@ -253,18 +295,18 @@ async fn cooperative_peers_allow_normal_and_forced_listener_cleanup() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn primary_peer_error_survives_stalled_domain_cleanup() {
+async fn primary_service_error_survives_stalled_domain_cleanup() {
     let runtime = runtime(bundle()).await;
     let (listener, dropped) = listener(ListenerMode::Stall);
-    let peer = RuntimePeer::new("Primary fixture", |_| async {
+    let hosted_service = hosted("Primary fixture", |_| async {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        anyhow::bail!("primary peer error");
+        anyhow::bail!("primary service error");
     });
     let error = runtime
-        .run_until(future::pending(), vec![listener], vec![peer])
+        .run_until(future::pending(), vec![listener], vec![hosted_service])
         .await
         .unwrap_err();
-    assert!(format!("{error:#}").contains("primary peer error"));
+    assert!(format!("{error:#}").contains("primary service error"));
     assert!(dropped.load(Ordering::Acquire));
 }
 
@@ -286,61 +328,18 @@ async fn domain_and_host_reuse_deadlines_across_time_and_policy_changes() {
     assert_eq!(first.overall.expires_at(), second.overall.expires_at());
     assert_eq!(first.requests.expires_at(), second.requests.expires_at());
     let (listener, dropped) = listener(ListenerMode::Stall);
-    let peer = RuntimePeer::new("Stalled fixture", |_| future::pending());
+    let hosted_service = hosted("Stalled fixture", |_| future::pending());
     let error = runtime
-        .run_until(tokio::time::sleep(Duration::from_millis(500)), vec![listener], vec![peer])
+        .run_until(
+            tokio::time::sleep(Duration::from_millis(500)),
+            vec![listener],
+            vec![hosted_service],
+        )
         .await
         .unwrap_err();
     assert!(error.to_string().contains("Shutdown deadline elapsed"));
     assert_eq!(started.elapsed(), Duration::from_secs(2));
     assert!(dropped.load(Ordering::Acquire));
-}
-
-struct SelfCancelling;
-
-#[async_trait]
-impl Companion for SelfCancelling {
-    fn name(&self) -> &'static str {
-        "Self-cancelling companion"
-    }
-    async fn run(self: Box<Self>, context: CompanionContext) -> anyhow::Result<()> {
-        context.cancellation.cancel();
-        Ok(())
-    }
-}
-
-#[tokio::test]
-async fn peers_and_companions_cannot_cancel_the_application() {
-    for companion in [true, false] {
-        let mut source = bundle();
-        let peers = if companion {
-            source.companions.push(Box::new(SelfCancelling));
-            Vec::new()
-        } else {
-            vec![RuntimePeer::new(
-                "Self-cancelling peer",
-                |context| async move {
-                    context.cancellation.cancel();
-                    Ok(())
-                },
-            )]
-        };
-        let runtime = runtime(source).await;
-        let health = runtime.health().clone();
-        let (listener, dropped) = listener(ListenerMode::Drain);
-        let error = runtime
-            .run_until(future::pending(), vec![listener], peers)
-            .await
-            .unwrap_err();
-        let expected = if companion {
-            "Self-cancelling companion stopped unexpectedly"
-        } else {
-            "Self-cancelling peer stopped unexpectedly"
-        };
-        assert!(format!("{error:#}").contains(expected));
-        assert!(dropped.load(Ordering::Acquire));
-        assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Failed);
-    }
 }
 
 struct Bootstrap {
@@ -354,7 +353,7 @@ impl ConfigDatastore for Bootstrap {
         "bootstrap-fixture"
     }
     fn runtime_policy(&self) -> DatastoreRuntimePolicy {
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None)
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None)
     }
     async fn load(&self) -> anyhow::Result<TacacsPlus> {
         unreachable!()
@@ -368,45 +367,48 @@ impl ConfigDatastore for Bootstrap {
     }
 }
 
-struct Started(Arc<AtomicBool>);
-
-#[async_trait]
-impl Companion for Started {
-    fn name(&self) -> &'static str {
-        "Must not start"
-    }
-    async fn run(self: Box<Self>, _: CompanionContext) -> anyhow::Result<()> {
-        self.0.store(true, Ordering::Release);
-        Ok(())
-    }
-}
-
 #[tokio::test]
-async fn fail_fast_error_and_cancellation_never_start_companions_or_listeners() {
-    for fail in [true, false] {
-        let entered = Arc::new(Notify::new());
-        let started = Arc::new(AtomicBool::new(false));
-        let mut source = bundle();
-        source.datastore = Arc::new(Bootstrap {
-            entered: entered.clone(),
-            fail,
-        });
-        source.companions.push(Box::new(Started(started.clone())));
-        let runtime = runtime(source).await;
-        let service = runtime.service().clone();
-        let stop = async {
-            entered.notified().await;
-            if fail {
-                future::pending::<()>().await;
-            }
-        };
-        let (listener, dropped) = listener(ListenerMode::Drain);
-        let result = runtime.run_until(stop, vec![listener], Vec::new()).await;
-        assert_eq!(result.is_err(), fail);
-        assert!(!started.load(Ordering::Acquire));
-        assert!(dropped.load(Ordering::Acquire));
-        assert!(service.ensure_open().is_err());
-    }
+async fn unavailable_initial_configuration_still_starts_services_and_listeners() {
+    let entered = Arc::new(Notify::new());
+    let started = Arc::new(AtomicBool::new(false));
+    let mut source = bundle();
+    source.datastore = Arc::new(Bootstrap {
+        entered: entered.clone(),
+        fail: true,
+    });
+    let runtime = runtime(source).await;
+    let service = runtime.service().clone();
+    let health = runtime.health();
+    let mut observed = health.subscribe();
+    let (listener, dropped) = listener(ListenerMode::Drain);
+    let recorded = started.clone();
+    let service_fixture = hosted("Starts without configuration", move |shutdown| async move {
+        recorded.store(true, Ordering::Release);
+        shutdown.requested().await;
+        Ok(())
+    });
+    let stop = async {
+        entered.notified().await;
+        observed
+            .wait_for(|snapshot| {
+                snapshot.is_listening() && snapshot.datastore() == DatastoreState::Unavailable
+            })
+            .await
+            .expect("the health watch must stay open");
+    };
+
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        runtime.run_until(stop, vec![listener], vec![service_fixture]),
+    )
+    .await
+    .expect("the runtime must stop")
+    .expect("an unavailable source must not stop the runtime");
+
+    assert!(started.load(Ordering::Acquire));
+    assert!(dropped.load(Ordering::Acquire));
+    assert!(!health.snapshot().has_applied_configuration());
+    assert!(service.ensure_open().is_err());
 }
 
 struct Notifications(tokio::sync::Mutex<Option<mpsc::Receiver<ConfigChangeEvent>>>);
@@ -425,7 +427,7 @@ impl ConfigDatastore for Notifications {
         "notification-fixture"
     }
     fn runtime_policy(&self) -> DatastoreRuntimePolicy {
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::Continuous)
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::Continuous)
     }
     async fn load(&self) -> anyhow::Result<TacacsPlus> {
         unreachable!()
@@ -449,32 +451,8 @@ impl CredentialChangeSource for CredentialEvents {
     }
 }
 
-struct Readiness {
-    ready: Arc<Notify>,
-    cleaned: Arc<AtomicBool>,
-}
-
-#[async_trait]
-impl Companion for Readiness {
-    fn name(&self) -> &'static str {
-        "Readiness fixture"
-    }
-    async fn run(self: Box<Self>, mut context: CompanionContext) -> anyhow::Result<()> {
-        loop {
-            if *context.ready.borrow_and_update() {
-                self.ready.notify_one();
-                break;
-            }
-            context.ready.changed().await?;
-        }
-        context.cancellation.cancelled().await;
-        self.cleaned.store(true, Ordering::Release);
-        Ok(())
-    }
-}
-
 #[tokio::test]
-async fn provider_notifications_credentials_and_companion_use_the_same_runtime() {
+async fn provider_notifications_credentials_and_hosted_service_use_the_same_runtime() {
     let (sender, receiver) = mpsc::channel(2);
     let baseline = TacacsPlusBuilder::new()
         .with_server_builder(
@@ -502,11 +480,16 @@ async fn provider_notifications_credentials_and_companion_use_the_same_runtime()
             subscribed: subscribed.clone(),
         }),
     );
-    source.companions.push(Box::new(Readiness {
-        ready: ready.clone(),
-        cleaned: cleaned.clone(),
-    }));
     let runtime = runtime(source).await;
+    let mut readiness = runtime.health().subscribe_readiness();
+    let (signal_ready, recorded) = (ready.clone(), cleaned.clone());
+    let readiness_fixture = hosted("Readiness fixture", move |shutdown| async move {
+        readiness.wait_for(|ready| *ready).await?;
+        signal_ready.notify_one();
+        shutdown.requested().await;
+        recorded.store(true, Ordering::Release);
+        Ok(())
+    });
     let service = runtime.service().clone();
     let (listener, _) = listener(ListenerMode::Drain);
     let stop = async {
@@ -520,7 +503,7 @@ async fn provider_notifications_credentials_and_companion_use_the_same_runtime()
     };
     tokio::time::timeout(
         Duration::from_secs(5),
-        runtime.run_until(stop, vec![listener], Vec::new()),
+        runtime.run_until(stop, vec![listener], vec![readiness_fixture]),
     )
     .await
     .unwrap()

@@ -24,7 +24,7 @@ use super::directory_watch::DirectoryWatch;
 use super::file_observation::{FileObservationState, ObservationContext};
 use super::{
     ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigDatastore, ConfigDelta,
-    ConfigObservation, DatastoreRuntimePolicy, InitialLoadPolicy,
+    ConfigObservation, DatastoreRuntimePolicy,
 };
 
 /// File-backed datastore for CLI-supplied TACACS+ configuration inputs.
@@ -146,7 +146,7 @@ impl ConfigDatastore for CliFileDatastore {
             ChangeNotificationMode::Continuous
         };
 
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, change_notifications)
+        DatastoreRuntimePolicy::new(change_notifications)
     }
 
     fn validation_options(&self) -> crate::ValidationOptions {
@@ -775,7 +775,7 @@ mod tests {
         ));
         assert_eq!(
             inline.runtime_policy(),
-            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None,)
+            DatastoreRuntimePolicy::new(ChangeNotificationMode::None)
         );
 
         let path = temp_config(&config("192.0.2.10"));
@@ -785,10 +785,7 @@ mod tests {
         ));
         assert_eq!(
             file.runtime_policy(),
-            DatastoreRuntimePolicy::new(
-                InitialLoadPolicy::FailFast,
-                ChangeNotificationMode::Continuous,
-            )
+            DatastoreRuntimePolicy::new(ChangeNotificationMode::Continuous)
         );
         fs::remove_file(path).ok();
     }

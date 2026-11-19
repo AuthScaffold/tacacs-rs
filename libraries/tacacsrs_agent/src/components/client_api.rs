@@ -1,56 +1,90 @@
-//! Composes the local client API IPC listener with the agent runtime.
+//! Serves the local client API over IPC.
 //!
-//! The daemon adapts the agent client API handle to the IPC server handler and
-//! injects an IPC listener into the agent runtime. The daemon maps the agent's
-//! prepared listener settings and health projection into the transport-neutral
-//! IPC options and health signal. No routing or materialization logic lives
-//! here.
+//! The component adapts the client API handle of the agent to the IPC server
+//! handler. It maps the prepared listener settings and the runtime health to
+//! the IPC listener options and the IPC health signal. The same socket also
+//! serves the operational statistics and the detailed runtime health. The
+//! detailed health includes each check in the injected [`HealthRegistry`].
+//! The component contains no routing or materialization logic.
 
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use dill::component;
 use tokio::sync::watch;
 
-use tacacsrs_agent::{
-    ClientApiHandle, ListenerRegistration, ListenerState, RuntimeHealthPublisher,
-    RuntimeHealthSnapshot, RuntimeListenerService, RuntimeService, ShutdownReceiver,
-    TacacsClientService,
+use crate::{
+    ClientApiHandle, DiagnosticsHandle, ListenerRegistration, ListenerState,
+    RuntimeHealthPublisher, RuntimeHealthSnapshot, RuntimeListenerService, RuntimeService,
+    ShutdownReceiver,
 };
-use tacacsrs_ipc::server::{self, HealthStatus, ListenerOptions};
+use super::health_details::AgentHealthDetails;
+use crate::host::{ClientApiAccess, ListenerFactory};
+use tacacsrs_composition::{Component, Composition, Named};
+use tacacsrs_ipc::server::{self, HealthStatus, ListenerOptions, ListenerServices};
+use tacacsrs_lifecycle::HealthRegistry;
 use tacacsrs_protocol::operations::{
     AccountingOperation, AccountingOperationResponse, AuthorizationOperation,
     AuthorizationOperationResponse, PapAuthenticationOperation, PapAuthenticationOperationResponse,
 };
 use tacacsrs_protocol::failure::ServiceError;
 
-/// Builds the injected runtime listeners for the local client API.
+/// Adds the client API IPC listener to the agent runtime.
 ///
-/// Returns one IPC listener when the client API is enabled, otherwise an empty
-/// set. The raw TACACS+ proxy remains an internal agent runtime listener.
-pub(crate) fn client_api_listeners(
-    service: &TacacsClientService,
-) -> Vec<Box<dyn RuntimeListenerService>> {
-    match service.client_api_socket_path() {
-        Some(path) => {
-            let settings = service.client_api_listener_settings();
-            let listener = ClientApiListener {
-                diagnostics: Arc::new(AgentDiagnostics(service.diagnostics_handle())),
-                handler: Arc::new(AgentClientApiHandler {
-                    handle: service.client_api_handle(),
-                }),
-                path,
-                options: ListenerOptions {
-                    socket_mode: settings.socket_mode,
-                    max_connections: settings.max_connections,
-                    max_client_api_streams: settings.max_client_api_streams,
-                    connection_lifetime: settings.connection_lifetime,
-                },
-            };
-            vec![Box::new(listener)]
-        }
-        None => Vec::new(),
+/// The listener binds only when the prepared local services enable the client
+/// API.
+pub struct ClientApiComponent;
+
+impl Component for ClientApiComponent {
+    fn name(&self) -> &'static str {
+        ClientApiListenerFactory::NAME
+    }
+
+    fn register(self: Box<Self>, composition: &mut Composition) -> anyhow::Result<()> {
+        composition.member::<dyn ListenerFactory, ClientApiListenerFactory, _>(
+            <ClientApiListenerFactory as dill::Component>::builder(),
+        )
+    }
+}
+
+/// Creates the client API IPC listener for the agent service.
+#[component]
+#[dill::scope(dill::Singleton)]
+#[dill::interface(dyn ListenerFactory)]
+struct ClientApiListenerFactory {
+    access: Arc<ClientApiAccess>,
+    diagnostics: Arc<DiagnosticsHandle>,
+    registry: Arc<HealthRegistry>,
+}
+
+impl Named for ClientApiListenerFactory {
+    const NAME: &'static str = "Client API";
+}
+
+impl ListenerFactory for ClientApiListenerFactory {
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn listener(&self) -> Option<Box<dyn RuntimeListenerService>> {
+        let path = self.access.socket_path.clone()?;
+        let settings = self.access.settings;
+        Some(Box::new(ClientApiListener {
+            diagnostics: Arc::new(AgentDiagnostics(DiagnosticsHandle::clone(&self.diagnostics))),
+            registry: self.registry.clone(),
+            handler: Arc::new(AgentClientApiHandler {
+                handle: self.access.handle.clone(),
+            }),
+            path,
+            options: ListenerOptions {
+                socket_mode: settings.socket_mode,
+                max_connections: settings.max_connections,
+                max_client_api_streams: settings.max_client_api_streams,
+                connection_lifetime: settings.connection_lifetime,
+            },
+        }))
     }
 }
 
@@ -89,6 +123,7 @@ impl server::Handler for AgentClientApiHandler {
 struct ClientApiListener {
     handler: Arc<AgentClientApiHandler>,
     diagnostics: Arc<AgentDiagnostics>,
+    registry: Arc<HealthRegistry>,
     path: PathBuf,
     options: ListenerOptions,
 }
@@ -103,6 +138,7 @@ impl RuntimeListenerService for ClientApiListener {
         let Self {
             handler,
             diagnostics,
+            registry,
             path,
             options,
         } = *self;
@@ -112,14 +148,20 @@ impl RuntimeListenerService for ClientApiListener {
         let on_bound = move || {
             let _ = bound_health.set_listener(RuntimeService::ClientApi, ListenerState::Bound);
         };
-        let serving = server::serve_unix_with_diagnostics(
+        let services = ListenerServices::default()
+            .with_diagnostics(diagnostics)
+            .with_health_details(Arc::new(AgentHealthDetails {
+                health: health.clone(),
+                registry,
+            }));
+        let serving = server::serve_unix_with_services(
             &path,
             options,
             handler,
             receiver,
             shutdown.flag(),
             on_bound,
-            Some(diagnostics),
+            services,
         );
         tokio::pin!(serving);
         let result = tokio::select! {
@@ -131,7 +173,7 @@ impl RuntimeListenerService for ClientApiListener {
     }
 }
 
-struct AgentDiagnostics(tacacsrs_agent::DiagnosticsHandle);
+struct AgentDiagnostics(DiagnosticsHandle);
 
 impl tacacsrs_ipc::DiagnosticsProvider for AgentDiagnostics {
     fn statistics_json(

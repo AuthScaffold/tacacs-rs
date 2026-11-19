@@ -311,6 +311,7 @@ Readiness reports configuration availability, not a completed upstream certifica
 |------|---------|-------------|
 | `--connect-timeout-seconds <SECS>` | `5` | Timeout for upstream TACACS+ connections |
 | `--runtime-policy <FILE>` | none | Optional live JSON policy for failover and request limits |
+| `--upstream-watchdog-interval-seconds <SECS>` | none (disabled) | Interval between upstream watchdog probes. See [Host Integration](#host-integration). |
 
 ### Operational Statistics
 
@@ -436,8 +437,9 @@ share its result instead of starting duplicate TLS handshakes.
 
 ## Startup Warm-up
 
-The daemon creates operation connections on first use. It does not send an
-accounting watchdog to test authentication or authorization routes.
+The daemon creates operation connections on first use. The optional upstream
+watchdog sends only accounting `WATCHDOG` records. It does not test
+authentication or authorization routes.
 
 ## Runtime Policy
 
@@ -568,11 +570,11 @@ The Client API endpoint also serves the standard `grpc.health.v1.Health` protoco
 |---|---|
 | `tacacsrs.agent.health.v1.Startup` | A validated snapshot is applied and every enabled listener is bound |
 | `tacacsrs.agent.health.v1.Liveness` | The process is starting or serving and the Client API can answer |
-| `tacacsrs.agent.health.v1.Readiness` | Startup is complete and at least one eligible upstream is configured |
+| `tacacsrs.agent.health.v1.Readiness` | Startup is complete, at least one eligible upstream is configured, and the enabled upstream watchdog has a successful probe for the current server set |
 | *(empty service name)* | Same as readiness |
 | `tacacsrs.agent.v1.TacacsAgent` | Same as readiness for the business RPC service |
 
-Current upstream reachability is diagnostic and does not gate readiness or liveness. During shutdown all names become `NOT_SERVING` before listeners stop accepting work.
+Without the upstream watchdog, upstream reachability is diagnostic and does not gate readiness. Upstream reachability never gates liveness. During shutdown all names become `NOT_SERVING` before listeners stop accepting work.
 
 Use the packaged probe for Kubernetes exec probes and local diagnostics:
 
@@ -594,7 +596,9 @@ The health endpoint exists only when `client-api` is enabled. A proxy-only proce
 
 ## Host Integration
 
-`--host-integration auto` selects systemd only when `NOTIFY_SOCKET` is present. `none` never invokes a host API and is the container setting. Explicit `systemd` requires both `NOTIFY_SOCKET` and `systemd-notify`. Missing prerequisites and runtime notification failures are fatal. Systemd receives a waiting status before readiness, `READY=1` exactly once, sanitized degraded status updates, and `STOPPING=1` before listener drain.
+`--host-integration auto` selects systemd only when `NOTIFY_SOCKET` is present. `none` never invokes a host API and is the container setting. Explicit `systemd` requires both `NOTIFY_SOCKET` and `systemd-notify`. Missing prerequisites and runtime notification failures are fatal. Systemd receives `READY=1` exactly once, after the enabled listeners bind. `READY=1` does not wait for configuration or upstream health, so a start timeout cannot stop the daemon while its source is unavailable. Status updates report the wait for configuration, a failed upstream watchdog probe, and other degraded states. Systemd receives `STOPPING=1` before listener drain.
+
+The daemon does not exit because the initial configuration is unavailable. It binds its listeners, reports that it is not ready, and retries. One exception applies. If the runtime rejects the configuration of a static source, the configuration cannot change. The runtime then adds the `SourceConfigurationInvalid` degradation reason, and the daemon exits with a failure status. A credential resolver failure does not cause this exit. Use the readiness health name to find this state. The optional upstream watchdog (`--upstream-watchdog-interval-seconds`) also gates readiness. Readiness waits for the first successful probe after each new server set. A policy reload does not start a new server set. Each probe tries every eligible accounting server once, independent of the configured failover strategy. The probe does not use client admission slots, so a busy daemon does not report a false failure. A reply with any accounting status counts as a success, so a server that rejects the record does not withdraw readiness. If no server replies, the daemon withdraws readiness until a later probe succeeds. If the server set has no accounting server, the watchdog sends nothing and does not gate readiness. Each new server set withdraws readiness until its first probe ends, so frequent server changes can make readiness change state for a short time.
 
 ## IPC Protocol
 

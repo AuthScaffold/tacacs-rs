@@ -4,12 +4,14 @@
 #[cfg(not(all(target_os = "linux", any(target_env = "gnu", target_env = "musl"))))]
 compile_error!("tacacsrs-sonic supports Linux GNU or musl only");
 
+mod component;
 mod datastore;
 pub mod mapping;
 mod provider;
 mod source;
 pub mod store;
 
+pub use component::SonicSource;
 pub use datastore::SonicConfigDb;
 pub use mapping::{
     SonicForwarderSettings, SonicHash, SonicTacacsTables, map_sonic_tables_to_tacacs_plus,

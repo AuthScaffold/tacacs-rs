@@ -7,13 +7,10 @@ use anyhow::Context;
 use clap::Parser;
 
 mod cli;
-mod client_api_listener;
-mod credential_provider;
-mod host_integration;
+mod components;
+mod http_evidence;
 mod local_services;
 mod signals;
-mod startup;
-mod statistics;
 mod source_registry;
 mod profiles;
 mod process;
@@ -34,10 +31,10 @@ fn main() -> anyhow::Result<()> {
         .build()
         .context("Failed to build the Tokio runtime")?;
 
-    runtime.block_on(run(profile))
+    runtime.block_on(run(profile.components))
 }
 
-async fn run(profile: profiles::SelectedProfile) -> anyhow::Result<()> {
+async fn run(components: Vec<Box<dyn tacacsrs_composition::Component>>) -> anyhow::Result<()> {
     let signals = signals::ProcessSignals::register()?;
-    startup::run_until(profile, signals.wait()).await
+    tacacsrs_agent::host::run_until(components, signals.wait()).await
 }

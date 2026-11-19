@@ -4,46 +4,10 @@ use std::collections::HashMap;
 use std::future::Future;
 
 use anyhow::Context;
-use futures_util::future::BoxFuture;
-use tokio::sync::watch;
 use tokio::task::{Id, JoinSet};
 use tokio_util::sync::CancellationToken;
 
-use crate::{RuntimeHealthPublisher, RuntimeHealthSnapshot, RuntimeLifecycle};
-
-/// Health and cancellation supplied to a process-owned peer.
-pub struct PeerContext {
-    /// Read-only runtime health.
-    pub health: watch::Receiver<RuntimeHealthSnapshot>,
-    /// Cancelled when the application starts shutdown.
-    /// Cancelling this child token does not stop the application.
-    pub cancellation: CancellationToken,
-}
-
-/// An inert process service started by the agent runtime.
-pub struct RuntimePeer {
-    name: &'static str,
-    start: Box<dyn FnOnce(PeerContext) -> BoxFuture<'static, anyhow::Result<()>> + Send>,
-}
-
-impl RuntimePeer {
-    /// Registers a critical service without starting it.
-    #[must_use]
-    pub fn new<F, Fut>(name: &'static str, start: F) -> Self
-    where
-        F: FnOnce(PeerContext) -> Fut + Send + 'static,
-        Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
-    {
-        Self {
-            name,
-            start: Box::new(move |context| Box::pin(start(context))),
-        }
-    }
-
-    pub(super) fn spawn(self, tasks: &mut CriticalTasks, context: PeerContext) {
-        tasks.spawn(self.name, (self.start)(context));
-    }
-}
+use crate::{RuntimeHealthPublisher, RuntimeLifecycle};
 
 pub(super) struct CriticalTasks {
     tasks: JoinSet<anyhow::Result<()>>,
@@ -96,8 +60,9 @@ impl Drop for CriticalTasks {
     }
 }
 
-/// Drives the domain future in place so forced peer cleanup cannot drop it.
+/// Drives the domain future in place so forced service cleanup cannot drop it.
 pub(super) async fn supervise(
+    stop: impl Future<Output = ()>,
     service: impl Future<Output = anyhow::Result<()>>,
     mut tasks: CriticalTasks,
     cancellation: CancellationToken,
@@ -122,6 +87,7 @@ pub(super) async fn supervise(
     let mut completed = false;
     let mut result = tokio::select! {
         biased;
+        () = stop => Ok(()),
         () = cancellation.cancelled() => Ok(()),
         result = &mut service => { completed = true; result },
         Some(result) = tasks.next(false) => result,

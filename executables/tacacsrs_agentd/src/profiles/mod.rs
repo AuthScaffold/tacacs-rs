@@ -1,19 +1,19 @@
-//! Registered application profiles and provider-owned source components.
+//! Registered application profiles.
 //!
-//! Parsing captures startup controls before Tokio starts. Preparation supplies
-//! canonical resources and providers without constructing the service.
+//! Each profile parses its controls before Tokio starts. Parsing selects the
+//! components of the process and makes no I/O. The host in
+//! `tacacsrs_agent::host` then prepares, registers, and runs the components.
 
-use std::future::Future;
 use std::path::PathBuf;
+use std::time::Duration;
 
-use futures_util::future::{BoxFuture, FutureExt};
-
+use tacacsrs_agent::PolicyInput;
+use tacacsrs_composition::{Component, Value};
 use tacacsrs_config::tacacsrs::RuntimePolicy;
 use tacacsrs_networking::CertificateVerification;
-pub(crate) use tacacsrs_agent::PolicyInput as PolicySource;
-use tacacsrs_provider::SourceBundle;
 
 use crate::cli::Cli;
+use crate::components::{self, HostInputs};
 use crate::process::ProcessOptions;
 
 pub(crate) struct Registration {
@@ -47,66 +47,100 @@ fn select_registered(cli: Cli, registrations: &[Registration]) -> anyhow::Result
     (registration.parse)(cli)
 }
 
+/// The process options and the selected components of one profile.
 pub(crate) struct SelectedProfile {
     pub(crate) process: ProcessOptions,
-    pub(crate) statistics_file: Option<PathBuf>,
-    pub(crate) protected_inputs: Vec<PathBuf>,
-    pub(crate) policy: PolicySource,
-    pub(crate) certificate_verification: CertificateVerification,
-    pub(crate) prepare: BoxFuture<'static, anyhow::Result<SourceBundle>>,
+    pub(crate) components: Vec<Box<dyn Component>>,
 }
 
 impl SelectedProfile {
-    pub(crate) fn from_cli<F, Fut>(cli: Cli, prepare: F) -> Self
-    where
-        F: FnOnce(Cli) -> Fut,
-        Fut: Future<Output = anyhow::Result<SourceBundle>> + Send + 'static,
-    {
-        let mut protected_inputs = Vec::new();
-        protected_inputs.extend(
-            cli.config
-                .iter()
-                .chain(cli.runtime_policy.iter())
-                .chain(cli.local_services.iter())
-                .cloned(),
-        );
-        protected_inputs.extend(
-            cli.client_certificate
-                .iter()
-                .chain(cli.client_key.iter())
-                .map(PathBuf::from),
-        );
-        protected_inputs.extend(
-            cli.http_crl_certificate
-                .chunks_exact(2)
-                .map(|values| PathBuf::from(&values[1])),
-        );
-        protected_inputs.extend(
-            cli.http_ocsp_source
-                .chunks_exact(4)
-                .flat_map(|values| [PathBuf::from(&values[2]), PathBuf::from(&values[3])]),
-        );
-        protected_inputs.extend(
-            cli.http_ocsp_certificate
-                .chunks_exact(3)
-                .flat_map(|values| [PathBuf::from(&values[1]), PathBuf::from(&values[2])]),
-        );
-        Self {
+    /// Selects the host-wide components, adds the host inputs, and then adds
+    /// the source components.
+    ///
+    /// # Errors
+    /// Returns a selection error.
+    pub(crate) fn new(
+        host: HostInputs,
+        policy: PolicyInput,
+        certificate_verification: CertificateVerification,
+        source: Vec<Box<dyn Component>>,
+    ) -> anyhow::Result<Self> {
+        let mut selected = components::select(&host)?;
+        selected.push(Box::new(Value::new("Runtime policy", policy)));
+        selected.push(Box::new(Value::new("Certificate verification", certificate_verification)));
+        selected.extend(source);
+        Ok(Self {
+            process: host.process,
+            components: selected,
+        })
+    }
+
+    /// Selects the components of a profile that the command line configures.
+    ///
+    /// The profile gets the HTTP credential evidence sources of the command
+    /// line. `source` returns the source components.
+    ///
+    /// # Errors
+    /// Returns a source or selection error.
+    pub(crate) fn from_cli(
+        cli: Cli,
+        source: impl FnOnce(&Cli) -> anyhow::Result<Vec<Box<dyn Component>>>,
+    ) -> anyhow::Result<Self> {
+        let host = HostInputs {
             process: ProcessOptions::from_cli(&cli),
             statistics_file: cli.statistics_file.clone(),
-            protected_inputs,
-            policy: cli.runtime_policy.clone().map_or_else(
-                || PolicySource::Canonical(RuntimePolicy::default()),
-                PolicySource::File,
-            ),
-            certificate_verification: if cli.insecure_disable_certificate_verification {
-                CertificateVerification::DisabledForDevelopment
-            } else {
-                CertificateVerification::Required
-            },
-            prepare: prepare(cli).boxed(),
-        }
+            upstream_watchdog_interval: cli
+                .upstream_watchdog_interval_seconds
+                .map(|seconds| Duration::from_secs(seconds.get())),
+            protected_inputs: protected_inputs(&cli),
+            http_evidence: crate::http_evidence::settings(&cli)?,
+        };
+        let policy = cli
+            .runtime_policy
+            .clone()
+            .map_or_else(|| PolicyInput::Canonical(RuntimePolicy::default()), PolicyInput::File);
+        let certificate_verification = if cli.insecure_disable_certificate_verification {
+            CertificateVerification::DisabledForDevelopment
+        } else {
+            CertificateVerification::Required
+        };
+        let source = source(&cli)?;
+        Self::new(host, policy, certificate_verification, source)
     }
+}
+
+/// Returns the input files that the statistics file must not replace.
+fn protected_inputs(cli: &Cli) -> Vec<PathBuf> {
+    let mut protected_inputs = Vec::new();
+    protected_inputs.extend(
+        cli.config
+            .iter()
+            .chain(cli.runtime_policy.iter())
+            .chain(cli.local_services.iter())
+            .cloned(),
+    );
+    protected_inputs.extend(
+        cli.client_certificate
+            .iter()
+            .chain(cli.client_key.iter())
+            .map(PathBuf::from),
+    );
+    protected_inputs.extend(
+        cli.http_crl_certificate
+            .chunks_exact(2)
+            .map(|values| PathBuf::from(&values[1])),
+    );
+    protected_inputs.extend(
+        cli.http_ocsp_source
+            .chunks_exact(4)
+            .flat_map(|values| [PathBuf::from(&values[2]), PathBuf::from(&values[3])]),
+    );
+    protected_inputs.extend(
+        cli.http_ocsp_certificate
+            .chunks_exact(3)
+            .flat_map(|values| [PathBuf::from(&values[1]), PathBuf::from(&values[2])]),
+    );
+    protected_inputs
 }
 
 #[cfg(test)]
@@ -122,16 +156,16 @@ mod tests {
 
     use tacacsrs_config::source::ConfigDatastore;
     use tacacsrs_config::tacacsrs::LocalServices;
-    use tacacsrs_provider::CredentialProvider;
     use tacacsrs_config::{
         TacacsPlus, TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType,
     };
     use tacacsrs_config::source::{
         ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigDelta, ConfigObservation,
-        DatastoreRuntimePolicy, InitialLoadPolicy,
+        DatastoreRuntimePolicy,
     };
 
     use super::*;
+    use tacacsrs_agent::components::{DatastoreSourceComponent, LocalServicesInput};
 
     struct NotificationSource;
 
@@ -189,10 +223,7 @@ mod tests {
             Ok(Box::new(NotificationSession { changes, worker }))
         }
         fn runtime_policy(&self) -> DatastoreRuntimePolicy {
-            DatastoreRuntimePolicy::new(
-                InitialLoadPolicy::FailFast,
-                ChangeNotificationMode::Continuous,
-            )
+            DatastoreRuntimePolicy::new(ChangeNotificationMode::Continuous)
         }
         async fn load(&self) -> anyhow::Result<TacacsPlus> {
             Ok(snapshot())
@@ -205,19 +236,18 @@ mod tests {
     #[tokio::test]
     async fn added_registration_drives_background_notifications_through_shared_startup() {
         fn parse(cli: Cli) -> anyhow::Result<SelectedProfile> {
-            Ok(SelectedProfile::from_cli(cli, |_| async {
-                Ok(SourceBundle {
-                    datastore: Arc::new(NotificationSource),
-                    credentials: CredentialProvider::none(),
-                    local_services: LocalServices {
+            SelectedProfile::from_cli(cli, |_| {
+                Ok(vec![Box::new(DatastoreSourceComponent::new(
+                    "Notification fixture",
+                    Arc::new(NotificationSource),
+                    LocalServicesInput::Fixed(LocalServices {
                         client_api_enabled: false,
                         tacacs_proxy_enabled: true,
                         tacacs_proxy_endpoint: Some("127.0.0.1:0".to_owned()),
                         ..LocalServices::default()
-                    },
-                    companions: Vec::new(),
-                })
-            }))
+                    }),
+                ))])
+            })
         }
         let registration = Registration {
             selector: "fixture",
@@ -234,14 +264,13 @@ mod tests {
         .unwrap();
         let profile =
             select_registered(Cli::from_arg_matches(&matches).unwrap(), &[registration]).unwrap();
-        let (runtime, peers) = crate::startup::prepare_service(profile).await.unwrap();
-        let service = runtime.service().clone();
+        let host = tacacsrs_agent::host::bootstrap(profile.components)
+            .await
+            .unwrap();
+        let service = host.runtime().service().clone();
         let cancellation = CancellationToken::new();
         let stop = cancellation.clone();
-        let monitor =
-            tokio::spawn(
-                async move { runtime.run_until(stop.cancelled(), Vec::new(), peers).await },
-            );
+        let monitor = tokio::spawn(async move { host.run_until(stop.cancelled()).await });
         tokio::time::timeout(Duration::from_secs(2), async {
             while service.server_count() != 1 {
                 tokio::time::sleep(Duration::from_millis(1)).await;
@@ -287,6 +316,32 @@ mod tests {
             }
         }
 
+        struct PendingSource {
+            _owner: Preparation,
+            entered: Option<tokio::sync::oneshot::Sender<()>>,
+        }
+
+        #[async_trait]
+        impl Component for PendingSource {
+            fn name(&self) -> &'static str {
+                "Pending source"
+            }
+
+            async fn prepare(&mut self) -> anyhow::Result<()> {
+                if let Some(entered) = self.entered.take() {
+                    entered.send(()).unwrap();
+                }
+                std::future::pending().await
+            }
+
+            fn register(
+                self: Box<Self>,
+                _composition: &mut tacacsrs_composition::Composition,
+            ) -> anyhow::Result<()> {
+                unreachable!("Preparation never completes")
+            }
+        }
+
         let directory = std::env::temp_dir().join(format!(
             "agentd-profile-{}-{}",
             std::process::id(),
@@ -307,14 +362,16 @@ mod tests {
         let dropped = Arc::new(AtomicBool::new(false));
         let owner = Preparation(dropped.clone());
         let (entered, started) = tokio::sync::oneshot::channel();
-        let profile = SelectedProfile::from_cli(cli, |_| async move {
-            let _owner = owner;
-            entered.send(()).unwrap();
-            std::future::pending::<anyhow::Result<SourceBundle>>().await
-        });
+        let profile = SelectedProfile::from_cli(cli, |_| {
+            Ok(vec![Box::new(PendingSource {
+                _owner: owner,
+                entered: Some(entered),
+            })])
+        })
+        .unwrap();
         let cancellation = CancellationToken::new();
         let stop = cancellation.clone();
-        let task = tokio::spawn(crate::startup::run_until(profile, async move {
+        let task = tokio::spawn(tacacsrs_agent::host::run_until(profile.components, async move {
             stop.cancelled().await;
             Ok(())
         }));

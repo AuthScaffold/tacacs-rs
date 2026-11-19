@@ -2,16 +2,51 @@
 
 use std::collections::BTreeMap;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use redis::IntoConnectionInfo;
 use tacacsrs_config::source::{ConfigChangeEvent, ConfigDatastore};
 use tacacsrs_kubesonic::datastore::KubeSonicConfigDb;
 use tacacsrs_kubesonic::environment::{Environment, SourceSettings};
-use tacacsrs_kubesonic::registration::LoopbackRegistration;
-use tacacsrs_provider::CompanionContext;
-use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
+use tacacsrs_kubesonic::registration::{
+    registration_settings, LoopbackRegistrar, LoopbackRegistration, RegistrationReadiness,
+    RegistrationState, RegistrationStatus,
+};
+use tacacsrs_lifecycle::{
+    async_trait, BoxError, HealthCheck, HealthCheckContext, HealthCheckResult, HealthGroup,
+    HealthMember, HostedService, ShutdownRequester,
+};
+
+struct Flag(Arc<AtomicBool>);
+
+#[async_trait]
+impl HealthCheck for Flag {
+    async fn check(&self, _: &HealthCheckContext) -> Result<HealthCheckResult, BoxError> {
+        Ok(if self.0.load(Ordering::Acquire) {
+            HealthCheckResult::healthy()
+        } else {
+            HealthCheckResult::unhealthy()
+        })
+    }
+}
+
+impl HealthMember<RegistrationReadiness> for Flag {
+    fn name(&self) -> &'static str {
+        "flag"
+    }
+}
+
+fn registrar(
+    input: &Environment,
+    ready: Arc<AtomicBool>,
+    status: Arc<RegistrationStatus>,
+) -> Arc<LoopbackRegistrar> {
+    let settings = registration_settings(input).unwrap().unwrap();
+    let readiness = HealthGroup::new(vec![Arc::new(Flag(ready))]).unwrap();
+    Arc::new(LoopbackRegistrar::new(settings, readiness, status))
+}
 
 struct Redis {
     child: Child,
@@ -140,9 +175,9 @@ async fn registration_owns_only_complete_unchanged_rows() {
     let key = "TACPLUS_SERVER|127.0.0.1";
     let mut registration = LoopbackRegistration::new(redis.settings.clone(), 32, 5049);
     registration.remove_stale().await.unwrap();
-    registration.reconcile(false).await.unwrap();
+    assert!(!registration.reconcile(false).await.unwrap());
     assert!(!redis.command::<bool>(redis::cmd("EXISTS").arg(key)).await);
-    registration.reconcile(true).await.unwrap();
+    assert!(registration.reconcile(true).await.unwrap());
     let values: Vec<String> = redis
         .command(redis::cmd("HMGET").arg(key).arg("tcp_port").arg("priority"))
         .await;
@@ -174,7 +209,7 @@ async fn uncertain_registration_cannot_report_successful_cleanup() {
 
 #[tokio::test]
 #[ignore = "requires redis-server"]
-async fn companion_waits_for_readiness_and_cleans_up_its_row() {
+async fn registrar_waits_for_readiness_and_cleans_up_its_row() {
     let redis = Redis::start().await;
     let key = "TACPLUS_SERVER|127.0.0.1";
     redis
@@ -184,15 +219,13 @@ async fn companion_waits_for_readiness_and_cleans_up_its_row() {
     input.source = redis.settings.clone();
     input.loopback.enabled = true;
     input.loopback.retry_interval = Duration::from_millis(25);
-    let mut bundle = tacacsrs_kubesonic::prepare(input).unwrap();
+    let ready = Arc::new(AtomicBool::new(false));
+    let status = Arc::new(RegistrationStatus::default());
+    let registrar = registrar(&input, ready.clone(), status.clone());
     assert!(redis.command::<bool>(redis::cmd("EXISTS").arg(key)).await);
-    let (sender, receiver) = watch::channel(false);
-    let cancellation = CancellationToken::new();
-    let companion = bundle.companions.pop().unwrap();
-    let handle = tokio::spawn(companion.run(CompanionContext {
-        ready: receiver,
-        cancellation: cancellation.clone(),
-    }));
+    assert_eq!(status.state(), RegistrationState::Starting);
+    let shutdown = ShutdownRequester::new();
+    let handle = tokio::spawn(registrar.run(shutdown.signal()));
     tokio::time::timeout(Duration::from_secs(2), async {
         while redis.command::<bool>(redis::cmd("EXISTS").arg(key)).await {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -200,7 +233,14 @@ async fn companion_waits_for_readiness_and_cleans_up_its_row() {
     })
     .await
     .unwrap();
-    sender.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while status.state() != RegistrationState::WaitingForReadiness {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    ready.store(true, Ordering::Release);
     tokio::time::timeout(Duration::from_secs(2), async {
         while !redis.command::<bool>(redis::cmd("EXISTS").arg(key)).await {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -208,17 +248,18 @@ async fn companion_waits_for_readiness_and_cleans_up_its_row() {
     })
     .await
     .unwrap();
-    sender.send(false).unwrap();
+    ready.store(false, Ordering::Release);
     tokio::time::sleep(Duration::from_millis(75)).await;
     assert!(redis.command::<bool>(redis::cmd("EXISTS").arg(key)).await);
-    cancellation.cancel();
+    assert_eq!(status.state(), RegistrationState::Registered);
+    shutdown.request();
     handle.await.unwrap().unwrap();
     assert!(!redis.command::<bool>(redis::cmd("EXISTS").arg(key)).await);
 }
 
 #[tokio::test]
 #[ignore = "requires redis-server"]
-async fn cancelled_companion_does_not_remove_stale_row() {
+async fn stopped_registrar_does_not_remove_stale_row() {
     let redis = Redis::start().await;
     let key = "TACPLUS_SERVER|127.0.0.1";
     redis
@@ -227,18 +268,10 @@ async fn cancelled_companion_does_not_remove_stale_row() {
     let mut input = Environment::parse(BTreeMap::new()).unwrap();
     input.source = redis.settings.clone();
     input.loopback.enabled = true;
-    let mut bundle = tacacsrs_kubesonic::prepare(input).unwrap();
-    let (_sender, ready) = watch::channel(false);
-    let cancellation = CancellationToken::new();
-    cancellation.cancel();
-    bundle
-        .companions
-        .pop()
-        .unwrap()
-        .run(CompanionContext {
-            ready,
-            cancellation,
-        })
+    let shutdown = ShutdownRequester::new();
+    shutdown.request();
+    registrar(&input, Arc::new(AtomicBool::new(true)), Arc::default())
+        .run(shutdown.signal())
         .await
         .unwrap();
     assert!(redis.command::<bool>(redis::cmd("EXISTS").arg(key)).await);

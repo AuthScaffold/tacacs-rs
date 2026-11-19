@@ -10,7 +10,76 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, ensure};
 use serde::Deserialize;
 
-use crate::tacacsrs::LocalServices;
+use crate::tacacsrs::{LocalServices, ProxyCredentialSource};
+
+/// The local services that a [`LocalServicesPatch`] enables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceSelection {
+    /// Enables only the local client API.
+    ClientApi,
+    /// Enables only the raw TACACS+ proxy.
+    TacacsProxy,
+    /// Enables the local client API and the raw TACACS+ proxy.
+    Both,
+}
+
+/// Changes to the local services that a host applies to a source value.
+///
+/// Each field that is `None` keeps the source value. A host uses a patch for
+/// listener settings from the command line or the environment. The patch is
+/// not part of the canonical YANG model.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LocalServicesPatch {
+    /// Replaces the client API socket path.
+    pub client_api_endpoint: Option<String>,
+    /// Replaces the TACACS+ proxy endpoint.
+    pub tacacs_proxy_endpoint: Option<String>,
+    /// Sets an inline downstream shared secret for the proxy.
+    pub proxy_shared_secret: Option<tacacsrs_secrets::SecretString>,
+    /// Replaces the Unix socket permission bits.
+    pub unix_socket_mode: Option<u16>,
+    /// Selects the enabled local services.
+    pub services: Option<ServiceSelection>,
+    /// Replaces the downstream credential source.
+    pub proxy_credential_source: Option<ProxyCredentialSource>,
+}
+
+impl LocalServicesPatch {
+    /// Applies the patch to `source` and validates the result.
+    ///
+    /// An inline shared secret selects the inline credential source. Without
+    /// a service selection, a proxy endpoint in the result enables the proxy.
+    /// An explicit credential source replaces the inline selection.
+    ///
+    /// # Errors
+    /// Returns the error of [`prepare_local_services`] for the result.
+    pub fn apply(&self, mut source: LocalServices) -> anyhow::Result<LocalServices> {
+        if let Some(endpoint) = &self.client_api_endpoint {
+            source.client_api_endpoint.clone_from(endpoint);
+        }
+        if let Some(endpoint) = &self.tacacs_proxy_endpoint {
+            source.tacacs_proxy_endpoint = Some(endpoint.clone());
+        }
+        if let Some(secret) = &self.proxy_shared_secret {
+            source.proxy_credential_source = ProxyCredentialSource::Inline;
+            source.proxy_shared_secret = Some(secret.clone());
+        }
+        if let Some(mode) = self.unix_socket_mode {
+            source.unix_socket_mode = mode;
+        }
+        if let Some(services) = self.services {
+            source.client_api_enabled = services != ServiceSelection::TacacsProxy;
+            source.tacacs_proxy_enabled = services != ServiceSelection::ClientApi;
+        } else if source.tacacs_proxy_endpoint.is_some() {
+            source.tacacs_proxy_enabled = true;
+        }
+        if let Some(selection) = self.proxy_credential_source {
+            source.proxy_credential_source = selection;
+        }
+        prepare_local_services(&source)?;
+        Ok(source)
+    }
+}
 
 /// A validated local listener target, independent of IPC transport libraries.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -315,6 +384,53 @@ mod tests {
             r#"{"tacacsrs:local-services":{"client-api-endpoint":"/tmp/socket\u0000"}}"#,
         ] {
             assert!(parse_local_services(document.as_bytes()).is_err(), "accepted {document}");
+        }
+    }
+
+    #[test]
+    fn empty_patch_keeps_the_source_and_inline_secret_selects_inline_credentials() {
+        let source = LocalServices::default();
+        assert_eq!(LocalServicesPatch::default().apply(source.clone()).unwrap(), source);
+        let patch = LocalServicesPatch {
+            tacacs_proxy_endpoint: Some("127.0.0.1:49".to_owned()),
+            proxy_shared_secret: Some(tacacsrs_secrets::SecretString::new(
+                "private-downstream-key".to_owned(),
+            )),
+            ..LocalServicesPatch::default()
+        };
+        let patched = patch.apply(LocalServices::default()).unwrap();
+        assert!(patched.client_api_enabled);
+        assert!(patched.tacacs_proxy_enabled);
+        assert_eq!(patched.proxy_credential_source, ProxyCredentialSource::Inline);
+        assert!(!format!("{patch:?} {patched:?}").contains("private-downstream-key"));
+    }
+
+    #[test]
+    fn patch_service_selection_and_invalid_results_fail() {
+        let proxy_only = LocalServicesPatch {
+            tacacs_proxy_endpoint: Some("/run/tacacs/proxy.sock".to_owned()),
+            services: Some(ServiceSelection::TacacsProxy),
+            ..LocalServicesPatch::default()
+        };
+        let patched = proxy_only.apply(LocalServices::default()).unwrap();
+        assert!(!patched.client_api_enabled);
+        assert!(patched.tacacs_proxy_enabled);
+        for patch in [
+            LocalServicesPatch {
+                services: Some(ServiceSelection::TacacsProxy),
+                ..LocalServicesPatch::default()
+            },
+            LocalServicesPatch {
+                services: Some(ServiceSelection::ClientApi),
+                tacacs_proxy_endpoint: Some("127.0.0.1:49".to_owned()),
+                ..LocalServicesPatch::default()
+            },
+            LocalServicesPatch {
+                unix_socket_mode: Some(0o1000),
+                ..LocalServicesPatch::default()
+            },
+        ] {
+            assert!(patch.apply(LocalServices::default()).is_err(), "accepted {patch:?}");
         }
     }
 

@@ -175,7 +175,7 @@ async fn statistics_export_is_read_only_private_and_generation_bound() {
 }
 
 #[tokio::test]
-async fn diagnostics_rpc_is_read_only_and_generation_bound() {
+async fn diagnostics_and_health_details_share_the_client_api_socket() {
     use tacacsrs_ipc::diagnostics::DiagnosticsClient;
     use tacacsrs_ipc::IpcEndpoint;
 
@@ -226,6 +226,18 @@ async fn diagnostics_rpc_is_read_only_and_generation_bound() {
         assert_eq!(snapshot["server"][0]["statistics"]["messages-sent"], "0");
     }
     drop(client);
+    let mut health = tacacsrs_ipc::HealthClient::connect(&IpcEndpoint::Unix(endpoint.clone()))
+        .await
+        .unwrap();
+    let details = health.details().await.unwrap();
+    assert_eq!(details.lifecycle(), tacacsrs_ipc::proto::RuntimeLifecycle::Serving);
+    assert!(details.applied_configuration);
+    assert_eq!(details.eligible_server_count, 1);
+    assert!(details.listeners.iter().any(|listener| {
+        listener.service() == tacacsrs_ipc::proto::RuntimeService::ClientApi
+            && listener.state() == tacacsrs_ipc::proto::ListenerState::Bound
+    }));
+    drop(health);
     stop(child, "-TERM").await;
     assert!(!endpoint.exists());
 }

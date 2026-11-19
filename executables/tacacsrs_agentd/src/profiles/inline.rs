@@ -2,16 +2,15 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+
+use tacacsrs_agent::components::DatastoreSourceComponent;
 use tacacsrs_config::input::{
     CliConfigSource, CliDatastoreInput, CliSecurity, CliSecurityInputs, CliServerInput,
 };
 use tacacsrs_config::source::CliFileDatastore;
 use tacacsrs_config::input::{CliPskInputs, PskKeyExchangeMode, PskKeyMaterial};
-use tacacsrs_config::tacacsrs::LocalServices;
-use tacacsrs_provider::{CredentialProvider, SourceBundle};
 
 use crate::cli::{Cli, PskKeyExchange};
-use crate::credential_provider;
 use crate::local_services;
 use super::SelectedProfile;
 
@@ -66,14 +65,13 @@ fn cli_psk_inputs(cli: &Cli) -> Option<CliPskInputs> {
 }
 
 pub(crate) fn parse(cli: Cli) -> anyhow::Result<SelectedProfile> {
-    Ok(SelectedProfile::from_cli(cli, |cli| async move {
-        Ok(SourceBundle {
-            datastore: Arc::new(CliFileDatastore::new(cli_datastore_input_from_cli(&cli))),
-            credentials: credential_provider::build(&cli, CredentialProvider::none()).await?,
-            local_services: local_services::load(&cli, LocalServices::default()).await?,
-            companions: Vec::new(),
-        })
-    }))
+    SelectedProfile::from_cli(cli, |cli| {
+        Ok(vec![Box::new(DatastoreSourceComponent::from_file_datastore(
+            "Inline server source",
+            Arc::new(CliFileDatastore::new(cli_datastore_input_from_cli(cli))),
+            local_services::input(cli)?,
+        ))])
+    })
 }
 
 #[cfg(test)]
@@ -351,7 +349,7 @@ mod tests {
             "secret1",
         ]);
 
-        let services = crate::local_services::from_cli(&cli, LocalServices::default()).unwrap();
+        let services = crate::local_services::patch(&cli).unwrap().apply(LocalServices::default()).unwrap();
         assert!(services.client_api_enabled);
         assert!(!services.tacacs_proxy_enabled);
         assert_eq!(cli.host_integration, HostIntegrationMode::Auto);
@@ -388,7 +386,7 @@ mod tests {
             "127.0.0.1:9050",
         ]);
 
-        let services = crate::local_services::from_cli(&cli, LocalServices::default()).unwrap();
+        let services = crate::local_services::patch(&cli).unwrap().apply(LocalServices::default()).unwrap();
         assert!(services.client_api_enabled);
         assert!(services.tacacs_proxy_enabled);
     }
@@ -407,7 +405,7 @@ mod tests {
             "127.0.0.1:9050",
         ]);
 
-        let services = crate::local_services::from_cli(&cli, LocalServices::default()).unwrap();
+        let services = crate::local_services::patch(&cli).unwrap().apply(LocalServices::default()).unwrap();
         assert!(!services.client_api_enabled);
         assert!(services.tacacs_proxy_enabled);
     }

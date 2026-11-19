@@ -17,11 +17,38 @@ Direct callers and IPC callers use those same types.
 same local endpoint. It accepts an optional exact server name and returns an
 RFC 7951 operational JSON document. The maximum JSON payload is 120 KiB.
 
-A host supplies `DiagnosticsProvider` through `serve_unix_with_diagnostics`.
+A host supplies `DiagnosticsProvider` through `ListenerServices::with_diagnostics`.
 The provider must bound snapshot copying and serialization and must not perform
 upstream I/O. The daemon adapts its read-only runtime handle to this interface.
 Provider errors use fixed public status messages. Hosts without a provider return
 `UNIMPLEMENTED`; the existing AAA handler and standard health service are unchanged.
+
+## Detailed health
+
+The standard gRPC health service gives one status for each probe name. The
+`AgentHealth.Details` RPC in
+[`proto/tacacsrs_agent_health.proto`](proto/tacacsrs_agent_health.proto) gives
+the facts behind those statuses. The reply contains the lifecycle, the probe
+results, the datastore and listener states, the upstream availability, the
+watchdog state, the degradation reasons, and the runtime revisions. The
+`components` field contains one `ComponentHealth` entry for each health check
+that a component registered. The reply contains no credentials, server
+addresses, or request payloads.
+
+`HealthDetailsProvider::health_details` is asynchronous, because the provider
+can run the registered checks for each request. The provider must limit the
+time of each check.
+
+A host supplies `HealthDetailsProvider` through
+`ListenerServices::with_health_details`. The listener then adds the route to the
+same socket as the other services. Without a provider, the listener does not add
+the route, and the RPC returns `UNIMPLEMENTED`. `HealthClient::details` reads the
+reply over the same channel as the standard health checks. Clients must accept
+enum values that their build does not know.
+
+`serve_unix_with_services` takes one `ListenerServices` value. A new optional
+route adds one builder method to `ListenerServices`. The listener signature and
+the callers do not change.
 
 ## Design goals
 
@@ -106,9 +133,11 @@ Unix(path)  parse as SocketAddr
 
 ## Protocol mapping
 
-The protobuf schema
-([`proto/tacacsrs_agent.proto`](proto/tacacsrs_agent.proto))
-defines the on-the-wire contract. `tacacsrs_protocol::operations` defines the shared request and
+The protobuf schemas
+([`proto/tacacsrs_agent.proto`](proto/tacacsrs_agent.proto) and
+[`proto/tacacsrs_agent_health.proto`](proto/tacacsrs_agent_health.proto))
+define the on-the-wire contract. The health details messages have no separate
+domain types. Hosts and clients use the generated messages directly. `tacacsrs_protocol::operations` defines the shared request and
 response domain types, and `tacacsrs_protocol::failure` defines the shared `ServiceError`:
 
 | Protobuf message      | Rust domain type                | Direction      |

@@ -35,6 +35,11 @@ pub(super) trait RoutedOperation: Send + Sync + 'static {
     const DISPLAY_NAME: &'static str;
     /// TACACS+ operation used for routing and connection isolation.
     const OPERATION: OperationKind;
+    /// Marks an agent-local probe that has no side effects on the server.
+    ///
+    /// A probe skips client admission, tries every eligible server, and also
+    /// retries after an unknown outcome. Client requests keep the default.
+    const SIDE_EFFECT_FREE_PROBE: bool = false;
     /// Sends the operation through the selected server connection.
     async fn send<Connection: UpstreamConnection + ?Sized>(
         connection: &Connection,
@@ -195,7 +200,10 @@ where
     where
         Operation: RoutedOperation,
     {
-        let routing = self.router.capture_request(Operation::OPERATION);
+        let mut routing = self.router.capture_request(Operation::OPERATION);
+        if Operation::SIDE_EFFECT_FREE_PROBE {
+            routing = routing.into_side_effect_free_probe();
+        }
         let check_deadline = || {
             routing.deadline().check().map_err(|error| {
                 ServiceError::new(
@@ -215,11 +223,16 @@ where
         check_deadline()?;
         let exchange = prepared.map_err(UpstreamRequestError::into_service_error)?;
         let body_length = exchange.request_body().as_bytes().len();
-        let _admission_permit = routing.admit(body_length).await.map_err(|error| {
-            error
-                .into_service_error()
-                .with_runtime_generation(routing.generation())
-        })?;
+        // One sequential probe must not compete with client requests for permits.
+        let _admission_permit = if Operation::SIDE_EFFECT_FREE_PROBE {
+            None
+        } else {
+            Some(routing.admit(body_length).await.map_err(|error| {
+                error
+                    .into_service_error()
+                    .with_runtime_generation(routing.generation())
+            })?)
+        };
 
         let plan = routing.failover_plan();
         let generation = routing.generation();

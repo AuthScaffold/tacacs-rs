@@ -1,15 +1,94 @@
-//! Daemon-owned host process-manager integration.
+//! Publishes agent health to the systemd service manager.
 
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tacacsrs_agent::{RuntimeHealthSnapshot, RuntimeLifecycle};
+use dill::component;
 use tokio::process::Command;
 use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
 
-use crate::cli::HostIntegrationMode;
+use crate::{DegradationReason, RuntimeHealth, RuntimeHealthSnapshot, RuntimeLifecycle};
+use tacacsrs_composition::{Component, Composition, Named};
+use tacacsrs_lifecycle::{HostedService, ShutdownSignal};
+
+/// Selects how strictly the agent requires systemd.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemdMode {
+    /// Notifies systemd only when `NOTIFY_SOCKET` is set. Failed
+    /// notifications cause warnings.
+    Auto,
+    /// Requires `NOTIFY_SOCKET` and the `systemd-notify` helper. A failed
+    /// notification stops the agent.
+    Required,
+}
+
+/// Sends readiness, status, and stopping notifications to systemd.
+///
+/// The component reads the process environment in `prepare`. In
+/// [`SystemdMode::Auto`] without `NOTIFY_SOCKET`, it registers nothing.
+pub struct SystemdComponent {
+    mode: SystemdMode,
+    selected: Option<SystemdIntegration>,
+}
+
+impl SystemdComponent {
+    /// Creates the component with the given mode.
+    #[must_use]
+    pub const fn new(mode: SystemdMode) -> Self {
+        Self {
+            mode,
+            selected: None,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Component for SystemdComponent {
+    fn name(&self) -> &'static str {
+        SystemdService::NAME
+    }
+
+    async fn prepare(&mut self) -> anyhow::Result<()> {
+        self.selected = SystemdIntegration::from_environment(self.mode)?;
+        Ok(())
+    }
+
+    fn register(self: Box<Self>, composition: &mut Composition) -> anyhow::Result<()> {
+        let Some(integration) = self.selected else {
+            return Ok(());
+        };
+        composition.hosted_service(SystemdService::builder(integration))
+    }
+}
+
+/// Publishes agent health to systemd until shutdown.
+#[component]
+#[dill::scope(dill::Singleton)]
+#[dill::interface(dyn HostedService)]
+struct SystemdService {
+    #[component(explicit)]
+    integration: SystemdIntegration,
+    health: Arc<RuntimeHealth>,
+}
+
+impl Named for SystemdService {
+    const NAME: &'static str = "Host integration";
+}
+
+#[async_trait::async_trait]
+impl HostedService for SystemdService {
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    async fn run(self: Arc<Self>, shutdown: ShutdownSignal) -> anyhow::Result<()> {
+        self.integration
+            .clone()
+            .run(self.health.subscribe(), shutdown)
+            .await
+    }
+}
 
 #[async_trait::async_trait]
 trait SystemdCommand: Send + Sync {
@@ -46,21 +125,32 @@ impl SystemdCommand for ProcessSystemdCommand {
     }
 }
 
-/// Selected host adapter that consumes common runtime health snapshots.
-pub(crate) enum HostIntegration {
-    None,
-    Systemd(SystemdIntegration),
+/// Backoff between retries of a systemd one-shot notification (`--ready` /
+/// `--stopping`) that failed transiently in auto mode. Each wait is bounded.
+/// The retry loop stays aware of cancellation. It resends a missed notification
+/// without an unrelated health change. Cancellation never waits for a full retry period.
+const SYSTEMD_RETRY_BACKOFF: Duration = Duration::from_secs(1);
+
+/// Systemd notification state. Each run starts from a clone of the selected state.
+#[derive(Clone)]
+pub(crate) struct SystemdIntegration {
+    command: Arc<dyn SystemdCommand>,
+    strict: bool,
+    ready_sent: bool,
+    stopping_sent: bool,
+    retry_backoff: Duration,
 }
 
-impl HostIntegration {
-    /// Selects an adapter from CLI mode and process environment.
+impl SystemdIntegration {
+    /// Selects systemd integration from the mode and the process environment.
+    ///
+    /// Returns `None` for auto mode without a notification socket. Auto mode
+    /// keeps the warn-and-continue helper behavior after it selects systemd.
     ///
     /// # Errors
     ///
-    /// When `NOTIFY_SOCKET` or the helper is unavailable, explicit systemd mode
-    /// fails. Auto mode selects no host integration when there is no notification
-    /// socket. It keeps the warn-and-continue helper behavior after it selects systemd.
-    pub(crate) fn from_environment(mode: HostIntegrationMode) -> anyhow::Result<Self> {
+    /// When `NOTIFY_SOCKET` or the helper is unavailable, required mode fails.
+    fn from_environment(mode: SystemdMode) -> anyhow::Result<Option<Self>> {
         Self::select(
             mode,
             std::env::var_os("NOTIFY_SOCKET").is_some(),
@@ -69,32 +159,31 @@ impl HostIntegration {
     }
 
     fn select(
-        mode: HostIntegrationMode,
+        mode: SystemdMode,
         notify_socket_present: bool,
         command: Arc<dyn SystemdCommand>,
-    ) -> anyhow::Result<Self> {
+    ) -> anyhow::Result<Option<Self>> {
         match mode {
-            HostIntegrationMode::None => Ok(Self::None),
-            HostIntegrationMode::Auto if !notify_socket_present => Ok(Self::None),
-            HostIntegrationMode::Auto => Ok(Self::Systemd(SystemdIntegration {
+            SystemdMode::Auto if !notify_socket_present => Ok(None),
+            SystemdMode::Auto => Ok(Some(Self {
                 command,
                 strict: false,
                 ready_sent: false,
                 stopping_sent: false,
                 retry_backoff: SYSTEMD_RETRY_BACKOFF,
             })),
-            HostIntegrationMode::Systemd => {
+            SystemdMode::Required => {
                 if !notify_socket_present {
                     anyhow::bail!(
-                        "--host-integration systemd requires the NOTIFY_SOCKET environment variable"
+                        "Required systemd integration needs the NOTIFY_SOCKET environment variable"
                     );
                 }
                 if !command.is_available() {
                     anyhow::bail!(
-                        "--host-integration systemd requires an executable systemd-notify helper"
+                        "Required systemd integration needs an executable systemd-notify helper"
                     );
                 }
-                Ok(Self::Systemd(SystemdIntegration {
+                Ok(Some(Self {
                     command,
                     strict: true,
                     ready_sent: false,
@@ -109,66 +198,44 @@ impl HostIntegration {
     pub(crate) async fn run(
         mut self,
         mut health: watch::Receiver<RuntimeHealthSnapshot>,
-        cancellation: CancellationToken,
+        shutdown: ShutdownSignal,
     ) -> anyhow::Result<()> {
-        match &mut self {
-            Self::None => {
-                cancellation.cancelled().await;
-                Ok(())
-            }
-            Self::Systemd(integration) => {
-                let snapshot = health.borrow().clone();
-                let mut retry_pending = integration.publish(&snapshot).await?;
-                loop {
-                    let backoff = integration.retry_backoff;
-                    // When a one-shot notification failed transiently, retry after a
-                    // bounded backoff even if health never changes again.
-                    let retry = async move {
-                        if retry_pending {
-                            tokio::time::sleep(backoff).await;
-                        } else {
-                            std::future::pending::<()>().await;
-                        }
-                    };
-                    tokio::pin!(retry);
+        let snapshot = health.borrow().clone();
+        let mut retry_pending = self.publish(&snapshot).await?;
+        loop {
+            let backoff = self.retry_backoff;
+            // When a one-shot notification failed transiently, retry after a
+            // bounded backoff even if health never changes again.
+            let retry = async move {
+                if retry_pending {
+                    tokio::time::sleep(backoff).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            };
+            tokio::pin!(retry);
 
-                    tokio::select! {
-                        biased;
-                        () = cancellation.cancelled() => {
-                            let snapshot = health.borrow().clone();
-                            integration.publish(&snapshot).await?;
-                            return Ok(());
-                        }
-                        () = &mut retry => {
-                            let snapshot = health.borrow().clone();
-                            retry_pending = integration.publish(&snapshot).await?;
-                        }
-                        result = health.changed() => {
-                            if result.is_err() {
-                                return Ok(());
-                            }
-                            let snapshot = health.borrow().clone();
-                            retry_pending = integration.publish(&snapshot).await?;
-                        }
+            tokio::select! {
+                biased;
+                () = shutdown.requested() => {
+                    let snapshot = health.borrow().clone();
+                    self.publish(&snapshot).await?;
+                    return Ok(());
+                }
+                () = &mut retry => {
+                    let snapshot = health.borrow().clone();
+                    retry_pending = self.publish(&snapshot).await?;
+                }
+                result = health.changed() => {
+                    if result.is_err() {
+                        return Ok(());
                     }
+                    let snapshot = health.borrow().clone();
+                    retry_pending = self.publish(&snapshot).await?;
                 }
             }
         }
     }
-}
-
-/// Backoff between retries of a systemd one-shot notification (`--ready` /
-/// `--stopping`) that failed transiently in auto mode. Each wait is bounded.
-/// The retry loop stays aware of cancellation. It resends a missed notification
-/// without an unrelated health change. Cancellation never waits for a full retry period.
-const SYSTEMD_RETRY_BACKOFF: Duration = Duration::from_secs(1);
-
-pub(crate) struct SystemdIntegration {
-    command: Arc<dyn SystemdCommand>,
-    strict: bool,
-    ready_sent: bool,
-    stopping_sent: bool,
-    retry_backoff: Duration,
 }
 
 impl SystemdIntegration {
@@ -182,7 +249,11 @@ impl SystemdIntegration {
         let mut arguments = vec!["--pid=parent".to_owned()];
         arguments.push(format!("--status={}", status_text(snapshot)));
 
-        let want_ready = snapshot.is_readiness_serving() && !self.ready_sent;
+        // READY=1 reports that the process started and the listeners are bound.
+        // Configuration and upstream health can arrive later. STATUS and the
+        // health service report them, so a start timeout cannot stop the daemon
+        // while its source is unavailable.
+        let want_ready = snapshot.is_listening() && !self.ready_sent;
         let want_stopping =
             matches!(snapshot.lifecycle(), RuntimeLifecycle::Draining | RuntimeLifecycle::Stopped)
                 && !self.stopping_sent;
@@ -219,10 +290,32 @@ fn status_text(snapshot: &RuntimeHealthSnapshot) -> &'static str {
         RuntimeLifecycle::Draining => "Stopping local TACACS+ services",
         RuntimeLifecycle::Stopped => "Stopped",
         RuntimeLifecycle::Failed => "Fatal runtime failure",
+        RuntimeLifecycle::Starting | RuntimeLifecycle::Serving
+            if snapshot
+                .degradation_reasons()
+                .contains(&DegradationReason::SourceConfigurationInvalid) =>
+        {
+            "Stopping because the static configuration is invalid"
+        }
         RuntimeLifecycle::Starting if !snapshot.has_applied_configuration() => {
             "Waiting for initial validated configuration"
         }
         RuntimeLifecycle::Starting => "Waiting for enabled listeners",
+        RuntimeLifecycle::Serving
+            if snapshot
+                .degradation_reasons()
+                .contains(&DegradationReason::UpstreamWatchdogFailed) =>
+        {
+            "Not ready because the upstream watchdog probe failed"
+        }
+        RuntimeLifecycle::Serving
+            if snapshot.has_applied_configuration()
+                && snapshot
+                    .degradation_reasons()
+                    .contains(&DegradationReason::UpstreamWatchdogPending) =>
+        {
+            "Waiting for the first upstream watchdog probe"
+        }
         RuntimeLifecycle::Serving if !snapshot.degradation_reasons().is_empty() => {
             "Serving in degraded state"
         }
@@ -237,7 +330,9 @@ fn status_text(snapshot: &RuntimeHealthSnapshot) -> &'static str {
 mod tests {
     use std::sync::Mutex;
 
-    use tacacsrs_agent::{
+    use tokio_util::sync::CancellationToken;
+
+    use crate::{
         DegradationReason, EnabledServices, ListenerState, RuntimeHealthPublisher, RuntimeService,
     };
 
@@ -283,31 +378,20 @@ mod tests {
     }
 
     #[test]
-    fn auto_without_socket_and_none_with_socket_select_no_integration() {
-        assert!(matches!(
-            HostIntegration::select(
-                HostIntegrationMode::Auto,
-                false,
-                Arc::new(CapturingCommand::default()),
-            )
-            .expect("auto selection"),
-            HostIntegration::None,
-        ));
-        assert!(matches!(
-            HostIntegration::select(
-                HostIntegrationMode::None,
-                true,
-                Arc::new(CapturingCommand::default()),
-            )
-            .expect("none selection"),
-            HostIntegration::None,
-        ));
+    fn auto_without_socket_selects_no_integration() {
+        assert!(SystemdIntegration::select(
+            SystemdMode::Auto,
+            false,
+            Arc::new(CapturingCommand::default()),
+        )
+        .expect("auto selection")
+        .is_none());
     }
 
     #[test]
     fn strict_systemd_requires_socket_and_helper() {
-        let no_socket = HostIntegration::select(
-            HostIntegrationMode::Systemd,
+        let no_socket = SystemdIntegration::select(
+            SystemdMode::Required,
             false,
             Arc::new(CapturingCommand {
                 available: true,
@@ -316,8 +400,8 @@ mod tests {
         );
         assert!(no_socket.is_err());
 
-        let no_helper = HostIntegration::select(
-            HostIntegrationMode::Systemd,
+        let no_helper = SystemdIntegration::select(
+            SystemdMode::Required,
             true,
             Arc::new(CapturingCommand::default()),
         );
@@ -331,15 +415,16 @@ mod tests {
             ..Default::default()
         });
         let health = ready_publisher();
-        let integration = HostIntegration::select(
-            HostIntegrationMode::Systemd,
+        let integration = SystemdIntegration::select(
+            SystemdMode::Required,
             true,
             Arc::clone(&command) as Arc<dyn SystemdCommand>,
         )
-        .expect("systemd selection");
+        .expect("systemd selection")
+        .expect("systemd must be selected");
         let cancellation = CancellationToken::new();
         let child = cancellation.clone();
-        let task = tokio::spawn(integration.run(health.subscribe(), child));
+        let task = tokio::spawn(integration.run(health.subscribe(), ShutdownSignal::from(&child)));
         tokio::task::yield_now().await;
 
         health.set_degraded(DegradationReason::UpstreamsUnavailable, true);
@@ -378,25 +463,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn systemd_sends_ready_when_listeners_bind_before_configuration() {
+        let command = Arc::new(CapturingCommand {
+            available: true,
+            ..Default::default()
+        });
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        assert!(health.set_listener(RuntimeService::ClientApi, ListenerState::Bound));
+        assert!(!health.snapshot().is_readiness_serving());
+        let integration = SystemdIntegration::select(
+            SystemdMode::Required,
+            true,
+            Arc::clone(&command) as Arc<dyn SystemdCommand>,
+        )
+        .expect("systemd selection")
+        .expect("systemd must be selected");
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        integration
+            .run(health.subscribe(), ShutdownSignal::from(&cancellation))
+            .await
+            .expect("notifications must succeed");
+
+        let calls = command.calls.lock().expect("calls lock");
+        assert!(calls
+            .iter()
+            .any(|call| call.contains(&"--ready".to_owned())));
+        assert!(calls.iter().any(|call| call
+            .iter()
+            .any(|arg| arg == "--status=Waiting for initial validated configuration")));
+    }
+
+    #[tokio::test]
     async fn auto_ignores_notification_failure_but_strict_returns_it() {
         let health = ready_publisher();
-        let auto = HostIntegration::select(
-            HostIntegrationMode::Auto,
+        let auto = SystemdIntegration::select(
+            SystemdMode::Auto,
             true,
             Arc::new(CapturingCommand {
                 fail: true,
                 ..Default::default()
             }),
         )
-        .expect("auto systemd selection");
+        .expect("auto systemd selection")
+        .expect("systemd must be selected");
         let cancellation = CancellationToken::new();
         cancellation.cancel();
-        auto.run(health.subscribe(), cancellation)
+        auto.run(health.subscribe(), ShutdownSignal::from(&cancellation))
             .await
             .expect("auto mode must tolerate the failure");
 
-        let strict = HostIntegration::select(
-            HostIntegrationMode::Systemd,
+        let strict = SystemdIntegration::select(
+            SystemdMode::Required,
             true,
             Arc::new(CapturingCommand {
                 available: true,
@@ -404,9 +522,10 @@ mod tests {
                 ..Default::default()
             }),
         )
-        .expect("strict selection");
+        .expect("strict selection")
+        .expect("systemd must be selected");
         assert!(strict
-            .run(health.subscribe(), CancellationToken::new())
+            .run(health.subscribe(), ShutdownSignal::from(&CancellationToken::new()))
             .await
             .is_err());
     }
@@ -539,15 +658,16 @@ mod tests {
             ..Default::default()
         });
         let health = ready_publisher();
-        let integration = HostIntegration::Systemd(SystemdIntegration {
+        let integration = SystemdIntegration {
             command: Arc::clone(&command) as Arc<dyn SystemdCommand>,
             strict: false,
             ready_sent: false,
             stopping_sent: false,
             retry_backoff: Duration::from_secs(1),
-        });
+        };
         let cancellation = CancellationToken::new();
-        let task = tokio::spawn(integration.run(health.subscribe(), cancellation.clone()));
+        let task =
+            tokio::spawn(integration.run(health.subscribe(), ShutdownSignal::from(&cancellation)));
 
         let mut ready_calls = 0;
         for _ in 0..20 {
@@ -581,15 +701,16 @@ mod tests {
             ..Default::default()
         });
         let health = ready_publisher();
-        let integration = HostIntegration::Systemd(SystemdIntegration {
+        let integration = SystemdIntegration {
             command: Arc::clone(&command) as Arc<dyn SystemdCommand>,
             strict: false,
             ready_sent: false,
             stopping_sent: false,
             retry_backoff: Duration::from_secs(1),
-        });
+        };
         let cancellation = CancellationToken::new();
-        let task = tokio::spawn(integration.run(health.subscribe(), cancellation.clone()));
+        let task =
+            tokio::spawn(integration.run(health.subscribe(), ShutdownSignal::from(&cancellation)));
 
         tokio::task::yield_now().await;
         cancellation.cancel();
@@ -609,15 +730,16 @@ mod tests {
         });
         let health = ready_publisher();
         health.set_lifecycle(RuntimeLifecycle::Draining);
-        let integration = HostIntegration::Systemd(SystemdIntegration {
+        let integration = SystemdIntegration {
             command: Arc::clone(&command) as Arc<dyn SystemdCommand>,
             strict: false,
             ready_sent: true,
             stopping_sent: false,
             retry_backoff: Duration::from_secs(1),
-        });
+        };
         let cancellation = CancellationToken::new();
-        let task = tokio::spawn(integration.run(health.subscribe(), cancellation.clone()));
+        let task =
+            tokio::spawn(integration.run(health.subscribe(), ShutdownSignal::from(&cancellation)));
 
         tokio::task::yield_now().await;
         health.set_lifecycle(RuntimeLifecycle::Stopped);

@@ -100,8 +100,8 @@ Install it with:
 rustup toolchain install nightly-2025-11-23 --profile minimal
 ```
 
-The adapter binary requires Rust **1.91**. The product workspace still requires
-Rust **1.88**. The separate tool lockfile uses MSRV-aware resolution for Rust 1.91.
+The adapter binary requires Rust **1.91**. The product workspace also requires
+Rust **1.91**. The separate tool lockfile uses MSRV-aware resolution for Rust 1.91.
 
 `cargo-semver-checks` 0.44 and 0.45 depend on vulnerable `gix-date` 0.10.
 Version 0.46 depends on vulnerable `gix-date` 0.11.

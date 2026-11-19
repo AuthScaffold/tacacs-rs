@@ -1,4 +1,4 @@
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 
 use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, ValueEnum};
@@ -84,6 +84,11 @@ pub(crate) struct CommonArgs {
     /// Publish read-only YANG statistics atomically to this file once per second.
     #[arg(long, value_name = "FILE")]
     pub(crate) statistics_file: Option<PathBuf>,
+
+    /// Send an RFC 8907 accounting WATCHDOG record to the upstream servers at this interval.
+    /// A failed probe withdraws readiness until a later probe succeeds. The watchdog is off by default.
+    #[arg(long, value_name = "SECONDS")]
+    pub(crate) upstream_watchdog_interval_seconds: Option<NonZeroU64>,
 
     /// Register a public HTTP(S) CRL URL for an opaque evidence reference.
     /// Repeat the reference to add issuer CRLs in fetch order. Locations must contain no secrets.

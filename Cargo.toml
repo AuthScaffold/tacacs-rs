@@ -8,6 +8,8 @@ members = [
     "libraries/tacacsrs_unix_socket",
     "libraries/tacacsrs_agent_ipc_emulator",
     "libraries/tacacsrs_agent",
+    "libraries/tacacsrs_lifecycle",
+    "libraries/tacacsrs_composition",
     "libraries/tacacsrs_provider",
     "libraries/tacacsrs_config",
     "libraries/tacacsrs_credential_resolution",
@@ -28,6 +30,8 @@ default-members = [
     "libraries/tacacsrs_ipc",
     "libraries/tacacsrs_unix_socket",
     "libraries/tacacsrs_agent",
+    "libraries/tacacsrs_lifecycle",
+    "libraries/tacacsrs_composition",
     "libraries/tacacsrs_provider",
     "libraries/tacacsrs_config",
     "libraries/tacacsrs_credential_resolution",
@@ -43,7 +47,8 @@ exclude = ["fuzz"]
 
 [workspace.package]
 edition = "2021"
-rust-version = "1.88"
+# Dill 0.17 needs Rust 1.91, because it calls `TypeId::of` in a const context.
+rust-version = "1.91"
 license = "MIT"
 repository = "https://github.com/AuthScaffold/tacacs-rs"
 

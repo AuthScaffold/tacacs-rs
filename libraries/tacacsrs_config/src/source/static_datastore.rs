@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use crate::TacacsPlus;
 use super::{
     ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigDatastore, ConfigDelta,
-    ConfigObservation, DatastoreRuntimePolicy, InitialLoadPolicy,
+    ConfigObservation, DatastoreRuntimePolicy,
 };
 
 struct StaticObservation(Option<Arc<TacacsPlus>>);
@@ -66,7 +66,7 @@ impl ConfigDatastore for StaticDatastore {
     }
 
     fn runtime_policy(&self) -> DatastoreRuntimePolicy {
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None)
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None)
     }
 
     async fn load(&self) -> anyhow::Result<TacacsPlus> {
@@ -102,7 +102,7 @@ mod tests {
         assert_eq!(store.label(), "static");
         assert_eq!(
             store.runtime_policy(),
-            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None,)
+            DatastoreRuntimePolicy::new(ChangeNotificationMode::None)
         );
 
         let mut observation = store.observe().await.unwrap();

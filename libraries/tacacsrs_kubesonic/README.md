@@ -8,7 +8,10 @@ Start the daemon with `tacacsrs-agentd --kubesonic`. Configure runtime behavior 
 
 The environment adapter creates canonical `LocalServices` and `RuntimePolicy` values. It also creates typed source, credential, and process inputs. It does not construct CLI arguments or maintain another server configuration model.
 
-The daemon registers this profile through its [source registry](../../executables/tacacsrs_agentd/src/source_registry.rs). The library prepares the source bundle without external mutation. The datastore owns Redis observation, and the credential provider owns file observation. The optional loopback registrar runs as a managed companion after startup.
+The daemon registers this profile through its [source registry](../../executables/tacacsrs_agentd/src/source_registry.rs). The profile calls `components`, which returns the components of this crate for the [agent host](../tacacsrs_agent/README.md#component-host):
+
+- `KubeSonicSource` shares the datastore, the mounted credential provider, and the local services. It does not change external state. The datastore owns Redis observation, and the credential provider owns file observation.
+- `RegistrationComponent` adds the loopback registrar as a `HostedService`. `components` adds it only when registration is enabled. The registrar waits for its `RegistrationReadiness` health group before it registers. The component adds the `application-readiness` member to that group, so the registrar waits until the agent is ready. If the upstream watchdog is enabled, the first registration also waits for a successful probe. A later readiness loss does not remove a registered row. The component also adds the `kubesonic-loopback-registration` member to the `component` health group. This check is healthy after the registrar writes its row, degraded while it starts or waits for readiness, and unhealthy after a Redis error. The health registry of the host reports the check in `AgentHealth.Details`, so the gRPC handler does not need a list of components.
 
 The read-only datastore loads only `TACPLUS_SERVER|*`. It reads `tcp_port` (default `49`) and `priority` (default `1`, range `1..=64`). Higher priorities come first. Endpoint text breaks ties. Other row fields do not configure this profile.
 
@@ -85,6 +88,7 @@ Rotation changes new upstream handshakes. Existing sessions follow native retire
 | `TACACSD_PROCESS_WORKER_THREADS` | `1` |
 | `TACACSD_PROCESS_HOST_INTEGRATION` | `none` |
 | `TACACSD_PROCESS_STATISTICS_FILE` | Absent |
+| `TACACSD_PROCESS_UPSTREAM_WATCHDOG_INTERVAL_SECONDS` | Absent (watchdog disabled) |
 | `TACACSD_LOG_FILTER` | `info` |
 | `TACACSD_LOG_STYLE` | `auto` |
 
@@ -129,7 +133,7 @@ The `clear` policy publishes an empty catalog and withdraws readiness. The proce
 
 A confirmed empty read can recover source freshness in retain mode. Redis outages and malformed rows still use the configured source-stale budget. Credential refresh does not reset that budget. Credential expiry remains active during retention.
 
-Unavailable startup dependencies cause retries rather than process restarts. Liveness remains independent of upstream availability. Readiness requires a published eligible server, not a successful upstream request.
+Unavailable startup dependencies cause retries rather than process restarts. Liveness remains independent of upstream availability. Readiness requires a published eligible server. Readiness also requires a successful upstream request only when the upstream watchdog is enabled.
 
 ## Optional loopback registration
 

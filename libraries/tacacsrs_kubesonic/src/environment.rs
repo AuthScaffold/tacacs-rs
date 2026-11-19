@@ -67,6 +67,8 @@ pub struct ProcessSettings {
     pub worker_threads: NonZeroUsize,
     pub host_integration: String,
     pub statistics_file: Option<PathBuf>,
+    /// The upstream watchdog probe interval, or `None` when the watchdog is disabled.
+    pub upstream_watchdog_interval: Option<Duration>,
     pub log_filter: String,
     pub log_style: String,
 }
@@ -347,11 +349,20 @@ impl Environment {
                 Ok(path)
             })
             .transpose()?;
+        let upstream_watchdog_interval = if inputs
+            .0
+            .contains_key(&format!("{PREFIX}PROCESS_UPSTREAM_WATCHDOG_INTERVAL_SECONDS"))
+        {
+            Some(inputs.duration("PROCESS_UPSTREAM_WATCHDOG_INTERVAL_SECONDS", 0, false)?)
+        } else {
+            None
+        };
         let process = ProcessSettings {
             worker_threads: NonZeroUsize::new(worker_threads)
                 .context("Worker count must be nonzero")?,
             host_integration,
             statistics_file,
+            upstream_watchdog_interval,
             log_filter: inputs.text("LOG_FILTER", "info")?,
             log_style,
         };
@@ -376,14 +387,7 @@ impl Environment {
             anyhow::anyhow!("TACACSD_SERVICES_ inputs violate canonical local-services constraints")
         })?;
         if loopback.enabled {
-            let endpoint = local_services
-                .tacacs_proxy_endpoint
-                .as_deref()
-                .and_then(|value| value.parse::<std::net::SocketAddr>().ok());
-            ensure!(
-                local_services.tacacs_proxy_enabled && endpoint.is_some_and(|endpoint| endpoint.ip() == std::net::Ipv4Addr::LOCALHOST && endpoint.port() != 0),
-                "Loopback registration requires an enabled TCP proxy on 127.0.0.1 with a nonzero port"
-            );
+            crate::registration::registration_port(&loopback, &local_services)?;
         }
         let runtime_policy = policy(&mut inputs)?;
         if let Some((name, _)) = inputs.0.first_key_value() {
@@ -460,6 +464,7 @@ mod tests {
         assert!(!input.loopback.enabled);
         assert_eq!(input.runtime_policy, RuntimePolicy::default());
         assert_eq!(input.process.worker_threads.get(), 1);
+        assert_eq!(input.process.upstream_watchdog_interval, None);
     }
 
     #[test]
@@ -470,8 +475,10 @@ mod tests {
             ("POLICY_TACACS_PROXY_FAILOVER_STRATEGY", "ordered-safe-retry"),
             ("SERVICES_UNIX_SOCKET_MODE", "0600"),
             ("CONFIG_RETRY_INITIAL_MILLISECONDS", "125"),
+            ("PROCESS_UPSTREAM_WATCHDOG_INTERVAL_SECONDS", "30"),
         ])
         .unwrap();
+        assert_eq!(input.process.upstream_watchdog_interval, Some(Duration::from_secs(30)));
         let expected = parse_runtime_policy(br#"{"tacacsrs:runtime-policy":{"shutdown-timeout-seconds":20,"authentication":{"max-concurrent-requests":7},"tacacs-proxy-failover-strategy":"ordered-safe-retry"}}"#).unwrap();
         assert_eq!(input.runtime_policy, expected);
         assert_eq!(input.local_services.unix_socket_mode, 0o600);
@@ -488,6 +495,7 @@ mod tests {
             ("POLICY_CLIENT_API_FAILOVER_STRATEGY", "private-sentinel"),
             ("SERVICES_UNIX_SOCKET_MODE", "888"),
             ("PROCESS_WORKER_THREADS", "0"),
+            ("PROCESS_UPSTREAM_WATCHDOG_INTERVAL_SECONDS", "0"),
             ("TLS_CLIENT_KEY", ""),
         ] {
             let error = parse(&[(key, value)]).unwrap_err();

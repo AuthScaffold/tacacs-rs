@@ -27,13 +27,13 @@ renamed dependency still maps to its real crate.
 
 `rules.json` has two sections.
 
-`allowed_workspace_edges` maps each of the 17 workspace packages to the set of
+`allowed_workspace_edges` maps each of the 21 workspace packages to the set of
 other workspace packages it may depend on through production edges. The set is a
 superset across supported platforms. A platform-specific edge, such as
 `tacon -> tacacsrs-ipc` on Linux, is listed once. Platform filtering removes it
 on other platforms, and an absent edge is never required.
 
-`forbidden_dependency_guards` lists the eight external and transitive guards.
+`forbidden_dependency_guards` lists the external and transitive guards.
 Each guard names its roots and the forbidden tokens. A token matches a package
 with that exact name or any crate under the `token-` prefix, which mirrors the
 `^token[ -]` word boundary from the old awk guards. The `supported-core` guard
@@ -48,7 +48,7 @@ uses the special `roots` value `default-members`, which resolves to
 | `provider-neutral-credentials` | `tacacsrs-credential-resolution` | tokio, openssl, tonic, prost, redis, tacacsrs-config, tacacsrs-networking, tacacsrs-agent, tacacsrs-sonic |
 | `schema-free-networking` | `tacacsrs-networking` | tonic, prost, redis, tacacsrs-config, tacacsrs-credential-resolution, tacacsrs-agent, tacacsrs-sonic |
 | `configuration-adapter` | `tacacsrs-config` | clap, tonic, prost, redis, tacacsrs-agent, tacacsrs-sonic |
-| `ipc-independent-agent` | `tacacsrs-agent` | tonic, prost, tacacsrs-ipc |
+| `provider-neutral-agent` | `tacacsrs-agent` | clap, redis, tacacsrs-sonic, tacacsrs-kubesonic |
 | `runtime-independent-ipc` | `tacacsrs-ipc` | redis, tacacsrs-config, tacacsrs-networking, tacacsrs-credential-resolution, tacacsrs-agent, tacacsrs-sonic |
 | `unix-socket-leaf` | `tacacsrs-unix-socket` | tonic, prost, redis, openssl, tacacsrs-protocol, tacacsrs-config, tacacsrs-networking, tacacsrs-agent, tacacsrs-ipc |
 | `supported-core` | default members | session-wrapper, tacacsrs-agent-ipc-emulator, tacacsrs-agent-ipc-emulatord, regorus, libseccomp |

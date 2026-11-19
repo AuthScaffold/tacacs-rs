@@ -63,6 +63,14 @@ impl<Connector: EndpointConnector> RequestRouting<Connector> {
         self.lease.admit_reserved(reservation).await
     }
 
+    /// Converts this request for a probe that has no side effects on the server.
+    pub(crate) fn into_side_effect_free_probe(self) -> Self {
+        Self {
+            manager: self.manager,
+            lease: self.lease.into_side_effect_free_probe(),
+        }
+    }
+
     pub(crate) fn deadline(&self) -> tacacsrs_networking::RequestDeadline {
         self.lease.deadline()
     }
@@ -101,5 +109,10 @@ impl<Connector: EndpointConnector> OperationRouter<Connector> {
             manager: Arc::clone(&self.manager),
             lease: self.manager.capture_request(self.service, operation),
         }
+    }
+
+    /// Returns the number of servers in the active set that are eligible for `operation`.
+    pub(crate) fn eligible_server_count(&self, operation: OperationKind) -> usize {
+        self.manager.eligible_server_count(operation)
     }
 }

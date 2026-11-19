@@ -1,14 +1,10 @@
-//! SONiC datastore, forwarder, and credential registration.
+//! SONiC ConfigDB source selection.
 
-use std::sync::Arc;
-use tacacsrs_config::tacacsrs::LocalServices;
-use tacacsrs_provider::{CredentialProvider, SourceBundle};
-use tacacsrs_sonic::{SonicConfigDb, SonicConnection, SonicForwarderSettings};
+use tacacsrs_sonic::{SonicConnection, SonicSource};
 
-use crate::cli::{Cli, ServiceMode};
-use crate::credential_provider;
-use crate::local_services;
 use super::SelectedProfile;
+use crate::cli::Cli;
+use crate::local_services;
 
 fn connection(cli: &Cli) -> SonicConnection {
     let mut settings = SonicConnection::default();
@@ -21,45 +17,35 @@ fn connection(cli: &Cli) -> SonicConnection {
     settings
 }
 
-pub(crate) fn credentials(cli: &Cli) -> CredentialProvider {
-    tacacsrs_sonic::credentials(&connection(cli))
+pub(crate) fn parse(cli: Cli) -> anyhow::Result<SelectedProfile> {
+    SelectedProfile::from_cli(cli, |cli| {
+        Ok(vec![Box::new(
+            SonicSource::new(connection(cli)).with_listener_patch(local_services::patch(cli)?)?,
+        )])
+    })
 }
 
-pub(crate) fn local_services_from_cli(
-    cli: &Cli,
-    forwarder: Option<SonicForwarderSettings>,
-) -> anyhow::Result<LocalServices> {
-    anyhow::ensure!(
-        cli.service_mode
-            .is_none_or(|mode| mode == ServiceMode::Both),
-        "SONiC central-agent mode requires --service-mode both"
-    );
-    let forwarder = forwarder
-        .ok_or_else(|| anyhow::anyhow!("SONiC listener configuration requires a forwarder row"))?;
-    if let Some(endpoint) = &cli.proxy_endpoint {
-        anyhow::ensure!(
-            endpoint.parse::<std::net::SocketAddr>().ok() == Some(forwarder.socket_address()),
-            "CLI proxy endpoint conflicts with TACPLUS_FORWARDER|global"
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::parse;
+    use crate::cli::Cli;
+
+    #[test]
+    fn service_mode_conflict_fails_before_configdb_access() {
+        let cli = Cli::parse_from([
+            "agentd",
+            "--sonic",
+            "--sonic-redis-url",
+            "redis://127.0.0.1:1",
+            "--service-mode",
+            "client-api",
+        ]);
+        let error = parse(cli).err().unwrap();
+        assert!(
+            format!("{error:#}").contains("requires both local services"),
+            "{error:#}"
         );
     }
-    local_services::from_cli(cli, forwarder.local_services())
-}
-
-pub(crate) fn parse(cli: Cli) -> anyhow::Result<SelectedProfile> {
-    anyhow::ensure!(
-        cli.service_mode
-            .is_none_or(|mode| mode == ServiceMode::Both),
-        "SONiC central-agent mode requires --service-mode both"
-    );
-    Ok(SelectedProfile::from_cli(cli, |cli| async move {
-        let settings = connection(&cli);
-        let credentials = credential_provider::build(&cli, credentials(&cli)).await?;
-        let forwarder = tacacsrs_sonic::wait_for_forwarder(&settings).await;
-        Ok(SourceBundle {
-            local_services: local_services_from_cli(&cli, Some(forwarder))?,
-            datastore: Arc::new(SonicConfigDb::with_bound_forwarder(settings, forwarder)),
-            credentials,
-            companions: Vec::new(),
-        })
-    }))
 }

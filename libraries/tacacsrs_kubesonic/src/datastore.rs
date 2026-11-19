@@ -19,7 +19,7 @@ use tacacsrs_config::{
 use tacacsrs_config::keystore::EndEntityCertWithKeyCentralKeystoreReference;
 use tacacsrs_config::source::{
     ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigDatastore, ConfigDelta,
-    ConfigObservation, DatastoreRuntimePolicy, InitialLoadPolicy,
+    ConfigObservation, DatastoreRuntimePolicy,
 };
 
 use crate::credentials::{CA_REFERENCE, IDENTITY_REFERENCE};
@@ -202,12 +202,9 @@ impl KubeSonicConfigDb {
     /// # Errors
     /// Returns an error for invalid retry delays.
     pub fn new(settings: SourceSettings) -> anyhow::Result<Self> {
-        let policy = DatastoreRuntimePolicy::new(
-            InitialLoadPolicy::RetryUntilAvailable,
-            ChangeNotificationMode::Continuous,
-        )
-        .with_empty_servers(settings.empty_servers)
-        .with_retry_backoff(settings.retry_initial, settings.retry_max)?;
+        let policy = DatastoreRuntimePolicy::new(ChangeNotificationMode::Continuous)
+            .with_empty_servers(settings.empty_servers)
+            .with_retry_backoff(settings.retry_initial, settings.retry_max)?;
         Ok(Self { settings, policy })
     }
 }

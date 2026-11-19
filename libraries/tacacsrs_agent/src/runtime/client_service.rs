@@ -64,7 +64,7 @@ use super::{RuntimeHealthPublisher, RuntimeListenerService};
 use crate::config::{RuntimePolicy, ServiceConfig};
 #[cfg(test)]
 use crate::config::PreparedProxyPolicy;
-use crate::services::client_api::{ClientApiHandle, UpstreamBridge};
+use crate::services::client_api::{ClientApiHandle, UpstreamBridge, UpstreamProbe};
 use crate::upstream::NetworkUpstreamConnector;
 
 mod engine;
@@ -129,6 +129,18 @@ impl DiagnosticsHandle {
             .upgrade()
             .ok_or_else(|| anyhow::anyhow!("The agent runtime is no longer available"))?
             .diagnostics_json(server, limit)
+    }
+
+    /// Captures the same server counters as [`TacacsClientService::statistics`].
+    ///
+    /// # Errors
+    /// Returns an error when the agent runtime no longer exists.
+    pub fn statistics(&self) -> anyhow::Result<tacacsrs_config::OperationalStatistics> {
+        Ok(self
+            .manager
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("The agent runtime is no longer available"))?
+            .statistics())
     }
 }
 
@@ -315,6 +327,18 @@ impl TacacsClientService {
     #[must_use]
     pub fn client_api_handle(&self) -> ClientApiHandle {
         ClientApiHandle::new(UpstreamBridge::new(Arc::clone(&self.runtime.manager)))
+    }
+
+    /// Returns a cloneable handle that sends upstream WATCHDOG probes.
+    ///
+    /// A host calls the probe on a schedule to learn upstream health before
+    /// the first client request. Each probe result updates runtime health.
+    #[must_use]
+    pub fn upstream_probe(&self) -> UpstreamProbe {
+        UpstreamProbe::new(
+            UpstreamBridge::new(Arc::clone(&self.runtime.manager)),
+            self.runtime.health.clone(),
+        )
     }
 
     /// Returns the prepared client API Unix socket path, if client API is enabled.

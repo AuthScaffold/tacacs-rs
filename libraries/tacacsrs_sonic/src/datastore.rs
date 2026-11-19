@@ -12,7 +12,7 @@ use tokio::time::Instant;
 use tacacsrs_config::{TacacsPlus, ValidationOptions, ValidationRelaxation};
 use tacacsrs_config::source::{
     ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigDatastore, ConfigDelta,
-    ConfigObservation, DatastoreRuntimePolicy, InitialLoadPolicy,
+    ConfigObservation, DatastoreRuntimePolicy,
 };
 
 use crate::{
@@ -71,10 +71,7 @@ impl ConfigDatastore for SonicConfigDb {
     }
 
     fn runtime_policy(&self) -> DatastoreRuntimePolicy {
-        DatastoreRuntimePolicy::new(
-            InitialLoadPolicy::RetryUntilAvailable,
-            ChangeNotificationMode::Continuous,
-        )
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::Continuous)
     }
 
     fn validation_options(&self) -> ValidationOptions {
@@ -395,10 +392,7 @@ mod tests {
 
         assert_eq!(
             datastore.runtime_policy(),
-            DatastoreRuntimePolicy::new(
-                InitialLoadPolicy::RetryUntilAvailable,
-                ChangeNotificationMode::Continuous,
-            )
+            DatastoreRuntimePolicy::new(ChangeNotificationMode::Continuous)
         );
     }
 

@@ -32,6 +32,24 @@ pub(super) struct RuntimeRoutingSnapshot<
     pub(super) credential_lifetime: crate::runtime::CredentialLifetime,
 }
 
+/// Returns the deadline for `attempts` request timeouts of `operation`.
+///
+/// The credential lifetime of the snapshot caps the deadline.
+fn request_deadline<Connector: EndpointConnector>(
+    runtime: &RuntimeRoutingSnapshot<Connector>,
+    operation: OperationKind,
+    attempts: usize,
+) -> RequestDeadline {
+    let timeout = runtime.runtime_policy.limits(operation).request_timeout();
+    let timeout = timeout.saturating_mul(u32::try_from(attempts).unwrap_or(u32::MAX));
+    let deadline = RequestDeadline::after(timeout)
+        .unwrap_or_else(|_| RequestDeadline::at(tokio::time::Instant::now()));
+    runtime
+        .credential_lifetime
+        .deadline
+        .map_or(deadline, |expiry| RequestDeadline::at(deadline.expires_at().min(expiry)))
+}
+
 /// One request's immutable routing and retry-policy inputs.
 pub(crate) struct RoutingLease<
     Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
@@ -51,18 +69,30 @@ impl<Connector: EndpointConnector> RoutingLease<Connector> {
         let plan = runtime
             .runtime_policy
             .failover_plan(service, runtime.server_set.client.eligible_count(operation));
-        let deadline =
-            RequestDeadline::after(runtime.runtime_policy.limits(operation).request_timeout())
-                .unwrap_or_else(|_| RequestDeadline::at(tokio::time::Instant::now()));
-        let deadline = runtime
-            .credential_lifetime
-            .deadline
-            .map_or(deadline, |expiry| RequestDeadline::at(deadline.expires_at().min(expiry)));
+        let deadline = request_deadline(&runtime, operation, 1);
         Self {
             runtime,
             operation,
             plan,
             deadline,
+        }
+    }
+
+    /// Converts this lease for a probe that has no side effects on the server.
+    ///
+    /// The probe can try every eligible server, also after an unknown outcome.
+    /// Each server gets one request timeout of the operation in the deadline.
+    pub(crate) fn into_side_effect_free_probe(self) -> Self {
+        let attempts = self
+            .runtime
+            .server_set
+            .client
+            .eligible_count(self.operation)
+            .max(1);
+        Self {
+            plan: FailoverPlan::side_effect_free(attempts),
+            deadline: request_deadline(&self.runtime, self.operation, attempts),
+            ..self
         }
     }
 

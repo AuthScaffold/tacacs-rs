@@ -1,55 +1,63 @@
-//! Startup adapters for the canonical local-services resource.
+//! Maps the listener flags to the local-services input of the library.
 
 use anyhow::Context;
 
-use tacacsrs_config::local_services::{parse_local_services, prepare_local_services};
-use tacacsrs_config::tacacsrs::{LocalServices, ProxyCredentialSource};
+use tacacsrs_agent::components::LocalServicesInput;
+use tacacsrs_config::local_services::{LocalServicesPatch, ServiceSelection};
 
 use crate::cli::{Cli, ServiceMode};
 
-pub(crate) async fn load(cli: &Cli, defaults: LocalServices) -> anyhow::Result<LocalServices> {
-    if let Some(path) = &cli.local_services {
-        let bytes = tokio::fs::read(path)
-            .await
-            .with_context(|| format!("read local-services resource {}", path.display()))?;
-        return parse_local_services(&bytes);
-    }
-    from_cli(cli, defaults)
+/// Returns the listener flags as a patch.
+///
+/// # Errors
+/// Returns an error when the socket mode is not an octal value.
+pub(crate) fn patch(cli: &Cli) -> anyhow::Result<LocalServicesPatch> {
+    Ok(LocalServicesPatch {
+        client_api_endpoint: cli.listen_endpoint.clone(),
+        tacacs_proxy_endpoint: cli.proxy_endpoint.clone(),
+        proxy_shared_secret: cli.proxy_shared_secret.clone(),
+        unix_socket_mode: cli
+            .socket_mode
+            .as_deref()
+            .map(|mode| u16::from_str_radix(mode, 8))
+            .transpose()
+            .context("socket mode must be an octal permission value")?,
+        services: cli.service_mode.map(|mode| match mode {
+            ServiceMode::ClientApi => ServiceSelection::ClientApi,
+            ServiceMode::TacacsProxy => ServiceSelection::TacacsProxy,
+            ServiceMode::Both => ServiceSelection::Both,
+        }),
+        proxy_credential_source: cli.proxy_credential_source,
+    })
 }
 
-pub(crate) fn from_cli(cli: &Cli, mut source: LocalServices) -> anyhow::Result<LocalServices> {
-    if let Some(endpoint) = &cli.listen_endpoint {
-        source.client_api_endpoint.clone_from(endpoint);
-    }
-    if let Some(endpoint) = &cli.proxy_endpoint {
-        source.tacacs_proxy_endpoint = Some(endpoint.clone());
-    }
-    if let Some(secret) = &cli.proxy_shared_secret {
-        source.proxy_credential_source = ProxyCredentialSource::Inline;
-        source.proxy_shared_secret = Some(secret.clone());
-    }
-    if let Some(mode) = &cli.socket_mode {
-        source.unix_socket_mode = u16::from_str_radix(mode, 8)
-            .context("socket mode must be an octal permission value")?;
-    }
-    if let Some(mode) = cli.service_mode {
-        source.client_api_enabled = mode != ServiceMode::TacacsProxy;
-        source.tacacs_proxy_enabled = mode != ServiceMode::ClientApi;
-    } else if source.tacacs_proxy_endpoint.is_some() {
-        source.tacacs_proxy_enabled = true;
-    }
-    if let Some(selection) = cli.proxy_credential_source {
-        source.proxy_credential_source = selection;
-    }
-    prepare_local_services(&source)?;
-    Ok(source)
+/// Returns the local-services input of a command-line profile.
+///
+/// # Errors
+/// Returns the error of [`patch`].
+pub(crate) fn input(cli: &Cli) -> anyhow::Result<LocalServicesInput> {
+    Ok(match &cli.local_services {
+        Some(path) => LocalServicesInput::File(path.clone()),
+        None => LocalServicesInput::Patch(patch(cli)?),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use tacacsrs_config::local_services::{parse_local_services, prepare_local_services};
+    use tacacsrs_config::tacacsrs::{LocalServices, ProxyCredentialSource};
     use tacacsrs_sonic::SonicForwarderSettings;
+
     use super::*;
+
+    fn from_cli(cli: &Cli, source: LocalServices) -> anyhow::Result<LocalServices> {
+        patch(cli)?.apply(source)
+    }
+
+    fn sonic(cli: &Cli, forwarder: SonicForwarderSettings) -> anyhow::Result<LocalServices> {
+        forwarder.local_services_with(&patch(cli)?)
+    }
 
     #[test]
     fn inline_cli_and_file_credentials_match_without_debug_disclosure() {
@@ -158,34 +166,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn file_adapter_loads_canonical_resource_and_rejects_replacement() {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir()
-            .join(format!("local-services-{}-{unique}.json", std::process::id()));
-        let cli = Cli::parse_from([
-            "agentd",
-            "--server-addr",
-            "192.0.2.1:49",
-            "--local-services",
-            path.to_str().unwrap(),
-        ]);
-        let document = br#"{"tacacsrs:local-services":{"client-api-endpoint":"/tmp/file-api.sock","unix-socket-mode":384}}"#;
-        tokio::fs::write(&path, document).await.unwrap();
-        let source = load(&cli, LocalServices::default()).await.unwrap();
-        assert_eq!(source, parse_local_services(document).unwrap());
-        tokio::fs::write(&path, br#"{"tacacsrs:local-services":{"unix-socket-mode":512}}"#)
-            .await
-            .unwrap();
-        let invalid = load(&cli, LocalServices::default()).await;
-        tokio::fs::remove_file(&path).await.unwrap();
-        assert!(invalid.is_err());
-        assert_eq!(source.unix_socket_mode, 0o600);
-    }
-
     #[test]
     fn sonic_forwarder_enters_canonical_preparation() {
         let cli = Cli::parse_from(["agentd", "--sonic"]);
@@ -195,8 +175,8 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        let forwarder = SonicForwarderSettings::from_hash(&hash).unwrap();
-        let source = crate::profiles::sonic::local_services_from_cli(&cli, forwarder).unwrap();
+        let forwarder = SonicForwarderSettings::from_hash(&hash).unwrap().unwrap();
+        let source = sonic(&cli, forwarder).unwrap();
         assert!(source.client_api_enabled);
         assert!(source.tacacs_proxy_enabled);
         assert_eq!(source.tacacs_proxy_endpoint.as_deref(), Some("127.0.0.1:49"));
@@ -207,7 +187,7 @@ mod tests {
             "--proxy-credential-source",
             "unobfuscated",
         ]);
-        let source = crate::profiles::sonic::local_services_from_cli(&plain, forwarder).unwrap();
+        let source = sonic(&plain, forwarder).unwrap();
         assert_eq!(source.proxy_credential_source, ProxyCredentialSource::Unobfuscated);
     }
 
@@ -220,7 +200,7 @@ mod tests {
             )]);
             let forwarder = SonicForwarderSettings::from_hash(&hash).unwrap().unwrap();
             let socket = forwarder.socket_address().to_string();
-            let sonic = Cli::parse_from(["agentd", "--sonic"]);
+            let sonic_cli = Cli::parse_from(["agentd", "--sonic"]);
             let inline = Cli::parse_from([
                 "agentd",
                 "--server-addr",
@@ -235,7 +215,7 @@ mod tests {
                 "proxy-credential-source": "local-proxy-row"
             }});
             let sources = [
-                crate::profiles::sonic::local_services_from_cli(&sonic, Some(forwarder)).unwrap(),
+                sonic(&sonic_cli, forwarder).unwrap(),
                 from_cli(&inline, LocalServices::default()).unwrap(),
                 parse_local_services(&serde_json::to_vec(&document).unwrap()).unwrap(),
             ];
@@ -257,14 +237,14 @@ mod tests {
             "local_listen_address".to_owned(),
             "127.0.0.1".to_owned(),
         )]);
-        let forwarder = SonicForwarderSettings::from_hash(&hash).unwrap();
+        let forwarder = SonicForwarderSettings::from_hash(&hash).unwrap().unwrap();
         for flags in [
             vec!["--proxy-endpoint", "127.0.0.2:49"],
             vec!["--service-mode", "client-api"],
             vec!["--socket-mode", "1000"],
         ] {
             let cli = Cli::parse_from(["agentd", "--sonic"].into_iter().chain(flags));
-            assert!(crate::profiles::sonic::local_services_from_cli(&cli, forwarder).is_err());
+            assert!(sonic(&cli, forwarder).is_err());
         }
     }
 }

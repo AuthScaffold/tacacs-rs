@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tacacsrs_credential_resolution::{CredentialChangeSource, CredentialResolver};
 
 /// A resolver and its optional notifications, or no external credentials.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct CredentialProvider {
     resolver: Option<Arc<dyn CredentialResolver>>,
     changes: Option<Arc<dyn CredentialChangeSource>>,
@@ -41,15 +41,19 @@ impl CredentialProvider {
     }
 
     /// Wraps the resolver and preserves its notifications.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns the error of `outer`.
     pub fn layer(
         self,
-        outer: impl FnOnce(Option<Arc<dyn CredentialResolver>>) -> Arc<dyn CredentialResolver>,
-    ) -> Self {
-        Self {
-            resolver: Some(outer(self.resolver)),
+        outer: impl FnOnce(
+            Option<Arc<dyn CredentialResolver>>,
+        ) -> anyhow::Result<Arc<dyn CredentialResolver>>,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            resolver: Some(outer(self.resolver)?),
             changes: self.changes,
-        }
+        })
     }
 
     /// Transfers the resolver and notifications to the runtime.
@@ -101,18 +105,21 @@ mod tests {
     fn layering_preserves_the_source_resolver_and_notifications() {
         let resolver: Arc<dyn CredentialResolver> = Arc::new(FakeCredentialResolver::new());
         let changes: Arc<dyn CredentialChangeSource> = Arc::new(Changes);
-        let provider =
-            CredentialProvider::observed(resolver.clone(), changes.clone()).layer(|base| {
+        let provider = CredentialProvider::observed(resolver.clone(), changes.clone())
+            .layer(|base| {
                 assert!(Arc::ptr_eq(base.as_ref().unwrap(), &resolver));
-                base.unwrap()
-            });
+                Ok(base.unwrap())
+            })
+            .unwrap();
         let (retained_resolver, retained_changes) = provider.into_parts();
         assert!(Arc::ptr_eq(&retained_resolver.unwrap(), &resolver));
         assert!(Arc::ptr_eq(&retained_changes.unwrap(), &changes));
-        let created = CredentialProvider::none().layer(|base| {
-            assert!(base.is_none());
-            resolver
-        });
+        let created = CredentialProvider::none()
+            .layer(|base| {
+                assert!(base.is_none());
+                Ok(resolver)
+            })
+            .unwrap();
         assert!(created.into_parts().0.is_some());
     }
 

@@ -24,6 +24,10 @@ The [`mapping`] module implements parsing and field mapping as pure functions
 and fully unit-tests them without a live Redis. The Redis client only handles
 I/O.
 
+## Source component
+
+`SonicSource` is the source component for the [agent host](../tacacsrs_agent/README.md#component-host). Preparation waits until ConfigDB contains a valid `TACPLUS_FORWARDER|global` row. The component then shares the datastore, the SONiC credential provider, and the local services of the forwarder row. The datastore compares later forwarder rows with the bound row. `SonicSource::with_listener_patch` applies host listener settings to the forwarder row. The patch must keep both local services and must not conflict with the proxy endpoint of the row. A host can also change the local services with a `LocalServicesOverlay`, and it can wrap the credential resolver with a `CredentialLayer`.
+
 ## Observation Ownership
 
 `SonicConfigDb::observe()` establishes Redis notification delivery before the baseline read.

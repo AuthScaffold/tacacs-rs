@@ -1,20 +1,133 @@
 # tacacsrs-agent
 
-Reusable building blocks for the central TACACS+ client service introduced for
-local IPC consumers such as TACON.
+Reusable building blocks for the central TACACS+ client service for local IPC consumers such as TACON.
 
-The crate owns configuration supervision, published routing generations, health,
-admission, shutdown, and the raw TACACS+ proxy. Networking owns upstream execution
-and conservative failover. The protocol crate owns transport-independent operations.
-The daemon composes the agent with the client and server transport from
-[`tacacsrs-ipc`](../tacacsrs_ipc/), which owns the protobuf contract.
-The agent has no production dependency on IPC bindings or tonic.
+The crate owns configuration supervision, published routing generations, health, admission, shutdown, and the raw TACACS+ proxy. It also owns the component host and the standard host components. Networking owns upstream execution and conservative failover. The protocol crate owns transport-independent operations. The client API component serves the client API with the server transport from [`tacacsrs-ipc`](../tacacsrs_ipc/), which owns the protobuf contract. The runtime modules do not use the IPC bindings. Only the client API component uses them.
+
+## Component host
+
+The `host` module builds and runs an agent runtime from selectable components. A host process selects its components and calls `host::run_until`. The host code does not name a concrete source, credential provider, listener, or hosted service. To add a part, add a component. The executable gives settings to the components and selects them. It does not need to supply its own components.
+
+### Bootstrap flow
+
+`host::bootstrap` uses these steps:
+
+1. Each component prepares in order with `prepare_all`. Preparation can do I/O. If shutdown is requested, `run_until` drops the bootstrap future.
+2. `declare` adds the host inputs, roles, and deferred values to a `Composition`. Then each component registers.
+3. `Composition::validate` checks the complete graph before any component is constructed.
+4. `PreparedHost::prepare` reads the inputs, applies the credential layers and the local services overlays in registration order, and calls `AgentRuntime::prepare`.
+5. The host supplies the deferred values and runs each `StartupCheck` in registration order.
+6. The host constructs the enabled listeners and the hosted services. Then it drops the graph.
+
+No listener binds and no hosted service starts before bootstrap is complete. `PreparedHost::run_until` then gives the listeners and services to `AgentRuntime::run_until`. The runtime starts them together with the configuration supervisor. It does not wait for the first configuration. The run stops when the stop future completes or a component stops the `ApplicationLifetime`. If the runtime stops without an error, the host returns the first `stop_with_error` error.
+
+### Inputs
+
+The components must supply exactly one value of each input type:
+
+| Input | Usual supplier |
+| --- | --- |
+| `SourceDatastore` | The source component |
+| `CredentialProvider` | The source component |
+| `LocalServices` | The source component |
+| `PolicyInput` | The host process |
+| `CertificateVerification` | The host process |
+
+A component shares an input with `Composition::shared`. `tacacsrs_composition::Value` shares one value that needs no preparation.
+
+### Roles
+
+A component adds role members with `Composition::member`. Each member type has a unique `Named::NAME`.
+
+- `dyn CredentialLayer` wraps the resolver of the source. For example, `HttpCredentialComponent` puts HTTP evidence retrieval in front of the SONiC resolver.
+- `dyn LocalServicesOverlay` changes the local services of the source before the runtime prepares them.
+- `dyn StartupCheck` checks the prepared host before any listener binds. A failed check stops startup.
+- `dyn ListenerFactory` creates one runtime listener. The factory returns `None` when the prepared runtime disables the listener.
+- `dyn HostedService` runs until shutdown. Use `Composition::hosted_service`.
+
+The following component adds a hosted service:
+
+```rust,ignore
+struct AuditComponent;
+
+impl Component for AuditComponent {
+    fn name(&self) -> &'static str {
+        AuditService::NAME
+    }
+
+    fn register(self: Box<Self>, composition: &mut Composition) -> anyhow::Result<()> {
+        composition.hosted_service(<AuditService as dill::Component>::builder())
+    }
+}
+```
+
+`AuditService` can inject the deferred values of the host, for example `Arc<DiagnosticsHandle>`.
+
+### Deferred values
+
+A component can inject these values. The host supplies them after it prepares the runtime:
+
+- `DiagnosticsHandle` reads operational statistics.
+- `RuntimeHealth` reads the runtime health snapshots.
+- `ClientApiAccess` gives the client API socket path, the listener settings, and the request handle.
+- `UpstreamProbe` sends one accounting `WATCHDOG` record and publishes the result to runtime health.
+- `PreparedLocalServices` gives the prepared listener endpoints.
+- `ApplicationReadiness` is a health check that is healthy when the agent is ready.
+- `ApplicationLifetime` stops the application. `stop` gives a successful exit. `stop_with_error` gives a failed exit with the first recorded error.
+
+A value that injects a deferred value is constructed only after the host supplies it. If an input injects a deferred value, startup fails with an error that names the value. Only `ApplicationLifetime` gives a component the authority to stop the application. A stop request starts the same graceful shutdown as the stop signal of the host. Hosted services observe shutdown only through `ShutdownSignal`.
+
+## Standard components
+
+The `components` module contains the components that do not depend on a source provider. Each constructor takes plain settings values. No component reads the command line or the environment. Provider crates such as [`tacacsrs-sonic`](../tacacsrs_sonic/README.md) and [`tacacsrs-kubesonic`](../tacacsrs_kubesonic/README.md) supply their own source components.
+
+| Component | Function |
+| --- | --- |
+| `DatastoreSourceComponent` | Shares a configuration datastore, an empty credential provider, and the local services. `LocalServicesInput` gives the local services as a fixed value, a YANG file, or a `LocalServicesPatch` on the defaults. If the server set cannot change and every address is an IP literal, preparation applies the proxy loop and credential policy. |
+| `ClientApiComponent` | Serves the local client API over IPC when the local services enable it. |
+| `HttpCredentialComponent` | Adds HTTP CRL and OCSP evidence retrieval in front of the source credential resolver. `HttpEvidenceSettings` lists the sources. |
+| `StatisticsComponent` | Writes operational statistics to a JSON file once each second. |
+| `SystemdComponent` | Sends readiness, status, and watchdog notifications to systemd. `SystemdMode::Auto` registers nothing without `NOTIFY_SOCKET`. `SystemdMode::Required` stops startup without it. |
+| `UpstreamWatchdogComponent` | Sends periodic upstream accounting probes. |
+| `InvalidSourceShutdownComponent` | Stops the application when the source configuration cannot become valid. |
+
+### Upstream watchdog
+
+`UpstreamWatchdogComponent` is an optional component. Its `ArmUpstreamWatchdog` startup check arms the probe before the listeners bind, so readiness waits for the first probe. The component also runs a hosted service that calls `UpstreamProbe` after each new server set and then once in each interval. The probes run in sequence, so they cannot overlap. Each probe tries every eligible accounting server once. Its deadline is the request timeout multiplied by the number of servers. A reply with any accounting status counts as a success. A failed probe withdraws readiness until a later probe succeeds. A probe failure never stops the service.
+
+### Invalid source shutdown
+
+`InvalidSourceShutdownComponent` is an optional component. Its hosted service waits for `DegradationReason::SourceConfigurationInvalid`. Then it calls `ApplicationLifetime::stop_with_error`. The host drains the runtime and returns the error. Without this component, the process stays alive and reports that it is not ready.
+
+### Host example
+
+The following host runs a source component and two standard components until the process receives a stop signal:
+
+```rust,ignore
+use tacacsrs_agent::components::{SystemdComponent, SystemdMode, UpstreamWatchdogComponent};
+use tacacsrs_agent::PolicyInput;
+use tacacsrs_composition::{Component, Value};
+use tacacsrs_networking::CertificateVerification;
+
+let components: Vec<Box<dyn Component>> = vec![
+    Box::new(Value::new("Runtime policy", PolicyInput::Canonical(policy))),
+    Box::new(Value::new("Certificate verification", CertificateVerification::Required)),
+    Box::new(tacacsrs_sonic::SonicSource::new(connection)),
+    Box::new(SystemdComponent::new(SystemdMode::Auto)),
+    Box::new(UpstreamWatchdogComponent::new(watchdog_interval)?),
+];
+tacacsrs_agent::host::run_until(components, stop_signal()).await?;
+```
 
 ## Embedding
 
-`AgentRuntime` owns source-driven construction, initial loading, configuration and policy supervision, companions, and shutdown. Providers supply a [`SourceBundle`](../tacacsrs_provider/README.md). The host supplies process services through `RuntimePeer` and transport adapters through `RuntimeListenerService`.
+For component-based hosting, use the `host` module. The rest of this section describes the direct runtime API under the host.
 
-`AgentRuntime::prepare` validates canonical local services and loads the initial policy. It starts no companions and binds no listeners. Its cancellable future owns local resources. `run_until` enforces fail-fast initial loading before it starts peers or listeners.
+`AgentRuntime` owns source-driven construction, configuration and policy supervision, and shutdown. Providers supply a [`SourceBundle`](../tacacsrs_provider/README.md). The host supplies background services through the [`HostedService`](../tacacsrs_lifecycle/README.md) contract and transport adapters through `RuntimeListenerService`.
+
+`AgentRuntime::prepare` validates canonical local services, loads the initial policy, and validates the provider settings. It starts no hosted services and binds no listeners. Its cancellable future owns local resources. `run_until` starts the configuration supervisor, the hosted services, and the listeners together. An unavailable source is never fatal. Runtime health reports it, and the supervisor retries with backoff. A request before the first configuration receives a retryable unavailable error. A source without change notifications cannot correct a rejected configuration. For this source, the supervisor adds the final `DegradationReason::SourceConfigurationInvalid` and stops its retries. A credential resolver failure still retries. The agent does not stop itself. A host component can stop the application when this reason appears.
+
+`TacacsClientService::upstream_probe` returns an `UpstreamProbe`. `UpstreamProbe::arm` adds `DegradationReason::UpstreamWatchdogPending`, so readiness waits for the first probe result. Each new server set adds the pending reason again. Each probe sends one accounting `WATCHDOG` record and tries every eligible accounting server once, independent of the failover strategy. The probe does not use client admission slots. An admission or cancellation error gives an inconclusive result and does not change health. A result for an old server set has no effect. A reply with any accounting status counts as a success. A failed probe adds `DegradationReason::UpstreamWatchdogFailed` and withdraws readiness until a later probe succeeds. `RuntimeHealthSnapshot::is_listening` reports a live process with bound listeners, without a configuration requirement.
 
 ```rust,no_run
 use std::sync::Arc;
@@ -36,7 +149,6 @@ async fn run(source: TacacsPlus, stop: tokio_util::sync::CancellationToken) -> a
                 tacacs_proxy_endpoint: Some("127.0.0.1:9049".to_owned()),
                 ..Default::default()
             },
-            companions: Vec::new(),
         },
         policy: PolicyInput::Canonical(Default::default()),
         certificate_verification: CertificateVerification::Required,
@@ -45,9 +157,9 @@ async fn run(source: TacacsPlus, stop: tokio_util::sync::CancellationToken) -> a
 }
 ```
 
-The agent runs critical peers in a named task set. Unexpected completion, error, or panic stops the application. Companions receive readiness directly from health publication, without a bridge task. Process peers receive the full read-only health stream.
+The agent runs each hosted service as a named critical task. Each service gets a `ShutdownSignal`, which observes shutdown but cannot request it. Unexpected completion, error, or panic stops the application. A service that needs agent health gets the read-only `RuntimeHealth` view or the `AgentReadinessCheck` health check from its host.
 
-The first shutdown caller captures overall and request deadlines from one instant and the active policy. Request drain can finish earlier but cannot extend the overall deadline. The host never drops domain cleanup at the peer deadline. It aborts remaining peers, joins them, and awaits the domain's forced listener and upstream cleanup. Cleanup errors retain useful context.
+The first shutdown caller captures overall and request deadlines from one instant and the active policy. Request drain can finish earlier but cannot extend the overall deadline. The host never drops domain cleanup at the service deadline. It aborts remaining services, joins them, and awaits the domain's forced listener and upstream cleanup. Cleanup errors retain useful context.
 
 Observation implementations keep their documented cancellation contracts. Dropping an observation cancels its workers but does not necessarily join them. Blocking native work cannot be forcibly interrupted.
 
@@ -97,8 +209,10 @@ The low-level host owns signals, listener adapters, and task supervision. A stop
 
 ```text
 tacacsrs_agent
+├── components       - standard host components
 ├── config           - public runtime configuration
 │   └── policy       - failover strategies and operation limits
+├── host             - component bootstrap, roles, and deferred values
 ├── runtime          - TacacsClientService lifecycle, hot reload, and drains
 ├── services         - internal service boundaries
 │   ├── client_api   - transport-independent operation ingress
@@ -553,10 +667,12 @@ Use `close_and_join(deadline)` to confirm upstream cleanup after cancellation or
 For an active listener run, request shutdown through the future passed to `serve_until` and await that run's result.
 
 The daemon captures one absolute deadline across service drain, configuration supervision, and host-task cleanup.
-At expiry it drops the service future, aborts and joins pending peer tasks, and reports failed shutdown without hiding the original failure.
+At expiry it drops the service future, aborts and joins pending hosted-service tasks, and reports failed shutdown without hiding the original failure.
 This bounds graceful asynchronous waits. Arbitrary non-yielding Rust code or an already-started blocking filesystem operation is not preemptible by a future timeout.
 
 The same typed watch-backed snapshot drives startup, liveness, readiness, datastore freshness, upstream availability, standard gRPC health, host integration, and operator status. It contains only typed flags and counts. Configuration values, server identities, credential references, and raw errors stay outside the shared state.
+
+The client API component also serves this snapshot as detailed health. It adds the `AgentHealth.Details` route from [`proto/tacacsrs_agent_health.proto`](../tacacsrs_ipc/proto/tacacsrs_agent_health.proto) to the client API socket. The reply gives the lifecycle, the probe results, the datastore and listener states, the upstream availability, the watchdog state, the degradation reasons, and the revisions. Each mapping uses an exhaustive match. A new runtime state does not compile until the proto has a value for it. The reply also has a `components` list. The handler fills it from the `HealthRegistry` of the composition. That registry runs every member of every health group, including the `component` group. A component adds a check with `health_member` at registration, and the check then shows in the reply without a change to the handler.
 
 ## Configuration details
 

@@ -12,23 +12,42 @@ The profile defaults to both local services, mounted kubelet identity, explicit 
 
 ## Source registration and ownership
 
-The [source registry](src/source_registry.rs) lists inline CLI, YANG file, SONiC, and KubeSONiC profiles. That list supplies runtime factories, source selectors, and arguments for the generated man page. All profiles use the same [service construction path](src/startup.rs).
+The [source registry](src/source_registry.rs) lists inline CLI, YANG file, SONiC, and KubeSONiC profiles. That list supplies source selectors, profile parsers, and arguments for the generated man page. Every profile returns a `SelectedProfile` with process controls and a list of [components](../../libraries/tacacsrs_composition/README.md). The [agent host](../../libraries/tacacsrs_agent/README.md#component-host) prepares, validates, and runs these components. The daemon does not select providers by concrete type. The daemon supplies no components of its own. It converts its arguments to settings for the library components.
 
-A profile parses its startup inputs before Tokio starts. It supplies process controls, protected input paths, and canonical runtime policy. Its asynchronous factory returns a [`SourceBundle`](../../libraries/tacacsrs_provider/README.md) with a datastore, credential capabilities, canonical local services, and inert companions. Provider crates own discovery and source-specific assembly. The application does not select providers by concrete type.
+A profile parses its startup inputs before Tokio starts. `SelectedProfile::new` puts the components in this order:
+
+1. The host components from `HOST_COMPONENTS`. These are the [standard components](../../libraries/tacacsrs_agent/README.md#standard-components) of `tacacsrs-agent`, for example systemd, statistics, the client API, and HTTP credential evidence.
+2. The runtime policy and the certificate verification values.
+3. The source components.
+
+The source components supply the datastore, the credential provider, and the local services. The SONiC and KubeSONiC sources come from their provider crates. The inline and YANG file profiles use `DatastoreSourceComponent` from `tacacsrs-agent`.
 
 To add a source:
 
-1. Implement a profile module under [profiles](src/profiles/).
-2. Add its selector, CLI arguments, and module name to the source registry.
-3. If the source requires a separate crate, add its dependency to the manifest.
+1. Implement a source component in a provider crate, or reuse `DatastoreSourceComponent`.
+2. Implement a profile module under [profiles](src/profiles/) that returns `SelectedProfile`.
+3. Add its selector, CLI arguments, and module name to the source registry.
 
-The profile factory returns provider components, not a constructed agent. Keep vendor parsing and I/O in the provider crate. Keep executable argument handling in the registration adapter.
+Keep vendor parsing and I/O in the provider crate. Keep executable argument handling in the profile module.
 
 Datastore observation owns the baseline, notifications, and any background workers. Observation must start before the baseline read. Cancelling an observation poll must preserve pending work. Dropping the session must stop notification delivery and cancel its workers. Credential providers use their independent change-source contract, so credential refresh does not depend on ConfigDB changes.
 
-Use the [`Companion` interface](../../libraries/tacacsrs_provider/src/companion.rs) for provider side effects that require readiness or shutdown cleanup. KubeSONiC owns its loopback registrar and implements that interface. Each companion runs as a named critical peer with shared cancellation. An unexpected exit or panic stops the application and drains the remaining peers.
+## Components
 
-All peers share one captured shutdown budget with domain drain. A companion must finish its cleanup before it returns after cancellation. At the deadline, the agent aborts and joins pending peers and awaits the domain's forced listener and upstream cleanup. Forced cancellation can interrupt external cleanup. Providers must not leave detached workers or child processes outside their ownership. Datastore and credential observations retain their own drop-based worker cancellation contracts.
+A component adds inputs, credential layers, local services overlays, startup checks, listeners, hosted services, or health members. The host code does not know the concrete component types. The daemon supplies no components of its own. Its [selection list](src/components/mod.rs) converts the arguments to settings for these [standard components](../../libraries/tacacsrs_agent/README.md#standard-components) of `tacacsrs-agent`:
+
+- `SystemdComponent` sends systemd notifications. `--host-integration auto` selects `SystemdMode::Auto`, and `systemd` selects `SystemdMode::Required`. `none` selects no component.
+- `StatisticsComponent` writes the statistics file. Its startup check protects the statistics file from the listener paths. The daemon selects it when `--statistics-file` is set.
+- `ClientApiComponent` adds the listener factory for the client API. The factory returns no listener when the client API is disabled.
+- `HttpCredentialComponent` adds the HTTP credential layer when HTTP evidence retrieval is configured. Only the inline, file, and SONiC profiles supply these settings.
+- `UpstreamWatchdogComponent` sends periodic upstream probes when a watchdog interval is set.
+- `InvalidSourceShutdownComponent` stops the daemon with an error when the runtime reports `SourceConfigurationInvalid`. The daemon always selects it.
+
+The inline and file profiles convert the listener arguments to a `LocalServicesPatch` for `DatastoreSourceComponent`. The SONiC profile gives the same patch to `SonicSource::with_listener_patch`, which applies it to the forwarder local services.
+
+To add a host component, implement it in a library crate. Then add a selection function to `HOST_COMPONENTS` that gives the component its settings. A source returns its components from its profile. Do not change the host code. The [agent host guide](../../libraries/tacacsrs_agent/README.md#component-host) shows how a component registers a hosted service and which deferred values it can inject.
+
+All hosted services share one captured shutdown budget with domain drain. A service must finish its cleanup before it returns after shutdown. At the deadline, the agent aborts and joins pending services and awaits the domain's forced listener and upstream cleanup. Forced cancellation can interrupt external cleanup. Providers must not leave detached workers or child processes outside their ownership. Datastore and credential observations retain their own drop-based worker cancellation contracts.
 
 ## Health and Host Integration
 
@@ -41,7 +60,7 @@ tacacsrs-agent-health \
     --timeout-seconds 2
 ```
 
-Outside KubeSONiC mode, use `--host-integration none` in containers. KubeSONiC defaults `TACACSD_PROCESS_HOST_INTEGRATION` to `none`. `auto` selects systemd only when `NOTIFY_SOCKET` is present. Explicit `systemd` requires the notification socket and helper, sends `READY=1` once, and sends `STOPPING=1` before listener drain.
+Outside KubeSONiC mode, use `--host-integration none` in containers. KubeSONiC defaults `TACACSD_PROCESS_HOST_INTEGRATION` to `none`. `auto` selects systemd only when `NOTIFY_SOCKET` is present. Explicit `systemd` requires the notification socket and helper, sends `READY=1` once after the enabled listeners bind, and sends `STOPPING=1` before listener drain. `READY=1` does not wait for configuration or upstream health. The systemd status text reports them.
 
 The daemon supervises SONiC ConfigDB startup and notification subscriptions.
 In SONiC mode, it loads the forwarder profile before binding listeners. It retries unavailable configuration with capped backoff.
@@ -52,13 +71,25 @@ Either signal cancels startup or requests listener drain through the signal-free
 An unavailable bootstrap dependency does not prevent signal handling. Requested shutdown exits successfully after cleanup.
 Unexpected host or configuration task exit is fatal, but the daemon still requests service drain and joins its other tasks.
 
-Startup uses the agent-owned `AgentRuntime`. It constructs the service and retains one `ConfigSupervisor` for initial preparation and all later server updates. Fail-fast preparation completes before listeners bind or companions start. Cancellation before serving does not bind listeners.
+Startup uses the agent-owned `AgentRuntime`. It constructs the service and retains one `ConfigSupervisor` for the initial configuration and all later server updates. The listeners, the hosted services, and the configuration supervisor start together. An unavailable source does not stop the daemon. The daemon binds its listeners, reports that it is not ready, and retries the source with capped backoff. A request that arrives before the first configuration receives a retryable unavailable error. Invalid command-line server values are immutable, so the daemon rejects them before it binds a listener.
 
-The independent `PolicySupervisor` submits canonical policy through `apply_policy_candidate`. Host integration, statistics export, configuration supervision, and companions run as separately named peers. Agentd retains process controls, signal handling, and IPC adaptation. The [agent embedding guide](../../libraries/tacacsrs_agent/README.md#embedding) documents the runtime contract.
+A static source has no change notifications, so a rejected static configuration cannot become valid. For this source, the runtime adds the final `SourceConfigurationInvalid` degradation reason and stops its retries. `InvalidSourceShutdownComponent` then stops the daemon through the injected `ApplicationLifetime`. The daemon drains its listeners and exits with a failure status. A credential resolver failure does not stop the daemon, because the resolver can recover. A source with change notifications, for example SONiC ConfigDB, keeps its retries.
+
+Runtime health reports this state. The gRPC health service, the `tacacsrs-agent-health` probe, and the systemd status show it. The host or the orchestrator decides what to do when the daemon stays not ready, for example restart the daemon.
+
+## Upstream Watchdog
+
+The upstream watchdog is optional and is disabled by default. Use `--upstream-watchdog-interval-seconds SECONDS` to enable it. In KubeSONiC mode, use `TACACSD_PROCESS_UPSTREAM_WATCHDOG_INTERVAL_SECONDS` instead of that flag.
+
+The watchdog sends one RFC 8907 accounting record with the `WATCHDOG` flag after each new server set and then once in each interval. Readiness waits for the first successful probe of each new server set. A policy reload does not start a new server set. The probe tries every eligible accounting server once, independent of the configured failover strategy. The probe does not use client admission slots. A reply with any accounting status counts as a success. An error status still proves the connection, the transport security, and the shared secret. If no server replies, the daemon adds the `UpstreamWatchdogFailed` degradation reason and withdraws readiness. A later successful probe restores readiness. Thus the host can see an upstream failure before the first client request.
+
+Watchdog records count in the accounting statistics of each server. A strict server can reject a `WATCHDOG` record that has no earlier `START` record. This rejection does not withdraw readiness. If the active server set has no accounting server, the watchdog sends nothing.
+
+The independent `PolicySupervisor` submits canonical policy through `apply_policy_candidate`. Configuration supervision runs in the agent. Host integration, statistics export, and profile services run as separately named hosted services. Agentd retains process controls, signal handling, and component selection. The [agent embedding guide](../../libraries/tacacsrs_agent/README.md#embedding) documents the runtime contract.
 
 Outside KubeSONiC mode, use `--runtime-policy <FILE>` to load live failover strategies and request limits. The daemon keeps the last-known-good policy after an invalid update. KubeSONiC uses the startup `TACACSD_POLICY_` inputs instead.
 
-Set `shutdown-timeout-seconds` in that canonical policy resource to bound graceful service and peer cleanup. Its default is 30 seconds; zero is invalid.
+Set `shutdown-timeout-seconds` in that canonical policy resource to bound graceful service cleanup. Its default is 30 seconds; zero is invalid.
 The daemon captures the applied value once when cleanup begins. Later policy updates do not renew the deadline.
 At expiry it cancels pending work and exits with an error. An earlier failure remains the primary reported error.
 Systemd notifications use owned asynchronous child processes, so a stalled helper is terminated when teardown aborts its task.

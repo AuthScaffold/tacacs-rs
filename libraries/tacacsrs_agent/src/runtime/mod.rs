@@ -9,6 +9,7 @@ mod client_service;
 mod config_filter;
 mod config_supervisor;
 mod health;
+mod health_view;
 mod listener_service;
 mod materialization_coordinator;
 pub(crate) mod candidate_preparation;
@@ -24,7 +25,7 @@ mod application_tasks;
 mod source_filter;
 
 pub use application::{AgentRuntime, RuntimeInputs, PolicyInput};
-pub use application_tasks::{PeerContext, RuntimePeer};
+pub use health_view::{AgentReadinessCheck, RuntimeHealth};
 
 pub use client_service::{DiagnosticsHandle, ListenerSettings, TacacsClientService};
 pub use config_filter::{FilteredTacacsPlus, NoopTacacsPlusFilter, TacacsPlusFilter};
@@ -47,6 +48,7 @@ pub(crate) use server_catalog::REQUIRED_SERVER_TYPES;
 #[cfg(test)]
 pub(crate) use server_catalog::enumerate_supported_servers;
 pub(crate) use proxy_loop_guard::{ProxyLoopGuard, ProxyListenerBinding};
+pub(crate) use source_filter::config_filter_from_local_services;
 pub(crate) use request_tracker::{RequestGuard, RequestTracker};
 pub use shutdown::{ListenerRegistration, ShutdownReceiver};
 pub(crate) use shutdown::ShutdownCoordinator;

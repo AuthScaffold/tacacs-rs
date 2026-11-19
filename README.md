@@ -124,7 +124,7 @@ The crate expands local credential bundles. It preserves external central refere
 
 ## Rust Toolchain
 
-This project has a minimum supported Rust version (MSRV) of **1.88**. The `rust-version` field in `Cargo.toml` defines this version.
+This project has a minimum supported Rust version (MSRV) of **1.91**. The `rust-version` field in `Cargo.toml` defines this version.
 
 The workspace crates are internal and are not published to crates.io.
 

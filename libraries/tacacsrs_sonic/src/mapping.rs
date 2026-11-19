@@ -208,6 +208,73 @@ impl SonicForwarderSettings {
             ..Default::default()
         }
     }
+
+    /// Applies host listener settings to the local services of this row.
+    ///
+    /// SONiC enables both local services. The patch can change the client API
+    /// path, the socket mode, and the credential source. A proxy endpoint in
+    /// the patch must be equal to the endpoint of this row.
+    ///
+    /// # Errors
+    /// Returns an error when the patch disables a service, the patch proxy
+    /// endpoint is different, or the result is invalid.
+    pub fn local_services_with(
+        self,
+        patch: &tacacsrs_config::local_services::LocalServicesPatch,
+    ) -> anyhow::Result<tacacsrs_config::tacacsrs::LocalServices> {
+        check_listener_patch(patch)?;
+        if let Some(endpoint) = &patch.tacacs_proxy_endpoint {
+            anyhow::ensure!(
+                endpoint.parse::<std::net::SocketAddr>().ok() == Some(self.socket_address()),
+                "The proxy endpoint conflicts with TACPLUS_FORWARDER|global"
+            );
+        }
+        patch.apply(self.local_services())
+    }
+}
+
+/// Checks the parts of a listener patch that do not depend on the forwarder
+/// row.
+///
+/// The check applies the patch to a representative forwarder row. A proxy
+/// endpoint in the patch must be a loopback socket address with a nonzero
+/// port, because every valid forwarder row has this form.
+pub(crate) fn check_listener_patch(
+    patch: &tacacsrs_config::local_services::LocalServicesPatch,
+) -> anyhow::Result<()> {
+    use tacacsrs_config::local_services::ServiceSelection;
+
+    anyhow::ensure!(
+        patch
+            .services
+            .is_none_or(|services| services == ServiceSelection::Both),
+        "SONiC central-agent mode requires both local services"
+    );
+    anyhow::ensure!(
+        patch.proxy_shared_secret.is_none(),
+        "SONiC central-agent mode does not accept an inline proxy shared secret"
+    );
+    let representative = match &patch.tacacs_proxy_endpoint {
+        Some(endpoint) => {
+            let endpoint = endpoint
+                .parse::<std::net::SocketAddr>()
+                .context("The SONiC proxy endpoint must be a socket address")?;
+            anyhow::ensure!(
+                endpoint.ip().to_canonical().is_loopback() && endpoint.port() != 0,
+                "The SONiC proxy endpoint must be a loopback address with a nonzero port"
+            );
+            SonicForwarderSettings {
+                listen_address: endpoint.ip().to_canonical(),
+                listen_port: endpoint.port(),
+            }
+        }
+        None => SonicForwarderSettings {
+            listen_address: IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            listen_port: DEFAULT_TACACS_TCP_PORT,
+        },
+    };
+    patch.apply(representative.local_services())?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -1251,6 +1318,80 @@ mod tests {
         ]))
         .expect_err("zero port must be rejected");
         assert!(error.to_string().contains("1..65535"));
+    }
+
+    #[test]
+    fn forwarder_listener_patch_keeps_both_services_and_the_row_endpoint() {
+        use tacacsrs_config::local_services::{LocalServicesPatch, ServiceSelection};
+
+        let settings = SonicForwarderSettings::from_hash(&h(&[
+            ("local_listen_address", "127.0.0.1"),
+            ("local_listen_port", "49"),
+        ]))
+        .unwrap()
+        .unwrap();
+        let patched = settings
+            .local_services_with(&LocalServicesPatch {
+                client_api_endpoint: Some("/run/tacacs/custom.sock".to_owned()),
+                tacacs_proxy_endpoint: Some("127.0.0.1:49".to_owned()),
+                services: Some(ServiceSelection::Both),
+                ..LocalServicesPatch::default()
+            })
+            .unwrap();
+        assert_eq!(patched.client_api_endpoint, "/run/tacacs/custom.sock");
+        assert!(patched.client_api_enabled && patched.tacacs_proxy_enabled);
+        for patch in [
+            LocalServicesPatch {
+                services: Some(ServiceSelection::ClientApi),
+                ..LocalServicesPatch::default()
+            },
+            LocalServicesPatch {
+                tacacs_proxy_endpoint: Some("127.0.0.1:50".to_owned()),
+                ..LocalServicesPatch::default()
+            },
+        ] {
+            assert!(settings.local_services_with(&patch).is_err(), "accepted {patch:?}");
+        }
+    }
+
+    #[test]
+    fn listener_patch_check_rejects_invalid_values_without_a_forwarder_row() {
+        use tacacsrs_config::local_services::LocalServicesPatch;
+
+        for patch in [
+            LocalServicesPatch {
+                tacacs_proxy_endpoint: Some("192.0.2.1:49".to_owned()),
+                ..LocalServicesPatch::default()
+            },
+            LocalServicesPatch {
+                tacacs_proxy_endpoint: Some("127.0.0.1:0".to_owned()),
+                ..LocalServicesPatch::default()
+            },
+            LocalServicesPatch {
+                tacacs_proxy_endpoint: Some("localhost:49".to_owned()),
+                ..LocalServicesPatch::default()
+            },
+            LocalServicesPatch {
+                unix_socket_mode: Some(0o1000),
+                ..LocalServicesPatch::default()
+            },
+            LocalServicesPatch {
+                proxy_shared_secret: tacacsrs_config::local_services::parse_local_services(
+                    br#"{"tacacsrs:local-services":{"tacacs-proxy-enabled":true,"tacacs-proxy-endpoint":"127.0.0.1:49","proxy-credential-source":"inline","proxy-shared-secret":"secret"}}"#,
+                )
+                .unwrap()
+                .proxy_shared_secret,
+                ..LocalServicesPatch::default()
+            },
+        ] {
+            assert!(check_listener_patch(&patch).is_err(), "accepted {patch:?}");
+        }
+        check_listener_patch(&LocalServicesPatch {
+            tacacs_proxy_endpoint: Some("127.0.0.1:4949".to_owned()),
+            unix_socket_mode: Some(0o660),
+            ..LocalServicesPatch::default()
+        })
+        .unwrap();
     }
 
     #[test]

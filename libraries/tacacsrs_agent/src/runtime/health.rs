@@ -108,12 +108,33 @@ pub enum DegradationReason {
     CandidateConfigurationRejected,
     /// A candidate runtime policy was rejected while an older policy remained active.
     CandidatePolicyRejected,
+    /// The runtime rejected the initial configuration of a datastore that has no
+    /// change notifications.
+    ///
+    /// A credential resolver failure does not set this reason, because the
+    /// resolver can recover.
+    ///
+    /// This reason is final. The datastore cannot give a different configuration,
+    /// so the runtime stops its retries. A host can stop the process when this
+    /// reason appears.
+    SourceConfigurationInvalid,
     /// Credential resolution failed for candidate configuration.
     CredentialResolutionFailed,
     /// Validated listener or host-binding settings require a process restart.
     RestartRequired,
     /// Each eligible server failed an authoritative connection attempt.
     UpstreamsUnavailable,
+    /// The latest upstream watchdog probe got no accounting reply from any eligible server.
+    ///
+    /// Only an enabled upstream watchdog sets this reason. While it is active,
+    /// readiness is withdrawn.
+    UpstreamWatchdogFailed,
+    /// The enabled upstream watchdog has no result for the current server set.
+    ///
+    /// The runtime sets this reason when the watchdog is armed and when a
+    /// materially new server set is published. While it is active, readiness
+    /// is withdrawn.
+    UpstreamWatchdogPending,
     /// A runtime invariant or internal component failed.
     InternalFailure,
 }
@@ -135,10 +156,27 @@ pub struct RuntimeHealthSnapshot {
     tacacs_proxy_listener: ListenerState,
     eligible_server_count: usize,
     upstream_availability: UpstreamAvailability,
+    upstream_watchdog_armed: bool,
+    upstream_watchdog_epoch: u64,
     degradation_reasons: BTreeSet<DegradationReason>,
 }
 
 impl RuntimeHealthSnapshot {
+    /// Returns the server-set epoch for upstream watchdog results.
+    ///
+    /// The epoch changes when a materially new server set is published. Policy
+    /// updates do not change it. A watchdog probes again after each change.
+    #[must_use]
+    pub const fn upstream_watchdog_epoch(&self) -> u64 {
+        self.upstream_watchdog_epoch
+    }
+
+    /// Returns whether an upstream watchdog is enabled for this runtime.
+    #[must_use]
+    pub const fn is_upstream_watchdog_armed(&self) -> bool {
+        self.upstream_watchdog_armed
+    }
+
     /// Returns provider and prepared-credential validity, independent of stale grace periods.
     #[must_use]
     pub fn credential_validity(
@@ -258,10 +296,29 @@ impl RuntimeHealthSnapshot {
     /// Returns whether clients can send operation requests to the agent.
     ///
     /// Readiness requires completed startup and at least one eligible server.
-    /// Current server availability does not affect readiness.
+    /// Connection observations from client requests do not affect readiness.
+    /// An armed upstream watchdog withdraws readiness until it has a result
+    /// for the current server set, and while its latest probe failed.
     #[must_use]
     pub fn is_readiness_serving(&self) -> bool {
-        self.is_startup_serving() && self.eligible_server_count > 0
+        self.is_startup_serving()
+            && self.eligible_server_count > 0
+            && !self
+                .degradation_reasons
+                .contains(&DegradationReason::UpstreamWatchdogFailed)
+            && !self
+                .degradation_reasons
+                .contains(&DegradationReason::UpstreamWatchdogPending)
+    }
+
+    /// Returns whether the process is live and each enabled listener is bound.
+    ///
+    /// This state does not need applied configuration. A host can use it to
+    /// report that the process started. Requests that arrive before the first
+    /// configuration receive a retryable unavailable error.
+    #[must_use]
+    pub fn is_listening(&self) -> bool {
+        self.accepts_health_requests() && self.all_enabled_listeners_bound()
     }
 
     fn accepts_health_requests(&self) -> bool {
@@ -322,6 +379,8 @@ impl RuntimeHealthPublisher {
             tacacs_proxy_listener,
             eligible_server_count: 0,
             upstream_availability: UpstreamAvailability::Unknown,
+            upstream_watchdog_armed: false,
+            upstream_watchdog_epoch: 0,
             degradation_reasons: BTreeSet::new(),
         };
         let (sender, _) = watch::channel(initial);
@@ -405,6 +464,49 @@ impl RuntimeHealthPublisher {
                     .remove(&DegradationReason::UpstreamsUnavailable);
             }
         });
+    }
+
+    /// Arms the upstream watchdog before the runtime publishes servers.
+    ///
+    /// Readiness stays withdrawn until the watchdog publishes a result for
+    /// the current server set.
+    pub(crate) fn arm_upstream_watchdog(&self) {
+        self.update(|snapshot| {
+            if !snapshot.upstream_watchdog_armed {
+                snapshot.upstream_watchdog_armed = true;
+                snapshot
+                    .degradation_reasons
+                    .insert(DegradationReason::UpstreamWatchdogPending);
+            }
+        });
+    }
+
+    /// Publishes the result of one upstream watchdog probe.
+    ///
+    /// The result applies only when `epoch` is still the current server-set
+    /// epoch. A probe that ran against an older server set changes nothing.
+    /// Returns `true` when the result applies.
+    pub(crate) fn set_upstream_watchdog_failed(&self, epoch: u64, failed: bool) -> bool {
+        let mut applied = false;
+        self.update(|snapshot| {
+            if snapshot.upstream_watchdog_epoch != epoch {
+                return;
+            }
+            applied = true;
+            snapshot
+                .degradation_reasons
+                .remove(&DegradationReason::UpstreamWatchdogPending);
+            if failed {
+                snapshot
+                    .degradation_reasons
+                    .insert(DegradationReason::UpstreamWatchdogFailed);
+            } else {
+                snapshot
+                    .degradation_reasons
+                    .remove(&DegradationReason::UpstreamWatchdogFailed);
+            }
+        });
+        applied
     }
 
     /// Commits runtime replacement and its health metadata in one watch transition.
@@ -502,6 +604,16 @@ impl RuntimeHealthPublisher {
                 snapshot
                     .degradation_reasons
                     .remove(&DegradationReason::UpstreamsUnavailable);
+                // A watchdog result describes one server set.
+                snapshot.upstream_watchdog_epoch = snapshot.upstream_watchdog_epoch.wrapping_add(1);
+                snapshot
+                    .degradation_reasons
+                    .remove(&DegradationReason::UpstreamWatchdogFailed);
+                if snapshot.upstream_watchdog_armed {
+                    snapshot
+                        .degradation_reasons
+                        .insert(DegradationReason::UpstreamWatchdogPending);
+                }
             }
         });
     }
@@ -630,6 +742,36 @@ mod tests {
     use std::sync::{Arc, Barrier};
 
     use super::*;
+
+    #[test]
+    fn watchdog_result_applies_only_to_the_current_server_set() {
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        health.arm_upstream_watchdog();
+        let has = |reason| health.snapshot().degradation_reasons().contains(&reason);
+        assert!(has(DegradationReason::UpstreamWatchdogPending));
+
+        let old_epoch = health.snapshot().upstream_watchdog_epoch();
+        health.publish_runtime(RuntimeGeneration::new(1), 1, Some(true), true, || None);
+        health.set_upstream_watchdog_failed(old_epoch, true);
+        assert!(has(DegradationReason::UpstreamWatchdogPending));
+        assert!(!has(DegradationReason::UpstreamWatchdogFailed));
+
+        // A policy update keeps the server-set epoch.
+        let epoch = health.snapshot().upstream_watchdog_epoch();
+        health.publish_policy(
+            RuntimeGeneration::new(2),
+            super::super::PolicyRevision::default(),
+            || {},
+        );
+        health.set_upstream_watchdog_failed(epoch, true);
+        assert!(!has(DegradationReason::UpstreamWatchdogPending));
+        assert!(has(DegradationReason::UpstreamWatchdogFailed));
+
+        // A new server set clears the old result and waits for a new probe.
+        health.publish_runtime(RuntimeGeneration::new(3), 1, Some(true), true, || None);
+        assert!(has(DegradationReason::UpstreamWatchdogPending));
+        assert!(!has(DegradationReason::UpstreamWatchdogFailed));
+    }
 
     #[test]
     fn new_publishes_starting_state_for_enabled_services() {

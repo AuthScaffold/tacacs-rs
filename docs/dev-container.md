@@ -90,9 +90,9 @@ Do not commit the bundle into the repository.
 
 ## Installed Tools
 
-The image retains Rust 1.88.0 as the workspace default and installs its Clippy and coverage components.
+The image uses Rust 1.91.0 as the workspace default and installs its Clippy and coverage components.
 Nightly supplies rustfmt, Clippy, Miri, and `rust-src` for the Miri sysroot.
-Rust 1.91.0 builds the standalone API classifier. Its rustdoc analysis uses `nightly-2025-11-23`.
+Rust 1.91.0 also builds the standalone API classifier. Its rustdoc analysis uses `nightly-2025-11-23`.
 Stable builds standalone Cargo tools without changing the workspace MSRV.
 The configuration disables remote-user UID updates because all writable paths use named volumes.
 The initialization command assigns those volumes to the `vscode` user.

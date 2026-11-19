@@ -16,6 +16,7 @@ mod accounting;
 mod authentication;
 mod authorization;
 mod routed;
+mod watchdog;
 
 #[cfg(test)]
 mod routing_tests;
@@ -194,6 +195,148 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.server, "secondary:49");
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Miri does not support Tokio tasks or time.
+    async fn watchdog_probe_failure_withdraws_readiness_and_success_restores_it() {
+        use crate::services::client_api::{UpstreamProbeOutcome, probe::run_probe};
+        use crate::{DegradationReason, ListenerState, RuntimeService};
+
+        let connection = Arc::new(FakeConnection {
+            address: "server:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let connector = Arc::new(FakeConnector::new(HashMap::from([(
+            "server:49".to_owned(),
+            Arc::clone(&connection),
+        )])));
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let state = Arc::new(UpstreamManager::new(
+            vec![test_server("server:49")],
+            Arc::clone(&connector) as Arc<UpstreamConnector>,
+            Duration::from_millis(200),
+            health.clone(),
+        ));
+        health.set_applied_configuration(true);
+        health.set_eligible_server_count(1);
+        assert!(health.set_listener(RuntimeService::ClientApi, ListenerState::Bound));
+        assert!(health.snapshot().is_readiness_serving());
+        let bridge = UpstreamBridge::new(state);
+
+        health.set_upstream_watchdog_failed(health.snapshot().upstream_watchdog_epoch(), true);
+        assert!(!health.snapshot().is_readiness_serving());
+        assert!(health.snapshot().is_listening());
+        assert_eq!(run_probe(&bridge, &health).await, UpstreamProbeOutcome::Succeeded);
+        assert!(health.snapshot().is_readiness_serving());
+
+        connection
+            .fail_next_request
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(run_probe(&bridge, &health).await, UpstreamProbeOutcome::Failed);
+        let snapshot = health.snapshot();
+        assert!(!snapshot.is_readiness_serving());
+        assert!(snapshot.is_listening());
+        assert!(snapshot
+            .degradation_reasons()
+            .contains(&DegradationReason::UpstreamWatchdogFailed));
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Miri does not support Tokio tasks or time.
+    async fn armed_watchdog_probe_tries_the_next_server_after_an_unknown_outcome() {
+        use crate::services::client_api::{UpstreamProbeOutcome, probe::run_probe};
+        use crate::{DegradationReason, ListenerState, RuntimeService};
+
+        let primary = Arc::new(FakeConnection {
+            address: "primary:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(true),
+        });
+        let secondary = Arc::new(FakeConnection {
+            address: "secondary:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let connector = Arc::new(FakeConnector::new(HashMap::from([
+            ("primary:49".to_owned(), Arc::clone(&primary)),
+            ("secondary:49".to_owned(), Arc::clone(&secondary)),
+        ])));
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        health.arm_upstream_watchdog();
+        let state = Arc::new(UpstreamManager::new(
+            vec![test_server("primary:49"), test_server("secondary:49")],
+            Arc::clone(&connector) as Arc<UpstreamConnector>,
+            Duration::from_millis(200),
+            health.clone(),
+        ));
+        health.set_applied_configuration(true);
+        health.set_eligible_server_count(2);
+        assert!(health.set_listener(RuntimeService::ClientApi, ListenerState::Bound));
+        let snapshot = health.snapshot();
+        assert!(!snapshot.is_readiness_serving());
+        assert!(snapshot
+            .degradation_reasons()
+            .contains(&DegradationReason::UpstreamWatchdogPending));
+
+        let bridge = UpstreamBridge::new(state);
+        assert_eq!(run_probe(&bridge, &health).await, UpstreamProbeOutcome::Succeeded);
+        assert_eq!(connector.connect_attempts_for("secondary:49").await, 1);
+        assert!(health.snapshot().is_readiness_serving());
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Miri does not support Tokio tasks or time.
+    async fn watchdog_probe_counts_an_accounting_error_reply_as_success() {
+        use crate::services::client_api::{UpstreamProbeOutcome, probe::run_probe};
+
+        let connection = Arc::new(FakeConnection {
+            address: "accounting-error:49".to_owned(),
+            usable: AtomicBool::new(true),
+            fail_next_request: AtomicBool::new(false),
+        });
+        let connector = Arc::new(FakeConnector::new(HashMap::from([(
+            "accounting-error:49".to_owned(),
+            Arc::clone(&connection),
+        )])));
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let state = Arc::new(UpstreamManager::new(
+            vec![test_server("accounting-error:49")],
+            Arc::clone(&connector) as Arc<UpstreamConnector>,
+            Duration::from_millis(200),
+            health.clone(),
+        ));
+        health.set_upstream_watchdog_failed(health.snapshot().upstream_watchdog_epoch(), true);
+        let bridge = UpstreamBridge::new(state);
+
+        assert_eq!(run_probe(&bridge, &health).await, UpstreamProbeOutcome::Succeeded);
+        assert!(!health
+            .snapshot()
+            .degradation_reasons()
+            .contains(&crate::DegradationReason::UpstreamWatchdogFailed));
+    }
+
+    #[tokio::test]
+    async fn watchdog_probe_without_accounting_servers_sends_nothing() {
+        use crate::services::client_api::{UpstreamProbeOutcome, probe::run_probe};
+
+        let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+        let connector = Arc::new(FakeConnector::new(HashMap::new()));
+        let state = Arc::new(UpstreamManager::new(
+            Vec::new(),
+            Arc::clone(&connector) as Arc<UpstreamConnector>,
+            Duration::from_millis(200),
+            health.clone(),
+        ));
+        health.set_upstream_watchdog_failed(health.snapshot().upstream_watchdog_epoch(), true);
+        let bridge = UpstreamBridge::new(state);
+
+        assert_eq!(run_probe(&bridge, &health).await, UpstreamProbeOutcome::Skipped);
+        assert!(!health
+            .snapshot()
+            .degradation_reasons()
+            .contains(&crate::DegradationReason::UpstreamWatchdogFailed));
     }
 
     #[tokio::test]

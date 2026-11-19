@@ -6,4 +6,4 @@ pub mod credentials;
 pub mod registration;
 mod source;
 
-pub use source::prepare;
+pub use source::{components, KubeSonicSource, RegistrationComponent};

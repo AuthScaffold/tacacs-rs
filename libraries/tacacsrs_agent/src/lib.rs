@@ -6,6 +6,10 @@ compile_error!("tacacsrs-agent supports Linux GNU or musl only");
 /// Public configuration for the agent runtime.
 pub mod config;
 
+pub mod components;
+
+pub mod host;
+
 /// Long-lived service lifecycle and configuration reloads.
 pub mod runtime;
 
@@ -28,11 +32,11 @@ pub use config::{
 };
 pub use upstream::OperationKind;
 pub use runtime::{
-    AgentRuntime, RuntimeInputs, PolicyInput, RuntimePeer, DiagnosticsHandle, PolicyRevision,
-    PolicyUpdate, CredentialRevision, MaterializationRevision, SourceRevision, DatastoreState,
-    DegradationReason, ListenerRegistration, ListenerSettings, ListenerState,
-    RuntimeHealthPublisher, RuntimeGeneration, RuntimeHealthSnapshot, RuntimeLifecycle,
-    RuntimeListenerService, RuntimeService, ShutdownReceiver, TacacsClientService,
-    UpstreamAvailability,
+    AgentReadinessCheck, AgentRuntime, RuntimeInputs, PolicyInput, DiagnosticsHandle,
+    PolicyRevision, PolicyUpdate, CredentialRevision, MaterializationRevision, SourceRevision,
+    DatastoreState, DegradationReason, ListenerRegistration, ListenerSettings, ListenerState,
+    RuntimeHealth, RuntimeHealthPublisher, RuntimeGeneration, RuntimeHealthSnapshot,
+    RuntimeLifecycle, RuntimeListenerService, RuntimeService, ShutdownReceiver,
+    TacacsClientService, UpstreamAvailability,
 };
-pub use services::client_api::ClientApiHandle;
+pub use services::client_api::{ClientApiHandle, UpstreamProbe, UpstreamProbeOutcome};

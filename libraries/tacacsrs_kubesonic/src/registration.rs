@@ -1,65 +1,237 @@
 //! Optional atomic loopback-row registration, separate from read-only discovery.
 
+use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use tokio::time::Instant;
 
-use tacacsrs_provider::{Companion, CompanionContext};
+use tacacsrs_lifecycle::{
+    EmptyGroup, HealthCheckResult, HealthGroup, HealthGroupKind, HostedService, ShutdownSignal,
+    POLL_INTERVAL,
+};
 
-use crate::environment::SourceSettings;
+use tacacsrs_config::tacacsrs::LocalServices;
+
+use crate::environment::{Environment, LoopbackSettings, SourceSettings};
 
 const KEY: &str = "TACPLUS_SERVER|127.0.0.1";
 
-pub(crate) struct Registrar {
-    row: LoopbackRegistration,
-    retry: Duration,
+/// Health group that must be healthy before the registrar creates the row.
+///
+/// The group rejects an empty member list, so the host must contribute at
+/// least one readiness check when it enables registration.
+pub struct RegistrationReadiness;
+
+impl HealthGroupKind for RegistrationReadiness {
+    const NAME: &'static str = "kubesonic-registration-readiness";
+    const EMPTY: EmptyGroup = EmptyGroup::Reject;
 }
 
-impl Registrar {
-    pub(crate) fn new(row: LoopbackRegistration, retry: Duration) -> Self {
-        Self { row, retry }
+/// The latest outcome of the loopback registrar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RegistrationState {
+    /// The registrar has not completed a ConfigDB operation.
+    Starting = 0,
+    /// The loopback row is absent, and the registrar waits for readiness.
+    WaitingForReadiness = 1,
+    /// The loopback row is present.
+    Registered = 2,
+    /// The latest ConfigDB operation of the registrar failed.
+    Unavailable = 3,
+}
+
+/// Shares the latest [`RegistrationState`] with health checks.
+///
+/// The registrar writes the state after each ConfigDB operation. A reader gets
+/// the state without I/O.
+#[derive(Debug, Default)]
+pub struct RegistrationStatus(AtomicU8);
+
+impl RegistrationStatus {
+    /// Returns the latest state.
+    #[must_use]
+    pub fn state(&self) -> RegistrationState {
+        match self.0.load(Ordering::Acquire) {
+            1 => RegistrationState::WaitingForReadiness,
+            2 => RegistrationState::Registered,
+            3 => RegistrationState::Unavailable,
+            _ => RegistrationState::Starting,
+        }
+    }
+
+    fn set(&self, state: RegistrationState) {
+        self.0.store(state as u8, Ordering::Release);
+    }
+
+    /// Returns the secret-free health result of the latest state.
+    ///
+    /// A registered row is healthy. A registrar that starts or waits for
+    /// readiness is degraded. A ConfigDB failure is unhealthy.
+    #[must_use]
+    pub fn health(&self) -> HealthCheckResult {
+        match self.state() {
+            RegistrationState::Starting => HealthCheckResult::degraded()
+                .with_description("The registrar has not completed a ConfigDB operation."),
+            RegistrationState::WaitingForReadiness => HealthCheckResult::degraded()
+                .with_description("The registrar waits for readiness before it adds the row."),
+            RegistrationState::Registered => {
+                HealthCheckResult::healthy().with_description("The loopback row is present.")
+            }
+            RegistrationState::Unavailable => HealthCheckResult::unhealthy()
+                .with_description("The latest ConfigDB operation of the registrar failed."),
+        }
+    }
+}
+
+/// Validated inputs for the optional loopback registrar.
+#[derive(Clone, Debug)]
+pub struct RegistrarSettings {
+    /// ConfigDB connection settings.
+    pub source: SourceSettings,
+    /// Priority of the registered row.
+    pub priority: u16,
+    /// Port of the local TACACS+ proxy.
+    pub port: u16,
+    /// Delay between two repair attempts with unchanged readiness.
+    pub retry_interval: Duration,
+}
+
+/// Returns registrar settings when registration is enabled.
+///
+/// # Errors
+/// Returns an error when registration is enabled with an invalid priority or
+/// without an enabled TCP proxy on `127.0.0.1` with a nonzero port.
+pub fn registration_settings(input: &Environment) -> anyhow::Result<Option<RegistrarSettings>> {
+    if !input.loopback.enabled {
+        return Ok(None);
+    }
+    Ok(Some(RegistrarSettings {
+        source: input.source.clone(),
+        priority: input.loopback.priority,
+        port: registration_port(&input.loopback, &input.local_services)?,
+        retry_interval: input.loopback.retry_interval,
+    }))
+}
+
+/// Validates enabled registration inputs and returns the proxy port.
+pub(crate) fn registration_port(
+    loopback: &LoopbackSettings,
+    services: &LocalServices,
+) -> anyhow::Result<u16> {
+    anyhow::ensure!(
+        (1..=64).contains(&loopback.priority),
+        "TACACSD_LOOPBACK_PRIORITY must be in 1..=64"
+    );
+    let endpoint = services
+        .tacacs_proxy_endpoint
+        .as_deref()
+        .and_then(|value| value.parse::<SocketAddr>().ok())
+        .filter(|endpoint| {
+            services.tacacs_proxy_enabled
+                && endpoint.ip() == Ipv4Addr::LOCALHOST
+                && endpoint.port() != 0
+        })
+        .context(
+            "Loopback registration requires an enabled TCP proxy on 127.0.0.1 with a nonzero port",
+        )?;
+    Ok(endpoint.port())
+}
+
+/// Hosted service that owns the optional loopback row.
+///
+/// Construction is inert. The service removes a stale row once, then creates
+/// the row after [`RegistrationReadiness`] becomes healthy. At shutdown, it
+/// removes only the row that it created. It writes each outcome to its
+/// [`RegistrationStatus`].
+pub struct LoopbackRegistrar {
+    settings: RegistrarSettings,
+    readiness: HealthGroup<RegistrationReadiness>,
+    status: Arc<RegistrationStatus>,
+}
+
+impl LoopbackRegistrar {
+    /// Diagnostic name of the registrar.
+    pub const NAME: &'static str = "Loopback registration";
+
+    /// Creates an inert registrar.
+    #[must_use]
+    pub fn new(
+        settings: RegistrarSettings,
+        readiness: HealthGroup<RegistrationReadiness>,
+        status: Arc<RegistrationStatus>,
+    ) -> Self {
+        Self {
+            settings,
+            readiness,
+            status,
+        }
     }
 }
 
 #[async_trait::async_trait]
-impl Companion for Registrar {
+impl HostedService for LoopbackRegistrar {
     fn name(&self) -> &'static str {
-        "Loopback registration"
+        Self::NAME
     }
 
-    async fn run(mut self: Box<Self>, context: CompanionContext) -> anyhow::Result<()> {
-        let CompanionContext {
-            mut ready,
-            cancellation,
-        } = context;
+    async fn run(self: Arc<Self>, shutdown: ShutdownSignal) -> anyhow::Result<()> {
+        let settings = &self.settings;
+        let mut row =
+            LoopbackRegistration::new(settings.source.clone(), settings.priority, settings.port);
         let mut initialized = false;
+        let mut previous: Option<bool> = None;
+        let mut last_attempt: Option<Instant> = None;
         loop {
-            if cancellation.is_cancelled() {
-                break;
-            }
-            let is_ready = *ready.borrow_and_update();
-            let operation = async {
-                if !initialized {
-                    self.row.remove_stale().await?;
-                    initialized = true;
-                }
-                if cancellation.is_cancelled() {
-                    return Ok(());
-                }
-                self.row.reconcile(is_ready).await
+            let assessment = tokio::select! {
+                biased;
+                () = shutdown.requested() => break,
+                assessment = self.readiness.assess() => assessment,
             };
-            if operation.await.is_err() {
-                log::warn!("Loopback registration is unavailable; retrying");
+            let ready = assessment.is_healthy();
+            if previous != Some(ready) {
+                if !ready {
+                    log::info!(
+                        "Loopback registration waits for readiness members: {}",
+                        assessment.failed.join(", ")
+                    );
+                }
+                previous = Some(ready);
+                last_attempt = None;
+            }
+            let due = last_attempt.is_none_or(|at| at.elapsed() >= settings.retry_interval);
+            if due && !shutdown.is_requested() {
+                last_attempt = Some(Instant::now());
+                let operation = async {
+                    if !initialized {
+                        row.remove_stale().await?;
+                        initialized = true;
+                    }
+                    if shutdown.is_requested() {
+                        return Ok(None);
+                    }
+                    row.reconcile(ready).await.map(Some)
+                };
+                match operation.await {
+                    Ok(Some(true)) => self.status.set(RegistrationState::Registered),
+                    Ok(Some(false)) => self.status.set(RegistrationState::WaitingForReadiness),
+                    Ok(None) => {}
+                    Err(_) => {
+                        self.status.set(RegistrationState::Unavailable);
+                        log::warn!("Loopback registration is unavailable; retrying");
+                    }
+                }
             }
             tokio::select! {
                 biased;
-                () = cancellation.cancelled() => break,
-                changed = ready.changed() => { changed.context("Runtime health publisher stopped")?; }
-                () = tokio::time::sleep(self.retry) => {}
+                () = shutdown.requested() => break,
+                () = tokio::time::sleep(POLL_INTERVAL.min(settings.retry_interval)) => {}
             }
         }
-        self.row
-            .cleanup()
+        row.cleanup()
             .await
             .context("Failed to clean up the owned loopback row")
     }
@@ -109,13 +281,15 @@ impl LoopbackRegistration {
 
     /// Registers or repairs a missing row only after local readiness.
     ///
+    /// Returns `true` when the row is present after the operation.
+    ///
     /// # Errors
     /// Returns an error when ConfigDB cannot complete the comparison.
-    pub async fn reconcile(&mut self, ready: bool) -> anyhow::Result<()> {
+    pub async fn reconcile(&mut self, ready: bool) -> anyhow::Result<bool> {
         let exists: bool = self.command(redis::cmd("EXISTS").arg(KEY)).await?;
         if exists {
             anyhow::ensure!(!self.uncertain, "A previous loopback registration outcome is unknown");
-            return Ok(());
+            return Ok(true);
         }
         self.owned = false;
         if ready {
@@ -137,7 +311,7 @@ impl LoopbackRegistration {
                 log::warn!("Another writer created the loopback row; preserving it");
             }
         }
-        Ok(())
+        Ok(ready)
     }
 
     /// Removes an owned row only while its complete contents remain unchanged.

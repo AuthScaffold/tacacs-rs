@@ -13,7 +13,7 @@ local module you are changing.
 - Preserve user changes in the worktree. Never reset or revert unrelated files.
 - Internal APIs can break when the change improves correctness or maintainability.
   When an API breaks, propagate the refactor through every affected crate.
-- The Rust edition is 2021. The workspace MSRV is `1.88`.
+- The Rust edition is 2021. The workspace MSRV is `1.91`.
 - All workspace crates are internal. They are not published to crates.io.
 
 ## Refactor Workflow
@@ -104,27 +104,32 @@ Current workspace members are listed in `Cargo.toml`. In the sketch below,
 arrows point from a crate to the workspace crates it depends on:
 
 ```text
+tacacsrs-lifecycle -> (no workspace crates)
+tacacsrs-composition -> tacacsrs-lifecycle
 tacacsrs-protocol -> tacacsrs-secrets
 tacacsrs-networking -> tacacsrs-protocol, tacacsrs-secrets
 tacacsrs-credential-resolution -> tacacsrs-secrets
 tacacsrs-config -> tacacsrs-networking, tacacsrs-protocol,
                    tacacsrs-credential-resolution, tacacsrs-secrets
 tacacsrs-provider -> tacacsrs-config, tacacsrs-credential-resolution
-tacacsrs-sonic -> tacacsrs-config, tacacsrs-credential-resolution, tacacsrs-provider
-tacacsrs-kubesonic -> tacacsrs-config, tacacsrs-credential-resolution,
+tacacsrs-sonic -> tacacsrs-composition, tacacsrs-config,
+                  tacacsrs-credential-resolution, tacacsrs-provider
+tacacsrs-kubesonic -> tacacsrs-composition, tacacsrs-config,
+                      tacacsrs-credential-resolution, tacacsrs-lifecycle,
                       tacacsrs-provider, tacacsrs-secrets
 tacacsrs-credential-http -> tacacsrs-credential-resolution, tacacsrs-secrets
 tacacsrs-ipc -> tacacsrs-protocol, tacacsrs-secrets, tacacsrs-unix-socket
 tacacsrs-agent -> tacacsrs-config, tacacsrs-protocol, tacacsrs-networking,
-                  tacacsrs-credential-resolution, tacacsrs-provider,
-                  tacacsrs-secrets, tacacsrs-unix-socket
+                  tacacsrs-credential-resolution, tacacsrs-credential-http,
+                  tacacsrs-composition, tacacsrs-ipc, tacacsrs-lifecycle,
+                  tacacsrs-provider, tacacsrs-secrets, tacacsrs-unix-socket
 tacacsrs-agent-ipc-emulator -> tacacsrs-ipc
 tacacsrs-bash-plugin -> tacacsrs-ipc
 
 tacon -> tacacsrs-ipc (Linux only), tacacsrs-config, tacacsrs-protocol, tacacsrs-networking
-tacacsrs-agentd -> tacacsrs-agent, tacacsrs-ipc, tacacsrs-config,
-                   tacacsrs-credential-http, tacacsrs-provider,
-                   tacacsrs-sonic, tacacsrs-kubesonic
+tacacsrs-agentd -> tacacsrs-agent, tacacsrs-composition, tacacsrs-config,
+                   tacacsrs-networking, tacacsrs-secrets, tacacsrs-sonic,
+                   tacacsrs-kubesonic
 tacacsrs-agent-health -> tacacsrs-ipc
 tacacsrs-agent-ipc-emulatord -> tacacsrs-ipc, tacacsrs-agent-ipc-emulator
 session-wrapper -> tacacsrs-ipc
@@ -138,10 +143,20 @@ session-wrapper -> tacacsrs-ipc
 - `tacacsrs-networking` owns prepared endpoints, transports, client selection,
   connection drivers, sessions, single-connect promotion, routed catalogs, and retry.
 - `tacacsrs-ipc` owns generated `proto` bindings, conversion, the domain handler,
-  bounded Unix server, health, and `ServiceClient`. The client retains a reusable tonic channel.
+  bounded Unix server, standard and detailed health, and `ServiceClient`. The client retains a reusable tonic channel.
+  Optional read-only routes join the listener through `ListenerServices`.
 - `tacacsrs-unix-socket` owns trusted-directory binding, advisory locks, and owned-path cleanup.
 - `tacacsrs-agent` owns source supervision, revision-fenced publication, health,
-  domain operation ingress, raw proxying, and coordinated shutdown. It has no production IPC dependency.
+  domain operation ingress, raw proxying, and coordinated shutdown. Its `host`
+  module declares the host inputs, roles, and deferred values, and runs
+  `AgentRuntime` from components. Its `components` module holds the standard
+  components: datastore source, client API over IPC, HTTP credential evidence,
+  statistics, systemd, upstream watchdog, and invalid-source shutdown.
+- `tacacsrs-lifecycle` owns `HostedService`, `ShutdownSignal`, and typed
+  `HealthGroup` contracts over `health-checks`. It has no workspace dependencies.
+- `tacacsrs-composition` owns the `Component` contract and the checked Dill
+  `Composition` and `Graph`. Only `tacacsrs-composition`, `tacacsrs-agent`, and
+  the source component crates use Dill.
 - `tacacsrs-config` contains generated RFC 7951/YANG JSON model types,
   builders, validation options, server enumeration, and credential reference
   validation for `ietf-system-tacacs-plus`.
@@ -151,6 +166,9 @@ session-wrapper -> tacacsrs-ipc
 - `tacacsrs-credential-http` implements explicitly authorized HTTP evidence retrieval.
 - `tacacsrs-sonic` maps SONiC ConfigDB `TACPLUS` / `TACPLUS_SERVER` data into
   the YANG model and implements SONiC-backed configuration loading and watching.
+  `SonicSource` is its source component.
+- `tacacsrs-kubesonic` maps `TACACSD_` environment variables, Redis server rows,
+  and mounted credentials. `components` returns its source and registration components.
 - `tacacsrs-agent-ipc-emulator` provides OPA/Rego-driven local IPC emulation for
   integration and scenario testing.
 - `tacacsrs-bash-plugin` exposes the SONiC Bash `execve` plugin surface and must
@@ -164,7 +182,11 @@ session-wrapper -> tacacsrs-ipc
   Its man page is generated from clap definitions in `executables/tacon/src/cli.rs`.
 - `tacacsrs-agentd` is the local central agent daemon. It can load static JSON or
   SONiC ConfigDB-backed configuration and proxies IPC operations to upstream
-  TACACS+ servers.
+  TACACS+ servers. Its profiles convert arguments to component settings and
+  select components, and `tacacsrs_agent::host` runs them. The daemon supplies
+  no components of its own. Add sources, credential layers, overlays, startup checks,
+  listeners, hosted services, and health members as components, not as
+  host code changes.
 - `tacacsrs-agent-ipc-emulatord` runs the OPA/Rego-driven IPC emulator as a process.
 - `session-wrapper` is a Linux x86_64 login session wrapper proof of concept.
   When you change it on Windows, use the session-wrapper WSL testing instructions.
@@ -255,9 +277,18 @@ The `.github/steps/inject-versions` action hydrates the manifests and
   channels and notifications.
 - Long CPU-bound work in async code must use `spawn_blocking` or cooperative
   yield points so it does not starve the runtime.
-- Preserve the service failover model: per-server reconnects are serialized, new
-  sessions use the active server index, and the preferred-server probe only does
-  extra work while failed over.
+- Preserve the service failover model: per-server reconnects are serialized and
+  new sessions use the active server index.
+- An unavailable configuration source is never fatal. The agent starts its
+  listeners and hosted services, reports the state through runtime health, and
+  retries. Hosts and orchestrators act on health. Do not add fail-fast startup.
+  A rejected configuration from a source without change notifications is
+  final. The runtime reports `SourceConfigurationInvalid`, and a host component
+  stops the application through the injected `ApplicationLifetime`.
+- The optional upstream watchdog sends accounting `WATCHDOG` records. Readiness
+  waits for the first probe of each server set, and a failed probe withdraws
+  readiness. Systemd `READY=1` follows bound listeners, not
+  readiness.
 
 ## Error Handling and Panics
 

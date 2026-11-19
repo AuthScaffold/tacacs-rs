@@ -246,7 +246,7 @@ cargo clippy --workspace --all-targets --all-features -- -W clippy::pedantic -W 
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --document-private-items
 
 # Verify the declared minimum supported compiler
-cargo +1.88.0 check --workspace --all-targets --all-features --locked
+cargo +1.91.0 check --workspace --all-targets --all-features --locked
 ```
 
 Every package inherits `rust-version.workspace`. Parser fuzz failures are blocking, not advisory.

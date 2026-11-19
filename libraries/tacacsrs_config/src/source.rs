@@ -162,15 +162,6 @@ pub trait ConfigObservation: Send {
     async fn next(&mut self) -> anyhow::Result<Option<ConfigChangeEvent>>;
 }
 
-/// Behavior the runtime applies when the initial datastore load fails.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum InitialLoadPolicy {
-    /// Return the load error to the operator and stop startup.
-    FailFast,
-    /// Retry until a valid snapshot is available or shutdown is requested.
-    RetryUntilAvailable,
-}
-
 /// Change-notification guarantees provided by a datastore instance.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ChangeNotificationMode {
@@ -193,8 +184,6 @@ pub enum EmptyServerPolicy {
 /// Runtime behavior declared by a [`ConfigDatastore`] instance.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct DatastoreRuntimePolicy {
-    /// Initial-load failure behavior.
-    pub initial_load: InitialLoadPolicy,
     /// Change-notification behavior.
     pub change_notifications: ChangeNotificationMode,
     /// Behavior after a valid empty source.
@@ -208,12 +197,8 @@ pub struct DatastoreRuntimePolicy {
 impl DatastoreRuntimePolicy {
     /// Creates a datastore runtime policy.
     #[must_use]
-    pub const fn new(
-        initial_load: InitialLoadPolicy,
-        change_notifications: ChangeNotificationMode,
-    ) -> Self {
+    pub const fn new(change_notifications: ChangeNotificationMode) -> Self {
         Self {
-            initial_load,
             change_notifications,
             empty_servers: EmptyServerPolicy::Clear,
             retry_initial: Duration::from_millis(250),

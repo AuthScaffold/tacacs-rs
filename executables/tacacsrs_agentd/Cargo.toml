@@ -9,41 +9,38 @@ description = "Local service that connects clients to TACACS+ servers"
 
 [dependencies]
 anyhow = { version = "1.0.102", features = ["backtrace"] }
-async-trait = "0.1.89"
 clap = { version = "4.6.1", features = ["derive"] }
 console-subscriber = { version = "0.5.0", optional = true }
 env_logger = "0.11.10"
 env_filter = "2"
-futures-util = { version = "0.3", default-features = false }
 log = "0.4"
-rustls-pki-types = "1.14.1"
-serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tacacsrs-ipc = { path = "../../libraries/tacacsrs_ipc" }
 tacacsrs-agent = { path = "../../libraries/tacacsrs_agent" }
-tacacsrs-provider = { path = "../../libraries/tacacsrs_provider" }
+tacacsrs-composition = { path = "../../libraries/tacacsrs_composition" }
 tacacsrs-config = { path = "../../libraries/tacacsrs_config" }
-tacacsrs-credential-http = { path = "../../libraries/tacacsrs_credential_http" }
 tacacsrs-networking = { path = "../../libraries/tacacsrs_networking" }
-tacacsrs-protocol = { path = "../../libraries/tacacsrs_protocol" }
 tacacsrs-secrets = { path = "../../libraries/tacacsrs_secrets" }
 tacacsrs-sonic = { path = "../../libraries/tacacsrs_sonic" }
 tacacsrs-kubesonic = { path = "../../libraries/tacacsrs_kubesonic" }
 tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "net", "parking_lot", "process", "rt", "rt-multi-thread", "signal", "sync", "time"] }
-tokio-stream = "0.1.18"
-tokio-util = "0.7.18"
-tonic-health = "0.14.6"
 
 [features]
 default = []
 console = ["console-subscriber"]
 
 [dev-dependencies]
-tacacsrs-credential-resolution = { path = "../../libraries/tacacsrs_credential_resolution" }
+async-trait = "0.1.89"
 foreign-types = "0.3.2"
+futures-util = { version = "0.3", default-features = false }
 openssl = "0.10.80"
 openssl-sys = "0.9.116"
+tacacsrs-credential-http = { path = "../../libraries/tacacsrs_credential_http" }
+tacacsrs-credential-resolution = { path = "../../libraries/tacacsrs_credential_resolution" }
+tacacsrs-ipc = { path = "../../libraries/tacacsrs_ipc" }
+tacacsrs-protocol = { path = "../../libraries/tacacsrs_protocol" }
 tokio-openssl = "0.6.5"
+tokio-util = "0.7.18"
+tonic-health = "0.14.6"
 tokio = { version = "1.52.3", features = ["test-util"] }
 tonic = "0.14.6"
 

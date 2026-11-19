@@ -172,7 +172,7 @@ impl ConfigObservation for OwnedObservation {
 #[async_trait]
 impl ConfigDatastore for OwnedSource {
     fn runtime_policy(&self) -> DatastoreRuntimePolicy {
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::Continuous)
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::Continuous)
     }
 
     async fn observe(&self) -> anyhow::Result<Box<dyn ConfigObservation>> {
@@ -381,6 +381,22 @@ fn central_event(server_name: &str) -> ConfigChangeEvent {
     })
 }
 
+struct RejectingFilter;
+
+impl TacacsPlusFilter for RejectingFilter {
+    fn known_payload_copies(&self, _source: &TacacsPlus) -> anyhow::Result<u64> {
+        Ok(0)
+    }
+
+    fn filter(
+        &self,
+        _source: TacacsPlus,
+    ) -> futures_util::future::BoxFuture<'_, anyhow::Result<crate::runtime::FilteredTacacsPlus>>
+    {
+        Box::pin(async { anyhow::bail!("scripted invalid configuration") })
+    }
+}
+
 struct AccountingFilter {
     calls: AtomicUsize,
     known_copy: u64,
@@ -415,7 +431,7 @@ impl TacacsPlusFilter for AccountingFilter {
 async fn candidate_closed_while_waiting_skips_filter_and_provider() {
     for referenced in [false, true] {
         let datastore = Arc::new(ScriptedDatastore::new(
-            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
             [],
             [],
         ));
@@ -499,7 +515,7 @@ async fn candidate_closed_while_waiting_skips_credential_and_scheduled_resolutio
 #[tokio::test]
 async fn candidate_filter_known_copies_are_reserved_before_entry_and_opaque_output_at_handoff() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [],
         [],
     ));
@@ -546,7 +562,7 @@ async fn registered_fixture() -> (
     });
     let (_, health, service) = supervisor(
         Arc::new(ScriptedDatastore::new(
-            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
             [],
             [],
         )),
@@ -739,7 +755,7 @@ async fn candidate_acceptance_timeout_cannot_reject_newer_source() {
 
 async fn acceptance_timeout_is_revision_fenced(superseded: bool) {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [],
         [],
     ));
@@ -947,7 +963,7 @@ async fn candidate_registered_worker_release_admits_only_latest_pending_source()
 #[tokio::test]
 async fn candidate_credential_invalidation_during_filtering_survives_projection() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [],
         [],
     ));
@@ -1155,7 +1171,7 @@ impl CredentialResolver for InitiallyUnavailableResolver {
         request: &CredentialRequest,
         _scope: &tacacsrs_credential_resolution::WorkScope,
     ) -> Result<ResolvedCredential, ResolutionError> {
-        #[allow(deprecated, reason = "AtomicUsize::try_update is newer than the Rust 1.88 MSRV.")]
+        #[allow(deprecated, reason = "AtomicUsize::try_update is newer than the Rust 1.91 MSRV.")]
         let should_fail = self
             .failures_remaining
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| count.checked_sub(1))
@@ -1317,7 +1333,7 @@ async fn provider_material_refreshes_before_expiry_without_notifications() {
     use std::time::SystemTime;
     use tacacsrs_credential_resolution::CredentialValidity;
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [LoadStep::CentralConfig(1)],
         [],
     ));
@@ -1355,7 +1371,7 @@ async fn scheduled_revalidation_does_not_extend_unchanged_provider_validity() {
     use std::time::SystemTime;
     use tacacsrs_credential_resolution::CredentialValidity;
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [LoadStep::CentralConfig(1)],
         [],
     ));
@@ -1395,7 +1411,7 @@ async fn scheduled_revalidation_does_not_extend_unchanged_provider_validity() {
 async fn scheduled_refresh_policy_does_not_postpone_due_work_or_poll_inline_material() {
     for referenced in [false, true] {
         let datastore = Arc::new(ScriptedDatastore::new(
-            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
             [if referenced {
                 LoadStep::CentralConfig(1)
             } else {
@@ -1473,7 +1489,7 @@ async fn scheduled_refresh_policy_does_not_postpone_due_work_or_poll_inline_mate
 #[tokio::test(start_paused = true)]
 async fn scheduled_refresh_failure_expires_and_recovers_without_notifications() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [LoadStep::CentralConfig(1)],
         [],
     ));
@@ -1529,7 +1545,7 @@ async fn scheduled_refresh_failure_expires_and_recovers_without_notifications() 
 #[tokio::test(start_paused = true)]
 async fn pending_scheduled_refresh_does_not_block_expiry_or_host_stop() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [LoadStep::CentralConfig(1)],
         [],
     ));
@@ -1572,7 +1588,7 @@ async fn absolute_validity_expires_without_notifications_and_after_source_withdr
     use tacacsrs_credential_resolution::CredentialValidity;
     for source_first in [false, true] {
         let datastore = Arc::new(ScriptedDatastore::new(
-            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
             [],
             [],
         ));
@@ -1670,10 +1686,7 @@ async fn older_filter_completion_cannot_replace_a_newer_source() {
     for with_resolver in [false, true] {
         for reject_old in [false, true] {
             let datastore = Arc::new(ScriptedDatastore::new(
-                DatastoreRuntimePolicy::new(
-                    InitialLoadPolicy::FailFast,
-                    ChangeNotificationMode::None,
-                ),
+                DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
                 [],
                 [],
             ));
@@ -1709,7 +1722,7 @@ async fn older_filter_completion_cannot_replace_a_newer_source() {
 #[tokio::test]
 async fn late_publication_return_cannot_clear_a_rejected_source_observation() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [],
         [],
     ));
@@ -1738,7 +1751,7 @@ async fn late_publication_return_cannot_clear_a_rejected_source_observation() {
 #[tokio::test]
 async fn credential_refresh_during_source_outage_does_not_claim_source_recovery() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [],
         [],
     ));
@@ -1782,7 +1795,7 @@ async fn credential_refresh_during_source_outage_does_not_claim_source_recovery(
 #[tokio::test(start_paused = true)]
 async fn failed_source_then_stale_credential_publish_keeps_original_expiry_deadline() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [],
         [],
     ));
@@ -1853,7 +1866,7 @@ async fn failed_source_then_stale_credential_publish_keeps_original_expiry_deadl
 #[tokio::test(start_paused = true)]
 async fn stale_source_expiry_does_not_renew_and_valid_source_recovers() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [],
         [],
     ));
@@ -1954,7 +1967,7 @@ async fn stale_source_expiry_does_not_renew_and_valid_source_recovers() {
 #[tokio::test(start_paused = true)]
 async fn recovered_source_resets_expiry_even_when_health_updates_coalesce() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [],
         [],
     ));
@@ -2002,7 +2015,7 @@ async fn recovered_source_resets_expiry_even_when_health_updates_coalesce() {
 #[tokio::test(start_paused = true)]
 async fn credential_expiry_does_not_renew_and_revalidation_recovers() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [],
         [],
     ));
@@ -2098,7 +2111,7 @@ async fn credential_expiry_does_not_renew_and_revalidation_recovers() {
 #[tokio::test(start_paused = true)]
 async fn pending_credential_resolution_expires_and_its_late_result_is_superseded() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [],
         [],
     ));
@@ -2153,7 +2166,7 @@ async fn pending_credential_resolution_expires_and_its_late_result_is_superseded
 #[tokio::test(start_paused = true)]
 async fn recovered_notifications_and_revalidation_clear_credential_staleness() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [],
         [],
     ));
@@ -2200,7 +2213,7 @@ async fn recovered_notifications_and_revalidation_clear_credential_staleness() {
 async fn credential_observation_loss_expires_only_referenced_material() {
     for referenced in [false, true] {
         let datastore = Arc::new(ScriptedDatastore::new(
-            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
             [],
             [],
         ));
@@ -2248,7 +2261,7 @@ async fn credential_observation_loss_expires_only_referenced_material() {
 async fn independent_expiry_budgets_remain_active_after_the_first_withdrawal() {
     for (source_timeout, credential_timeout) in [(1, 2), (2, 1)] {
         let datastore = Arc::new(ScriptedDatastore::new(
-            DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+            DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
             [],
             [],
         ));
@@ -2319,7 +2332,7 @@ async fn independent_expiry_budgets_remain_active_after_the_first_withdrawal() {
 #[tokio::test(start_paused = true)]
 async fn failed_credentials_expire_even_while_source_is_current() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [LoadStep::CentralConfig(1)],
         [],
     ));
@@ -2361,7 +2374,7 @@ async fn failed_credentials_expire_even_while_source_is_current() {
 #[tokio::test(start_paused = true)]
 async fn unavailable_source_does_not_serve_past_the_default_stale_budget() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [LoadStep::Config(1)],
         [],
     ));
@@ -2396,7 +2409,7 @@ async fn unavailable_source_does_not_serve_past_the_default_stale_budget() {
 #[tokio::test]
 async fn source_without_a_resolver_rejects_central_references_before_publication() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [],
         [],
     ));
@@ -2425,10 +2438,7 @@ async fn source_without_a_resolver_rejects_central_references_before_publication
 #[tokio::test]
 async fn dropped_initialization_reopens_observation_before_retry() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(
-            InitialLoadPolicy::FailFast,
-            ChangeNotificationMode::Continuous,
-        ),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::Continuous),
         [LoadStep::Config(1), LoadStep::Config(2)],
         [],
     ));
@@ -2458,7 +2468,7 @@ async fn dropped_initialization_reopens_observation_before_retry() {
 #[tokio::test]
 async fn initialization_and_updates_share_one_observation_until_cancellation() {
     let dummy = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [],
         [],
     ));
@@ -2556,7 +2566,7 @@ async fn initialization_and_updates_share_one_observation_until_cancellation() {
 #[tokio::test]
 async fn notification_loop_replaces_pending_source_work_and_cancels_it_on_shutdown() {
     let dummy = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [],
         [],
     ));
@@ -2632,7 +2642,7 @@ async fn notification_loop_replaces_pending_source_work_and_cancels_it_on_shutdo
 #[tokio::test(start_paused = true)]
 async fn notification_disconnect_cancels_stalled_resolution_and_expires_original_source() {
     let dummy = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [],
         [],
     ));
@@ -2725,7 +2735,7 @@ async fn file_change_between_initialization_and_serving_is_reconciled() {
         |servers| format!(r#"{{"ietf-system-tacacs-plus:tacacs-plus":{{"server":{servers}}}}}"#);
     tokio::fs::write(&path, document(r#"[{"name":"primary","server-type":"accounting","address":"192.0.2.10","port":49,"shared-secret":"test-secret"}]"#)).await.unwrap();
     let dummy = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [],
         [],
     ));
@@ -2763,7 +2773,7 @@ async fn file_change_between_initialization_and_serving_is_reconciled() {
 #[tokio::test]
 async fn initialized_supervisor_starts_credential_notifications_without_reloading_source() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [LoadStep::CentralConfig(1)],
         [],
     ));
@@ -2794,7 +2804,7 @@ async fn initialized_supervisor_starts_credential_notifications_without_reloadin
         }
     })
     .await
-    .expect("credential recovery must run after fail-fast initialization");
+    .expect("credential recovery must run after the initial configuration");
     cancellation.cancel();
     task.await.unwrap().unwrap();
     assert_eq!(datastore.load_count.load(Ordering::Relaxed), 1);
@@ -2803,7 +2813,7 @@ async fn initialized_supervisor_starts_credential_notifications_without_reloadin
 #[tokio::test]
 async fn host_cancellation_interrupts_resolution_and_keeps_applied_configuration() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [LoadStep::CentralConfig(2)],
         [],
     ));
@@ -2831,7 +2841,7 @@ async fn host_cancellation_interrupts_resolution_and_keeps_applied_configuration
 #[tokio::test]
 async fn credential_notifications_without_a_resolver_are_rejected() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [LoadStep::Config(1)],
         [],
     ));
@@ -2851,10 +2861,7 @@ async fn credential_notifications_without_a_resolver_are_rejected() {
 #[tokio::test]
 async fn cancellation_interrupts_recovery_reload() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(
-            InitialLoadPolicy::FailFast,
-            ChangeNotificationMode::Continuous,
-        ),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::Continuous),
         [LoadStep::Config(1), LoadStep::Pending],
         [SubscriptionStep::Empty],
     ));
@@ -2883,7 +2890,7 @@ async fn cancellation_interrupts_recovery_reload() {
 #[tokio::test]
 async fn older_publication_completion_cannot_clear_newer_credential_failure() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [],
         [],
     ));
@@ -2932,7 +2939,7 @@ async fn older_publication_completion_cannot_clear_newer_credential_failure() {
 #[tokio::test]
 async fn resolved_candidate_applies_only_after_every_credential_succeeds() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [],
         [],
     ));
@@ -2980,10 +2987,7 @@ async fn resolved_candidate_applies_only_after_every_credential_succeeds() {
 #[tokio::test]
 async fn initial_credential_unavailability_retries_complete_snapshot_before_apply() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(
-            InitialLoadPolicy::RetryUntilAvailable,
-            ChangeNotificationMode::None,
-        ),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [LoadStep::CentralConfig(1), LoadStep::CentralConfig(1)],
         [],
     ));
@@ -3014,7 +3018,7 @@ async fn initial_credential_unavailability_retries_complete_snapshot_before_appl
 #[tokio::test]
 async fn known_credential_event_rematerializes_only_affected_server() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [LoadStep::CentralConfig(2)],
         [],
     ));
@@ -3080,7 +3084,7 @@ async fn known_credential_event_rematerializes_only_affected_server() {
 #[tokio::test]
 async fn credential_refresh_preserves_rejected_datastore_candidate_state() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [],
         [],
     ));
@@ -3131,7 +3135,7 @@ async fn credential_refresh_preserves_rejected_datastore_candidate_state() {
 #[tokio::test]
 async fn credential_subscription_failure_sets_distinct_health_reason() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [LoadStep::CentralConfig(1)],
         [],
     ));
@@ -3186,22 +3190,99 @@ async fn credential_subscription_failure_sets_distinct_health_reason() {
 }
 
 #[tokio::test]
-async fn fail_fast_returns_after_first_initial_load_failure() {
+async fn rejected_static_configuration_is_final_and_stops_retries() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
+        [LoadStep::Config(1), LoadStep::Config(1)],
+        [],
+    ));
+    let (_, health, service) = supervisor(Arc::clone(&datastore), Duration::ZERO);
+    let supervisor = ConfigSupervisor::with_backoff(
+        Arc::clone(&datastore) as Arc<dyn ConfigDatastore>,
+        Arc::clone(&service),
+        health.clone(),
+        Arc::new(RejectingFilter),
+        Arc::new(FixedBackoff(Duration::ZERO)),
+    );
+    let cancellation = CancellationToken::new();
+    let mut observed = health.subscribe();
+
+    let load = supervisor.load_initial(&cancellation);
+    tokio::pin!(load);
+    let final_reason = observed.wait_for(|snapshot| {
+        snapshot
+            .degradation_reasons()
+            .contains(&DegradationReason::SourceConfigurationInvalid)
+    });
+    tokio::select! {
+        result = &mut load => panic!("the final rejection must wait for cancellation, not return {result:?}"),
+        changed = timeout(Duration::from_secs(5), final_reason) => {
+            changed
+                .expect("the supervisor must report the final rejection")
+                .expect("the health watch must stay open");
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(datastore.load_count.load(Ordering::Relaxed), 1);
+    cancellation.cancel();
+    load.await.expect("cancellation is successful");
+    assert_eq!(service.server_count(), 0);
+}
+
+#[tokio::test]
+async fn static_materialization_failure_without_a_resolver_is_final() {
+    let datastore = Arc::new(ScriptedDatastore::new(
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
+        [LoadStep::CentralConfig(1), LoadStep::Config(1)],
+        [],
+    ));
+    let (supervisor, health, service) = supervisor(Arc::clone(&datastore), Duration::ZERO);
+    let cancellation = CancellationToken::new();
+    let mut observed = health.subscribe();
+
+    let load = supervisor.load_initial(&cancellation);
+    tokio::pin!(load);
+    let final_reason = observed.wait_for(|snapshot| {
+        snapshot
+            .degradation_reasons()
+            .contains(&DegradationReason::SourceConfigurationInvalid)
+    });
+    tokio::select! {
+        result = &mut load => panic!("the final rejection must wait for cancellation, not return {result:?}"),
+        changed = timeout(Duration::from_secs(5), final_reason) => {
+            changed
+                .expect("the supervisor must report the final rejection")
+                .expect("the health watch must stay open");
+        }
+    }
+    assert_eq!(datastore.load_count.load(Ordering::Relaxed), 1);
+    cancellation.cancel();
+    load.await.expect("cancellation is successful");
+    assert_eq!(service.server_count(), 0);
+}
+
+#[tokio::test]
+async fn initial_load_failure_reports_unavailable_while_it_retries() {
+    let datastore = Arc::new(ScriptedDatastore::new(
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [LoadStep::Error],
         [],
     ));
-    let (supervisor, health, _) = supervisor(Arc::clone(&datastore), Duration::ZERO);
+    let (supervisor, health, _) = supervisor(Arc::clone(&datastore), Duration::MAX);
+    let cancellation = CancellationToken::new();
+    let mut observed = health.subscribe();
 
-    let result = supervisor.load_initial(&CancellationToken::new()).await;
+    let load = supervisor.load_initial(&cancellation);
+    tokio::pin!(load);
+    tokio::select! {
+        result = &mut load => panic!("the initial load must retry, not return {result:?}"),
+        changed = observed.wait_for(|snapshot| snapshot.datastore() == DatastoreState::Unavailable) => {
+            changed.expect("the health watch must stay open");
+        }
+    }
+    cancellation.cancel();
+    load.await.expect("cancellation must stop the retry");
 
-    assert!(result.is_err());
-    let public_error = result
-        .expect_err("fail-fast must return an error")
-        .to_string();
-    assert!(!public_error.contains("scripted load failure"));
-    assert!(!public_error.contains("test-secret"));
     assert_eq!(datastore.load_count.load(Ordering::Relaxed), 1);
     assert_eq!(health.snapshot().datastore(), DatastoreState::Unavailable);
 }
@@ -3209,10 +3290,7 @@ async fn fail_fast_returns_after_first_initial_load_failure() {
 #[tokio::test]
 async fn retrying_initial_load_applies_first_available_snapshot() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(
-            InitialLoadPolicy::RetryUntilAvailable,
-            ChangeNotificationMode::None,
-        ),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [LoadStep::Error, LoadStep::Error, LoadStep::Config(1)],
         [],
     ));
@@ -3232,10 +3310,7 @@ async fn retrying_initial_load_applies_first_available_snapshot() {
 #[tokio::test]
 async fn cancellation_interrupts_initial_retry_sleep() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(
-            InitialLoadPolicy::RetryUntilAvailable,
-            ChangeNotificationMode::None,
-        ),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [LoadStep::Error],
         [],
     ));
@@ -3258,7 +3333,7 @@ async fn cancellation_interrupts_initial_retry_sleep() {
 #[tokio::test]
 async fn notification_none_never_subscribes() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(InitialLoadPolicy::FailFast, ChangeNotificationMode::None),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::None),
         [LoadStep::Config(1)],
         [],
     ));
@@ -3277,10 +3352,7 @@ async fn notification_none_never_subscribes() {
 #[tokio::test]
 async fn ended_observation_reopens_before_reading_recovery_baseline() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(
-            InitialLoadPolicy::RetryUntilAvailable,
-            ChangeNotificationMode::Continuous,
-        ),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::Continuous),
         [LoadStep::Config(1), LoadStep::Config(2)],
         [SubscriptionStep::Empty, SubscriptionStep::Pending],
     ));
@@ -3308,10 +3380,7 @@ async fn ended_observation_reopens_before_reading_recovery_baseline() {
 #[tokio::test]
 async fn rejected_candidate_retains_known_good_configuration() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(
-            InitialLoadPolicy::FailFast,
-            ChangeNotificationMode::Continuous,
-        ),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::Continuous),
         [LoadStep::Config(1)],
         [SubscriptionStep::RejectedThenPending],
     ));
@@ -3345,10 +3414,7 @@ async fn rejected_candidate_retains_known_good_configuration() {
 #[tokio::test]
 async fn restart_required_retains_known_good_configuration_and_readiness() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(
-            InitialLoadPolicy::FailFast,
-            ChangeNotificationMode::Continuous,
-        ),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::Continuous),
         [LoadStep::Config(1)],
         [SubscriptionStep::RestartThenPending],
     ));
@@ -3384,10 +3450,7 @@ async fn restart_required_retains_known_good_configuration_and_readiness() {
 #[tokio::test]
 async fn observation_setup_failure_never_loads_an_unobserved_snapshot() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(
-            InitialLoadPolicy::RetryUntilAvailable,
-            ChangeNotificationMode::Continuous,
-        ),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::Continuous),
         [LoadStep::Config(1), LoadStep::Config(2)],
         [SubscriptionStep::Error, SubscriptionStep::Pending],
     ));
@@ -3415,10 +3478,7 @@ async fn observation_setup_failure_never_loads_an_unobserved_snapshot() {
 #[tokio::test]
 async fn failed_recovery_baseline_reopens_observation_before_retry() {
     let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(
-            InitialLoadPolicy::RetryUntilAvailable,
-            ChangeNotificationMode::Continuous,
-        ),
+        DatastoreRuntimePolicy::new(ChangeNotificationMode::Continuous),
         [LoadStep::Config(1), LoadStep::Error, LoadStep::Config(2)],
         [SubscriptionStep::Empty, SubscriptionStep::Pending],
     ));

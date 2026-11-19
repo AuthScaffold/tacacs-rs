@@ -440,7 +440,8 @@ async fn wait_for_health(
     Ok(())
 }
 
-async fn terminate(child: Child) -> Result<()> {
+/// Stops the daemon with SIGTERM and returns its standard error.
+async fn terminate(child: Child) -> Result<String> {
     assert!(Command::new("kill")
         .arg("-TERM")
         .arg(child.id().unwrap().to_string())
@@ -453,6 +454,13 @@ async fn terminate(child: Child) -> Result<()> {
         "daemon shutdown failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    Ok(String::from_utf8_lossy(&output.stderr).into_owned())
+}
+
+/// Waits until the daemon serves IPC but reports that it is not ready.
+async fn wait_for_unavailable_source(directory: &Path, child: &mut Child) -> Result<()> {
+    wait_for_health(directory, child, ServingStatus::NotServing).await?;
+    anyhow::ensure!(directory.join("agent.sock").exists(), "IPC socket must stay bound");
     Ok(())
 }
 
@@ -593,13 +601,14 @@ async fn daemon_http_loads_a_complete_delta_pair_without_rewriting_source() -> R
         if complete {
             wait_for_health(&directory.0, &mut child, ServingStatus::Serving).await?;
             terminate(child).await?;
+            tokio::time::timeout(Duration::from_secs(5), peer).await???;
         } else {
-            let output =
-                tokio::time::timeout(Duration::from_secs(5), child.wait_with_output()).await??;
-            assert!(!output.status.success());
-            assert!(!directory.0.join("agent.sock").exists());
+            // An incomplete pair is never applied. The daemon stays up and not ready.
+            tokio::time::timeout(Duration::from_secs(5), peer).await???;
+            wait_for_unavailable_source(&directory.0, &mut child).await?;
+            terminate(child).await?;
         }
-        tokio::time::timeout(Duration::from_secs(5), peer).await???;
+        assert!(!directory.0.join("agent.sock").exists());
         assert_eq!(tokio::fs::read(directory.0.join("config.json")).await?, original);
     }
     Ok(())
@@ -678,13 +687,13 @@ async fn daemon_http_refresh_withdraws_recovers_and_cancels_pending_io() -> Resu
 }
 
 #[tokio::test]
-async fn daemon_http_startup_failure_and_cancellation_do_not_bind_ipc() -> Result<()> {
+async fn daemon_http_startup_failure_keeps_ipc_not_ready_and_cancellation_is_clean() -> Result<()> {
     for cancel in [false, true] {
         let directory = Directory::new()?;
         write_source(&directory.0).await?;
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let url = format!("http://{}/issuer.crl", listener.local_addr()?);
-        let child = agent_command(&directory.0, &url).spawn()?;
+        let mut child = agent_command(&directory.0, &url).spawn()?;
         let (mut stream, _) =
             tokio::time::timeout(Duration::from_secs(5), listener.accept()).await??;
         assert!(stream.read(&mut [0; 4096]).await? > 0);
@@ -696,10 +705,9 @@ async fn daemon_http_startup_failure_and_cancellation_do_not_bind_ipc() -> Resul
             );
         } else {
             stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await?;
-            let output =
-                tokio::time::timeout(Duration::from_secs(5), child.wait_with_output()).await??;
-            assert!(!output.status.success());
-            let error = String::from_utf8_lossy(&output.stderr);
+            drop(stream);
+            wait_for_unavailable_source(&directory.0, &mut child).await?;
+            let error = terminate(child).await?;
             assert!(!error.contains(&url) && !error.contains("opaque-crls"));
         }
         assert!(!directory.0.join("agent.sock").exists());
@@ -765,14 +773,13 @@ async fn daemon_https_requires_trusted_ca_and_matching_identity() -> Result<()> 
         if accepted {
             wait_for_health(&directory.0, &mut child, ServingStatus::Serving).await?;
             terminate(child).await?;
+            tokio::time::timeout(Duration::from_secs(5), peer).await???;
         } else {
-            let output =
-                tokio::time::timeout(Duration::from_secs(5), child.wait_with_output()).await??;
-            assert!(!output.status.success());
-            assert!(!String::from_utf8_lossy(&output.stderr).contains(&url));
-            assert!(!directory.0.join("agent.sock").exists());
+            tokio::time::timeout(Duration::from_secs(5), peer).await???;
+            wait_for_unavailable_source(&directory.0, &mut child).await?;
+            assert!(!terminate(child).await?.contains(&url));
         }
-        tokio::time::timeout(Duration::from_secs(5), peer).await???;
+        assert!(!directory.0.join("agent.sock").exists());
     }
     Ok(())
 }
