@@ -466,7 +466,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             return;
         }
         log::info!(
-            "Configured {} TACACS+ server(s); operation connections will open on first use",
+            "Configured {} TACACS+ server(s); server connections will open on first use",
             server_set.server_count()
         );
     }

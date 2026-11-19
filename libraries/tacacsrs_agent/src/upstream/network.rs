@@ -57,7 +57,7 @@ impl tacacsrs_networking::routed::EndpointConnector for NetworkUpstreamConnector
     async fn connect(
         &self,
         endpoint: PreparedEndpoint,
-        operation: OperationKind,
+        _operation: OperationKind,
     ) -> anyhow::Result<Arc<Self::Connection>> {
         let address = endpoint.address().to_string();
         let connection = TacacsClient::connect_prepared(
@@ -67,7 +67,6 @@ impl tacacsrs_networking::routed::EndpointConnector for NetworkUpstreamConnector
 
         Ok(Arc::new(TacacsUpstreamConnection {
             server_address: address,
-            operation,
             connection,
         }))
     }
@@ -75,14 +74,12 @@ impl tacacsrs_networking::routed::EndpointConnector for NetworkUpstreamConnector
 
 /// Wraps a configured network client for the service state machine.
 ///
-/// The networking layer selects a dedicated connection or a shared
-/// single-connection transport for each operation. The agent only runs
+/// The routed client shares one connection per server across
+/// authentication, authorization, and accounting. The agent only runs
 /// request/reply flows and controls failover.
 pub(crate) struct TacacsUpstreamConnection {
     /// The `host:port` address of the TACACS+ server.
     server_address: String,
-    /// Operation isolated on this adaptive client.
-    operation: OperationKind,
     /// The adaptive client connection.
     connection: TacacsClient,
 }
@@ -153,7 +150,6 @@ impl UpstreamConnection for TacacsUpstreamConnection {
         exchange: &AccountingExchange,
         deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AccountingReply, UpstreamRequestError> {
-        debug_assert_eq!(self.operation, OperationKind::Accounting);
         log_session_start(
             "accounting",
             &self.server_address,
@@ -192,7 +188,6 @@ impl UpstreamConnection for TacacsUpstreamConnection {
         exchange: &PapAuthenticationExchange,
         deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthenticationReply, UpstreamRequestError> {
-        debug_assert_eq!(self.operation, OperationKind::Authentication);
         self.connection
             .execute_classified_until(exchange, deadline)
             .await
@@ -209,7 +204,6 @@ impl UpstreamConnection for TacacsUpstreamConnection {
         exchange: &AuthorizationExchange,
         deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthorizationReply, UpstreamRequestError> {
-        debug_assert_eq!(self.operation, OperationKind::Authorization);
         log_session_start(
             "authorization",
             &self.server_address,

@@ -8,13 +8,20 @@ use crate::{PreparedEndpoint, RequestDeadline, TacacsClient};
 
 use super::OperationKind;
 
-/// Supplies operation-isolated connections and their retirement behavior.
+/// Supplies shared endpoint connections and their retirement behavior.
+///
+/// The routed client caches one connection per endpoint. Every operation that
+/// routes to the endpoint uses that connection, so it must accept
+/// authentication, authorization, and accounting sessions.
 #[async_trait]
 pub trait EndpointConnector: Send + Sync + 'static {
     /// Shared connection handle used by the caller's exchange implementation.
     type Connection: Send + Sync + ?Sized + 'static;
 
     /// Establishes a connection from prepared transport inputs.
+    ///
+    /// `operation` names the operation whose binding started this attempt.
+    /// Use it for diagnostics only. The connection serves every operation.
     ///
     /// # Errors
     /// Returns an error if connection establishment fails.

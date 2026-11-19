@@ -27,6 +27,7 @@ impl OperationCircuit {
             .is_some()
     }
 
+    #[cfg(test)]
     pub(super) fn open(&self) {
         let mut state = self
             .state
@@ -35,6 +36,31 @@ impl OperationCircuit {
         state.opened_at = Some(Instant::now());
         state.recovery_trial_active = false;
         state.revision = state.revision.wrapping_add(1);
+    }
+
+    /// Returns the current revision, which changes on every open or close.
+    pub(super) fn revision(&self) -> u64 {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .revision
+    }
+
+    /// Opens the circuit if no other outcome changed it after `revision`.
+    ///
+    /// An already open circuit restarts its recovery interval.
+    pub(super) fn open_if_unchanged(&self, revision: u64) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.revision != revision {
+            return false;
+        }
+        state.opened_at = Some(Instant::now());
+        state.recovery_trial_active = false;
+        state.revision = state.revision.wrapping_add(1);
+        true
     }
 
     /// Returns the circuit revision while the circuit is open.

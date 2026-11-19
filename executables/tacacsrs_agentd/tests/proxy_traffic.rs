@@ -1263,9 +1263,9 @@ async fn start_failover_pair(strategy: &str) -> (Upstream, Upstream, Daemon) {
 /// Checks that an `ERROR` affects only the operation type that received it.
 ///
 /// RFC 8907 section 4.4 tells the client to treat an `ERROR` reply as an
-/// unreachable server. The proxy must stop new sessions on the failed
-/// connection for that operation, close it, and send new requests of that
-/// operation to the backup. The other operation types keep the preferred server.
+/// unreachable server. The proxy sends new requests of that operation to the
+/// backup. The other operation types keep the preferred server and its shared
+/// connection.
 async fn assert_error_isolated_to_operation(primary: &Upstream, backup: &Upstream, port: u16) {
     for kind in [Kind::Authentication, Kind::Accounting] {
         let before = primary.received(kind);
@@ -1274,15 +1274,29 @@ async fn assert_error_isolated_to_operation(primary: &Upstream, backup: &Upstrea
         assert_eq!(primary.received(kind), before + 1, "{kind:?} left the preferred server");
         assert_eq!(backup.received(kind), 0, "{kind:?} moved to the backup server");
     }
-    // Only the retired authorization connection closes.
-    wait_until("the failed authorization connection closes", || primary.open_connections() == 2)
-        .await;
+    assert_eq!(primary.open_connections(), 1, "the shared preferred connection closed");
+    assert_eq!(primary.connections_accepted(), 1);
+
+    // A second operation that fails over joins the open backup connection.
+    let before = primary.received(Kind::Accounting);
+    primary.set_plan(once(Kind::Accounting, Fault::Error));
+    let _ = single_request(port, Kind::Accounting, &format!("{USER_PREFIX}a")).await;
+    let moved = single_request(port, Kind::Accounting, &format!("{USER_PREFIX}m")).await;
+    assert!(succeeded(&moved), "accounting failed after its ERROR: {moved:?}");
+    assert_eq!(primary.received(Kind::Accounting), before + 1);
+    assert!(backup.received(Kind::Accounting) >= 1, "accounting did not fail over");
+    assert_eq!(backup.connections_accepted(), 1, "the backup opened a second connection");
+
+    let authentication =
+        single_request(port, Kind::Authentication, &format!("{USER_PREFIX}s")).await;
+    assert!(succeeded(&authentication), "authentication failed: {authentication:?}");
+    assert_eq!(backup.received(Kind::Authentication), 0, "authentication left the primary");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deferred_failover_forwards_an_error_and_moves_only_that_operation() {
     let (primary, backup, daemon) = start_failover_pair("deferred-failover").await;
-    assert_eq!(primary.open_connections(), 3);
+    assert_eq!(primary.open_connections(), 1, "operations did not share one connection");
     primary.set_plan(once(Kind::Authorization, Fault::Error));
 
     let failed = single_request(daemon.port, Kind::Authorization, &format!("{USER_PREFIX}e")).await;
@@ -1329,10 +1343,38 @@ async fn dropped_proven_connection_reconnects_to_the_preferred_server() {
     daemon.stop().await;
 }
 
+/// Checks that a preferred-server outage moves every operation onto one backup connection.
+///
+/// Each operation type discovers the outage separately. They must still share
+/// one backup connection, so the backup does not receive three connections for
+/// each proxy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn preferred_server_outage_converges_on_one_backup_connection() {
+    let (primary, backup, daemon) = start_failover_pair("ordered-safe-retry").await;
+    drop(primary);
+
+    for kind in Kind::ALL {
+        let mut outcome = None;
+        for attempt in 0..3 {
+            let next = single_request(daemon.port, kind, &format!("{USER_PREFIX}o{attempt}")).await;
+            if succeeded(&next) {
+                outcome = None;
+                break;
+            }
+            outcome = Some(next);
+        }
+        assert!(outcome.is_none(), "{kind:?} did not recover on the backup: {outcome:?}");
+        assert!(backup.received(kind) >= 1, "{kind:?} did not use the backup");
+    }
+    assert_eq!(backup.connections_accepted(), 1, "operations opened separate backup connections");
+    assert_eq!(backup.open_connections(), 1);
+    daemon.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ordered_safe_retry_replays_an_error_on_the_backup_server() {
     let (primary, backup, daemon) = start_failover_pair("ordered-safe-retry").await;
-    assert_eq!(primary.open_connections(), 3);
+    assert_eq!(primary.open_connections(), 1, "operations did not share one connection");
     primary.set_plan(once(Kind::Authorization, Fault::Error));
 
     let retried =

@@ -374,13 +374,13 @@ Atomic replacement prevents partial reports but does not make filesystem I/O har
 
 ## Failover behavior
 
-Each operation (authentication, authorization, or accounting) has its own active route and its own circuit on each server. The route contains only servers that support the operation, in configuration order. IPC and proxy requests share that route. With single-connect, they can reuse one upstream connection per server and operation.
+Each operation (authentication, authorization, or accounting) has its own active route and its own circuit on each server. The route contains only servers that support the operation, in configuration order. IPC and proxy requests share that route. Each server has one cached upstream connection, and all three operations use it. With single-connect, sessions of every operation share that connection.
 
 ### State transitions
 
-A closed circuit lets a server receive new sessions. A failed connection attempt, an upstream `ERROR`, or a timeout during an upstream exchange opens the circuit. The routed client discards the cached connection. If the failed server was active, the route advances one position. A downstream disconnect alone leaves the circuit unchanged.
+A closed circuit lets a server receive new sessions. A failed connection attempt, an upstream `ERROR`, or a timeout during an upstream exchange opens the circuit for that operation only. If the failed server was active, the operation's route advances one position. After an `ERROR` or a timeout, the shared connection stays open, because the other operations can still be healthy on that server. A downstream disconnect alone leaves the circuit unchanged.
 
-A lost connection or a truncated reply is a transport fault. If the connection already completed a valid exchange for that operation, the routed client discards the connection and keeps the circuit closed. The next session of that operation reconnects to the same server. The session that was in progress on the lost connection fails. The circuit opens only if the reconnect fails, the server times out, or the server returns `ERROR`. A transport fault on a connection that has not completed a valid exchange opens the circuit, so a server that accepts connections and then drops them cannot keep traffic.
+A lost connection or a truncated reply is a transport fault. The routed client discards the shared connection for all operations. If the connection already completed a valid exchange for any operation, the circuit stays closed. The next session of each operation reconnects to the same server, and the operations share the new connection. The session that was in progress on the lost connection fails. The circuit opens only if the reconnect fails, the server times out, or the server returns `ERROR`. A transport fault on a connection that has not completed a valid exchange opens the circuit, so a server that accepts connections and then drops them cannot keep traffic.
 
 For each new binding, the routed client tries each eligible server at most once across three passes:
 
@@ -388,7 +388,18 @@ For each new binding, the routed client tries each eligible server at most once 
 2. **Healthy servers.** The client tries closed circuits from the active position and wraps to the start of the route. The first server that connects becomes active.
 3. **Last resort.** If neither pass found a connection, the client tries the remaining open circuits from the active position, without waiting for recovery.
 
-A connection failure in any pass opens that server's circuit or keeps it open, and selection continues within the same call. If another server connects and answers in time, the downstream client receives its reply. Concurrent callers share a connection attempt for the same server and operation. After a successful exchange on a recovery trial or last-resort binding, the circuit closes. That server becomes active if it comes before the active server in configuration order, or if the active server's circuit is open. The routed client then retires the cached connections for that operation on the other servers. Each retired connection refuses new sessions and closes after its active sessions finish. For example, when authentication returns from B to A, the authentication connection to B closes, and the authorization and accounting connections to A are not affected.
+A connection failure in any pass opens that server's circuit or keeps it open, and selection continues within the same call. If another server connects and answers in time, the downstream client receives its reply. Concurrent callers share a connection attempt for the same server, whatever their operations. After a successful exchange on a recovery trial or last-resort binding, the circuit closes. That server becomes active if it comes before the active server in configuration order, or if the active server's circuit is open.
+
+### Connection sharing and retirement
+
+An operation that moves to a server with an open connection uses that connection. It does not open a second one. The routed client retires a server's connection when no operation's route has that server active and no session holds the connection. A retired connection refuses new sessions and closes after its active sessions finish.
+
+For example, the configuration lists A, then B:
+
+- **Authorization receives `ERROR` on A.** Authorization moves to B and opens one connection to B. Authentication and accounting keep using the connection to A.
+- **Accounting then receives `ERROR` on A.** Accounting moves to B and uses the existing connection to B.
+- **A recovers.** A recovery trial for authorization succeeds on A's existing connection, and authorization returns to A. Accounting returns after its own trial. When no operation uses B and its last session ends, the connection to B closes.
+- **A shuts down.** Each operation finds out separately, when its next session fails to reach A. Each one then moves to B, and all three share one connection to B. B receives one connection from each proxy.
 
 ### Failover strategies
 
@@ -401,7 +412,7 @@ The `tacacs-proxy-failover-strategy` policy controls how the proxy handles the f
 
 After an authentication challenge, the session stays on the server that sent the challenge. Under either strategy, the proxy forwards a later `ERROR`. If the proxy has no upstream reply to forward, it sends a local `ERROR`. An upstream failure ends only the affected session. Other sessions can continue on the same downstream connection.
 
-For a connection-related `ERROR` in single-connect mode, section 4.4 requires the connection to refuse new sessions. Established sessions can finish, then the connection must close. The proxy retires the shared upstream connection on any `ERROR`, even on the first packet. The connection stops accepting new sessions and closes once active sessions finish. If the connector takes more than one second to initiate retirement, the routed client forces closure. Sessions that have already started to drain have no separate one-second cutoff.
+For a connection-related `ERROR` in single-connect mode, section 4.4 says that the client must not start new sessions on that connection, and must close it after its active sessions finish. The proxy applies this rule per operation. It stops new sessions of the failed operation on that server, and keeps the shared connection open for the other operations. This is a deliberate trade-off. An `ERROR` often comes from one request type or one request's content, and closing the connection would move every operation to the backup at once. If the server is down for every operation, each operation fails over when its own sessions fail. When a retired connection closes and the connector takes more than one second to initiate retirement, the routed client forces closure. Sessions that have already started to drain have no separate one-second cutoff.
 
 [RFC 8907 section 3.6](https://www.rfc-editor.org/rfc/rfc8907#section-3.6) also calls for `ERROR` for an unsupported or unrecognized option. The status alone cannot distinguish this case from a server fault. One such request can therefore move its operation to a backup.
 
@@ -431,7 +442,7 @@ In both cases, new sessions stay on C between recovery trials. If A’s recovery
 
 ## Startup Warm-up
 
-The daemon creates operation connections on first use. The optional upstream
+The daemon creates server connections on first use. The optional upstream
 watchdog sends only accounting `WATCHDOG` records. It does not test
 authentication or authorization routes.
 

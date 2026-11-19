@@ -595,17 +595,6 @@ async fn test_connections_open_lazily_in_preference_order() {
     assert_eq!(connector.connect_attempts_for(&second.address).await, 1);
 }
 
-async fn recover_fake_connection(connection: &FakeConnection) {
-    tokio::time::timeout(Duration::from_secs(1), async {
-        while connection.usable.load(Ordering::Acquire) {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("old connection retirement must precede simulated server recovery");
-    connection.usable.store(true, Ordering::Release);
-}
-
 #[tokio::test]
 async fn operation_failure_does_not_move_other_operation_cursors() {
     let primary = Arc::new(FakeConnection {
@@ -634,7 +623,6 @@ async fn operation_failure_does_not_move_other_operation_cursors() {
         .await
         .expect("primary authentication route");
     authentication.note_failure().await;
-    recover_fake_connection(&primary).await;
 
     let authorization = state
         .bind_server_for_operation(OperationKind::Authorization)
@@ -1171,7 +1159,6 @@ async fn binding_outcomes_outlive_router_and_manager() {
     let request = router.capture_request(OperationKind::Authentication);
     let initial = request.bind().await.unwrap();
     initial.note_failure().await;
-    recover_fake_connection(&primary).await;
     tokio::time::advance(Duration::from_secs(5)).await;
     let recovery = request.bind().await.unwrap();
     assert_eq!(recovery.connection.server_address(), primary.address);
@@ -1224,7 +1211,6 @@ async fn real_request_recovers_a_higher_priority_operation_route() {
         .await
         .expect("initial primary route");
     initial.note_failure().await;
-    recover_fake_connection(&primary).await;
     let fallback = state
         .bind_server_for_operation(OperationKind::Authentication)
         .await
@@ -1282,7 +1268,6 @@ async fn stale_failure_does_not_invalidate_a_recovered_connection() {
         .await
         .expect("initial binding");
     stale_binding.note_failure().await;
-    recover_fake_connection(&primary).await;
     tokio::time::advance(Duration::from_secs(5)).await;
     let recovered = state
         .bind_server_for_operation(OperationKind::Authentication)
@@ -1297,7 +1282,8 @@ async fn stale_failure_does_not_invalidate_a_recovered_connection() {
         .expect("current connection remains available");
 
     assert_eq!(current.binding.connection_generation(), recovered.binding.connection_generation());
-    assert_eq!(connector.connect_attempts_for(&primary.address).await, 2);
+    // An ERROR keeps the shared connection, so recovery reuses it.
+    assert_eq!(connector.connect_attempts_for(&primary.address).await, 1);
 }
 
 #[tokio::test]

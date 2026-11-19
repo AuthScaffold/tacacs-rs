@@ -263,7 +263,7 @@ The [daemon failover guide](../../docs/tacacsrs-agentd.md#failover-behavior) exp
 
 `config::RuntimePolicy` projects canonical service policy into a `FailoverPlan` attempt budget.
 `tacacsrs_networking::retry` applies the conservative replay rules and owns the retry loop.
-The networking `routed` module owns endpoint catalogs, operation identities, circuits, reconnect serialization, and lifecycle state.
+The networking `routed` module owns endpoint catalogs, operation identities, circuits, reconnect serialization, and lifecycle state. It keeps one shared connection per server for all operations and per-operation circuits and routes.
 The agent does not keep duplicate routing or retry state.
 
 Each ingress path implements `FailoverAttempt` and returns one `Attempt` value for each try.
@@ -623,7 +623,7 @@ server-operation circuit and advances only that operation cursor.
 When no other server is eligible, the operation uses the failed server without waiting for the recovery interval.
 A failure guard that is dropped before its request deadline, for example after a downstream disconnect, does not open a circuit.
 A lost connection that already completed a valid exchange keeps the circuit closed, and the next request reconnects to the same server.
-When a recovered server becomes active, the operation's cached connections to the other servers are retired.
+All operations on one server share its cached connection. An `ERROR` or a timeout keeps that connection open for the other operations. When no operation route has a server active and no session holds its connection, that connection is retired.
 
 ```text
 active operation route

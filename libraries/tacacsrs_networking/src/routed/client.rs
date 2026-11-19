@@ -1,7 +1,7 @@
 //! Endpoint selection, reconnect serialization, and binding outcomes.
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::bail;
@@ -173,15 +173,13 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
                 .iter()
                 .any(|new| Arc::ptr_eq(old, new))
         }) {
-            for operation in &slot.operations {
-                let cached = operation
-                    .connection
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .take();
-                if let Some(cached) = cached {
-                    self.connector.retire(&cached.connection).await;
-                }
+            let cached = slot
+                .connection
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(cached) = cached {
+                self.connector.retire(&cached.connection).await;
             }
         }
     }
@@ -249,13 +247,15 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
         self.runtime.close_and_join(deadline).await
     }
 
-    /// Selects an eligible endpoint and obtains its operation-isolated connection.
+    /// Selects an eligible endpoint and obtains its shared connection.
     ///
     /// Each call tries eligible endpoints in three passes. It makes at most one connection attempt per endpoint:
     ///
     /// 1. Try open circuits due for recovery in configuration order. Each endpoint allows one trial at a time for this operation.
     /// 2. Try closed circuits in route order from the active position. The first endpoint that connects becomes active.
     /// 3. Try remaining open circuits in the same route order without waiting for `recovery_interval`.
+    ///
+    /// All operations that select one endpoint share its cached connection. Circuits and the active position are kept for each operation.
     ///
     /// After a successful recovery or last-resort exchange, [`BoundEndpoint::note_success`] closes the circuit. The endpoint becomes active if it precedes the active endpoint or the active endpoint's circuit is open.
     ///
@@ -278,13 +278,11 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
         let mut attempted = Vec::with_capacity(route.indices.len());
         for index in &route.indices {
             let slot = &self.catalog.endpoints[*index];
-            let Some(permit) = slot
-                .operation(operation)
-                .circuit
-                .try_begin_recovery(recovery_interval)
-            else {
+            let circuit = &slot.operation(operation).circuit;
+            let Some(permit) = circuit.try_begin_recovery(recovery_interval) else {
                 continue;
             };
+            let revision = circuit.revision();
             attempted.push(*index);
             match self.ensure_connection(slot, operation).await {
                 Ok(cached) => {
@@ -293,6 +291,7 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
                         operation,
                         cached,
                         Some(RecoveryClaim::Trial(permit)),
+                        revision,
                     ))
                 }
                 Err(error) => {
@@ -302,7 +301,7 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
                         slot.endpoint.prepared().address(),
                         error.source
                     );
-                    self.note_failure(*index, operation, error.generation).await;
+                    self.note_connect_failure(*index, operation, error.generation, revision);
                 }
             }
         }
@@ -310,9 +309,11 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
             let position = (start + offset) % route.indices.len();
             let index = route.indices[position];
             let slot = &self.catalog.endpoints[index];
-            if attempted.contains(&index) || slot.operation(operation).circuit.is_open() {
+            let circuit = &slot.operation(operation).circuit;
+            if attempted.contains(&index) || circuit.is_open() {
                 continue;
             }
+            let revision = circuit.revision();
             attempted.push(index);
             match self.ensure_connection(slot, operation).await {
                 Ok(cached) => {
@@ -320,7 +321,7 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
                         .active_position
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner) = position;
-                    return Ok(self.binding(index, operation, cached, None));
+                    return Ok(self.binding(index, operation, cached, None, revision));
                 }
                 Err(error) => {
                     log::warn!(
@@ -329,7 +330,7 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
                         slot.endpoint.prepared().address(),
                         error.source
                     );
-                    self.note_failure(index, operation, error.generation).await;
+                    self.note_connect_failure(index, operation, error.generation, revision);
                 }
             }
         }
@@ -356,6 +357,7 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
                         operation,
                         cached,
                         Some(RecoveryClaim::LastResort(revision)),
+                        revision,
                     ));
                 }
                 Err(error) => {
@@ -365,7 +367,7 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
                         slot.endpoint.prepared().address(),
                         error.source
                     );
-                    self.note_failure(index, operation, error.generation).await;
+                    self.note_connect_failure(index, operation, error.generation, revision);
                 }
             }
         }
@@ -378,6 +380,7 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
         operation: OperationKind,
         cached: CachedConnection<Connector::Connection>,
         recovery: Option<RecoveryClaim>,
+        revision: u64,
     ) -> BoundEndpoint<Connector> {
         BoundEndpoint {
             client: self.clone(),
@@ -385,69 +388,58 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
             operation,
             cached,
             recovery,
+            report: Arc::new(BindingReport {
+                reported: AtomicBool::new(false),
+                revision: AtomicU64::new(revision),
+            }),
         }
     }
 
+    /// Returns the endpoint's cached connection, or connects once for all waiters.
+    ///
+    /// A successful result counts as a binding until the caller drops the
+    /// [`BoundEndpoint`] that owns it.
     async fn ensure_connection(
         &self,
         slot: &EndpointSlot<Connector>,
         operation: OperationKind,
     ) -> Result<CachedConnection<Connector::Connection>, ConnectFailure> {
-        let state = slot.operation(operation);
         slot.lifecycle
             .ensure_open()
             .map_err(|source| ConnectFailure {
-                generation: state.connection_generation.load(Ordering::Acquire),
+                generation: slot.connection_generation.load(Ordering::Acquire),
                 source,
             })?;
-        if let Some(cached) = state
-            .connection
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-        {
-            return Ok(CachedConnection {
-                generation: cached.generation,
-                connection: Arc::clone(&cached.connection),
-            });
+        if let Some(cached) = lease_cached(slot) {
+            return Ok(cached);
         }
-        let previous = state.completed_connect_attempts.load(Ordering::Acquire);
-        let _guard = state.connect_lock.lock().await;
+        let previous = slot.completed_connect_attempts.load(Ordering::Acquire);
+        let _guard = slot.connect_lock.lock().await;
         slot.lifecycle
             .ensure_open()
             .map_err(|source| ConnectFailure {
-                generation: state.connection_generation.load(Ordering::Acquire),
+                generation: slot.connection_generation.load(Ordering::Acquire),
                 source,
             })?;
-        if let Some(cached) = state
-            .connection
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-        {
-            return Ok(CachedConnection {
-                generation: cached.generation,
-                connection: Arc::clone(&cached.connection),
-            });
+        if let Some(cached) = lease_cached(slot) {
+            return Ok(cached);
         }
-        let completed = state.completed_connect_attempts.load(Ordering::Acquire);
+        let completed = slot.completed_connect_attempts.load(Ordering::Acquire);
         if completed != previous {
             return Err(ConnectFailure {
-                generation: state.connection_generation.load(Ordering::Acquire),
+                generation: slot.connection_generation.load(Ordering::Acquire),
                 source: anyhow::anyhow!(
-                    "Another {} connection attempt to {} completed for this request",
-                    operation.name(),
+                    "Another connection attempt to {} completed for this request",
                     slot.endpoint.prepared().address()
                 ),
             });
         }
         let generation = {
-            let _cache = state
+            let _cache = slot
                 .connection
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state
-                .connection_generation
+            slot.connection_generation
                 .fetch_add(1, Ordering::AcqRel)
                 .wrapping_add(1)
         };
@@ -455,12 +447,11 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
             .lifecycle
             .connect(slot.endpoint.prepared().clone(), operation)
             .await;
-        let mut cache = state
+        let mut cache = slot
             .connection
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state
-            .completed_connect_attempts
+        slot.completed_connect_attempts
             .fetch_add(1, Ordering::AcqRel);
         let pending = result.map_err(|source| ConnectFailure { generation, source })?;
         slot.lifecycle
@@ -471,69 +462,95 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
             generation,
             connection: Arc::clone(&connection),
         });
+        slot.bindings.fetch_add(1, Ordering::AcqRel);
         Ok(CachedConnection {
             generation,
             connection,
         })
     }
 
-    async fn note_failure(&self, index: usize, operation: OperationKind, failed_generation: u64) {
-        if let Some(connection) =
-            self.invalidate_failure(index, operation, failed_generation, FailureKind::Server)
-        {
-            self.connector.retire(&connection).await;
+    fn note_connect_failure(
+        &self,
+        index: usize,
+        operation: OperationKind,
+        failed_generation: u64,
+        revision: u64,
+    ) {
+        if let Some(connection) = self.invalidate_failure(
+            index,
+            operation,
+            failed_generation,
+            FailureKind::Server,
+            revision,
+        ) {
+            self.catalog.endpoints[index]
+                .lifecycle
+                .retire_detached(connection);
         }
     }
 
-    /// Detaches a failed connection. The first report for a generation decides its effect.
+    /// Applies one failure report to the operation circuit and the shared connection.
     ///
-    /// A server failure opens the circuit and advances an active route. A
-    /// transport failure on a connection that completed a valid exchange only
-    /// detaches the connection, so the next binding reconnects to the same
-    /// endpoint. A transport failure on an unproven connection is a server failure.
+    /// Reports for a connection generation that was already replaced are
+    /// ignored. A server failure opens the operation's circuit and advances
+    /// its route, but keeps the shared connection for other operations. A
+    /// transport failure detaches the shared connection. If that connection
+    /// completed a valid exchange, the circuit stays closed, so the next
+    /// binding reconnects to the same endpoint. Otherwise, the transport
+    /// failure also opens the operation's circuit.
+    ///
+    /// The circuit changes only if no other outcome changed it after
+    /// `revision`, so a stale report cannot undo a newer recovery.
     fn invalidate_failure(
         &self,
         index: usize,
         operation: OperationKind,
         failed_generation: u64,
         kind: FailureKind,
+        revision: u64,
     ) -> Option<Arc<Connector::Connection>> {
         let slot = &self.catalog.endpoints[index];
-        let state = slot.operation(operation);
-        let mut cache = state
-            .connection
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if failed_generation != state.connection_generation.load(Ordering::Acquire) {
-            return None;
-        }
-        if state.failed_generation.load(Ordering::Acquire) == failed_generation {
-            return None;
-        }
-        state
-            .failed_generation
-            .store(failed_generation, Ordering::Release);
-        let cached = cache.take();
-        let proven = state.proven_generation.load(Ordering::Acquire) == failed_generation;
-        if kind == FailureKind::Transport && proven {
-            log::info!(
-                "The {} connection to {} failed after valid exchanges; the next request reconnects",
-                operation.name(),
-                slot.endpoint.prepared().address()
-            );
-        } else {
-            state.circuit.open();
+        let (detached, open_circuit) = {
+            let mut cache = slot
+                .connection
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if failed_generation != slot.connection_generation.load(Ordering::Acquire) {
+                return None;
+            }
+            match kind {
+                FailureKind::Server => (None, true),
+                FailureKind::Transport => {
+                    let proven =
+                        slot.proven_generation.load(Ordering::Acquire) == failed_generation;
+                    if proven {
+                        log::info!(
+                            "The connection to {} failed after valid exchanges; the next request reconnects",
+                            slot.endpoint.prepared().address()
+                        );
+                    }
+                    (cache.take().map(|cached| cached.connection), !proven)
+                }
+            }
+        };
+        if open_circuit
+            && slot
+                .operation(operation)
+                .circuit
+                .open_if_unchanged(revision)
+        {
             self.catalog.route(operation).advance_if_active(index);
+            self.retire_if_unused(index);
         }
-        cached.map(|cached| cached.connection)
+        detached
     }
 
-    /// Makes a recovered endpoint active when it is preferred, then retires idle alternatives.
+    /// Makes a recovered endpoint active when it is preferred, then retires unused alternatives.
     ///
     /// The active endpoint changes only when the recovered endpoint precedes
     /// it in configuration order or the active endpoint has an open circuit.
-    /// Cached connections for this operation on every other endpoint are
-    /// retired, so each operation keeps one upstream connection.
+    /// Other endpoints in this operation's route keep their shared connection
+    /// only while another operation still routes to them.
     fn promote_recovered(&self, index: usize, operation: OperationKind) {
         let route = self.catalog.route(operation);
         let Some(position) = route
@@ -559,27 +576,54 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
             route.indices[*active]
         };
         for other in route.indices.iter().filter(|other| **other != active_index) {
-            let slot = &self.catalog.endpoints[*other];
-            let detached = slot
-                .operation(operation)
-                .connection
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
-            if let Some(detached) = detached {
-                log::info!(
-                    "Retiring the idle {} connection to {} because {} is active",
-                    operation.name(),
-                    slot.endpoint.prepared().address(),
-                    self.catalog.endpoints[active_index]
-                        .endpoint
-                        .prepared()
-                        .address()
-                );
-                slot.lifecycle.retire_detached(detached.connection);
-            }
+            self.retire_if_unused(*other);
         }
     }
+
+    /// Retires an endpoint's shared connection when nothing can use it.
+    ///
+    /// The connection stays while any operation route prefers the endpoint or
+    /// any binding still holds a connection from it. The last binding to drop
+    /// repeats this check.
+    fn retire_if_unused(&self, index: usize) {
+        if self.catalog.is_active_anywhere(index) {
+            return;
+        }
+        let slot = &self.catalog.endpoints[index];
+        let detached = {
+            let mut cache = slot
+                .connection
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if slot.bindings.load(Ordering::Acquire) != 0 {
+                return;
+            }
+            cache.take()
+        };
+        if let Some(detached) = detached {
+            log::info!(
+                "Retiring the idle connection to {} because no operation routes to it",
+                slot.endpoint.prepared().address()
+            );
+            slot.lifecycle.retire_detached(detached.connection);
+        }
+    }
+}
+
+/// Clones the cached connection and counts the new binding under the cache lock.
+fn lease_cached<Connector: EndpointConnector>(
+    slot: &EndpointSlot<Connector>,
+) -> Option<CachedConnection<Connector::Connection>> {
+    let cache = slot
+        .connection
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let cached = cache.as_ref()?;
+    slot.bindings.fetch_add(1, Ordering::AcqRel);
+    Some(CachedConnection {
+        generation: cached.generation,
+        connection: Arc::clone(&cached.connection),
+    })
 }
 
 /// How an upstream failure affects routing.
@@ -599,6 +643,14 @@ enum RecoveryClaim {
     LastResort(u64),
 }
 
+/// Failure-reporting state shared by one binding and its observations.
+struct BindingReport {
+    /// Set by the first failure report. Later reports for the binding are ignored.
+    reported: AtomicBool,
+    /// The circuit revision that this binding observed or produced.
+    revision: AtomicU64,
+}
+
 /// Reports an upstream attempt that its deadline interrupted.
 ///
 /// Call [`Self::disarm`] after a valid reply or a local validation failure.
@@ -611,6 +663,9 @@ enum RecoveryClaim {
 /// downstream client disconnected. A cancellation is not evidence that the
 /// server failed, so it must not open the circuit of a healthy server.
 ///
+/// Each binding records at most one failure. The first report from the
+/// binding or any of its observations decides the effect.
+///
 /// A recorded failure updates the captured connection generation
 /// synchronously. Connector retirement remains owned by the endpoint lifecycle.
 pub struct FailureObservation<Connector: EndpointConnector> {
@@ -618,6 +673,7 @@ pub struct FailureObservation<Connector: EndpointConnector> {
     index: usize,
     operation: OperationKind,
     generation: u64,
+    report: Arc<BindingReport>,
     deadline: crate::RequestDeadline,
     armed: bool,
 }
@@ -630,10 +686,10 @@ impl<Connector: EndpointConnector> FailureObservation<Connector> {
 
     /// Records an upstream I/O failure now.
     ///
-    /// If the connection completed a valid exchange earlier and the deadline
-    /// has not expired, the failure only detaches the connection. The next
-    /// binding reconnects to the same endpoint. Otherwise, the failure opens
-    /// the circuit as a server failure.
+    /// The failure detaches the shared connection. If the connection
+    /// completed a valid exchange earlier and the deadline has not expired,
+    /// the next binding reconnects to the same endpoint. Otherwise, the
+    /// failure also opens the circuit for this operation.
     pub fn fail(mut self) {
         self.armed = false;
         let kind = if self.deadline.check().is_err() {
@@ -645,10 +701,16 @@ impl<Connector: EndpointConnector> FailureObservation<Connector> {
     }
 
     fn record_failure(&self, kind: FailureKind) {
-        if let Some(connection) =
-            self.client
-                .invalidate_failure(self.index, self.operation, self.generation, kind)
-        {
+        if self.report.reported.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if let Some(connection) = self.client.invalidate_failure(
+            self.index,
+            self.operation,
+            self.generation,
+            kind,
+            self.report.revision.load(Ordering::Acquire),
+        ) {
             self.client.catalog.endpoints[self.index]
                 .lifecycle
                 .retire_detached(connection);
@@ -665,12 +727,16 @@ impl<Connector: EndpointConnector> Drop for FailureObservation<Connector> {
 }
 
 /// Connection and outcome-reporting identity for one selected endpoint.
+///
+/// The binding holds the endpoint's shared connection. While any binding
+/// holds it, the client does not retire it as unused.
 pub struct BoundEndpoint<Connector: EndpointConnector = NativeConnector> {
     client: RoutedClient<Connector>,
     index: usize,
     operation: OperationKind,
     cached: CachedConnection<Connector::Connection>,
     recovery: Option<RecoveryClaim>,
+    report: Arc<BindingReport>,
 }
 
 impl<Connector: EndpointConnector> BoundEndpoint<Connector> {
@@ -688,6 +754,7 @@ impl<Connector: EndpointConnector> BoundEndpoint<Connector> {
             index: self.index,
             operation: self.operation,
             generation: self.cached.generation,
+            report: Arc::clone(&self.report),
             deadline,
             armed: true,
         }
@@ -720,8 +787,10 @@ impl<Connector: EndpointConnector> BoundEndpoint<Connector> {
     /// Records a server failure against the catalog and connection it used.
     ///
     /// Report an upstream `ERROR` reply or a timeout here. The failure opens
-    /// the circuit for this endpoint and operation. Report I/O failures through
-    /// [`FailureObservation::fail`] instead.
+    /// the circuit for this endpoint and operation, and moves the operation
+    /// to the next endpoint. Other operations keep using the shared
+    /// connection. Report I/O failures through [`FailureObservation::fail`]
+    /// instead.
     ///
     /// Invalidation completes without yielding. Connector retirement is owned
     /// by the lifecycle and cannot extend the caller's request deadline.
@@ -730,11 +799,15 @@ impl<Connector: EndpointConnector> BoundEndpoint<Connector> {
         reason = "Retain the async reporting API while committing failure state without yielding."
     )]
     pub async fn note_failure(&self) {
+        if self.report.reported.swap(true, Ordering::AcqRel) {
+            return;
+        }
         if let Some(connection) = self.client.invalidate_failure(
             self.index,
             self.operation,
             self.cached.generation,
             FailureKind::Server,
+            self.report.revision.load(Ordering::Acquire),
         ) {
             self.client.catalog.endpoints[self.index]
                 .lifecycle
@@ -747,39 +820,56 @@ impl<Connector: EndpointConnector> BoundEndpoint<Connector> {
     /// A later I/O failure on this connection reconnects to the same endpoint.
     /// After a recovery trial or a last-resort binding, a success also closes
     /// the circuit. If this endpoint becomes active, the client retires the
-    /// cached connections for this operation on the other endpoints.
+    /// shared connections of endpoints that no operation routes to.
     #[allow(
         clippy::unused_async,
         clippy::unused_async_trait_impl,
         reason = "Retain the async reporting API while committing success state without yielding."
     )]
     pub async fn note_success(&self) {
-        let state = self.client.catalog.endpoints[self.index].operation(self.operation);
+        let slot = &self.client.catalog.endpoints[self.index];
+        let circuit = &slot.operation(self.operation).circuit;
         let closed = {
-            let cache = state
+            let cache = slot
                 .connection
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if self.cached.generation != state.connection_generation.load(Ordering::Acquire)
+            if self.cached.generation != slot.connection_generation.load(Ordering::Acquire)
                 || cache
                     .as_ref()
                     .is_none_or(|cached| cached.generation != self.cached.generation)
             {
                 return;
             }
-            state
-                .proven_generation
+            slot.proven_generation
                 .store(self.cached.generation, Ordering::Release);
             match &self.recovery {
                 None => false,
                 Some(RecoveryClaim::Trial(permit)) => permit.succeed(),
-                Some(RecoveryClaim::LastResort(revision)) => {
-                    state.circuit.close_if_unchanged(*revision)
-                }
+                Some(RecoveryClaim::LastResort(revision)) => circuit.close_if_unchanged(*revision),
             }
         };
         if closed {
+            self.report
+                .revision
+                .store(circuit.revision(), Ordering::Release);
             self.client.promote_recovered(self.index, self.operation);
+        }
+    }
+}
+
+impl<Connector: EndpointConnector> Drop for BoundEndpoint<Connector> {
+    fn drop(&mut self) {
+        let slot = &self.client.catalog.endpoints[self.index];
+        let previous = {
+            let _cache = slot
+                .connection
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            slot.bindings.fetch_sub(1, Ordering::AcqRel)
+        };
+        if previous == 1 {
+            self.client.retire_if_unused(self.index);
         }
     }
 }
@@ -802,6 +892,7 @@ mod tests {
         release: Notify,
         block_first: bool,
         fail_first: bool,
+        refused_host: std::sync::Mutex<Option<String>>,
     }
 
     #[async_trait]
@@ -810,10 +901,13 @@ mod tests {
 
         async fn connect(
             &self,
-            _endpoint: PreparedEndpoint,
+            endpoint: PreparedEndpoint,
             _operation: OperationKind,
         ) -> anyhow::Result<Arc<usize>> {
             let attempt = self.attempts.fetch_add(1, Ordering::AcqRel) + 1;
+            if self.refused_host.lock().unwrap().as_deref() == Some(&*endpoint.address().host()) {
+                bail!("injected connection refusal");
+            }
             if attempt == 1 {
                 if self.block_first {
                     self.entered.notify_one();
@@ -1150,26 +1244,41 @@ mod tests {
     #[tokio::test]
     async fn stale_failure_guard_cannot_invalidate_recovered_connection() {
         let client = controlled_client(ControlledConnector::default());
+        let circuit = || {
+            client.catalog.endpoints[0]
+                .operation(OperationKind::Accounting)
+                .circuit
+                .is_open()
+        };
+        let stale = client
+            .bind(OperationKind::Accounting, Duration::ZERO)
+            .await
+            .unwrap();
         let first = client
             .bind(OperationKind::Accounting, Duration::ZERO)
             .await
             .unwrap();
         let expired = crate::RequestDeadline::after(Duration::ZERO).unwrap();
-        let delayed = first.observe_failure(expired);
+        let delayed = stale.observe_failure(expired);
         drop(first.observe_failure(expired));
+        assert!(circuit());
         let recovered = client
             .bind(OperationKind::Accounting, Duration::ZERO)
             .await
             .unwrap();
-        assert_ne!(first.connection_generation(), recovered.connection_generation());
+        // A timeout keeps the shared connection for other packet types.
+        assert_eq!(first.connection_generation(), recovered.connection_generation());
         recovered.note_success().await;
+        assert!(!circuit());
         drop(delayed);
+        assert!(!circuit());
         let next = client
             .bind(OperationKind::Accounting, Duration::from_secs(30))
             .await
             .unwrap();
         assert_eq!(next.connection_generation(), recovered.connection_generation());
         assert!(Arc::ptr_eq(next.connection(), recovered.connection()));
+        assert_eq!(client.connector.attempts.load(Ordering::Acquire), 1);
     }
 
     #[tokio::test]
@@ -1217,7 +1326,7 @@ mod tests {
             .bind(OperationKind::Accounting, Duration::from_secs(30))
             .await
             .unwrap();
-        assert_ne!(first.connection_generation(), last_resort.connection_generation());
+        assert!(Arc::ptr_eq(first.connection(), last_resort.connection()));
         assert!(circuit());
         last_resort.note_success().await;
         assert!(!circuit());
@@ -1304,6 +1413,137 @@ mod tests {
 
     const HOLD: Duration = Duration::from_secs(30);
 
+    fn distinct_pair() -> RoutedClient<ControlledConnector> {
+        let endpoint = |name, host| {
+            Endpoint::new(
+                name,
+                PreparedEndpoint::new(
+                    crate::ServerAddress::new(host, 49).unwrap(),
+                    crate::PreparedTransport::Tcp,
+                    false,
+                    None,
+                    ConnectOptions::default(),
+                ),
+                OperationKind::ALL,
+            )
+        };
+        RoutedClient::with_connector(
+            vec![
+                endpoint("primary", "127.0.0.1"),
+                endpoint("secondary", "127.0.0.2"),
+            ],
+            ControlledConnector::default(),
+        )
+    }
+
+    #[tokio::test]
+    async fn operations_share_one_connection_per_endpoint() {
+        let client = distinct_pair();
+        let mut bindings = Vec::new();
+        for operation in OperationKind::ALL {
+            bindings.push(client.bind(operation, HOLD).await.unwrap());
+        }
+        for binding in &bindings {
+            assert_eq!(binding.endpoint().name(), "primary");
+            assert!(Arc::ptr_eq(binding.connection(), bindings[0].connection()));
+        }
+        assert_eq!(client.connector.attempts.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn error_moves_only_failing_operation_and_reuses_backup_connection() {
+        let client = distinct_pair();
+        let authorization = client
+            .bind(OperationKind::Authorization, HOLD)
+            .await
+            .unwrap();
+        let accounting = client.bind(OperationKind::Accounting, HOLD).await.unwrap();
+        authorization.note_failure().await;
+
+        let moved = client
+            .bind(OperationKind::Authorization, HOLD)
+            .await
+            .unwrap();
+        assert_eq!(moved.endpoint().name(), "secondary");
+        let stayed = client.bind(OperationKind::Accounting, HOLD).await.unwrap();
+        assert_eq!(stayed.endpoint().name(), "primary");
+        assert!(Arc::ptr_eq(stayed.connection(), accounting.connection()));
+
+        stayed.note_failure().await;
+        let joined = client.bind(OperationKind::Accounting, HOLD).await.unwrap();
+        assert_eq!(joined.endpoint().name(), "secondary");
+        assert!(Arc::ptr_eq(joined.connection(), moved.connection()));
+        assert_eq!(client.connector.attempts.load(Ordering::Acquire), 2);
+
+        // Authentication still prefers the primary, so its connection stays open.
+        drop((authorization, accounting, stayed));
+        let authentication = client
+            .bind(OperationKind::Authentication, HOLD)
+            .await
+            .unwrap();
+        assert_eq!(authentication.endpoint().name(), "primary");
+        assert_eq!(client.connector.retired.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    async fn proven_transport_failure_reconnects_every_operation_once() {
+        let client = distinct_pair();
+        let authorization = client
+            .bind(OperationKind::Authorization, HOLD)
+            .await
+            .unwrap();
+        let accounting = client.bind(OperationKind::Accounting, HOLD).await.unwrap();
+        authorization.note_success().await;
+        authorization
+            .observe_failure(crate::RequestDeadline::after(Duration::from_secs(60)).unwrap())
+            .fail();
+        // The other operation sees the same broken stream. Its report is stale.
+        accounting
+            .observe_failure(crate::RequestDeadline::after(Duration::from_secs(60)).unwrap())
+            .fail();
+
+        let mut next = Vec::new();
+        for operation in OperationKind::ALL {
+            let binding = client.bind(operation, HOLD).await.unwrap();
+            assert_eq!(binding.endpoint().name(), "primary");
+            assert!(!client.catalog.endpoints[0]
+                .operation(operation)
+                .circuit
+                .is_open());
+            next.push(binding);
+        }
+        assert!(!Arc::ptr_eq(next[0].connection(), authorization.connection()));
+        assert!(Arc::ptr_eq(next[0].connection(), next[2].connection()));
+        assert_eq!(client.connector.attempts.load(Ordering::Acquire), 2);
+    }
+
+    #[tokio::test]
+    async fn primary_outage_converges_every_operation_on_one_backup_connection() {
+        let client = distinct_pair();
+        let mut old = Vec::new();
+        for operation in OperationKind::ALL {
+            let binding = client.bind(operation, HOLD).await.unwrap();
+            binding.note_success().await;
+            old.push(binding);
+        }
+        *client.connector.refused_host.lock().unwrap() = Some("127.0.0.1".to_owned());
+        for binding in &old {
+            binding
+                .observe_failure(crate::RequestDeadline::after(Duration::from_secs(60)).unwrap())
+                .fail();
+        }
+
+        let mut moved = Vec::new();
+        for operation in OperationKind::ALL {
+            let binding = client.bind(operation, HOLD).await.unwrap();
+            assert_eq!(binding.endpoint().name(), "secondary");
+            moved.push(binding);
+        }
+        for binding in &moved {
+            assert!(Arc::ptr_eq(binding.connection(), moved[0].connection()));
+        }
+    }
+
     async fn wait_for_retired(client: &RoutedClient<ControlledConnector>, expected: usize) {
         tokio::time::timeout(Duration::from_secs(5), async {
             while client.connector.retired.load(Ordering::Acquire) < expected {
@@ -1374,15 +1614,29 @@ mod tests {
         let backup = client.bind(operation, HOLD).await.unwrap();
         assert_eq!(backup.endpoint().name(), "secondary");
         backup.note_success().await;
-        wait_for_retired(&client, 1).await;
+        // The other operations still use the primary connection.
+        assert!(client.catalog.endpoints[0]
+            .connection
+            .lock()
+            .unwrap()
+            .is_some());
 
         let trial = client.bind(operation, Duration::ZERO).await.unwrap();
         assert_eq!(trial.endpoint().name(), "primary");
+        assert!(Arc::ptr_eq(trial.connection(), primary.connection()));
         trial.note_success().await;
-        wait_for_retired(&client, 2).await;
+        // The backup stays cached while a binding still holds it.
+        tokio::task::yield_now().await;
+        assert_eq!(client.connector.retired.load(Ordering::Acquire), 0);
+        assert!(client.catalog.endpoints[1]
+            .connection
+            .lock()
+            .unwrap()
+            .is_some());
+        drop(backup);
+        wait_for_retired(&client, 1).await;
 
         assert!(client.catalog.endpoints[1]
-            .operation(operation)
             .connection
             .lock()
             .unwrap()
@@ -1410,8 +1664,11 @@ mod tests {
 
         let next = client.bind(operation, HOLD).await.unwrap();
         assert_eq!(next.endpoint().name(), "primary");
+        assert!(Arc::ptr_eq(next.connection(), primary.connection()));
+        drop(backup);
+        drop(backup_trial);
+        wait_for_retired(&client, 1).await;
         assert!(client.catalog.endpoints[1]
-            .operation(operation)
             .connection
             .lock()
             .unwrap()
@@ -1424,11 +1681,31 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let client = controlled_client(ControlledConnector::default());
+        let endpoint = |name| {
+            Endpoint::new(
+                name,
+                PreparedEndpoint::new(
+                    crate::ServerAddress::parse("127.0.0.1:49", 49).unwrap(),
+                    crate::PreparedTransport::Tcp,
+                    false,
+                    None,
+                    ConnectOptions::default(),
+                ),
+                [OperationKind::Accounting],
+            )
+        };
+        let client = runtime.block_on(async {
+            RoutedClient::with_connector(
+                vec![endpoint("primary"), endpoint("secondary")],
+                ControlledConnector::default(),
+            )
+        });
         let bound = runtime
             .block_on(client.bind(OperationKind::Accounting, Duration::ZERO))
             .unwrap();
         drop(bound.observe_failure(crate::RequestDeadline::after(Duration::ZERO).unwrap()));
+        // No route prefers the primary now, so dropping its last binding retires it.
+        drop(bound);
         runtime.block_on(async {
             tokio::time::timeout(Duration::from_secs(1), async {
                 while client.connector.retired.load(Ordering::Acquire) == 0 {
@@ -1657,9 +1934,8 @@ mod tests {
             .bind(OperationKind::Accounting, Duration::from_secs(30))
             .await
             .unwrap();
-        client
-            .note_failure(0, OperationKind::Accounting, failure.generation)
-            .await;
+        let revision = slot.operation(OperationKind::Accounting).circuit.revision();
+        client.note_connect_failure(0, OperationKind::Accounting, failure.generation, revision);
         let current = client
             .bind(OperationKind::Accounting, Duration::from_secs(30))
             .await
