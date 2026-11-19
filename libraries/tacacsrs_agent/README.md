@@ -42,7 +42,7 @@ A component adds role members with `Composition::member`. Each member type has a
 - `dyn CredentialLayer` wraps the resolver of the source. For example, `HttpCredentialComponent` puts HTTP evidence retrieval in front of the SONiC resolver.
 - `dyn LocalServicesOverlay` changes the local services of the source before the runtime prepares them.
 - `dyn StartupCheck` checks the prepared host before any listener binds. A failed check stops startup.
-- `dyn ListenerFactory` creates one runtime listener. The factory returns `None` when the prepared runtime disables the listener.
+- `dyn ListenerFactory` creates one runtime listener. A factory can return `None` when it has no listener to supply. The standard listeners always exist and follow the active local services.
 - `dyn HostedService` runs until shutdown. Use `Composition::hosted_service`.
 
 The following component adds a hosted service:
@@ -69,9 +69,10 @@ A component can inject these values. The host supplies them after it prepares th
 
 - `DiagnosticsHandle` reads operational statistics.
 - `RuntimeHealth` reads the runtime health snapshots.
-- `ClientApiAccess` gives the client API socket path, the listener settings, and the request handle.
+- `ClientApiAccess` gives the active local services and the request handle.
+- `TacacsProxyAccess` gives the TACACS+ proxy listener.
 - `UpstreamProbe` sends one accounting `WATCHDOG` record and publishes the result to runtime health.
-- `PreparedLocalServices` gives the prepared listener endpoints.
+- `LocalServicesView` gives the active local services. Each change of the local services is visible to each clone.
 - `ApplicationReadiness` is a health check that is healthy when the agent is ready.
 - `ApplicationLifetime` stops the application. `stop` gives a successful exit. `stop_with_error` gives a failed exit with the first recorded error.
 
@@ -83,8 +84,9 @@ The `components` module contains the components that do not depend on a source p
 
 | Component | Function |
 | --- | --- |
-| `DatastoreSourceComponent` | Shares a configuration datastore, an empty credential provider, and the local services. `LocalServicesInput` gives the local services as a fixed value, a YANG file, or a `LocalServicesPatch` on the defaults. If the server set cannot change and every address is an IP literal, preparation applies the proxy loop and credential policy. |
-| `ClientApiComponent` | Serves the local client API over IPC when the local services enable it. |
+| `DatastoreSourceComponent` | Shares a configuration datastore, an empty credential provider, and the local services. `LocalServicesInput` gives the local services as a fixed value, a YANG file, or a `LocalServicesPatch` on the defaults. Preparation does not read the datastore. The runtime applies the proxy loop and credential policy to each configuration candidate. |
+| `ClientApiComponent` | Serves the local client API over IPC while the active local services enable it. The socket moves when the local services change its path. |
+| `TacacsProxyComponent` | Serves the TACACS+ proxy listener while the active local services enable it. If the source gives the proxy endpoint later, the listener reports `Pending` until the endpoint is known. |
 | `HttpCredentialComponent` | Adds HTTP CRL and OCSP evidence retrieval in front of the source credential resolver. `HttpEvidenceSettings` lists the sources. |
 | `StatisticsComponent` | Writes operational statistics to a JSON file once each second. |
 | `SystemdComponent` | Sends readiness, status, and watchdog notifications to systemd. `SystemdMode::Auto` registers nothing without `NOTIFY_SOCKET`. `SystemdMode::Required` stops startup without it. |
@@ -149,6 +151,7 @@ async fn run(source: TacacsPlus, stop: tokio_util::sync::CancellationToken) -> a
                 tacacs_proxy_endpoint: Some("127.0.0.1:9049".to_owned()),
                 ..Default::default()
             },
+            local_services_overlays: Vec::new(),
         },
         policy: PolicyInput::Canonical(Default::default()),
         certificate_verification: CertificateVerification::Required,
@@ -157,7 +160,7 @@ async fn run(source: TacacsPlus, stop: tokio_util::sync::CancellationToken) -> a
 }
 ```
 
-The agent runs each hosted service as a named critical task. Each service gets a `ShutdownSignal`, which observes shutdown but cannot request it. Unexpected completion, error, or panic stops the application. A service that needs agent health gets the read-only `RuntimeHealth` view or the `AgentReadinessCheck` health check from its host.
+The agent runs each hosted service as a named background task. Each service gets a `ShutdownSignal`, which observes shutdown but cannot request it. A service that returns `Ok` before shutdown completed its work, and the application continues. An error or a panic stops the application. A long-lived service that cannot recover must return an error or call `ApplicationLifetime::stop_with_error`. Listeners follow the same rule: an early `Ok` is complete work, and an error or a panic stops the runtime. A service that needs agent health gets the read-only `RuntimeHealth` view or the `AgentReadinessCheck` health check from its host.
 
 The first shutdown caller captures overall and request deadlines from one instant and the active policy. Request drain can finish earlier but cannot extend the overall deadline. The host never drops domain cleanup at the service deadline. It aborts remaining services, joins them, and awaits the domain's forced listener and upstream cleanup. Cleanup errors retain useful context.
 
@@ -174,7 +177,7 @@ The agent exposes no unmanaged construction or server-update mode.
 Give the supervisor the health publisher of the service.
 Take `ServiceConfig::validation_options` from the datastore.
 Give `NoopTacacsPlusFilter::new` the `LocalServices` value of the service.
-`NoopTacacsPlusFilter::default()` derives an unobfuscated downstream proxy policy, which replaces a configured proxy secret at publication.
+`NoopTacacsPlusFilter` derives an unobfuscated downstream proxy policy, which replaces a configured proxy secret at publication.
 
 Server updates use the retained datastore observation and supervisor.
 `apply_policy_candidate` is the only public policy-update method. It accepts canonical YANG policy, not prepared values.
@@ -656,6 +659,16 @@ Embedding hosts can read the applied budget through `TacacsClientService::shutdo
 At expiry, remaining listener tasks are cancelled and joined, and upstream sockets are forced closed.
 Owned Unix socket paths are removed before successful shutdown publishes `Stopped`.
 A listener failure cancels its siblings and uses the same cleanup path.
+
+### Live local services
+
+A source can give new `tacacsrs:local-services` values in `ConfigChange::local_services`. The configuration supervisor applies the local services overlays and prepares the value with each candidate. An invalid value rejects the candidate, and the active listeners stay. A change without local services keeps the active value. The runtime publishes the new local services after the server set, through `LocalServicesView`.
+
+Each standard listener runs a reconciler for its service. The reconciler selects one of three states: disabled, pending an endpoint, or ready with a bind target. For a new target, the reconciler binds the new instance first. Then it stops the old instance, which drains its own connections. If the two targets use the same socket, the reconciler stops the old instance first. A bind failure keeps the old instance. The reconciler tries again after 1 s, with a delay that doubles up to 30 s. An error from a bound instance stops the runtime.
+
+The proxy loop guard receives the new proxy target before the listeners do. During a move, the guard blocks upstream connections to each bound proxy endpoint.
+
+The host makes sure at bootstrap that each enabled service has one listener component. If a later value enables a service and no component supplies its listener, the service does not bind.
 
 Reload schedules removed endpoints for terminal retirement under one cutoff derived from the maximum operation budget at preparation start.
 Captured requests can still use their old endpoints before that cutoff; the retirement owner then cancels setup, closes sockets, and joins drivers.

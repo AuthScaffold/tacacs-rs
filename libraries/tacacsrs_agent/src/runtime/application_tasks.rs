@@ -1,4 +1,9 @@
-//! Named critical tasks owned by one application run.
+//! Named tasks owned by one application run.
+//!
+//! A critical task must run until shutdown. An early return stops the
+//! application. A background task follows the hosted service model: an early
+//! `Ok(())` return is complete work, and the application continues. An error
+//! or a panic from either kind stops the application.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -9,9 +14,15 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{RuntimeHealthPublisher, RuntimeLifecycle};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TaskKind {
+    Critical,
+    Background,
+}
+
 pub(super) struct CriticalTasks {
     tasks: JoinSet<anyhow::Result<()>>,
-    names: HashMap<Id, &'static str>,
+    names: HashMap<Id, (&'static str, TaskKind)>,
     cancellation: CancellationToken,
 }
 
@@ -24,32 +35,66 @@ impl CriticalTasks {
         }
     }
 
+    /// Spawns a task that must run until shutdown.
     pub(super) fn spawn(
         &mut self,
         name: &'static str,
         future: impl Future<Output = anyhow::Result<()>> + Send + 'static,
     ) {
-        let task = self.tasks.spawn(future);
-        self.names.insert(task.id(), name);
+        self.spawn_kind(name, TaskKind::Critical, future);
     }
 
+    /// Spawns a task that can complete before shutdown.
+    pub(super) fn spawn_background(
+        &mut self,
+        name: &'static str,
+        future: impl Future<Output = anyhow::Result<()>> + Send + 'static,
+    ) {
+        self.spawn_kind(name, TaskKind::Background, future);
+    }
+
+    fn spawn_kind(
+        &mut self,
+        name: &'static str,
+        kind: TaskKind,
+        future: impl Future<Output = anyhow::Result<()>> + Send + 'static,
+    ) {
+        let task = self.tasks.spawn(future);
+        self.names.insert(task.id(), (name, kind));
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.tasks.is_empty()
+    }
+
+    /// Returns the result of the next task that affects the application.
+    ///
+    /// Before shutdown, the method logs a background task that returns
+    /// `Ok(())` and waits for the next task.
     async fn next(&mut self, shutting_down: bool) -> Option<anyhow::Result<()>> {
-        let result = self.tasks.join_next_with_id().await?;
-        let id = match &result {
-            Ok((id, _)) => *id,
-            Err(error) => error.id(),
-        };
-        let name = self
-            .names
-            .remove(&id)
-            .expect("every critical task has a registered name");
-        Some(match result {
-            Ok((_, Ok(()))) if !shutting_down => {
-                Err(anyhow::anyhow!("{name} stopped unexpectedly"))
-            }
-            Ok((_, result)) => result.with_context(|| format!("{name} failed")),
-            Err(error) => Err(anyhow::Error::new(error).context(format!("{name} task panicked"))),
-        })
+        loop {
+            let result = self.tasks.join_next_with_id().await?;
+            let id = match &result {
+                Ok((id, _)) => *id,
+                Err(error) => error.id(),
+            };
+            let (name, kind) = self
+                .names
+                .remove(&id)
+                .expect("every application task has a registered name");
+            return Some(match result {
+                Ok((_, Ok(()))) if shutting_down => Ok(()),
+                Ok((_, Ok(()))) if kind == TaskKind::Background => {
+                    log::info!("{name} completed");
+                    continue;
+                }
+                Ok((_, Ok(()))) => Err(anyhow::anyhow!("{name} stopped unexpectedly")),
+                Ok((_, result)) => result.with_context(|| format!("{name} failed")),
+                Err(error) => {
+                    Err(anyhow::Error::new(error).context(format!("{name} task panicked")))
+                }
+            });
+        }
     }
 }
 
@@ -113,7 +158,7 @@ pub(super) async fn supervise(
     let mut timed_out = false;
     let mut timeout_is_primary = false;
     loop {
-        if completed && tasks.tasks.is_empty() {
+        if completed && tasks.is_empty() {
             break;
         }
         tokio::select! {
@@ -125,10 +170,10 @@ pub(super) async fn supervise(
                     timeout_is_primary = false;
                 }
             },
-            Some(next) = tasks.next(true), if !tasks.tasks.is_empty() => {
+            Some(next) = tasks.next(true), if !tasks.is_empty() => {
                 if result.is_ok() { result = next; }
             },
-            () = tokio::time::sleep_until(overall), if !timed_out && !tasks.tasks.is_empty() => {
+            () = tokio::time::sleep_until(overall), if !timed_out && !tasks.is_empty() => {
                 timed_out = true;
                 tasks.tasks.abort_all();
                 if result.is_ok() {

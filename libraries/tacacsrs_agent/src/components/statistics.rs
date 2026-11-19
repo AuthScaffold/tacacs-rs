@@ -9,10 +9,10 @@ use anyhow::{Context, ensure};
 use dill::component;
 use tokio::io::AsyncWriteExt;
 
-use crate::DiagnosticsHandle;
+use crate::{DiagnosticsHandle, LocalServicesView};
 use crate::host::StartupCheck;
 use tacacsrs_composition::{Component, Composition, Named};
-use tacacsrs_config::local_services::{ListenerEndpoint, PreparedLocalServices};
+use tacacsrs_config::local_services::ListenerEndpoint;
 use tacacsrs_lifecycle::{HostedService, ShutdownSignal};
 
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
@@ -66,14 +66,15 @@ impl Component for StatisticsComponent {
 
 /// Stops startup when the statistics file is a listener socket path.
 ///
-/// The host runs this check before any listener binds.
+/// The host runs this check before any listener binds. The check uses the
+/// bootstrap local services.
 #[component]
 #[dill::scope(dill::Singleton)]
 #[dill::interface(dyn StartupCheck)]
 struct ListenerProtection {
     #[component(explicit)]
     file: StatisticsFile,
-    local_services: Arc<PreparedLocalServices>,
+    local_services: Arc<LocalServicesView>,
 }
 
 impl Named for ListenerProtection {
@@ -87,10 +88,12 @@ impl StartupCheck for ListenerProtection {
     }
 
     async fn check(&self) -> anyhow::Result<()> {
-        if let Some(path) = self.local_services.client_api() {
+        let active = self.local_services.current();
+        let prepared = active.prepared();
+        if let Some(path) = prepared.client_api() {
             self.file.protect_listener(path).await?;
         }
-        if let Some(ListenerEndpoint::Unix(path)) = self.local_services.tacacs_proxy() {
+        if let Some(ListenerEndpoint::Unix(path)) = prepared.tacacs_proxy() {
             self.file.protect_listener(path).await?;
         }
         Ok(())

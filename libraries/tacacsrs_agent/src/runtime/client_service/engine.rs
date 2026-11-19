@@ -16,19 +16,18 @@ use std::sync::Arc;
 use futures_util::FutureExt;
 #[cfg(test)]
 use tacacsrs_config::TacacsPlus;
-use tacacsrs_config::local_services::{prepare_local_services, PreparedLocalServices, ListenerEndpoint};
+use tacacsrs_provider::LocalServicesOverlay;
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 
 use crate::config::{PreparedProxyPolicy, RuntimePolicy, ServiceConfig};
 use crate::runtime::{
-    RequestTracker, RuntimeHealthPublisher, RuntimeListenerService, ShutdownCoordinator,
-    ProxyLoopGuard,
+    ActiveLocalServices, LocalServicesState, ProxyLoopGuard, RuntimeHealthPublisher,
+    RuntimeListenerService, ShutdownCoordinator,
 };
 #[cfg(test)]
 use crate::runtime::enumerate_supported_servers;
-use crate::services::ListenerOptions;
-use crate::services::tacacs_proxy::TacacsProxyService;
+use crate::services::tacacs_proxy::{TacacsProxyListener, TacacsProxyService};
 #[cfg(test)]
 use crate::upstream::NetworkUpstreamConnector;
 #[cfg(test)]
@@ -44,16 +43,14 @@ pub(crate) struct ServiceRuntime<
 > {
     /// Validated operator configuration.
     pub(super) config: ServiceConfig,
-    pub(super) listeners: PreparedLocalServices,
-    pub(super) proxy_loop_guard: ProxyLoopGuard,
+    /// Active local services, their overlays, and the proxy loop guard.
+    pub(super) local_services: LocalServicesState,
     /// Shared upstream manager. It owns the routing catalog, failover, and
     /// generation-aware health publication.
     pub(super) manager: Arc<UpstreamManager<Connector>>,
     /// Serializes one complete runtime-generation publication at the service
     /// layer. It is the outer lock, ahead of the manager catalog reload lock.
     pub(super) reload_publication_lock: Mutex<()>,
-    /// Shared request tracker for graceful shutdown.
-    request_tracker: Arc<RequestTracker>,
     /// Shared protocol-neutral runtime health publisher.
     pub(super) health: RuntimeHealthPublisher,
     #[cfg(test)]
@@ -125,6 +122,7 @@ impl ServiceRuntime<ServiceConnector> {
             health,
             servers.into_iter().map(Arc::new).collect(),
             configuration_applied,
+            Vec::new(),
             |guard| ServiceConnector(NetworkUpstreamConnector::new(guard).erased()),
         )
     }
@@ -141,6 +139,7 @@ impl ServiceRuntime<ServiceConnector> {
             health,
             servers.into_iter().map(Arc::new).collect(),
             true,
+            Vec::new(),
             |_| ServiceConnector(connector),
         )
     }
@@ -155,14 +154,14 @@ where
         health: RuntimeHealthPublisher,
         servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
         configuration_applied: bool,
+        local_services_overlays: Vec<Arc<dyn LocalServicesOverlay>>,
         factory: impl FnOnce(ProxyLoopGuard) -> Connector,
     ) -> anyhow::Result<Self> {
-        let listeners = prepare_local_services(&config.local_services)?;
-        let proxy_loop_guard = ProxyLoopGuard::new(listeners.tacacs_proxy());
-        if health.snapshot().enabled_services() != config.enabled_services() {
-            anyhow::bail!("Runtime health and service configuration must enable the same services");
-        }
-        let connector = factory(proxy_loop_guard.clone());
+        let local_services = LocalServicesState::new(
+            ActiveLocalServices::new(config.local_services.clone())?,
+            local_services_overlays,
+        );
+        let connector = factory(local_services.proxy_loop_guard().clone());
         let proxy_policy = if !configuration_applied
             && config.local_services.proxy_credential_source
                 == tacacsrs_config::tacacsrs::ProxyCredentialSource::LocalProxyRow
@@ -180,16 +179,13 @@ where
             tacacsrs_config::prepare::PrepareOptions::default()
                 .with_certificate_verification(config.certificate_verification),
         )?);
-        let request_tracker = Arc::new(RequestTracker::default());
         manager.publish_initial_health(configuration_applied);
 
         Ok(Self {
             config,
-            listeners,
-            proxy_loop_guard,
+            local_services,
             manager,
             reload_publication_lock: Mutex::new(()),
-            request_tracker,
             health,
             #[cfg(test)]
             implicit_reload_pause: std::sync::Mutex::new(None),
@@ -311,7 +307,6 @@ where
         &self,
         candidate: crate::upstream::manager::PublicationCandidate<Commit, Connector>,
     ) -> anyhow::Result<crate::upstream::manager::PublicationCandidate<Commit, Connector>> {
-        candidate.proxy_downstream_obfuscation.shared_secret()?;
         tacacsrs_config::prepare::validate_materialized_servers(
             candidate.servers.iter().map(AsRef::as_ref),
             &self.config.validation_options,
@@ -363,6 +358,21 @@ where
         }
     }
 
+    /// Builds the raw TACACS+ proxy listener.
+    ///
+    /// The listener follows the active local services. It reports
+    /// `Disabled` while the local services disable the proxy.
+    pub(super) fn tacacs_proxy_listener(&self) -> Box<dyn RuntimeListenerService>
+    where
+        Connector: 'static,
+    {
+        let service = TacacsProxyService::new(
+            Arc::clone(&self.manager),
+            self.local_services.proxy_loop_guard().clone(),
+        );
+        Box::new(TacacsProxyListener::new(service, self.local_services.view()))
+    }
+
     /// Permanently closes admission and joins upstream resources without starting listeners.
     ///
     /// # Errors
@@ -400,54 +410,39 @@ where
         shutdown: &ShutdownCoordinator,
         listeners: Vec<Box<dyn RuntimeListenerService>>,
     ) -> anyhow::Result<()> {
-        let listener_options = ListenerOptions::new(&self.listeners);
         let mut tasks = JoinSet::new();
-        let mut service_count = 0;
-
+        if listeners.is_empty() {
+            anyhow::bail!("Enable at least one runtime service");
+        }
         for listener in listeners {
             let shutdown = shutdown.subscribe();
             let health = self.health.clone();
-            tasks.spawn(async move { listener.serve(shutdown, health).await });
-            service_count += 1;
-        }
-
-        if let Some(target) = self.listeners.tacacs_proxy() {
-            let service = TacacsProxyService::new(
-                Arc::clone(&self.manager),
-                Arc::clone(&self.request_tracker),
-                self.proxy_loop_guard.clone(),
-            );
-            let endpoint = match target {
-                ListenerEndpoint::Unix(path) => ListenerEndpoint::Unix(path.clone()),
-                ListenerEndpoint::Tcp(address) => ListenerEndpoint::Tcp(*address),
-            };
-            let shutdown = shutdown.subscribe();
-            let health = self.health.clone();
-            tasks.spawn(async move {
-                service
-                    .serve(&endpoint, listener_options, shutdown, health)
-                    .await
-            });
-            service_count += 1;
-        }
-
-        if service_count == 0 {
-            anyhow::bail!("Enable at least one runtime service");
+            let name = listener.name();
+            tasks.spawn(async move { (name, listener.serve(shutdown, health).await) });
         }
 
         let stop = shutdown.subscribe().wait();
         tokio::pin!(stop);
         let mut failure = None;
-        tokio::select! {
-            biased;
-            () = &mut stop => {},
-            result = tasks.join_next() => {
-                match result {
-                    Some(Ok(Err(error))) => { failure = Some(error); shutdown.fail(); }
-                    Some(Err(error)) => { failure = Some(error.into()); shutdown.fail(); }
-                    Some(Ok(Ok(()))) => { shutdown.initiate_shutdown(); }
-                    None => {},
-                }
+        loop {
+            tokio::select! {
+                biased;
+                () = &mut stop => break,
+                Some(result) = tasks.join_next() => match result {
+                    Ok((name, Ok(()))) => {
+                        log::info!("The {name} listener completed before shutdown");
+                    }
+                    Ok((name, Err(error))) => {
+                        failure = Some(error.context(format!("The {name} listener failed")));
+                        shutdown.fail();
+                        break;
+                    }
+                    Err(error) => {
+                        failure = Some(error.into());
+                        shutdown.fail();
+                        break;
+                    }
+                },
             }
         }
         let deadline = self.manager.shutdown_deadline()?;
@@ -456,7 +451,7 @@ where
             while let Some(result) = tasks.join_next().await {
                 if let Err(error) = result
                     .map_err(anyhow::Error::from)
-                    .and_then(std::convert::identity)
+                    .and_then(|(_, result)| result)
                 {
                     failure.get_or_insert(error);
                 }
@@ -480,15 +475,23 @@ where
     /// This mirrors how the daemon composes the IPC listener with the agent
     /// runtime. It returns one listener when the client API is enabled.
     fn test_client_api_listeners(&self) -> Vec<Box<dyn RuntimeListenerService>> {
-        match self.listeners.client_api() {
+        let mut listeners = vec![self.tacacs_proxy_listener()];
+        listeners.extend(self.test_client_api_only());
+        listeners
+    }
+
+    fn test_client_api_only(&self) -> Vec<Box<dyn RuntimeListenerService>> {
+        let local = self.local_services.current();
+        let prepared = local.prepared();
+        match prepared.client_api() {
             Some(path) => vec![crate::test_support::TestClientApiListener::boxed(
                 Arc::clone(&self.manager),
                 path.to_path_buf(),
                 tacacsrs_ipc::server::ListenerOptions {
-                    socket_mode: self.listeners.unix_socket_mode(),
-                    max_connections: self.listeners.max_connections(),
-                    max_client_api_streams: self.listeners.max_client_api_streams(),
-                    connection_lifetime: self.listeners.connection_lifetime(),
+                    socket_mode: prepared.unix_socket_mode(),
+                    max_connections: prepared.max_connections(),
+                    max_client_api_streams: prepared.max_client_api_streams(),
+                    connection_lifetime: prepared.connection_lifetime(),
                 },
             )],
             None => Vec::new(),

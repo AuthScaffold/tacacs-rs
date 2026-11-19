@@ -8,4 +8,4 @@ mod listener;
 mod service;
 mod upstream_bridge;
 
-pub(crate) use service::TacacsProxyService;
+pub(crate) use service::{TacacsProxyListener, TacacsProxyService};

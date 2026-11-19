@@ -4,6 +4,7 @@ use anyhow::Context;
 
 use tacacsrs_agent::components::LocalServicesInput;
 use tacacsrs_config::local_services::{LocalServicesPatch, ServiceSelection};
+use tacacsrs_config::tacacsrs::LocalServices;
 
 use crate::cli::{Cli, ServiceMode};
 
@@ -33,12 +34,24 @@ pub(crate) fn patch(cli: &Cli) -> anyhow::Result<LocalServicesPatch> {
 
 /// Returns the local-services input of a command-line profile.
 ///
+/// A command-line profile has no source that can supply a proxy endpoint
+/// later. An enabled proxy must therefore have `--proxy-endpoint`.
+///
 /// # Errors
-/// Returns the error of [`patch`].
+/// Returns the error of [`patch`], or an error when the flags enable the
+/// proxy without an endpoint.
 pub(crate) fn input(cli: &Cli) -> anyhow::Result<LocalServicesInput> {
     Ok(match &cli.local_services {
         Some(path) => LocalServicesInput::File(path.clone()),
-        None => LocalServicesInput::Patch(patch(cli)?),
+        None => {
+            let patch = patch(cli)?;
+            let services = patch.apply(LocalServices::default())?;
+            anyhow::ensure!(
+                !services.tacacs_proxy_enabled || services.tacacs_proxy_endpoint.is_some(),
+                "The TACACS+ proxy service needs --proxy-endpoint"
+            );
+            LocalServicesInput::Patch(patch)
+        }
     })
 }
 
@@ -46,7 +59,7 @@ pub(crate) fn input(cli: &Cli) -> anyhow::Result<LocalServicesInput> {
 mod tests {
     use clap::Parser;
     use tacacsrs_config::local_services::{parse_local_services, prepare_local_services};
-    use tacacsrs_config::tacacsrs::{LocalServices, ProxyCredentialSource};
+    use tacacsrs_config::tacacsrs::ProxyCredentialSource;
     use tacacsrs_sonic::SonicForwarderSettings;
 
     use super::*;
@@ -127,7 +140,6 @@ mod tests {
         for flags in [
             vec!["--socket-mode", "1000"],
             vec!["--socket-mode", "999"],
-            vec!["--service-mode", "tacacs-proxy"],
             vec!["--listen-endpoint", "relative/socket"],
             vec!["--proxy-endpoint", "/run/tacacs/tacacs.sock"],
             vec![
@@ -144,6 +156,20 @@ mod tests {
             );
             assert!(from_cli(&cli, LocalServices::default()).is_err());
         }
+    }
+
+    #[test]
+    fn a_command_line_proxy_needs_an_endpoint() {
+        let cli = Cli::parse_from([
+            "agentd",
+            "--server-addr",
+            "192.0.2.1:49",
+            "--service-mode",
+            "tacacs-proxy",
+        ]);
+        assert!(from_cli(&cli, LocalServices::default()).is_ok());
+        let error = input(&cli).expect_err("the proxy needs an endpoint");
+        assert!(error.to_string().contains("--proxy-endpoint"), "{error:#}");
     }
 
     #[test]

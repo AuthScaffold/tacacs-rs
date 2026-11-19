@@ -120,8 +120,6 @@ pub enum DegradationReason {
     SourceConfigurationInvalid,
     /// Credential resolution failed for candidate configuration.
     CredentialResolutionFailed,
-    /// Validated listener or host-binding settings require a process restart.
-    RestartRequired,
     /// Each eligible server failed an authoritative connection attempt.
     UpstreamsUnavailable,
     /// The latest upstream watchdog probe got no accounting reply from any eligible server.
@@ -241,7 +239,7 @@ impl RuntimeHealthSnapshot {
         self.continuous_notifications_connected
     }
 
-    /// Returns the services enabled for this runtime.
+    /// Returns the services that the current local services enable.
     #[must_use]
     pub const fn enabled_services(&self) -> EnabledServices {
         self.enabled_services
@@ -429,20 +427,20 @@ impl RuntimeHealthPublisher {
 
     /// Publishes a local listener transition.
     ///
-    /// If the selected listener is disabled, this method returns `false` and
-    /// does not change the snapshot. The return value reports an invalid
-    /// ownership assumption to the caller.
-    #[must_use]
-    pub fn set_listener(&self, service: RuntimeService, state: ListenerState) -> bool {
-        if !self.service_enabled(service) {
-            return false;
-        }
-
-        self.update(|snapshot| match service {
-            RuntimeService::ClientApi => snapshot.client_api_listener = state,
-            RuntimeService::TacacsProxy => snapshot.tacacs_proxy_listener = state,
+    /// The local services change at runtime, so each listener state is
+    /// valid for each service. A service is enabled while its listener state
+    /// is not [`ListenerState::Disabled`].
+    pub fn set_listener(&self, service: RuntimeService, state: ListenerState) {
+        self.update(|snapshot| {
+            match service {
+                RuntimeService::ClientApi => snapshot.client_api_listener = state,
+                RuntimeService::TacacsProxy => snapshot.tacacs_proxy_listener = state,
+            }
+            snapshot.enabled_services = EnabledServices::new(
+                snapshot.client_api_listener != ListenerState::Disabled,
+                snapshot.tacacs_proxy_listener != ListenerState::Disabled,
+            );
         });
-        true
     }
 
     /// Publishes the count of configured servers eligible for runtime operations.
@@ -683,14 +681,6 @@ impl RuntimeHealthPublisher {
         });
     }
 
-    fn service_enabled(&self, service: RuntimeService) -> bool {
-        let enabled_services = self.sender.borrow().enabled_services;
-        match service {
-            RuntimeService::ClientApi => enabled_services.client_api(),
-            RuntimeService::TacacsProxy => enabled_services.tacacs_proxy(),
-        }
-    }
-
     fn update(&self, mutation: impl FnOnce(&mut RuntimeHealthSnapshot)) {
         let mut mutation = Some(mutation);
         self.sender.send_if_modified(|snapshot| {
@@ -829,11 +819,11 @@ mod tests {
         let publisher = RuntimeHealthPublisher::new(EnabledServices::BOTH);
         publisher.set_applied_configuration(true);
         publisher.set_eligible_server_count(1);
-        assert!(publisher.set_listener(RuntimeService::ClientApi, ListenerState::Bound));
+        publisher.set_listener(RuntimeService::ClientApi, ListenerState::Bound);
 
         assert!(!publisher.snapshot().is_startup_serving());
 
-        assert!(publisher.set_listener(RuntimeService::TacacsProxy, ListenerState::Bound));
+        publisher.set_listener(RuntimeService::TacacsProxy, ListenerState::Bound);
         let snapshot = publisher.snapshot();
         assert_eq!(snapshot.lifecycle(), RuntimeLifecycle::Serving);
         assert!(snapshot.is_startup_serving());
@@ -844,7 +834,7 @@ mod tests {
     fn startup_allows_zero_eligible_servers_but_readiness_does_not() {
         let publisher = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
         publisher.set_applied_configuration(true);
-        assert!(publisher.set_listener(RuntimeService::ClientApi, ListenerState::Bound));
+        publisher.set_listener(RuntimeService::ClientApi, ListenerState::Bound);
 
         let snapshot = publisher.snapshot();
         assert!(snapshot.is_startup_serving());
@@ -858,7 +848,7 @@ mod tests {
         let publisher = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
         publisher.set_applied_configuration(true);
         publisher.set_eligible_server_count(2);
-        assert!(publisher.set_listener(RuntimeService::ClientApi, ListenerState::Bound));
+        publisher.set_listener(RuntimeService::ClientApi, ListenerState::Bound);
         publisher.set_upstream_availability(UpstreamAvailability::Unavailable);
         publisher.set_degraded(DegradationReason::UpstreamsUnavailable, true);
 
@@ -875,7 +865,7 @@ mod tests {
         let publisher = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
         publisher.set_applied_configuration(true);
         publisher.set_eligible_server_count(1);
-        assert!(publisher.set_listener(RuntimeService::ClientApi, ListenerState::Bound));
+        publisher.set_listener(RuntimeService::ClientApi, ListenerState::Bound);
         publisher.set_datastore(DatastoreState::Stale);
         publisher.set_degraded(DegradationReason::DatastoreStale, true);
 
@@ -885,32 +875,11 @@ mod tests {
     }
 
     #[test]
-    fn restart_required_is_degraded_without_withdrawing_readiness() {
-        let publisher = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
-        publisher.set_applied_configuration(true);
-        publisher.set_eligible_server_count(1);
-        assert!(publisher.set_listener(RuntimeService::ClientApi, ListenerState::Bound));
-
-        publisher.set_degraded(DegradationReason::RestartRequired, true);
-        assert!(publisher.snapshot().is_readiness_serving());
-        assert!(publisher
-            .snapshot()
-            .degradation_reasons()
-            .contains(&DegradationReason::RestartRequired));
-
-        publisher.set_degraded(DegradationReason::RestartRequired, false);
-        assert!(!publisher
-            .snapshot()
-            .degradation_reasons()
-            .contains(&DegradationReason::RestartRequired));
-    }
-
-    #[test]
     fn draining_withdraws_every_health_view() {
         let publisher = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
         publisher.set_applied_configuration(true);
         publisher.set_eligible_server_count(1);
-        assert!(publisher.set_listener(RuntimeService::ClientApi, ListenerState::Bound));
+        publisher.set_listener(RuntimeService::ClientApi, ListenerState::Bound);
         publisher.set_lifecycle(RuntimeLifecycle::Serving);
         publisher.set_lifecycle(RuntimeLifecycle::Draining);
 
@@ -937,14 +906,13 @@ mod tests {
     }
 
     #[test]
-    fn disabled_listener_rejects_transitions() {
+    fn listener_transitions_enable_and_disable_the_service() {
         let publisher = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
 
-        assert!(!publisher.set_listener(RuntimeService::TacacsProxy, ListenerState::Bound));
-        assert_eq!(
-            publisher.snapshot().listener(RuntimeService::TacacsProxy),
-            ListenerState::Disabled
-        );
+        publisher.set_listener(RuntimeService::TacacsProxy, ListenerState::Bound);
+        assert_eq!(publisher.snapshot().enabled_services(), EnabledServices::BOTH);
+        publisher.set_listener(RuntimeService::ClientApi, ListenerState::Disabled);
+        assert_eq!(publisher.snapshot().enabled_services(), EnabledServices::TACACS_PROXY);
     }
 
     #[test]

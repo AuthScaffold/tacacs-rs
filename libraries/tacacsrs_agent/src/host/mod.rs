@@ -15,12 +15,12 @@ use std::sync::Arc;
 use anyhow::Context;
 use tokio_util::sync::CancellationToken;
 
+use crate::runtime::LocalServicesView;
 use crate::{
     AgentReadinessCheck, AgentRuntime, DiagnosticsHandle, PolicyInput, RuntimeHealth,
     RuntimeInputs, UpstreamProbe,
 };
 use tacacsrs_composition::{prepare_all, register_all, Component, Composition, Graph};
-use tacacsrs_config::local_services::PreparedLocalServices;
 use tacacsrs_config::tacacsrs::LocalServices;
 use tacacsrs_lifecycle::{ApplicationLifetime, ApplicationReadiness, HostedService};
 use tacacsrs_networking::CertificateVerification;
@@ -32,18 +32,20 @@ mod roles;
 #[cfg(test)]
 mod tests;
 
-pub use roles::{ClientApiAccess, ListenerFactory, StartupCheck};
+pub use roles::{ClientApiAccess, ListenerFactory, StartupCheck, TacacsProxyAccess};
 
 /// Declares the inputs, roles, and deferred values of the agent host.
 ///
 /// Components must provide exactly one value of each input type:
 /// [`SourceDatastore`], [`CredentialProvider`], [`LocalServices`],
-/// [`PolicyInput`], and [`CertificateVerification`].
+/// [`PolicyInput`], and [`CertificateVerification`]. The [`LocalServices`]
+/// value is the bootstrap value. A datastore change can replace it at runtime.
 ///
 /// Components can inject these deferred values. The host supplies them after
 /// it prepares the agent runtime: [`DiagnosticsHandle`], [`RuntimeHealth`],
-/// [`ClientApiAccess`], [`UpstreamProbe`], [`PreparedLocalServices`],
-/// [`ApplicationReadiness`], and [`ApplicationLifetime`].
+/// [`ClientApiAccess`], [`TacacsProxyAccess`], [`UpstreamProbe`],
+/// [`LocalServicesView`], [`ApplicationReadiness`], and
+/// [`ApplicationLifetime`].
 ///
 /// # Errors
 /// Returns an error when a component already registered one of the deferred
@@ -61,8 +63,9 @@ pub fn declare(composition: &mut Composition) -> anyhow::Result<()> {
     composition.deferred::<DiagnosticsHandle>()?;
     composition.deferred::<RuntimeHealth>()?;
     composition.deferred::<ClientApiAccess>()?;
+    composition.deferred::<TacacsProxyAccess>()?;
     composition.deferred::<UpstreamProbe>()?;
-    composition.deferred::<PreparedLocalServices>()?;
+    composition.deferred::<LocalServicesView>()?;
     composition.deferred::<ApplicationReadiness>()?;
     composition.deferred::<ApplicationLifetime>()?;
     Ok(())
@@ -87,9 +90,13 @@ impl PreparedHost {
     /// registration order. Last, it constructs the enabled listeners and the
     /// hosted services, and drops the graph.
     ///
+    /// Each runtime service can have at most one selected listener. A service
+    /// that the bootstrap local services enable must have one.
+    ///
     /// # Errors
     /// Returns an input, layer, overlay, runtime, startup check, or
-    /// construction error.
+    /// construction error. Also returns an error when a runtime service has
+    /// more than one listener, or when an enabled service has no listener.
     pub async fn prepare(graph: Graph) -> anyhow::Result<Self> {
         let inputs = read_inputs(&graph)?;
         let runtime = AgentRuntime::prepare(inputs).await?;
@@ -97,12 +104,12 @@ impl PreparedHost {
         graph.supply(Arc::new(service.diagnostics_handle()))?;
         graph.supply(Arc::new(runtime.health()))?;
         graph.supply(Arc::new(ClientApiAccess {
-            socket_path: service.client_api_socket_path(),
-            settings: service.client_api_listener_settings(),
+            local_services: service.local_services(),
             handle: service.client_api_handle(),
         }))?;
+        graph.supply(Arc::new(TacacsProxyAccess::new(Arc::clone(service))))?;
         graph.supply(Arc::new(service.upstream_probe()))?;
-        graph.supply(Arc::new(runtime.prepared_local_services().clone()))?;
+        graph.supply(Arc::new(runtime.local_services()))?;
         graph.supply(Arc::new(ApplicationReadiness::new(AgentReadinessCheck::new(
             runtime.health(),
         ))))?;
@@ -114,11 +121,12 @@ impl PreparedHost {
                 .await
                 .with_context(|| format!("The startup check {} failed", check.name()))?;
         }
-        let listeners = graph
+        let listeners: Vec<_> = graph
             .members::<dyn ListenerFactory>(|factory| factory.name())?
             .iter()
             .filter_map(|factory| factory.listener())
             .collect();
+        check_listeners(&runtime, &listeners)?;
         let services = graph.hosted_services()?;
         graph.finish()?;
         Ok(Self {
@@ -163,6 +171,32 @@ impl PreparedHost {
     }
 }
 
+fn check_listeners(
+    runtime: &AgentRuntime,
+    listeners: &[Box<dyn crate::RuntimeListenerService>],
+) -> anyhow::Result<()> {
+    let enabled = runtime.health().snapshot().enabled_services();
+    for (service, label, is_enabled) in [
+        (crate::RuntimeService::ClientApi, "client API", enabled.client_api()),
+        (crate::RuntimeService::TacacsProxy, "TACACS+ proxy", enabled.tacacs_proxy()),
+    ] {
+        let count = listeners
+            .iter()
+            .filter(|listener| listener.service() == Some(service))
+            .count();
+        anyhow::ensure!(
+            count <= 1,
+            "The components supply {count} {label} listeners. Select at most one listener component for each service"
+        );
+        anyhow::ensure!(
+            count == 1 || !is_enabled,
+            "The configuration enables the {label}, but no component supplies its listener. \
+             Select one listener component for each enabled service"
+        );
+    }
+    Ok(())
+}
+
 fn read_inputs(graph: &Graph) -> anyhow::Result<RuntimeInputs> {
     let datastore = graph.one::<SourceDatastore>()?.0.clone();
     let mut credentials = (*graph.one::<CredentialProvider>()?).clone();
@@ -172,7 +206,9 @@ fn read_inputs(graph: &Graph) -> anyhow::Result<RuntimeInputs> {
             .with_context(|| format!("Could not apply the credential layer {}", layer.name()))?;
     }
     let mut local_services = (*graph.one::<LocalServices>()?).clone();
-    for overlay in graph.members::<dyn LocalServicesOverlay>(|overlay| overlay.name())? {
+    let local_services_overlays =
+        graph.members::<dyn LocalServicesOverlay>(|overlay| overlay.name())?;
+    for overlay in &local_services_overlays {
         local_services = overlay.apply(local_services).with_context(|| {
             format!("Could not apply the local services overlay {}", overlay.name())
         })?;
@@ -182,6 +218,7 @@ fn read_inputs(graph: &Graph) -> anyhow::Result<RuntimeInputs> {
             datastore,
             credentials,
             local_services,
+            local_services_overlays,
         },
         policy: (*graph.one::<PolicyInput>()?).clone(),
         certificate_verification: *graph.one::<CertificateVerification>()?,

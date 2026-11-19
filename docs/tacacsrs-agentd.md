@@ -105,9 +105,9 @@ Example resource for `--local-services`:
 
 The default document is `{"tacacsrs:local-services":{}}`. It enables only the client API with permissions `0660`.
 YANG JSON encodes permission bits as a decimal number from 0 through 511. The CLI `--socket-mode` input remains octal.
-The resource file loads once at startup. Listener changes require a restart.
+The resource file loads once at startup. A change to the file has no effect until the daemon starts again. A source that supplies local services at runtime, such as SONiC ConfigDB, can change the listeners without a restart.
 It cannot be combined with listener flags, `--proxy-credential-source`, or `--sonic`.
-SONiC mode still loads its forwarder row and normalizes the result into the canonical resource.
+In SONiC mode, the forwarder row supplies the proxy endpoint after startup. The proxy listener reports `Pending` until the first valid row arrives.
 
 Each listener serves at most `max-connections` connections. Further connections wait in the operating system's bounded listen backlog.
 The client API permits at most `max-client-api-streams` concurrent HTTP/2 streams on each connection.
@@ -532,7 +532,7 @@ A final reply retains admission capacity until the writer acknowledges delivery.
 Full continuation queues also close the connection so one session cannot block dispatch to all other sessions.
 Client API physical delivery is bounded by the connection lifetime; its operation deadline still bounds upstream execution.
 
-SONiC ConfigDB is supervised differently from local CLI or file input. Before constructing the service, the daemon waits for a valid `TACPLUS_FORWARDER|global` row and uses its loopback address and port for the raw TACACS+ proxy listener. SONiC mode always hosts both the Client API and proxy. A conflicting `--proxy-endpoint` or non-`both` service mode is rejected. Ctrl-C or SIGTERM cancels this pre-bind retry.
+SONiC ConfigDB is supervised differently from local CLI or file input. The daemon does not read ConfigDB at startup. The Client API and the health service bind at once. The raw TACACS+ proxy listener reports `pending` until the daemon reads a valid `TACPLUS_FORWARDER|global` row. The proxy then binds to the loopback address and port of that row. While the row is missing, the server configuration applies and the proxy waits. An invalid row rejects the ConfigDB candidate, and the active configuration and listeners stay. SONiC mode always hosts both the Client API and proxy. A conflicting `--proxy-endpoint` or non-`both` service mode is rejected.
 
 After forwarder bootstrap, the daemon binds both listeners with an empty upstream configuration and reports startup and readiness as not serving. It then retries server and credential dependencies with capped jittered backoff. Each candidate is loaded, filtered, bundle-enumerated, completely resolved through the SONiC provider, materialized into generated inline server fields, and validated before one atomic apply. A missing provider root or object therefore cannot apply a partial server list.
 
@@ -540,9 +540,7 @@ When Redis and every referenced credential become available, the same process ap
 
 The daemon validates forwarder changes against the same complete ConfigDB snapshot as live upstream changes. Server and credential updates continue to apply.
 
-Changes to the forwarder configuration do not change active endpoints. Instead, the daemon reports a sanitized, restart-required degradation.
-
-The daemon clears this degradation after the bound values return. It rejects malformed rows without reporting a listener change.
+A change to the forwarder row moves the proxy at runtime. The proxy binds the new endpoint first, and then stops the old endpoint and drains its connections. If the two endpoints use the same port, the proxy stops the old endpoint first. If the new endpoint cannot bind, the old endpoint continues to serve, and the proxy tries again after 1 s, with a delay that doubles up to 30 s. A removed row stops the proxy, and the proxy reports `pending`.
 
 ## Health and Probes
 

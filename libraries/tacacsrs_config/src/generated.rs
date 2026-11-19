@@ -1582,7 +1582,7 @@ pub mod tacacsrs {
     fn default_local_services_unix_socket_mode() -> u16 { 432 }
     fn default_local_services_proxy_credential_source() -> ProxyCredentialSource { ProxyCredentialSource::Unobfuscated }
 
-    /// Startup listener configuration. Changes require a service restart.
+    /// Local listener configuration. The agent applies changes at runtime.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct LocalServices {
@@ -1607,7 +1607,7 @@ pub mod tacacsrs {
         #[serde(rename = "client-api-endpoint")]
         #[serde(default = "default_local_services_client_api_endpoint")]
         pub client_api_endpoint: String,
-        /// Enables the raw TACACS+ proxy.
+        /// Enables the raw TACACS+ proxy. Without an endpoint, the proxy waits for one.
         #[serde(rename = "tacacs-proxy-enabled")]
         #[serde(default)]
         pub tacacs_proxy_enabled: bool,

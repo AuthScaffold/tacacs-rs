@@ -79,9 +79,12 @@ mod client_api {
     pub(crate) fn client_api_listeners(
         service: &TacacsClientService,
     ) -> Vec<Box<dyn RuntimeListenerService>> {
-        match service.client_api_socket_path() {
+        let local_services = service.local_services().current();
+        let prepared = local_services.prepared();
+        match prepared.client_api() {
             Some(path) => {
-                let settings = service.client_api_listener_settings();
+                let path = path.to_path_buf();
+                let settings = tacacsrs_agent::ListenerSettings::from(prepared);
                 vec![Box::new(ClientApiListener {
                     handler: Arc::new(AgentHandler {
                         handle: service.client_api_handle(),
@@ -135,6 +138,14 @@ mod client_api {
 
     #[async_trait]
     impl RuntimeListenerService for ClientApiListener {
+        fn name(&self) -> &'static str {
+            "test client API"
+        }
+
+        fn service(&self) -> Option<tacacsrs_agent::RuntimeService> {
+            Some(tacacsrs_agent::RuntimeService::ClientApi)
+        }
+
         async fn serve(
             self: Box<Self>,
             shutdown: ShutdownReceiver,
@@ -157,7 +168,7 @@ mod client_api {
             }));
             let bound = health.clone();
             let on_bound = move || {
-                let _ = bound.set_listener(RuntimeService::ClientApi, ListenerState::Bound);
+                bound.set_listener(RuntimeService::ClientApi, ListenerState::Bound);
             };
             let result =
                 server::serve_unix(&path, options, handler, receiver, shutdown.flag(), on_bound)
@@ -847,7 +858,7 @@ async fn inline_client_certificate_expiry_preserves_supervised_catalog() -> Resu
         datastore.clone(),
         service.clone(),
         health.clone(),
-        Arc::new(NoopTacacsPlusFilter::default()),
+        Arc::new(NoopTacacsPlusFilter),
     );
     supervisor.initialize_until(std::future::pending()).await?;
     assert_eq!(
@@ -940,7 +951,7 @@ async fn unchanged_provider_refresh_after_certificate_expiry_reuses_catalog_and_
         datastore.clone(),
         service.clone(),
         health.clone(),
-        Arc::new(NoopTacacsPlusFilter::default()),
+        Arc::new(NoopTacacsPlusFilter),
     )
     .with_credential_resolver(resolver.clone());
     supervisor.initialize_until(std::future::pending()).await?;

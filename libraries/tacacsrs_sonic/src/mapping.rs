@@ -242,6 +242,18 @@ impl SonicForwarderSettings {
 pub(crate) fn check_listener_patch(
     patch: &tacacsrs_config::local_services::LocalServicesPatch,
 ) -> anyhow::Result<()> {
+    deferred_local_services(patch).map(|_| ())
+}
+
+/// Applies host listener settings to the SONiC local services before the
+/// forwarder row is known.
+///
+/// The result has no proxy endpoint, because the forwarder row supplies it
+/// later. The function also returns the proxy endpoint of the patch, if any.
+/// The forwarder row must agree with this endpoint.
+pub(crate) fn deferred_local_services(
+    patch: &tacacsrs_config::local_services::LocalServicesPatch,
+) -> anyhow::Result<(tacacsrs_config::tacacsrs::LocalServices, Option<std::net::SocketAddr>)> {
     use tacacsrs_config::local_services::ServiceSelection;
 
     anyhow::ensure!(
@@ -254,27 +266,28 @@ pub(crate) fn check_listener_patch(
         patch.proxy_shared_secret.is_none(),
         "SONiC central-agent mode does not accept an inline proxy shared secret"
     );
-    let representative = match &patch.tacacs_proxy_endpoint {
-        Some(endpoint) => {
+    let expected = patch
+        .tacacs_proxy_endpoint
+        .as_deref()
+        .map(|endpoint| {
             let endpoint = endpoint
                 .parse::<std::net::SocketAddr>()
                 .context("The SONiC proxy endpoint must be a socket address")?;
+            let address = endpoint.ip().to_canonical();
             anyhow::ensure!(
-                endpoint.ip().to_canonical().is_loopback() && endpoint.port() != 0,
+                address.is_loopback() && endpoint.port() != 0,
                 "The SONiC proxy endpoint must be a loopback address with a nonzero port"
             );
-            SonicForwarderSettings {
-                listen_address: endpoint.ip().to_canonical(),
-                listen_port: endpoint.port(),
-            }
-        }
-        None => SonicForwarderSettings {
-            listen_address: IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-            listen_port: DEFAULT_TACACS_TCP_PORT,
-        },
+            Ok(std::net::SocketAddr::new(address, endpoint.port()))
+        })
+        .transpose()?;
+    let representative = SonicForwarderSettings {
+        listen_address: expected.map_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), |e| e.ip()),
+        listen_port: expected.map_or(DEFAULT_TACACS_TCP_PORT, |e| e.port()),
     };
-    patch.apply(representative.local_services())?;
-    Ok(())
+    let mut services = patch.apply(representative.local_services())?;
+    services.tacacs_proxy_endpoint = None;
+    Ok((services, expected))
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

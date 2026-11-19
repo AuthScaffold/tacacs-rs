@@ -10,12 +10,13 @@ mod config_filter;
 mod config_supervisor;
 mod health;
 mod health_view;
+mod listener_reconciler;
 mod listener_service;
+mod local_services;
 mod materialization_coordinator;
 pub(crate) mod candidate_preparation;
 mod policy_supervisor;
 mod proxy_loop_guard;
-mod request_tracker;
 mod revision;
 #[cfg(test)]
 mod server_catalog;
@@ -47,8 +48,11 @@ pub use health::{
 pub(crate) use server_catalog::REQUIRED_SERVER_TYPES;
 #[cfg(test)]
 pub(crate) use server_catalog::enumerate_supported_servers;
+pub(crate) use listener_reconciler::{
+    endpoints_conflict, reconcile, BindSignal, DesiredListener, ListenerInstances,
+};
+pub use local_services::{ActiveLocalServices, LocalServicesView};
+pub(crate) use local_services::LocalServicesState;
 pub(crate) use proxy_loop_guard::{ProxyLoopGuard, ProxyListenerBinding};
-pub(crate) use source_filter::config_filter_from_local_services;
-pub(crate) use request_tracker::{RequestGuard, RequestTracker};
 pub use shutdown::{ListenerRegistration, ShutdownReceiver};
 pub(crate) use shutdown::ShutdownCoordinator;

@@ -25,6 +25,7 @@ impl ConfigObservation for StaticObservation {
             ConfigChangeEvent::Changed(ConfigChange {
                 delta: ConfigDelta::diff(None, &config),
                 config,
+                local_services: None,
             })
         }))
     }

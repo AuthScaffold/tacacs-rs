@@ -14,7 +14,7 @@ use std::time::Duration;
 use tacacsrs_agent::components::{
     ClientApiComponent, HttpCredentialComponent, HttpEvidenceSettings,
     InvalidSourceShutdownComponent, StatisticsComponent, SystemdComponent, SystemdMode,
-    UpstreamWatchdogComponent,
+    TacacsProxyComponent, UpstreamWatchdogComponent,
 };
 use tacacsrs_composition::Component;
 
@@ -38,6 +38,7 @@ pub(crate) const HOST_COMPONENTS: &[Select] = &[
     select_systemd,
     select_statistics,
     select_client_api,
+    select_tacacs_proxy,
     select_http_evidence,
     select_upstream_watchdog,
     select_invalid_source_shutdown,
@@ -68,6 +69,13 @@ fn select_statistics(host: &HostInputs) -> anyhow::Result<Option<Box<dyn Compone
 #[expect(clippy::unnecessary_wraps, reason = "Every selection function has the Select signature")]
 fn select_client_api(_: &HostInputs) -> anyhow::Result<Option<Box<dyn Component>>> {
     Ok(Some(Box::new(ClientApiComponent)))
+}
+
+/// Selects the TACACS+ proxy listener. It binds only when the local services
+/// enable the proxy.
+#[expect(clippy::unnecessary_wraps, reason = "Every selection function has the Select signature")]
+fn select_tacacs_proxy(_: &HostInputs) -> anyhow::Result<Option<Box<dyn Component>>> {
+    Ok(Some(Box::new(TacacsProxyComponent)))
 }
 
 /// Selects the HTTP credential evidence layer when a source is registered.

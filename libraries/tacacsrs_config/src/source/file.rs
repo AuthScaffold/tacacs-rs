@@ -189,6 +189,7 @@ impl ConfigObservation for FileObservation {
             ConfigChangeEvent::Changed(ConfigChange {
                 config: snapshot,
                 delta,
+                local_services: None,
             })
         } else {
             log::warn!("Configuration candidate was rejected");

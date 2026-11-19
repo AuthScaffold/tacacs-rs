@@ -1,8 +1,9 @@
 //! Serves the local client API over IPC.
 //!
 //! The component adapts the client API handle of the agent to the IPC server
-//! handler. It maps the prepared listener settings and the runtime health to
-//! the IPC listener options and the IPC health signal. The same socket also
+//! handler. It maps the active local services and the runtime health to the
+//! IPC listener options and the IPC health signal. The listener binds, moves,
+//! or stops the socket when the local services change. The same socket also
 //! serves the operational statistics and the detailed runtime health. The
 //! detailed health includes each check in the injected [`HealthRegistry`].
 //! The component contains no routing or materialization logic.
@@ -13,12 +14,17 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dill::component;
+use futures_util::future::BoxFuture;
+use futures_util::FutureExt;
 use tokio::sync::watch;
 
+use crate::runtime::{
+    reconcile, ActiveLocalServices, BindSignal, DesiredListener, ListenerInstances,
+    LocalServicesView,
+};
 use crate::{
-    ClientApiHandle, DiagnosticsHandle, ListenerRegistration, ListenerState,
-    RuntimeHealthPublisher, RuntimeHealthSnapshot, RuntimeListenerService, RuntimeService,
-    ShutdownReceiver,
+    ClientApiHandle, DiagnosticsHandle, ListenerSettings, RuntimeHealthPublisher,
+    RuntimeHealthSnapshot, RuntimeListenerService, RuntimeService, ShutdownReceiver,
 };
 use super::health_details::AgentHealthDetails;
 use crate::host::{ClientApiAccess, ListenerFactory};
@@ -33,7 +39,7 @@ use tacacsrs_protocol::failure::ServiceError;
 
 /// Adds the client API IPC listener to the agent runtime.
 ///
-/// The listener binds only when the prepared local services enable the client
+/// The listener binds only while the active local services enable the client
 /// API.
 pub struct ClientApiComponent;
 
@@ -69,21 +75,13 @@ impl ListenerFactory for ClientApiListenerFactory {
     }
 
     fn listener(&self) -> Option<Box<dyn RuntimeListenerService>> {
-        let path = self.access.socket_path.clone()?;
-        let settings = self.access.settings;
         Some(Box::new(ClientApiListener {
             diagnostics: Arc::new(AgentDiagnostics(DiagnosticsHandle::clone(&self.diagnostics))),
             registry: self.registry.clone(),
             handler: Arc::new(AgentClientApiHandler {
                 handle: self.access.handle.clone(),
             }),
-            path,
-            options: ListenerOptions {
-                socket_mode: settings.socket_mode,
-                max_connections: settings.max_connections,
-                max_client_api_streams: settings.max_client_api_streams,
-                connection_lifetime: settings.connection_lifetime,
-            },
+            local_services: self.access.local_services.clone(),
         }))
     }
 }
@@ -124,12 +122,19 @@ struct ClientApiListener {
     handler: Arc<AgentClientApiHandler>,
     diagnostics: Arc<AgentDiagnostics>,
     registry: Arc<HealthRegistry>,
-    path: PathBuf,
-    options: ListenerOptions,
+    local_services: LocalServicesView,
 }
 
 #[async_trait]
 impl RuntimeListenerService for ClientApiListener {
+    fn name(&self) -> &'static str {
+        ClientApiListenerFactory::NAME
+    }
+
+    fn service(&self) -> Option<RuntimeService> {
+        Some(RuntimeService::ClientApi)
+    }
+
     async fn serve(
         self: Box<Self>,
         shutdown: ShutdownReceiver,
@@ -139,37 +144,83 @@ impl RuntimeListenerService for ClientApiListener {
             handler,
             diagnostics,
             registry,
-            path,
-            options,
+            local_services,
         } = *self;
-        let registration = ListenerRegistration::new(health.clone(), RuntimeService::ClientApi);
-        let (receiver, forwarder) = readiness_bridge(&health);
-        let bound_health = health.clone();
-        let on_bound = move || {
-            let _ = bound_health.set_listener(RuntimeService::ClientApi, ListenerState::Bound);
+        let instances = ClientApiInstances {
+            handler,
+            diagnostics,
+            registry,
+            health: health.clone(),
         };
+        reconcile(instances, local_services.subscribe(), shutdown, health).await
+    }
+}
+
+/// Starts one client API socket for each bind target.
+struct ClientApiInstances {
+    handler: Arc<AgentClientApiHandler>,
+    diagnostics: Arc<AgentDiagnostics>,
+    registry: Arc<HealthRegistry>,
+    health: RuntimeHealthPublisher,
+}
+
+impl ListenerInstances for ClientApiInstances {
+    type Target = (PathBuf, ListenerSettings);
+
+    fn service(&self) -> RuntimeService {
+        RuntimeService::ClientApi
+    }
+
+    fn desired(&self, local: &ActiveLocalServices) -> DesiredListener<Self::Target> {
+        let prepared = local.prepared();
+        match prepared.client_api() {
+            Some(path) => DesiredListener::Ready((path.to_path_buf(), prepared.into())),
+            None => DesiredListener::Disabled,
+        }
+    }
+
+    fn conflicts(&self, active: &Self::Target, next: &Self::Target) -> bool {
+        active.0 == next.0
+    }
+
+    fn start(
+        &self,
+        (path, settings): Self::Target,
+        shutdown: ShutdownReceiver,
+        bound: BindSignal,
+    ) -> BoxFuture<'static, anyhow::Result<()>> {
+        let handler = self.handler.clone();
+        let health = self.health.clone();
         let services = ListenerServices::default()
-            .with_diagnostics(diagnostics)
+            .with_diagnostics(self.diagnostics.clone())
             .with_health_details(Arc::new(AgentHealthDetails {
                 health: health.clone(),
-                registry,
+                registry: self.registry.clone(),
             }));
-        let serving = server::serve_unix_with_services(
-            &path,
-            options,
-            handler,
-            receiver,
-            shutdown.flag(),
-            on_bound,
-            services,
-        );
-        tokio::pin!(serving);
-        let result = tokio::select! {
-            result = &mut serving => result,
-            () = forwarder => serving.await,
+        let options = ListenerOptions {
+            socket_mode: settings.socket_mode,
+            max_connections: settings.max_connections,
+            max_client_api_streams: settings.max_client_api_streams,
+            connection_lifetime: settings.connection_lifetime,
         };
-        drop(registration);
-        result
+        async move {
+            let (receiver, forwarder) = readiness_bridge(&health);
+            let serving = server::serve_unix_with_services(
+                &path,
+                options,
+                handler,
+                receiver,
+                shutdown.flag(),
+                move || bound.mark_bound(),
+                services,
+            );
+            tokio::pin!(serving);
+            tokio::select! {
+                result = &mut serving => result,
+                () = forwarder => serving.await,
+            }
+        }
+        .boxed()
     }
 }
 

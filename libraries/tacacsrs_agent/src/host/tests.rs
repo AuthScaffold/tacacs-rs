@@ -10,7 +10,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{DiagnosticsHandle, PolicyInput};
 use tacacsrs_composition::{Component, Composition, Named, Value};
-use tacacsrs_config::local_services::PreparedLocalServices;
 use tacacsrs_config::source::StaticDatastore;
 use tacacsrs_config::tacacsrs::{LocalServices, RuntimePolicy};
 use tacacsrs_config::{
@@ -26,7 +25,7 @@ use tacacsrs_networking::CertificateVerification;
 use tacacsrs_provider::{CredentialLayer, CredentialProvider, LocalServicesOverlay, SourceDatastore};
 
 use super::{bootstrap, run_until, StartupCheck};
-use crate::components::InvalidSourceShutdownComponent;
+use crate::components::{InvalidSourceShutdownComponent, TacacsProxyComponent};
 
 const SOURCE: &str = "fixture source";
 
@@ -66,6 +65,7 @@ fn components(extra: Vec<Box<dyn Component>>) -> Vec<Box<dyn Component>> {
         Box::new(Value::new("runtime policy", PolicyInput::Canonical(RuntimePolicy::default()))),
         Box::new(Value::new("certificate verification", CertificateVerification::Required)),
         Box::new(FixtureSource),
+        Box::new(TacacsProxyComponent),
     ];
     components.extend(extra);
     components
@@ -260,6 +260,7 @@ async fn invalid_static_source_stops_the_application_with_an_error() {
         Box::new(Value::new("runtime policy", PolicyInput::Canonical(RuntimePolicy::default()))),
         Box::new(Value::new("certificate verification", CertificateVerification::Required)),
         Box::new(InvalidSource),
+        Box::new(TacacsProxyComponent),
         Box::new(InvalidSourceShutdownComponent),
     ];
     let result =
@@ -271,6 +272,23 @@ async fn invalid_static_source_stops_the_application_with_an_error() {
         error
             .to_string()
             .contains("source configuration is invalid"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test]
+async fn enabled_service_without_a_listener_fails_bootstrap() {
+    let components: Vec<Box<dyn Component>> = vec![
+        Box::new(Value::new("runtime policy", PolicyInput::Canonical(RuntimePolicy::default()))),
+        Box::new(Value::new("certificate verification", CertificateVerification::Required)),
+        Box::new(FixtureSource),
+    ];
+    let Err(error) = bootstrap(components).await else {
+        panic!("An enabled proxy without a listener component must fail bootstrap");
+    };
+    assert!(
+        format!("{error:#}")
+            .contains("enables the TACACS+ proxy, but no component supplies its listener"),
         "{error:#}"
     );
 }
@@ -406,7 +424,7 @@ struct FailingCheck;
 #[dill::scope(dill::Singleton)]
 #[dill::interface(dyn StartupCheck)]
 impl FailingCheck {
-    fn new(local_services: Arc<PreparedLocalServices>) -> Self {
+    fn new(local_services: Arc<crate::LocalServicesView>) -> Self {
         drop(local_services);
         Self
     }
@@ -458,4 +476,146 @@ fn bootstrap_future_is_send() {
     fn assert_send<T: Send>(_: &T) {}
     assert_send(&bootstrap(Vec::new()));
     assert_send(&super::run_until(Vec::new(), async { Ok(()) }));
+}
+
+struct ChangeObservation(tokio::sync::mpsc::Receiver<tacacsrs_config::source::ConfigChangeEvent>);
+
+#[async_trait]
+impl tacacsrs_config::source::ConfigObservation for ChangeObservation {
+    async fn next(&mut self) -> anyhow::Result<Option<tacacsrs_config::source::ConfigChangeEvent>> {
+        Ok(self.0.recv().await)
+    }
+}
+
+/// A datastore that sends each change from the test.
+struct ChangeDatastore(
+    tokio::sync::Mutex<
+        Option<tokio::sync::mpsc::Receiver<tacacsrs_config::source::ConfigChangeEvent>>,
+    >,
+);
+
+#[async_trait]
+impl tacacsrs_config::source::ConfigDatastore for ChangeDatastore {
+    fn label(&self) -> &'static str {
+        "change fixture"
+    }
+
+    fn runtime_policy(&self) -> tacacsrs_config::source::DatastoreRuntimePolicy {
+        tacacsrs_config::source::DatastoreRuntimePolicy::new(
+            tacacsrs_config::source::ChangeNotificationMode::Continuous,
+        )
+    }
+
+    async fn load(&self) -> anyhow::Result<tacacsrs_config::TacacsPlus> {
+        anyhow::bail!("the fixture only sends changes")
+    }
+
+    async fn observe(&self) -> anyhow::Result<Box<dyn tacacsrs_config::source::ConfigObservation>> {
+        let receiver = self
+            .0
+            .lock()
+            .await
+            .take()
+            .expect("the runtime observes once");
+        Ok(Box::new(ChangeObservation(receiver)))
+    }
+}
+
+struct ChangeSource {
+    datastore: Arc<ChangeDatastore>,
+    client_api: std::path::PathBuf,
+}
+
+impl Component for ChangeSource {
+    fn name(&self) -> &'static str {
+        SOURCE
+    }
+
+    fn register(self: Box<Self>, composition: &mut Composition) -> anyhow::Result<()> {
+        composition.shared(Arc::new(SourceDatastore(self.datastore)))?;
+        composition.shared(Arc::new(CredentialProvider::none()))?;
+        composition.shared(Arc::new(client_api_only(&self.client_api)))
+    }
+}
+
+fn client_api_only(path: &std::path::Path) -> LocalServices {
+    LocalServices {
+        client_api_endpoint: path.to_str().unwrap().to_owned(),
+        ..LocalServices::default()
+    }
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri does not support Unix domain sockets.
+async fn a_datastore_change_moves_the_client_api_socket() {
+    let directory = std::env::temp_dir().join(format!(
+        "tacacsrs-host-client-api-move-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let (first, second) = (directory.join("first.sock"), directory.join("second.sock"));
+    let (sender, receiver) = tokio::sync::mpsc::channel(2);
+    let components: Vec<Box<dyn Component>> = vec![
+        Box::new(Value::new("runtime policy", PolicyInput::Canonical(RuntimePolicy::default()))),
+        Box::new(Value::new("certificate verification", CertificateVerification::Required)),
+        Box::new(ChangeSource {
+            datastore: Arc::new(ChangeDatastore(tokio::sync::Mutex::new(Some(receiver)))),
+            client_api: first.clone(),
+        }),
+        Box::new(crate::components::ClientApiComponent),
+    ];
+    let host = bootstrap(components).await.unwrap();
+    let config = Arc::new(
+        TacacsPlusBuilder::new()
+            .with_server_builder(
+                TacacsPlusServerBuilder::new(
+                    "fixture",
+                    TacacsPlusServerType::all(),
+                    "192.0.2.10",
+                    49,
+                )
+                .with_shared_secret("test-key"),
+            )
+            .build()
+            .unwrap(),
+    );
+    let stop = async {
+        let connects = |path: std::path::PathBuf| async move {
+            tokio::net::UnixStream::connect(path).await.is_ok()
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !connects(first.clone()).await {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the client API must bind the first socket");
+        sender
+            .send(tacacsrs_config::source::ConfigChangeEvent::Changed(
+                tacacsrs_config::source::ConfigChange {
+                    local_services: Some(Arc::new(client_api_only(&second))),
+                    delta: tacacsrs_config::source::ConfigDelta::diff(None, &config),
+                    config: Arc::clone(&config),
+                },
+            ))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !(connects(second.clone()).await && !first.exists()) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the client API must move to the second socket");
+    };
+    tokio::time::timeout(Duration::from_secs(10), host.run_until(stop))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!second.exists(), "shutdown must remove the socket");
+    std::fs::remove_dir_all(directory).unwrap();
 }

@@ -60,6 +60,8 @@ impl DependencyKnowledge {
 struct FilteredSource {
     source: Arc<TacacsPlus>,
     proxy_policy: PreparedProxyPolicy,
+    /// Local services that the publication of this source activates.
+    local_services: Option<Arc<crate::runtime::ActiveLocalServices>>,
     dependencies: DependencyKnowledge,
 }
 
@@ -233,6 +235,7 @@ pub(crate) struct PreparedMaterialization {
     candidates: Vec<(MaterializedServer, super::CredentialLifetime)>,
     runtime_source: Arc<TacacsPlus>,
     proxy_policy: PreparedProxyPolicy,
+    local_services: Option<Arc<crate::runtime::ActiveLocalServices>>,
     preparation: Arc<Preparation>,
 }
 
@@ -408,7 +411,7 @@ impl MaterializationCoordinator {
         proxy_policy: PreparedProxyPolicy,
     ) -> MaterializationAttempt {
         let revision = self.admit_source(desired_source).await;
-        self.accept_filtered_source(revision, runtime_source, proxy_policy)
+        self.accept_filtered_source(revision, runtime_source, proxy_policy, None)
             .await
             .expect("test source must remain current")
     }
@@ -418,6 +421,7 @@ impl MaterializationCoordinator {
         revision: SourceRevision,
         runtime_source: TacacsPlus,
         proxy_policy: PreparedProxyPolicy,
+        local_services: Option<Arc<crate::runtime::ActiveLocalServices>>,
     ) -> Option<MaterializationAttempt> {
         let runtime_source = Arc::new(runtime_source);
         #[cfg(test)]
@@ -433,6 +437,7 @@ impl MaterializationCoordinator {
         state.desired_runtime = DesiredRuntime::Filtered(FilteredSource {
             source: Arc::clone(&runtime_source),
             proxy_policy,
+            local_services,
             dependencies: DependencyKnowledge::Unknown,
         });
         Some(MaterializationAttempt {
@@ -592,6 +597,13 @@ impl MaterializationCoordinator {
     }
 
     #[cfg(test)]
+    pub(crate) fn subscribe_revisions(
+        &self,
+    ) -> tokio::sync::watch::Receiver<MaterializationRevision> {
+        self.revision_updates.subscribe()
+    }
+
+    #[cfg(test)]
     pub(crate) fn preparation_counts(&self) -> (usize, usize, usize) {
         use std::sync::atomic::Ordering;
         (
@@ -675,7 +687,7 @@ impl MaterializationCoordinator {
         preparation: Arc<Preparation>,
     ) -> anyhow::Result<PreparedMaterialization> {
         self.check_attempt(&attempt).await?;
-        let (runtime_source, proxy_policy, active_servers, selected_servers) = {
+        let (runtime_source, proxy_policy, local_services, active_servers, selected_servers) = {
             let state = attempt.admission.run(self.state.lock()).await?;
             let projection = state
                 .desired_runtime
@@ -684,6 +696,7 @@ impl MaterializationCoordinator {
             (
                 Arc::clone(&projection.source),
                 projection.proxy_policy.clone(),
+                projection.local_services.clone(),
                 state.published.servers().to_vec(),
                 selected_server_names(
                     &attempt.selection,
@@ -692,11 +705,7 @@ impl MaterializationCoordinator {
                 ),
             )
         };
-        let mut logical = u64::try_from(
-            proxy_policy
-                .shared_secret()?
-                .map_or(0, |secret| secret.expose_secret().len()),
-        )?;
+        let mut logical = u64::try_from(proxy_policy.secret_len())?;
         for server in &runtime_source.server {
             let bytes = if selected_servers.contains(&server.name) {
                 enumerated_payload_bytes(&runtime_source, server)?
@@ -799,6 +808,7 @@ impl MaterializationCoordinator {
             candidates,
             runtime_source,
             proxy_policy,
+            local_services,
             preparation,
         })
     }
@@ -903,6 +913,7 @@ impl MaterializationCoordinator {
             next_active.push(server);
         }
         drop(candidate_by_name);
+        let local_services = prepared.local_services;
         drop(prepared.runtime_source);
         drop(active_by_name);
         drop(published);
@@ -950,6 +961,9 @@ impl MaterializationCoordinator {
                 })
             }))
             .await?;
+        if let Some(local_services) = local_services {
+            service.publish_local_services(local_services);
+        }
         Ok(PublicationOutcome::Published)
     }
 

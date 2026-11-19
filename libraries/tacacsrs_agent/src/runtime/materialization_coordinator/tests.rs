@@ -231,7 +231,7 @@ async fn empty_retention_uses_published_source_and_fences_late_replacements() {
         .await
         .unwrap();
     let attempt = coordinator
-        .accept_filtered_source(revision, first.clone(), PreparedProxyPolicy::unobfuscated())
+        .accept_filtered_source(revision, first.clone(), PreparedProxyPolicy::unobfuscated(), None)
         .await
         .unwrap();
     coordinator
@@ -245,7 +245,7 @@ async fn empty_retention_uses_published_source_and_fences_late_replacements() {
         .await
         .unwrap();
     let attempt = coordinator
-        .accept_filtered_source(revision, replacement, PreparedProxyPolicy::unobfuscated())
+        .accept_filtered_source(revision, replacement, PreparedProxyPolicy::unobfuscated(), None)
         .await
         .unwrap();
     let late = coordinator.materialize(attempt).await.unwrap();
@@ -263,6 +263,7 @@ async fn empty_retention_uses_published_source_and_fences_late_replacements() {
             revision,
             retained.as_ref().clone(),
             PreparedProxyPolicy::unobfuscated(),
+            None,
         )
         .await
         .unwrap();
@@ -281,6 +282,7 @@ async fn empty_retention_uses_published_source_and_fences_late_replacements() {
             revision,
             clear.as_ref().clone(),
             PreparedProxyPolicy::unobfuscated(),
+            None,
         )
         .await
         .unwrap();
@@ -597,7 +599,7 @@ async fn candidate_raw_owner_sharing_does_not_relabel_retained_filtered_copy() {
         &raw
     ));
     let attempt = coordinator
-        .accept_filtered_source(revision, (*raw).clone(), PreparedProxyPolicy::unobfuscated())
+        .accept_filtered_source(revision, (*raw).clone(), PreparedProxyPolicy::unobfuscated(), None)
         .await
         .unwrap();
     let prepared = coordinator
@@ -659,7 +661,7 @@ async fn candidate_periodic_ticks_during_filtering_coalesce_without_renewal() {
         1
     );
     let attempt = coordinator
-        .accept_filtered_source(revision, canonical, PreparedProxyPolicy::unobfuscated())
+        .accept_filtered_source(revision, canonical, PreparedProxyPolicy::unobfuscated(), None)
         .await
         .unwrap();
     assert_eq!(attempt.admission.admitted, original.admitted);
@@ -1399,7 +1401,12 @@ async fn pending_filter_blocks_old_source_refresh_and_keeps_credential_revision(
         .await
         .is_none());
     let filtered = coordinator
-        .accept_filtered_source(revision, candidate.clone(), PreparedProxyPolicy::unobfuscated())
+        .accept_filtered_source(
+            revision,
+            candidate.clone(),
+            PreparedProxyPolicy::unobfuscated(),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(filtered.revision.source(), revision);

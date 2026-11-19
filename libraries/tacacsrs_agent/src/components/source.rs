@@ -8,9 +8,8 @@ use anyhow::Context;
 use tacacsrs_composition::{Component, Composition};
 use tacacsrs_config::input::{immutable_cli_tacacs_plus, CliDatastoreInput};
 use tacacsrs_config::local_services::{parse_local_services, LocalServicesPatch};
-use tacacsrs_config::source::{ChangeNotificationMode, CliFileDatastore, ConfigDatastore};
+use tacacsrs_config::source::{CliFileDatastore, ConfigDatastore};
 use tacacsrs_config::tacacsrs::LocalServices;
-use tacacsrs_config::TacacsPlus;
 use tacacsrs_provider::{CredentialProvider, SourceDatastore};
 
 /// The origin of the local services of a [`DatastoreSourceComponent`].
@@ -45,9 +44,10 @@ impl LocalServicesInput {
 
 /// Supplies a datastore, no source credentials, and the local services.
 ///
-/// Preparation rejects invalid command-line server values, because they
-/// cannot change later. Preparation also loads an unwatched datastore once. A
-/// watched file can change later, so the runtime retries a file error.
+/// Preparation rejects invalid command-line server values and reads the local
+/// services. Preparation does not read the datastore. The configuration
+/// supervisor reads the datastore after startup, and runtime health reports
+/// each rejected configuration.
 pub struct DatastoreSourceComponent {
     name: &'static str,
     datastore: Arc<dyn ConfigDatastore>,
@@ -75,9 +75,7 @@ impl DatastoreSourceComponent {
 
     /// Creates a source for a file datastore with command-line server values.
     ///
-    /// Preparation validates the command-line server values. For inline
-    /// servers with IP-literal addresses, preparation also applies the proxy
-    /// policy of the local services, because neither value can change later.
+    /// Preparation validates the command-line server values.
     #[must_use]
     pub fn from_file_datastore(
         name: &'static str,
@@ -101,27 +99,11 @@ impl Component for DatastoreSourceComponent {
     }
 
     async fn prepare(&mut self) -> anyhow::Result<()> {
-        let mut immutable = match &self.cli_input {
-            Some(input) => immutable_cli_tacacs_plus(input)
-                .context("The command-line server configuration is invalid")?,
-            None => None,
-        };
-        // Immutable input cannot recover later, so a load error is an operator input error.
-        if self.datastore.runtime_policy().change_notifications == ChangeNotificationMode::None {
-            immutable = Some(
-                self.datastore
-                    .load()
-                    .await
-                    .context("The command-line server configuration is invalid")?,
-            );
+        if let Some(input) = &self.cli_input {
+            immutable_cli_tacacs_plus(input)
+                .context("The command-line server configuration is invalid")?;
         }
-        let local_services = self.local_services_input.resolve().await?;
-        if let Some(servers) = immutable {
-            check_immutable_proxy_policy(&local_services, servers)
-                .await
-                .context("The server configuration conflicts with the local services")?;
-        }
-        self.local_services = Some(local_services);
+        self.local_services = Some(self.local_services_input.resolve().await?);
         Ok(())
     }
 
@@ -133,34 +115,6 @@ impl Component for DatastoreSourceComponent {
         composition.shared(Arc::new(CredentialProvider::none()))?;
         composition.shared(Arc::new(local_services))
     }
-}
-
-/// Applies the proxy policy of `local_services` to a server set that cannot change.
-///
-/// The check runs only when every server address is an IP literal. A host
-/// name needs DNS, and a DNS result can change, so runtime health reports
-/// those conflicts. A conflict in an IP-literal set cannot recover, because
-/// the server set and the local services are fixed for the process.
-async fn check_immutable_proxy_policy(
-    local_services: &LocalServices,
-    servers: TacacsPlus,
-) -> anyhow::Result<()> {
-    if servers
-        .server
-        .iter()
-        .any(|server| server.address.parse::<std::net::IpAddr>().is_err())
-    {
-        return Ok(());
-    }
-    let configured = servers.server.len();
-    let filtered = crate::runtime::config_filter_from_local_services(local_services)?
-        .filter(servers)
-        .await?;
-    anyhow::ensure!(
-        configured == 0 || !filtered.tacacs_plus.server.is_empty(),
-        "Every upstream server targets the local TACACS+ proxy endpoint"
-    );
-    Ok(())
 }
 
 #[cfg(test)]
@@ -190,7 +144,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn immutable_inline_servers_that_loop_into_the_proxy_fail_preparation() {
+    async fn preparation_does_not_read_the_datastore() {
         use tacacsrs_config::input::{
             CertKeyIdentity, CliConfigSource, CliSecurity, CliSecurityMode, CliServerInput,
         };
@@ -224,8 +178,9 @@ mod tests {
             )
         };
 
-        let error = component("127.0.0.1:9049").prepare().await.unwrap_err();
-        assert!(format!("{error:#}").contains("TLS upstream targets"), "{error:#}");
+        // The runtime rejects the looping server after startup. Runtime health
+        // reports the rejection.
+        component("127.0.0.1:9049").prepare().await.unwrap();
         component("192.0.2.20:9049").prepare().await.unwrap();
     }
 }

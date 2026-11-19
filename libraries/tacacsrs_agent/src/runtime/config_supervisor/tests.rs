@@ -46,7 +46,6 @@ enum SubscriptionStep {
     Empty,
     Pending,
     RejectedThenPending,
-    RestartThenPending,
 }
 
 struct ScriptedDatastore {
@@ -83,6 +82,7 @@ impl ConfigDatastore for ScriptedDatastore {
         };
         let config = Arc::new(self.load().await?);
         let baseline = ConfigChangeEvent::Changed(tacacsrs_config::source::ConfigChange {
+            local_services: None,
             delta: tacacsrs_config::source::ConfigDelta::diff(None, &config),
             config,
         });
@@ -132,10 +132,6 @@ impl ScriptedDatastore {
             SubscriptionStep::Pending => Ok(Box::pin(tokio_stream::pending())),
             SubscriptionStep::RejectedThenPending => Ok(Box::pin(
                 tokio_stream::once(ConfigChangeEvent::CandidateRejected)
-                    .chain(tokio_stream::pending()),
-            )),
-            SubscriptionStep::RestartThenPending => Ok(Box::pin(
-                tokio_stream::once(ConfigChangeEvent::RestartRequired { required: true })
                     .chain(tokio_stream::pending()),
             )),
         }
@@ -301,17 +297,13 @@ async fn candidate_three_loops_keep_three_unexpanded_waiters_behind_registered_w
         .send(ConfigChangeEvent::CandidateRejected)
         .await
         .unwrap();
-    source_events
-        .send(ConfigChangeEvent::RestartRequired { required: true })
-        .await
-        .unwrap();
     let mut changes = health.subscribe();
     timeout(
         Duration::from_secs(2),
         changes.wait_for(|snapshot| {
             snapshot
                 .degradation_reasons()
-                .contains(&DegradationReason::RestartRequired)
+                .contains(&DegradationReason::CandidateConfigurationRejected)
         }),
     )
     .await
@@ -376,6 +368,7 @@ fn central_event(server_name: &str) -> ConfigChangeEvent {
     config.server[0].name = server_name.to_owned();
     let config = Arc::new(config);
     ConfigChangeEvent::Changed(tacacsrs_config::source::ConfigChange {
+        local_services: None,
         delta: tacacsrs_config::source::ConfigDelta::diff(None, &config),
         config,
     })
@@ -384,14 +377,19 @@ fn central_event(server_name: &str) -> ConfigChangeEvent {
 struct RejectingFilter;
 
 impl TacacsPlusFilter for RejectingFilter {
-    fn known_payload_copies(&self, _source: &TacacsPlus) -> anyhow::Result<u64> {
+    fn known_payload_copies(
+        &self,
+        _source: &TacacsPlus,
+        _local_services: &tacacsrs_config::tacacsrs::LocalServices,
+    ) -> anyhow::Result<u64> {
         Ok(0)
     }
 
-    fn filter(
-        &self,
+    fn filter<'a>(
+        &'a self,
         _source: TacacsPlus,
-    ) -> futures_util::future::BoxFuture<'_, anyhow::Result<crate::runtime::FilteredTacacsPlus>>
+        _local_services: &'a tacacsrs_config::tacacsrs::LocalServices,
+    ) -> futures_util::future::BoxFuture<'a, anyhow::Result<crate::runtime::FilteredTacacsPlus>>
     {
         Box::pin(async { anyhow::bail!("scripted invalid configuration") })
     }
@@ -404,14 +402,19 @@ struct AccountingFilter {
 }
 
 impl TacacsPlusFilter for AccountingFilter {
-    fn known_payload_copies(&self, _source: &TacacsPlus) -> anyhow::Result<u64> {
+    fn known_payload_copies(
+        &self,
+        _source: &TacacsPlus,
+        _local_services: &tacacsrs_config::tacacsrs::LocalServices,
+    ) -> anyhow::Result<u64> {
         Ok(self.known_copy)
     }
 
-    fn filter(
-        &self,
+    fn filter<'a>(
+        &'a self,
         mut source: TacacsPlus,
-    ) -> futures_util::future::BoxFuture<'_, anyhow::Result<crate::runtime::FilteredTacacsPlus>>
+        _local_services: &'a tacacsrs_config::tacacsrs::LocalServices,
+    ) -> futures_util::future::BoxFuture<'a, anyhow::Result<crate::runtime::FilteredTacacsPlus>>
     {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.opaque_output {
@@ -577,7 +580,7 @@ async fn registered_fixture() -> (
         source,
         service.clone(),
         health.clone(),
-        Arc::new(NoopTacacsPlusFilter::default()),
+        Arc::new(NoopTacacsPlusFilter),
     )
     .with_credential_resolver(resolver.clone());
     sender.send(central_event("baseline")).await.unwrap();
@@ -615,17 +618,13 @@ async fn candidate_registered_worker_burst_preserves_rejection_then_latest_recov
         .send(ConfigChangeEvent::CandidateRejected)
         .await
         .unwrap();
-    sender
-        .send(ConfigChangeEvent::RestartRequired { required: true })
-        .await
-        .unwrap();
     let mut changes = health.subscribe();
     timeout(
         Duration::from_secs(2),
         changes.wait_for(|snapshot| {
             snapshot
                 .degradation_reasons()
-                .contains(&DegradationReason::RestartRequired)
+                .contains(&DegradationReason::CandidateConfigurationRejected)
         }),
     )
     .await
@@ -906,41 +905,18 @@ async fn candidate_registered_worker_release_admits_only_latest_pending_source()
     timeout(Duration::from_secs(2), resolver.entered.notified())
         .await
         .unwrap();
-    let mut changes = health.subscribe();
-    sender.send(central_event("superseded-b")).await.unwrap();
-    sender
-        .send(ConfigChangeEvent::RestartRequired { required: true })
-        .await
-        .unwrap();
-    timeout(
-        Duration::from_secs(2),
-        changes.wait_for(|snapshot| {
-            snapshot
-                .degradation_reasons()
-                .contains(&DegradationReason::RestartRequired)
-        }),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    sender.send(central_event("latest-c")).await.unwrap();
-    sender
-        .send(ConfigChangeEvent::RestartRequired { required: false })
-        .await
-        .unwrap();
-    timeout(
-        Duration::from_secs(2),
-        changes.wait_for(|snapshot| {
-            !snapshot
-                .degradation_reasons()
-                .contains(&DegradationReason::RestartRequired)
-        }),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    let mut revisions = coordinator.subscribe_revisions();
+    for name in ["superseded-b", "latest-c"] {
+        let previous = revisions.borrow_and_update().source;
+        sender.send(central_event(name)).await.unwrap();
+        timeout(Duration::from_secs(2), revisions.wait_for(|revision| revision.source != previous))
+            .await
+            .unwrap()
+            .unwrap();
+    }
     assert_eq!(resolver.calls.load(Ordering::SeqCst), 2);
     assert_eq!(coordinator.preparation_counts().0, 1);
+    let mut changes = health.subscribe();
     release.send(()).unwrap();
     timeout(
         Duration::from_secs(2),
@@ -1092,10 +1068,11 @@ struct ReorderedFilter {
 }
 
 impl TacacsPlusFilter for ReorderedFilter {
-    fn filter(
-        &self,
+    fn filter<'a>(
+        &'a self,
         candidate: TacacsPlus,
-    ) -> futures_util::future::BoxFuture<'_, anyhow::Result<crate::runtime::FilteredTacacsPlus>>
+        local_services: &'a tacacsrs_config::tacacsrs::LocalServices,
+    ) -> futures_util::future::BoxFuture<'a, anyhow::Result<crate::runtime::FilteredTacacsPlus>>
     {
         Box::pin(async move {
             if candidate.server.len() == 1 {
@@ -1103,16 +1080,17 @@ impl TacacsPlusFilter for ReorderedFilter {
                 self.release.notified().await;
                 anyhow::ensure!(!self.reject_old, "rejected old candidate");
             }
-            NoopTacacsPlusFilter::default().filter(candidate).await
+            NoopTacacsPlusFilter.filter(candidate, local_services).await
         })
     }
 }
 
 impl TacacsPlusFilter for PausingFilter {
-    fn filter(
-        &self,
+    fn filter<'a>(
+        &'a self,
         candidate: TacacsPlus,
-    ) -> futures_util::future::BoxFuture<'_, anyhow::Result<crate::runtime::FilteredTacacsPlus>>
+        local_services: &'a tacacsrs_config::tacacsrs::LocalServices,
+    ) -> futures_util::future::BoxFuture<'a, anyhow::Result<crate::runtime::FilteredTacacsPlus>>
     {
         Box::pin(async move {
             if !self.paused.swap(true, Ordering::AcqRel) {
@@ -1120,7 +1098,7 @@ impl TacacsPlusFilter for PausingFilter {
                 self.entered.notify_one();
                 std::future::pending::<()>().await;
             }
-            NoopTacacsPlusFilter::default().filter(candidate).await
+            NoopTacacsPlusFilter.filter(candidate, local_services).await
         })
     }
 }
@@ -1322,7 +1300,7 @@ fn supervisor(
         datastore,
         Arc::clone(&service),
         health.clone(),
-        Arc::new(NoopTacacsPlusFilter::default()),
+        Arc::new(NoopTacacsPlusFilter),
         Arc::new(FixedBackoff(backoff)),
     );
     (supervisor, health, service)
@@ -1603,7 +1581,7 @@ async fn absolute_validity_expires_without_notifications_and_after_source_withdr
             .await
             .unwrap();
         let original = health.snapshot().materialization_revision().unwrap();
-        assert!(health.set_listener(crate::RuntimeService::ClientApi, crate::ListenerState::Bound));
+        health.set_listener(crate::RuntimeService::ClientApi, crate::ListenerState::Bound);
         assert!(health.snapshot().is_readiness_serving());
         let cancellation = CancellationToken::new();
         let monitor = supervisor.run_absolute_credential_expiry(&cancellation);
@@ -1886,7 +1864,7 @@ async fn stale_source_expiry_does_not_renew_and_valid_source_recovers() {
         .unwrap();
     supervisor.apply_candidate(test_config(1)).await.unwrap();
     let original = health.snapshot().materialization_revision().unwrap();
-    assert!(health.set_listener(crate::RuntimeService::ClientApi, crate::ListenerState::Bound));
+    health.set_listener(crate::RuntimeService::ClientApi, crate::ListenerState::Bound);
     assert!(health.snapshot().is_readiness_serving());
     supervisor
         .materialization_coordinator
@@ -2042,7 +2020,7 @@ async fn credential_expiry_does_not_renew_and_revalidation_recovers() {
         .await
         .unwrap();
     let original = health.snapshot().materialization_revision().unwrap();
-    assert!(health.set_listener(crate::RuntimeService::ClientApi, crate::ListenerState::Bound));
+    health.set_listener(crate::RuntimeService::ClientApi, crate::ListenerState::Bound);
     *resolver.rejected_server.lock().unwrap() = Some("server-0".to_owned());
     assert!(
         !supervisor
@@ -2482,6 +2460,7 @@ async fn initialization_and_updates_share_one_observation_until_cancellation() {
     });
     let change = |count| {
         ConfigChangeEvent::Changed(tacacsrs_config::source::ConfigChange {
+            local_services: None,
             config: Arc::new(test_config(count)),
             delta: tacacsrs_config::source::ConfigDelta::default(),
         })
@@ -2491,7 +2470,7 @@ async fn initialization_and_updates_share_one_observation_until_cancellation() {
         source.clone(),
         service.clone(),
         health.clone(),
-        Arc::new(NoopTacacsPlusFilter::default()),
+        Arc::new(NoopTacacsPlusFilter),
     );
     supervisor
         .initialize_until(std::future::pending())
@@ -2580,17 +2559,14 @@ async fn notification_loop_replaces_pending_source_work_and_cancels_it_on_shutdo
     });
     let change = |count| {
         ConfigChangeEvent::Changed(tacacsrs_config::source::ConfigChange {
+            local_services: None,
             config: Arc::new(test_config(count)),
             delta: tacacsrs_config::source::ConfigDelta::default(),
         })
     };
     events.send(change(1)).await.unwrap();
-    let mut supervisor = ConfigSupervisor::new(
-        source,
-        service.clone(),
-        health,
-        Arc::new(NoopTacacsPlusFilter::default()),
-    );
+    let mut supervisor =
+        ConfigSupervisor::new(source, service.clone(), health, Arc::new(NoopTacacsPlusFilter));
     supervisor
         .initialize_until(std::future::pending())
         .await
@@ -2660,6 +2636,7 @@ async fn notification_disconnect_cancels_stalled_resolution_and_expires_original
     });
     let change = |count| {
         ConfigChangeEvent::Changed(tacacsrs_config::source::ConfigChange {
+            local_services: None,
             config: Arc::new(central_test_config(count)),
             delta: tacacsrs_config::source::ConfigDelta::default(),
         })
@@ -2674,7 +2651,7 @@ async fn notification_disconnect_cancels_stalled_resolution_and_expires_original
         source,
         service.clone(),
         health.clone(),
-        Arc::new(NoopTacacsPlusFilter::default()),
+        Arc::new(NoopTacacsPlusFilter),
     )
     .with_credential_resolver(resolver.clone());
     supervisor
@@ -2744,12 +2721,8 @@ async fn file_change_between_initialization_and_serving_is_reconciled() {
         CliDatastoreInput::new(CliConfigSource::YangFile { path: path.clone() }, "file")
             .with_debounce(Duration::ZERO),
     ));
-    let mut supervisor = ConfigSupervisor::new(
-        source,
-        service.clone(),
-        health,
-        Arc::new(NoopTacacsPlusFilter::default()),
-    );
+    let mut supervisor =
+        ConfigSupervisor::new(source, service.clone(), health, Arc::new(NoopTacacsPlusFilter));
     supervisor
         .initialize_until(std::future::pending())
         .await
@@ -2902,7 +2875,7 @@ async fn older_publication_completion_cannot_clear_newer_credential_failure() {
         datastore,
         service.clone(),
         health.clone(),
-        Arc::new(NoopTacacsPlusFilter::default()),
+        Arc::new(NoopTacacsPlusFilter),
         Arc::new(FixedBackoff(Duration::ZERO)),
         Some(resolver.clone()),
     );
@@ -2951,7 +2924,7 @@ async fn resolved_candidate_applies_only_after_every_credential_succeeds() {
         datastore,
         Arc::clone(&service),
         health.clone(),
-        Arc::new(NoopTacacsPlusFilter::default()),
+        Arc::new(NoopTacacsPlusFilter),
         Arc::new(FixedBackoff(Duration::ZERO)),
         Some(Arc::clone(&resolver) as Arc<dyn CredentialResolver>),
     );
@@ -2999,7 +2972,7 @@ async fn initial_credential_unavailability_retries_complete_snapshot_before_appl
         Arc::clone(&datastore) as Arc<dyn ConfigDatastore>,
         Arc::clone(&service),
         health.clone(),
-        Arc::new(NoopTacacsPlusFilter::default()),
+        Arc::new(NoopTacacsPlusFilter),
         Arc::new(FixedBackoff(Duration::ZERO)),
         Some(resolver as Arc<dyn CredentialResolver>),
     );
@@ -3038,7 +3011,7 @@ async fn known_credential_event_rematerializes_only_affected_server() {
         datastore,
         Arc::clone(&service),
         health,
-        Arc::new(NoopTacacsPlusFilter::default()),
+        Arc::new(NoopTacacsPlusFilter),
         Arc::new(FixedBackoff(Duration::ZERO)),
         Some(Arc::clone(&resolver) as Arc<dyn CredentialResolver>),
         Some(change_source),
@@ -3096,7 +3069,7 @@ async fn credential_refresh_preserves_rejected_datastore_candidate_state() {
         datastore,
         service,
         health.clone(),
-        Arc::new(NoopTacacsPlusFilter::default()),
+        Arc::new(NoopTacacsPlusFilter),
         Arc::new(FixedBackoff(Duration::ZERO)),
         Some(resolver as Arc<dyn CredentialResolver>),
     );
@@ -3153,7 +3126,7 @@ async fn credential_subscription_failure_sets_distinct_health_reason() {
         datastore,
         service,
         health.clone(),
-        Arc::new(NoopTacacsPlusFilter::default()),
+        Arc::new(NoopTacacsPlusFilter),
         Arc::new(FixedBackoff(Duration::from_millis(25))),
         Some(resolver),
         Some(change_source),
@@ -3409,42 +3382,6 @@ async fn rejected_candidate_retains_known_good_configuration() {
 
     assert_eq!(service.server_count(), 1);
     assert_eq!(health.snapshot().datastore(), DatastoreState::Stale);
-}
-
-#[tokio::test]
-async fn restart_required_retains_known_good_configuration_and_readiness() {
-    let datastore = Arc::new(ScriptedDatastore::new(
-        DatastoreRuntimePolicy::new(ChangeNotificationMode::Continuous),
-        [LoadStep::Config(1)],
-        [SubscriptionStep::RestartThenPending],
-    ));
-    let (supervisor, health, service) = supervisor(Arc::clone(&datastore), Duration::ZERO);
-    let cancellation = CancellationToken::new();
-    let child = cancellation.clone();
-
-    supervisor
-        .load_initial(&cancellation)
-        .await
-        .expect("initial load");
-    assert!(health.set_listener(crate::RuntimeService::ClientApi, crate::ListenerState::Bound,));
-    let task = tokio::spawn(async move { supervisor.run_notifications(&child).await });
-    timeout(Duration::from_secs(1), async {
-        while !health
-            .snapshot()
-            .degradation_reasons()
-            .contains(&DegradationReason::RestartRequired)
-        {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("restart requirement must be published");
-    cancellation.cancel();
-    task.await.expect("task must join");
-
-    assert_eq!(service.server_count(), 1);
-    assert!(health.snapshot().is_readiness_serving());
-    assert_eq!(health.snapshot().datastore(), DatastoreState::Current);
 }
 
 #[tokio::test]

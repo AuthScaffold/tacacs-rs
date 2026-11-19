@@ -7,6 +7,7 @@
 //! - [`DatastoreSourceComponent`]: a configuration datastore and the local
 //!   services.
 //! - [`ClientApiComponent`]: the local client API over IPC.
+//! - [`TacacsProxyComponent`]: the raw TACACS+ proxy.
 //! - [`HttpCredentialComponent`]: HTTP revocation evidence for credentials.
 //! - [`StatisticsComponent`]: a periodic operational statistics file.
 //! - [`SystemdComponent`]: readiness and status for systemd.
@@ -24,6 +25,7 @@ mod source;
 mod source_guard;
 mod statistics;
 mod systemd;
+mod tacacs_proxy;
 mod watchdog;
 
 pub use client_api::ClientApiComponent;
@@ -34,4 +36,5 @@ pub use source::{DatastoreSourceComponent, LocalServicesInput};
 pub use source_guard::InvalidSourceShutdownComponent;
 pub use statistics::StatisticsComponent;
 pub use systemd::{SystemdComponent, SystemdMode};
+pub use tacacs_proxy::TacacsProxyComponent;
 pub use watchdog::UpstreamWatchdogComponent;

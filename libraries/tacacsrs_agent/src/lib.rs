@@ -32,11 +32,11 @@ pub use config::{
 };
 pub use upstream::OperationKind;
 pub use runtime::{
-    AgentReadinessCheck, AgentRuntime, RuntimeInputs, PolicyInput, DiagnosticsHandle,
-    PolicyRevision, PolicyUpdate, CredentialRevision, MaterializationRevision, SourceRevision,
-    DatastoreState, DegradationReason, ListenerRegistration, ListenerSettings, ListenerState,
-    RuntimeHealth, RuntimeHealthPublisher, RuntimeGeneration, RuntimeHealthSnapshot,
-    RuntimeLifecycle, RuntimeListenerService, RuntimeService, ShutdownReceiver,
-    TacacsClientService, UpstreamAvailability,
+    ActiveLocalServices, AgentReadinessCheck, AgentRuntime, LocalServicesView, RuntimeInputs,
+    PolicyInput, DiagnosticsHandle, PolicyRevision, PolicyUpdate, CredentialRevision,
+    MaterializationRevision, SourceRevision, DatastoreState, DegradationReason,
+    ListenerRegistration, ListenerSettings, ListenerState, RuntimeHealth, RuntimeHealthPublisher,
+    RuntimeGeneration, RuntimeHealthSnapshot, RuntimeLifecycle, RuntimeListenerService,
+    RuntimeService, ShutdownReceiver, TacacsClientService, UpstreamAvailability,
 };
 pub use services::client_api::{ClientApiHandle, UpstreamProbe, UpstreamProbeOutcome};

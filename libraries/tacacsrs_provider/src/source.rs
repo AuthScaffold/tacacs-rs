@@ -15,8 +15,14 @@ pub struct SourceBundle {
     pub datastore: Arc<dyn ConfigDatastore>,
     /// Credentials and optional change notifications.
     pub credentials: CredentialProvider,
-    /// Canonical local listener configuration.
+    /// Bootstrap local listener configuration, with the overlays applied.
+    ///
+    /// A datastore change that contains local services replaces this value
+    /// at runtime.
     pub local_services: LocalServices,
+    /// Overlays that the runtime applies to the local services of each
+    /// datastore change, in order.
+    pub local_services_overlays: Vec<Arc<dyn LocalServicesOverlay>>,
 }
 
 /// The configuration datastore of the selected source.
@@ -57,7 +63,9 @@ pub trait CredentialLayer: Send + Sync {
 
 /// Changes the local services of the source before the runtime prepares them.
 ///
-/// The host applies the overlays in registration order.
+/// The host applies the overlays in registration order to the bootstrap
+/// value. The runtime applies them again to the local services of each
+/// datastore change.
 pub trait LocalServicesOverlay: Send + Sync {
     /// Returns a stable, secret-free name that is unique among overlays.
     fn name(&self) -> &'static str;

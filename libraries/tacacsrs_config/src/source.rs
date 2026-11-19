@@ -25,6 +25,7 @@ use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use tokio_stream::StreamExt;
 
+use crate::tacacsrs::LocalServices;
 use crate::{TacacsPlus, ValidationOptions};
 
 pub(crate) mod directory_watch;
@@ -123,6 +124,12 @@ pub struct ConfigChange {
     pub config: Arc<TacacsPlus>,
     /// Changes that the backend detected from the previous snapshot.
     pub delta: ConfigDelta,
+    /// Local listener configuration that this source owns.
+    ///
+    /// `None` means that the source does not own the local services. The
+    /// runtime then keeps its current local services. A source that owns the
+    /// local services sends a value with every change.
+    pub local_services: Option<Arc<LocalServices>>,
 }
 
 /// Typed event emitted by a datastore change subscription.
@@ -136,14 +143,6 @@ pub enum ConfigChangeEvent {
     /// configuration value. Thus, health consumers cannot expose addresses,
     /// credential references, or secrets.
     CandidateRejected,
-    /// A validated host-binding setting changed but cannot be applied live.
-    ///
-    /// Bound resources stay active until the process restarts. This event does
-    /// not contain configuration values.
-    RestartRequired {
-        /// Whether the current validated settings differ from bound resources.
-        required: bool,
-    },
 }
 
 /// Stream of canonical configuration change events for stream-based adapters.
@@ -155,7 +154,7 @@ pub type ConfigChangeStream = Pin<Box<dyn Stream<Item = ConfigChangeEvent> + Sen
 /// work when `next()` is cancelled. Consumers must not mutate source snapshots.
 #[async_trait]
 pub trait ConfigObservation: Send {
-    /// Returns a candidate, rejection, restart requirement, or end of observation.
+    /// Returns a candidate, a rejection, or the end of observation.
     ///
     /// # Errors
     /// Returns an error when observation fails and must be established again.
@@ -313,6 +312,7 @@ pub fn watch_to_change_stream(
         let change = ConfigChange {
             config: Arc::clone(&snapshot),
             delta,
+            local_services: None,
         };
         previous = Some(snapshot);
         Some(ConfigChangeEvent::Changed(change))

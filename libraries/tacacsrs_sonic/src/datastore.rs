@@ -9,6 +9,8 @@ use futures_util::{future::BoxFuture, FutureExt, StreamExt};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
+use tacacsrs_config::local_services::LocalServicesPatch;
+use tacacsrs_config::tacacsrs::LocalServices;
 use tacacsrs_config::{TacacsPlus, ValidationOptions, ValidationRelaxation};
 use tacacsrs_config::source::{
     ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigDatastore, ConfigDelta,
@@ -31,29 +33,33 @@ use crate::{
 /// restarts `database.service`.
 pub struct SonicConfigDb {
     settings: SonicConnection,
-    bound_forwarder: Option<SonicForwarderSettings>,
+    listener_patch: Option<LocalServicesPatch>,
 }
 
 impl SonicConfigDb {
     /// Creates a datastore with the supplied connection configuration.
+    ///
+    /// The datastore does not own the local services. Each change keeps the
+    /// local services of the runtime.
     #[must_use]
     pub fn new(settings: SonicConnection) -> Self {
         Self {
             settings,
-            bound_forwarder: None,
+            listener_patch: None,
         }
     }
 
-    /// Creates a datastore that compares new forwarder snapshots with the
-    /// configuration used to bind service listeners.
+    /// Creates a datastore that owns the local services.
+    ///
+    /// Each change contains the local services of the forwarder row, with
+    /// `patch` applied. Without a forwarder row, the proxy is enabled and
+    /// waits for its endpoint. If the patch sets a proxy endpoint, the
+    /// datastore rejects a forwarder row with a different endpoint.
     #[must_use]
-    pub fn with_bound_forwarder(
-        settings: SonicConnection,
-        bound_forwarder: SonicForwarderSettings,
-    ) -> Self {
+    pub fn with_listener_patch(settings: SonicConnection, patch: LocalServicesPatch) -> Self {
         Self {
             settings,
-            bound_forwarder: Some(bound_forwarder),
+            listener_patch: Some(patch),
         }
     }
 
@@ -67,7 +73,9 @@ impl SonicConfigDb {
 #[async_trait]
 impl ConfigDatastore for SonicConfigDb {
     async fn observe(&self) -> anyhow::Result<Box<dyn ConfigObservation>> {
-        Ok(Box::new(SonicObservation::open(self.settings.clone(), self.bound_forwarder).await?))
+        Ok(Box::new(
+            SonicObservation::open(self.settings.clone(), self.listener_patch.clone()).await?,
+        ))
     }
 
     fn runtime_policy(&self) -> DatastoreRuntimePolicy {
@@ -97,14 +105,27 @@ impl ConfigDatastore for SonicConfigDb {
     }
 }
 
+/// Returns the local services of `forwarder` with `patch` applied.
+///
+/// Without a forwarder row, the proxy is enabled and has no endpoint.
+fn forwarder_local_services(
+    patch: &LocalServicesPatch,
+    forwarder: Option<SonicForwarderSettings>,
+) -> anyhow::Result<LocalServices> {
+    match forwarder {
+        Some(row) => row.local_services_with(patch),
+        None => Ok(crate::mapping::deferred_local_services(patch)?.0),
+    }
+}
+
 struct SonicObservation {
     settings: SonicConnection,
-    bound_forwarder: Option<SonicForwarderSettings>,
+    listener_patch: Option<LocalServicesPatch>,
     signals: watch::Receiver<()>,
     pump: JoinHandle<()>,
     previous: Option<Arc<TacacsPlus>>,
+    previous_local_services: Option<Arc<LocalServices>>,
     candidate_rejected: bool,
-    restart: Option<bool>,
     pending: bool,
     debounce_until: Option<Instant>,
     reload: Option<BoxFuture<'static, anyhow::Result<ReloadedCandidate>>>,
@@ -113,7 +134,7 @@ struct SonicObservation {
 impl SonicObservation {
     async fn open(
         settings: SonicConnection,
-        bound_forwarder: Option<SonicForwarderSettings>,
+        listener_patch: Option<LocalServicesPatch>,
     ) -> anyhow::Result<Self> {
         let client = redis::Client::open(settings.url.as_str())
             .context("invalid ConfigDB connection string")?;
@@ -141,12 +162,12 @@ impl SonicObservation {
         });
         Ok(Self {
             settings,
-            bound_forwarder,
+            listener_patch,
             signals,
             pump,
             previous: None,
+            previous_local_services: None,
             candidate_rejected: false,
-            restart: None,
             pending: true,
             debounce_until: None,
             reload: None,
@@ -185,12 +206,21 @@ impl Drop for SonicObservation {
 #[async_trait]
 impl ConfigObservation for SonicObservation {
     async fn next(&mut self) -> anyhow::Result<Option<ConfigChangeEvent>> {
+        loop {
+            if let Some(event) = self.next_candidate().await? {
+                return Ok(Some(event));
+            }
+        }
+    }
+}
+
+impl SonicObservation {
+    /// Reads one candidate. Returns `None` when the candidate does not change
+    /// the configuration or the local services.
+    async fn next_candidate(&mut self) -> anyhow::Result<Option<ConfigChangeEvent>> {
         self.signals
             .has_changed()
             .context("ConfigDB observation disconnected")?;
-        if let Some(required) = self.restart.take() {
-            return Ok(Some(ConfigChangeEvent::RestartRequired { required }));
-        }
         if !self.pending {
             self.signals
                 .changed()
@@ -207,40 +237,53 @@ impl ConfigObservation for SonicObservation {
         self.signals
             .has_changed()
             .context("ConfigDB observation disconnected")?;
-        let Ok(candidate) = candidate else {
+        let candidate = candidate.and_then(|candidate| {
+            let local_services = self
+                .listener_patch
+                .as_ref()
+                .map(|patch| forwarder_local_services(patch, candidate.forwarder))
+                .transpose()?;
+            Ok((candidate.config, local_services))
+        });
+        let Ok((config, local_services)) = candidate else {
             self.candidate_rejected = true;
             log::warn!("Rejected ConfigDB candidate. Keeping the previous configuration");
             return Ok(Some(ConfigChangeEvent::CandidateRejected));
         };
-        let required = self
-            .bound_forwarder
-            .is_some_and(|bound| candidate.forwarder != Some(bound));
-        let snapshot = Arc::new(candidate.config);
+        let snapshot = Arc::new(config);
+        let local_services = local_services.map(Arc::new);
+        let local_services_changed = local_services != self.previous_local_services;
         let change = config_change(
             self.previous.as_deref(),
             snapshot.clone(),
-            std::mem::take(&mut self.candidate_rejected),
+            std::mem::take(&mut self.candidate_rejected) || local_services_changed,
         );
         self.previous = Some(snapshot);
-        if let Some(change) = change {
-            self.restart = Some(required);
-            Ok(Some(ConfigChangeEvent::Changed(change)))
-        } else {
-            Ok(Some(ConfigChangeEvent::RestartRequired { required }))
-        }
+        self.previous_local_services.clone_from(&local_services);
+        Ok(change.map(|change| {
+            ConfigChangeEvent::Changed(ConfigChange {
+                local_services,
+                ..change
+            })
+        }))
     }
 }
 
+/// Returns a change for a baseline, a forced change, or a non-empty delta.
+///
+/// The caller forces a change after a rejected candidate or when the local
+/// services change.
 fn config_change(
     previous: Option<&TacacsPlus>,
     snapshot: Arc<TacacsPlus>,
-    recovered_rejection: bool,
+    forced: bool,
 ) -> Option<ConfigChange> {
     let is_baseline = previous.is_none();
     let delta = ConfigDelta::diff(previous, &snapshot);
-    (is_baseline || recovered_rejection || !delta.is_empty()).then_some(ConfigChange {
+    (is_baseline || forced || !delta.is_empty()).then_some(ConfigChange {
         config: snapshot,
         delta,
+        local_services: None,
     })
 }
 
@@ -380,10 +423,43 @@ mod tests {
         };
         assert!(recovered.delta.is_empty());
         assert_eq!(recovered.config.server.len(), 2);
-        assert!(matches!(
-            next_event(events, "recovery restart").await,
-            ConfigChangeEvent::RestartRequired { required: false }
-        ));
+    }
+
+    fn forwarder(port: u16) -> SonicForwarderSettings {
+        SonicForwarderSettings::from_hash(&crate::SonicHash::from([
+            ("local_listen_address".to_owned(), "127.0.0.1".to_owned()),
+            ("local_listen_port".to_owned(), port.to_string()),
+        ]))
+        .unwrap()
+        .unwrap()
+    }
+
+    fn proxy_endpoint(local_services: &LocalServices) -> Option<&str> {
+        local_services.tacacs_proxy_endpoint.as_deref()
+    }
+
+    #[test]
+    fn forwarder_row_gives_the_proxy_endpoint_and_a_missing_row_waits() {
+        let patch = LocalServicesPatch::default();
+
+        let waiting = forwarder_local_services(&patch, None).unwrap();
+        assert!(waiting.tacacs_proxy_enabled);
+        assert_eq!(proxy_endpoint(&waiting), None);
+
+        let bound = forwarder_local_services(&patch, Some(forwarder(50))).unwrap();
+        assert_eq!(proxy_endpoint(&bound), Some("127.0.0.1:50"));
+    }
+
+    #[test]
+    fn a_patch_endpoint_rejects_a_conflicting_forwarder_row() {
+        let patch = LocalServicesPatch {
+            tacacs_proxy_endpoint: Some("127.0.0.1:49".to_owned()),
+            ..Default::default()
+        };
+
+        assert!(forwarder_local_services(&patch, Some(forwarder(50))).is_err());
+        let accepted = forwarder_local_services(&patch, Some(forwarder(49))).unwrap();
+        assert_eq!(proxy_endpoint(&accepted), Some("127.0.0.1:49"));
     }
 
     #[test]
@@ -510,7 +586,6 @@ mod tests {
                 .timeout,
             9
         );
-        observation.next().await.unwrap();
         let Some(ConfigChangeEvent::Changed(latest)) = observation.next().await.unwrap() else {
             panic!("replacement expected");
         };
@@ -597,7 +672,6 @@ mod tests {
         let datastore = SonicConfigDb::new(settings);
         let mut events = datastore.observe().await.unwrap();
         next_event(&mut events, "baseline").await;
-        next_event(&mut events, "baseline restart").await;
         drop(events);
         timeout(Duration::from_secs(1), async {
             loop {
@@ -618,8 +692,65 @@ mod tests {
         .expect("dropping an idle subscription must close its Redis connection");
     }
 
+    fn changed(event: ConfigChangeEvent) -> ConfigChange {
+        let ConfigChangeEvent::Changed(change) = event else {
+            panic!("changed event expected");
+        };
+        change
+    }
+
+    fn changed_proxy_endpoint(change: &ConfigChange) -> Option<&str> {
+        proxy_endpoint(
+            change
+                .local_services
+                .as_deref()
+                .expect("local services expected"),
+        )
+    }
+
     #[tokio::test]
-    async fn redis_forwarder_changes_report_restart_without_blocking_server_reload() {
+    async fn redis_missing_forwarder_waits_for_the_proxy_endpoint_until_the_row_arrives() {
+        let Ok(url) = std::env::var("TACACSRS_SONIC_TEST_REDIS_URL") else {
+            return;
+        };
+        let settings = SonicConnection {
+            url,
+            db_index: 15,
+            debounce: Duration::from_millis(20),
+            credential_watch_root: None,
+        };
+        let mut connection = settings.connect().await.expect("connect test Redis");
+        seed_redis(&mut connection).await;
+        connection
+            .del::<_, ()>("TACPLUS_FORWARDER|global")
+            .await
+            .expect("delete forwarder");
+
+        let datastore = SonicConfigDb::with_listener_patch(settings, LocalServicesPatch::default());
+        let mut events = datastore.observe().await.expect("subscribe");
+        let baseline = changed(next_event(&mut events, "missing forwarder").await);
+        assert_eq!(baseline.config.server.len(), 2);
+        let waiting = baseline.local_services.as_deref().expect("local services");
+        assert!(waiting.tacacs_proxy_enabled);
+        assert_eq!(proxy_endpoint(waiting), None);
+
+        connection
+            .hset_multiple::<_, _, _, ()>(
+                "TACPLUS_FORWARDER|global",
+                &[
+                    ("local_listen_address", "127.0.0.1"),
+                    ("local_listen_port", "4949"),
+                ],
+            )
+            .await
+            .expect("add forwarder");
+        let bound = changed(next_event(&mut events, "forwarder arrives").await);
+        assert!(bound.delta.is_empty());
+        assert_eq!(changed_proxy_endpoint(&bound), Some("127.0.0.1:4949"));
+    }
+
+    #[tokio::test]
+    async fn redis_forwarder_changes_move_the_proxy_with_server_reload() {
         let Ok(url) = std::env::var("TACACSRS_SONIC_TEST_REDIS_URL") else {
             return;
         };
@@ -632,11 +763,7 @@ mod tests {
         let mut connection = settings.connect().await.expect("connect test Redis");
         seed_redis(&mut connection).await;
 
-        let bound = settings
-            .load_forwarder_settings()
-            .await
-            .expect("load bound forwarder");
-        let datastore = SonicConfigDb::with_bound_forwarder(settings, bound);
+        let datastore = SonicConfigDb::with_listener_patch(settings, LocalServicesPatch::default());
         let initial = datastore.load().await.expect("initial complete snapshot");
         assert_eq!(initial.server.len(), 2);
         assert!(initial.server.iter().any(|server| {
@@ -648,49 +775,36 @@ mod tests {
         }));
         let mut events = datastore.observe().await.expect("subscribe");
 
-        // subscribe() establishes the subscription before it emits the baseline.
-        assert!(matches!(
-            next_event(&mut events, "initial baseline change").await,
-            ConfigChangeEvent::Changed(_)
-        ));
-        assert!(matches!(
-            next_event(&mut events, "initial baseline restart").await,
-            ConfigChangeEvent::RestartRequired { required: false }
-        ));
+        // observe() establishes the subscription before it emits the baseline.
+        let baseline = changed(next_event(&mut events, "initial baseline change").await);
+        assert_eq!(changed_proxy_endpoint(&baseline), Some("127.0.0.1:49"));
 
         set_field(&mut connection, "TACPLUS_FORWARDER|global", "local_listen_port", "50").await;
         set_field(&mut connection, "TACPLUS_SERVER|192.0.2.10", "timeout", "6").await;
         set_field(&mut connection, "TACPLUS_SERVER_TLS|192.0.2.20", "timeout", "7").await;
-        let changed = next_event(&mut events, "changed event").await;
-        let ConfigChangeEvent::Changed(changed) = changed else {
-            panic!("expected changed event");
-        };
-        assert_eq!(changed.config.server.len(), 2);
-        assert_eq!(changed.config.server[0].address, "192.0.2.20");
-        assert_eq!(changed.config.server[0].timeout, 7);
-        assert_eq!(changed.config.server[1].name, sonic_server_name("192.0.2.10"));
-        assert_eq!(changed.config.server[1].timeout, 6);
-        assert!(changed
+        let changed_event = changed(next_event(&mut events, "changed event").await);
+        assert_eq!(changed_proxy_endpoint(&changed_event), Some("127.0.0.1:50"));
+        assert_eq!(changed_event.config.server.len(), 2);
+        assert_eq!(changed_event.config.server[0].address, "192.0.2.20");
+        assert_eq!(changed_event.config.server[0].timeout, 7);
+        assert_eq!(changed_event.config.server[1].name, sonic_server_name("192.0.2.10"));
+        assert_eq!(changed_event.config.server[1].timeout, 6);
+        assert!(changed_event
             .delta
             .modified_servers
             .contains(&sonic_server_name("192.0.2.10")));
-        assert!(changed
+        assert!(changed_event
             .delta
             .modified_servers
             .contains(&sonic_server_name("192.0.2.20")));
-        assert!(matches!(
-            next_event(&mut events, "restart event").await,
-            ConfigChangeEvent::RestartRequired { required: true }
-        ));
 
         connection
             .del::<_, ()>("TACPLUS_FORWARDER|global")
             .await
             .expect("delete forwarder");
-        assert!(matches!(
-            next_event(&mut events, "deletion restart").await,
-            ConfigChangeEvent::RestartRequired { required: true }
-        ));
+        let removed = changed(next_event(&mut events, "forwarder deletion").await);
+        assert!(removed.delta.is_empty());
+        assert_eq!(changed_proxy_endpoint(&removed), None);
 
         connection
             .hset_multiple::<_, _, _, ()>(
@@ -702,10 +816,8 @@ mod tests {
             )
             .await
             .expect("restore forwarder");
-        assert!(matches!(
-            next_event(&mut events, "clear restart").await,
-            ConfigChangeEvent::RestartRequired { required: false }
-        ));
+        let restored = changed(next_event(&mut events, "forwarder restore").await);
+        assert_eq!(changed_proxy_endpoint(&restored), Some("127.0.0.1:49"));
 
         assert_rejected_forwarder_recovery(&mut connection, &mut events).await;
 
@@ -713,11 +825,7 @@ mod tests {
             .del::<_, ()>(&["TACPLUS_SERVER|192.0.2.10", "TACPLUS_SERVER_TLS|192.0.2.20"])
             .await
             .unwrap();
-        let ConfigChangeEvent::Changed(empty) =
-            next_event(&mut events, "remove final servers").await
-        else {
-            panic!("empty snapshot expected");
-        };
+        let empty = changed(next_event(&mut events, "remove final servers").await);
         assert_eq!(empty.config.server.len(), 0);
         assert_eq!(empty.delta.removed_servers.len(), 2);
     }

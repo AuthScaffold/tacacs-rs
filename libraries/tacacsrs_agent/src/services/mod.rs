@@ -8,7 +8,7 @@ pub(crate) mod client_api;
 pub(crate) mod tacacs_proxy;
 
 /// Platform-specific listener settings for the raw TACACS+ proxy.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) struct ListenerOptions {
     socket_mode: u32,
     pub(crate) max_connections: usize,

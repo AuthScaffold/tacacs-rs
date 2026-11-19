@@ -1,4 +1,4 @@
-//! Parses canonical startup listener configuration and prepares bind targets.
+//! Parses canonical listener configuration and prepares bind targets.
 //!
 //! Preparation performs no filesystem or network I/O and preserves the source.
 //! Unix paths use Linux syntax, including when configuration is inspected elsewhere.
@@ -121,6 +121,7 @@ impl ListenerEndpoint {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedLocalServices {
     client_api: Option<PathBuf>,
+    tacacs_proxy_enabled: bool,
     tacacs_proxy: Option<ListenerEndpoint>,
     unix_socket_mode: u32,
     max_connections: usize,
@@ -153,7 +154,17 @@ impl PreparedLocalServices {
         self.client_api.as_deref()
     }
 
-    /// Returns the proxy target when that service is enabled.
+    /// Returns whether the raw TACACS+ proxy is enabled.
+    ///
+    /// An enabled proxy without a target waits until the source supplies an
+    /// endpoint.
+    #[must_use]
+    pub const fn tacacs_proxy_enabled(&self) -> bool {
+        self.tacacs_proxy_enabled
+    }
+
+    /// Returns the proxy target when that service is enabled and has an
+    /// endpoint.
     #[must_use]
     pub const fn tacacs_proxy(&self) -> Option<&ListenerEndpoint> {
         self.tacacs_proxy.as_ref()
@@ -198,10 +209,13 @@ pub fn parse_local_services(bytes: &[u8]) -> anyhow::Result<LocalServices> {
 
 /// Validates and prepares canonical listener controls without binding sockets.
 ///
+/// An enabled proxy without an endpoint is valid. The proxy then waits until
+/// a later source value supplies the endpoint.
+///
 /// # Errors
 ///
 /// Returns an error for disabled services, invalid endpoints or permissions,
-/// conflicting Unix paths, or a proxy endpoint inconsistent with service selection.
+/// conflicting Unix paths, or a proxy endpoint for a disabled proxy.
 pub fn prepare_local_services(source: &LocalServices) -> anyhow::Result<PreparedLocalServices> {
     crate::proxy_policy::validate_proxy_source(source)?;
     ensure!(source.max_connections > 0, "local-services/max-connections must be greater than zero");
@@ -221,8 +235,8 @@ pub fn prepare_local_services(source: &LocalServices) -> anyhow::Result<Prepared
     let client_path = unix_path(&source.client_api_endpoint)
         .context("invalid local-services/client-api-endpoint")?;
     ensure!(
-        source.tacacs_proxy_enabled == source.tacacs_proxy_endpoint.is_some(),
-        "The proxy endpoint must be present exactly when the TACACS+ proxy service is enabled"
+        source.tacacs_proxy_enabled || source.tacacs_proxy_endpoint.is_none(),
+        "A proxy endpoint requires an enabled TACACS+ proxy service"
     );
     let proxy = source
         .tacacs_proxy_endpoint
@@ -248,6 +262,7 @@ pub fn prepare_local_services(source: &LocalServices) -> anyhow::Result<Prepared
     );
     Ok(PreparedLocalServices {
         client_api: source.client_api_enabled.then_some(client_path),
+        tacacs_proxy_enabled: source.tacacs_proxy_enabled,
         tacacs_proxy: proxy,
         unix_socket_mode: u32::from(source.unix_socket_mode),
         max_connections: usize::from(source.max_connections),
@@ -370,13 +385,33 @@ mod tests {
     }
 
     #[test]
+    fn an_enabled_proxy_without_an_endpoint_waits_for_the_endpoint() {
+        let source = LocalServices {
+            tacacs_proxy_enabled: true,
+            proxy_credential_source: ProxyCredentialSource::LocalProxyRow,
+            ..LocalServices::default()
+        };
+        let prepared = prepare_local_services(&source).unwrap();
+        assert!(prepared.tacacs_proxy_enabled());
+        assert_eq!(prepared.tacacs_proxy(), None);
+        let mut complete = source.clone();
+        complete.tacacs_proxy_endpoint = Some("127.0.0.1:49".to_owned());
+        assert!(prepare_local_services(&complete)
+            .unwrap()
+            .tacacs_proxy()
+            .is_some());
+        let mut unix = source;
+        unix.tacacs_proxy_endpoint = Some("/run/tacacs/proxy.sock".to_owned());
+        assert!(prepare_local_services(&unix).is_err(), "a proxy row needs a TCP endpoint");
+    }
+
+    #[test]
     fn rejects_invalid_listener_resources() {
         for document in [
             "{}",
             r#"{"tacacsrs:local-services":{}} {}"#,
             r#"{"tacacsrs:local-services":{"unknown":true}}"#,
             r#"{"tacacsrs:local-services":{"client-api-enabled":false}}"#,
-            r#"{"tacacsrs:local-services":{"tacacs-proxy-enabled":true}}"#,
             r#"{"tacacsrs:local-services":{"tacacs-proxy-endpoint":"127.0.0.1:49"}}"#,
             r#"{"tacacsrs:local-services":{"unix-socket-mode":512}}"#,
             r#"{"tacacsrs:local-services":{"client-api-endpoint":"127.0.0.1:49"}}"#,
@@ -415,11 +450,16 @@ mod tests {
         let patched = proxy_only.apply(LocalServices::default()).unwrap();
         assert!(!patched.client_api_enabled);
         assert!(patched.tacacs_proxy_enabled);
+        let waiting = LocalServicesPatch {
+            services: Some(ServiceSelection::TacacsProxy),
+            ..LocalServicesPatch::default()
+        };
+        assert!(waiting
+            .apply(LocalServices::default())
+            .unwrap()
+            .tacacs_proxy_endpoint
+            .is_none());
         for patch in [
-            LocalServicesPatch {
-                services: Some(ServiceSelection::TacacsProxy),
-                ..LocalServicesPatch::default()
-            },
             LocalServicesPatch {
                 services: Some(ServiceSelection::ClientApi),
                 tacacs_proxy_endpoint: Some("127.0.0.1:49".to_owned()),

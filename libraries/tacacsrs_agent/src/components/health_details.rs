@@ -182,7 +182,6 @@ const fn degradation(value: DegradationReason) -> proto::DegradationReason {
         DegradationReason::CandidatePolicyRejected => Wire::CandidatePolicyRejected,
         DegradationReason::SourceConfigurationInvalid => Wire::SourceConfigurationInvalid,
         DegradationReason::CredentialResolutionFailed => Wire::CredentialResolutionFailed,
-        DegradationReason::RestartRequired => Wire::RestartRequired,
         DegradationReason::UpstreamsUnavailable => Wire::UpstreamsUnavailable,
         DegradationReason::UpstreamWatchdogFailed => Wire::UpstreamWatchdogFailed,
         DegradationReason::UpstreamWatchdogPending => Wire::UpstreamWatchdogPending,
@@ -224,7 +223,7 @@ mod tests {
         health.set_eligible_server_count(2);
         health.set_degraded(DegradationReason::DatastoreStale, true);
         health.set_degraded(DegradationReason::RetainedAfterClear, true);
-        assert!(health.set_listener(RuntimeService::ClientApi, ListenerState::Bound));
+        health.set_listener(RuntimeService::ClientApi, ListenerState::Bound);
         let member: Arc<dyn tacacsrs_lifecycle::HealthMember<tacacsrs_lifecycle::ComponentHealth>> =
             Arc::new(Waiting);
         let registry =

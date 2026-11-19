@@ -221,7 +221,7 @@ mod tests {
         ));
         health.set_applied_configuration(true);
         health.set_eligible_server_count(1);
-        assert!(health.set_listener(RuntimeService::ClientApi, ListenerState::Bound));
+        health.set_listener(RuntimeService::ClientApi, ListenerState::Bound);
         assert!(health.snapshot().is_readiness_serving());
         let bridge = UpstreamBridge::new(state);
 
@@ -273,7 +273,7 @@ mod tests {
         ));
         health.set_applied_configuration(true);
         health.set_eligible_server_count(2);
-        assert!(health.set_listener(RuntimeService::ClientApi, ListenerState::Bound));
+        health.set_listener(RuntimeService::ClientApi, ListenerState::Bound);
         let snapshot = health.snapshot();
         assert!(!snapshot.is_readiness_serving());
         assert!(snapshot

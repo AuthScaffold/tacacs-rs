@@ -318,7 +318,11 @@ impl ConfigObservation for Observation {
                     let config = Arc::new(config);
                     let delta = ConfigDelta::diff(self.previous.as_deref(), &config);
                     self.previous = Some(config.clone());
-                    return Ok(Some(ConfigChangeEvent::Changed(ConfigChange { config, delta })));
+                    return Ok(Some(ConfigChangeEvent::Changed(ConfigChange {
+                        config,
+                        delta,
+                        local_services: None,
+                    })));
                 }
                 Err(_) => {
                     log::warn!(

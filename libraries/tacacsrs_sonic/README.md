@@ -26,7 +26,7 @@ I/O.
 
 ## Source component
 
-`SonicSource` is the source component for the [agent host](../tacacsrs_agent/README.md#component-host). Preparation waits until ConfigDB contains a valid `TACPLUS_FORWARDER|global` row. The component then shares the datastore, the SONiC credential provider, and the local services of the forwarder row. The datastore compares later forwarder rows with the bound row. `SonicSource::with_listener_patch` applies host listener settings to the forwarder row. The patch must keep both local services and must not conflict with the proxy endpoint of the row. A host can also change the local services with a `LocalServicesOverlay`, and it can wrap the credential resolver with a `CredentialLayer`.
+`SonicSource` is the source component for the [agent host](../tacacsrs_agent/README.md#component-host). The component does not read ConfigDB at startup. It shares the datastore, the SONiC credential provider, and the SONiC local services without a proxy endpoint. The client API and health serve at once. Each ConfigDB change gives the local services of the `TACPLUS_FORWARDER|global` row. The proxy listener reports `Pending` until the datastore reads a valid row. A later change to the row moves the proxy at runtime, and a removed row stops the proxy. An invalid row rejects the candidate, and the active listeners stay. `SonicSource::with_listener_patch` applies host listener settings to the SONiC local services. The patch must keep both local services. If the patch sets a proxy endpoint, the forwarder row must have the same endpoint. A host can also change the local services with a `LocalServicesOverlay`, and it can wrap the credential resolver with a `CredentialLayer`.
 
 ## Observation Ownership
 
@@ -39,7 +39,7 @@ Dropping the observation cancels the pump and drops the pending Redis operation.
 Loss of the Pub/Sub connection returns an observation error. The agent opens a new session before it reads a recovery baseline.
 Rejected mappings retain the previous accepted snapshot and its delta history.
 The first valid snapshot after a rejection emits a recovery change, even when its TACACS+ delta is empty.
-The matching restart-required event follows that recovery change.
+A change of the forwarder local services also emits a change, even when the TACACS+ delta is empty.
 The native tests verify idle cleanup, pending-read cleanup, cancellation, disconnect recovery, and removal of the final server.
 
 `ConfigDatastore` requires an explicit observation implementation. Its former `subscribe()` method and default observation adapter are removed.
@@ -48,7 +48,7 @@ One-shot `load()` remains available for non-observing callers.
 ## Forwarder Ownership
 
 `SonicForwarderSettings::local_services` normalizes the validated forwarder row into generated `LocalServices`.
-`wait_for_forwarder` retries discovery until ConfigDB returns a valid row. Dropping its future stops discovery.
+`SonicConfigDb::with_listener_patch` adds the local services of the forwarder row to each change. Without a forwarder row, the proxy is enabled and has no endpoint.
 The SONiC profile enables both services and selects `local-proxy-row` credentials.
 Generated YANG defaults supply the client API path and socket permissions.
 The optional ConfigDB listener port still defaults to 49 as a SONiC input rule. The canonical resource contains the explicit endpoint.

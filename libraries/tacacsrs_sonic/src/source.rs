@@ -1,13 +1,12 @@
-//! Source-specific forwarder discovery and credential assembly.
+//! SONiC credential assembly.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use tacacsrs_provider::CredentialProvider;
 
 use crate::{
     SonicConnection, SonicCredentialChangeSource, SonicCredentialPolicy, SonicCredentialResolver,
-    SonicCredentialRoots, SonicForwarderSettings,
+    SonicCredentialRoots,
 };
 
 /// Creates the SONiC credential provider for this connection.
@@ -26,23 +25,6 @@ pub fn credentials(settings: &SonicConnection) -> CredentialProvider {
     }
 }
 
-/// Retries forwarder discovery until ConfigDB returns a valid row.
-///
-/// Dropping the future stops discovery.
-pub async fn wait_for_forwarder(settings: &SonicConnection) -> SonicForwarderSettings {
-    let mut delay = Duration::from_millis(250);
-    loop {
-        match settings.load_forwarder_settings().await {
-            Ok(forwarder) => return forwarder,
-            Err(_) => {
-                log::warn!("SONiC forwarder configuration is unavailable. The daemon retries before it binds.");
-                tokio::time::sleep(delay).await;
-                delay = delay.saturating_mul(2).min(Duration::from_secs(30));
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,16 +37,5 @@ mod tests {
         settings.credential_watch_root = None;
         let (resolver, changes) = credentials(&settings).into_parts();
         assert!(resolver.is_some() && changes.is_none());
-    }
-
-    #[tokio::test]
-    async fn forwarder_discovery_can_be_cancelled() {
-        let settings = SonicConnection {
-            url: "invalid".to_owned(),
-            ..SonicConnection::default()
-        };
-        assert!(tokio::time::timeout(Duration::from_millis(20), wait_for_forwarder(&settings),)
-            .await
-            .is_err());
     }
 }

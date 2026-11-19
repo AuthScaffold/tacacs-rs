@@ -8,7 +8,6 @@ use anyhow::Context;
 use futures_util::FutureExt;
 use tokio_util::sync::CancellationToken;
 
-use tacacsrs_config::local_services::{prepare_local_services, PreparedLocalServices};
 use tacacsrs_config::source::policy::{
     FilePolicyObservation, PolicyChange, PolicyFile, PolicyObservation,
 };
@@ -17,9 +16,11 @@ use tacacsrs_lifecycle::{HostedService, ShutdownSignal};
 use tacacsrs_provider::SourceBundle;
 
 use crate::{RuntimeHealthPublisher, RuntimePolicy, ServiceConfig, TacacsClientService};
-use super::{ConfigSupervisor, PolicySupervisor, RuntimeHealth, RuntimeListenerService};
+use super::{
+    ConfigSupervisor, LocalServicesView, PolicySupervisor, RuntimeHealth, RuntimeListenerService,
+};
 use super::application_tasks::{CriticalTasks, supervise};
-use super::source_filter::config_filter_from_local_services;
+use super::source_filter::ProxySelfLoopFilter;
 
 /// Canonical policy or an independently observed policy file.
 #[derive(Clone, Debug)]
@@ -44,7 +45,6 @@ pub struct RuntimeInputs {
 pub struct AgentRuntime {
     service: Arc<TacacsClientService>,
     health: RuntimeHealthPublisher,
-    local_services: PreparedLocalServices,
     supervisor: ConfigSupervisor,
     policy_observation: Option<FilePolicyObservation>,
 }
@@ -62,8 +62,6 @@ impl AgentRuntime {
             policy,
             certificate_verification,
         } = inputs;
-        let local_services = prepare_local_services(&source.local_services)?;
-        let filter = config_filter_from_local_services(&source.local_services)?;
         let (runtime_policy, policy_observation) = match policy {
             PolicyInput::Canonical(policy) => (RuntimePolicy::try_from(&policy)?, None),
             PolicyInput::File(path) => {
@@ -82,11 +80,19 @@ impl AgentRuntime {
         };
         let health = RuntimeHealthPublisher::new(config.enabled_services());
         let service = Arc::new(
-            TacacsClientService::new(config, health.clone())
-                .context("Failed to build TACACS+ client service configuration")?,
+            TacacsClientService::with_overlays(
+                config,
+                health.clone(),
+                source.local_services_overlays,
+            )
+            .context("Failed to build TACACS+ client service configuration")?,
         );
-        let mut supervisor =
-            ConfigSupervisor::new(source.datastore, service.clone(), health.clone(), filter);
+        let mut supervisor = ConfigSupervisor::new(
+            source.datastore,
+            service.clone(),
+            health.clone(),
+            Arc::new(ProxySelfLoopFilter),
+        );
         let (resolver, changes) = source.credentials.into_parts();
         if let Some(resolver) = resolver {
             supervisor = supervisor.with_credential_resolver(resolver);
@@ -98,7 +104,6 @@ impl AgentRuntime {
         Ok(Self {
             service,
             health,
-            local_services,
             supervisor,
             policy_observation,
         })
@@ -116,10 +121,10 @@ impl AgentRuntime {
         RuntimeHealth::new(self.health.clone())
     }
 
-    /// Returns prepared listener settings for output-path protection.
+    /// Returns a view of the active local services.
     #[must_use]
-    pub fn prepared_local_services(&self) -> &PreparedLocalServices {
-        &self.local_services
+    pub fn local_services(&self) -> LocalServicesView {
+        self.service.local_services()
     }
 
     /// Runs the supervisors, listeners, and hosted services until shutdown.
@@ -127,7 +132,11 @@ impl AgentRuntime {
     /// All parts start together. No part waits for the first configuration.
     /// Runtime health reports the configuration, listener, and upstream state.
     /// Requests before the first publication receive a retryable unavailable
-    /// error. Each hosted service receives a shutdown observer. An early return from a service is fatal.
+    /// error. Each hosted service receives a shutdown observer. A hosted
+    /// service or a listener can complete early with `Ok(())`, and the
+    /// application continues. An error or a panic stops the application. A
+    /// long-lived component that cannot recover must return an error or stop
+    /// the [`ApplicationLifetime`](tacacsrs_lifecycle::ApplicationLifetime).
     /// The first stop or failure captures the shared teardown deadline.
     /// Normal return follows domain cleanup and joins every critical task.
     /// Observation implementations retain their own drop-based cancellation contract.
@@ -161,7 +170,7 @@ impl AgentRuntime {
         }
         for service in services {
             let shutdown = ShutdownSignal::from(&cancellation);
-            tasks.spawn(service.name(), service.run(shutdown));
+            tasks.spawn_background(service.name(), service.run(shutdown));
         }
         let serving = self
             .service

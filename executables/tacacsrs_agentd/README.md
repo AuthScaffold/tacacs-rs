@@ -39,11 +39,12 @@ A component adds inputs, credential layers, local services overlays, startup che
 - `SystemdComponent` sends systemd notifications. `--host-integration auto` selects `SystemdMode::Auto`, and `systemd` selects `SystemdMode::Required`. `none` selects no component.
 - `StatisticsComponent` writes the statistics file. Its startup check protects the statistics file from the listener paths. The daemon selects it when `--statistics-file` is set.
 - `ClientApiComponent` adds the listener factory for the client API. The factory returns no listener when the client API is disabled.
+- `TacacsProxyComponent` adds the listener factory for the TACACS+ proxy. The factory returns no listener when the proxy is disabled.
 - `HttpCredentialComponent` adds the HTTP credential layer when HTTP evidence retrieval is configured. Only the inline, file, and SONiC profiles supply these settings.
 - `UpstreamWatchdogComponent` sends periodic upstream probes when a watchdog interval is set.
 - `InvalidSourceShutdownComponent` stops the daemon with an error when the runtime reports `SourceConfigurationInvalid`. The daemon always selects it.
 
-The inline and file profiles convert the listener arguments to a `LocalServicesPatch` for `DatastoreSourceComponent`. The SONiC profile gives the same patch to `SonicSource::with_listener_patch`, which applies it to the forwarder local services.
+The inline and file profiles convert the listener arguments to a `LocalServicesPatch` for `DatastoreSourceComponent`. The SONiC profile gives the same patch to `SonicSource::with_listener_patch`, which applies it to the SONiC local services. The SONiC forwarder row supplies the proxy endpoint later.
 
 To add a host component, implement it in a library crate. Then add a selection function to `HOST_COMPONENTS` that gives the component its settings. A source returns its components from its profile. Do not change the host code. The [agent host guide](../../libraries/tacacsrs_agent/README.md#component-host) shows how a component registers a hosted service and which deferred values it can inject.
 
@@ -71,7 +72,7 @@ Either signal cancels startup or requests listener drain through the signal-free
 An unavailable bootstrap dependency does not prevent signal handling. Requested shutdown exits successfully after cleanup.
 Unexpected host or configuration task exit is fatal, but the daemon still requests service drain and joins its other tasks.
 
-Startup uses the agent-owned `AgentRuntime`. It constructs the service and retains one `ConfigSupervisor` for the initial configuration and all later server updates. The listeners, the hosted services, and the configuration supervisor start together. An unavailable source does not stop the daemon. The daemon binds its listeners, reports that it is not ready, and retries the source with capped backoff. A request that arrives before the first configuration receives a retryable unavailable error. Invalid command-line server values are immutable, so the daemon rejects them before it binds a listener.
+Startup uses the agent-owned `AgentRuntime`. It constructs the service and retains one `ConfigSupervisor` for the initial configuration and all later server updates. The listeners, the hosted services, and the configuration supervisor start together. An unavailable source does not stop the daemon. The daemon binds its listeners, reports that it is not ready, and retries the source with capped backoff. A request that arrives before the first configuration receives a retryable unavailable error. Bootstrap reads only the command line and the local services. It does not read the configuration datastore. If the runtime rejects a static server configuration, `InvalidSourceShutdownComponent` stops the daemon with an error.
 
 A static source has no change notifications, so a rejected static configuration cannot become valid. For this source, the runtime adds the final `SourceConfigurationInvalid` degradation reason and stops its retries. `InvalidSourceShutdownComponent` then stops the daemon through the injected `ApplicationLifetime`. The daemon drains its listeners and exits with a failure status. A credential resolver failure does not stop the daemon, because the resolver can recover. A source with change notifications, for example SONiC ConfigDB, keeps its retries.
 

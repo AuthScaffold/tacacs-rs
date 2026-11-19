@@ -57,7 +57,6 @@
 //! 4. Current and historical upstream resources close and join using that deadline.
 //! 5. Owned Unix socket paths are removed before stopped state is published.
 
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::{RuntimeHealthPublisher, RuntimeListenerService};
@@ -75,7 +74,7 @@ use engine::ServiceRuntime;
 /// A host maps these transport-neutral values into its own listener options,
 /// for example the IPC listener options. The agent runtime does not own the IPC
 /// transport or protobuf schema.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct ListenerSettings {
     /// Unix socket file permission bits.
     pub socket_mode: u32,
@@ -85,6 +84,17 @@ pub struct ListenerSettings {
     pub max_client_api_streams: u32,
     /// Maximum lifetime of one accepted connection.
     pub connection_lifetime: std::time::Duration,
+}
+
+impl From<&tacacsrs_config::local_services::PreparedLocalServices> for ListenerSettings {
+    fn from(prepared: &tacacsrs_config::local_services::PreparedLocalServices) -> Self {
+        Self {
+            socket_mode: prepared.unix_socket_mode(),
+            max_connections: prepared.max_connections(),
+            max_client_api_streams: prepared.max_client_api_streams(),
+            connection_lifetime: prepared.connection_lifetime(),
+        }
+    }
 }
 
 /// Long-lived local TACACS+ client service.
@@ -207,15 +217,69 @@ impl TacacsClientService {
     /// # Errors
     /// Returns an error for invalid listener controls or inconsistent health services.
     pub fn new(config: ServiceConfig, health: RuntimeHealthPublisher) -> anyhow::Result<Self> {
+        Self::with_overlays(config, health, Vec::new())
+    }
+
+    /// Builds a native service that applies local services overlays to each
+    /// datastore change.
+    ///
+    /// The overlays run in order. The bootstrap local services in `config`
+    /// must already contain the overlays.
+    ///
+    /// # Errors
+    /// Returns an error for invalid listener controls.
+    pub fn with_overlays(
+        config: ServiceConfig,
+        health: RuntimeHealthPublisher,
+        overlays: Vec<Arc<dyn tacacsrs_provider::LocalServicesOverlay>>,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
             runtime: ServiceRuntime::from_config(
                 config,
                 health,
                 Vec::new(),
                 false,
+                overlays,
                 NetworkUpstreamConnector::new,
             )?,
         })
+    }
+
+    /// Builds the raw TACACS+ proxy listener.
+    ///
+    /// The listener follows the active local services. A host passes the
+    /// listener to [`Self::serve_until`] with its other listeners.
+    #[must_use]
+    pub fn tacacs_proxy_listener(&self) -> Box<dyn RuntimeListenerService> {
+        self.runtime.tacacs_proxy_listener()
+    }
+
+    /// Returns a view of the active local services.
+    ///
+    /// A host listener uses the view to bind, move, or stop its endpoint when
+    /// a datastore change publishes new local services.
+    #[must_use]
+    pub fn local_services(&self) -> super::LocalServicesView {
+        self.runtime.local_services.view()
+    }
+
+    /// Applies the overlays to the local services of a datastore change and
+    /// prepares the result.
+    pub(crate) fn prepare_local_services_candidate(
+        &self,
+        source: &tacacsrs_config::tacacsrs::LocalServices,
+    ) -> anyhow::Result<Arc<super::ActiveLocalServices>> {
+        self.runtime.local_services.prepare_candidate(source)
+    }
+
+    /// Returns the active local services.
+    pub(crate) fn active_local_services(&self) -> Arc<super::ActiveLocalServices> {
+        self.runtime.local_services.current()
+    }
+
+    /// Publishes new local services to the listeners.
+    pub(crate) fn publish_local_services(&self, local: Arc<super::ActiveLocalServices>) {
+        self.runtime.local_services.publish(local);
     }
 
     /// Applies an observed canonical policy or records a source rejection.
@@ -339,27 +403,6 @@ impl TacacsClientService {
             UpstreamBridge::new(Arc::clone(&self.runtime.manager)),
             self.runtime.health.clone(),
         )
-    }
-
-    /// Returns the prepared client API Unix socket path, if client API is enabled.
-    ///
-    /// A host composes its client API listener on this path. The agent runtime
-    /// does not own the IPC transport.
-    #[must_use]
-    pub fn client_api_socket_path(&self) -> Option<PathBuf> {
-        self.runtime.listeners.client_api().map(Path::to_path_buf)
-    }
-
-    /// Returns the prepared listener settings for a host-composed client API listener.
-    #[must_use]
-    pub fn client_api_listener_settings(&self) -> ListenerSettings {
-        let prepared = &self.runtime.listeners;
-        ListenerSettings {
-            socket_mode: prepared.unix_socket_mode(),
-            max_connections: prepared.max_connections(),
-            max_client_api_streams: prepared.max_client_api_streams(),
-            connection_lifetime: prepared.connection_lifetime(),
-        }
     }
 
     /// Serves until an embedding host requests shutdown, without installing signals.

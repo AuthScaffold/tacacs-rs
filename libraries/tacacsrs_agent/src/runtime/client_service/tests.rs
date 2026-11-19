@@ -224,7 +224,7 @@ async fn already_stopped_host_does_not_attempt_listener_binding() {
         Arc::new(tacacsrs_config::source::StaticDatastore::new(config.source)),
         service.clone(),
         health.clone(),
-        Arc::new(crate::runtime::NoopTacacsPlusFilter::default()),
+        Arc::new(crate::runtime::NoopTacacsPlusFilter),
     );
     assert_eq!(service.server_count(), 0);
     assert!(!health.snapshot().has_applied_configuration());
@@ -304,7 +304,7 @@ async fn public_facade_uses_concrete_native_connector_through_ipc_and_shutdown()
             Arc::new(tacacsrs_config::source::StaticDatastore::new(config.source)),
             service.clone(),
             health.clone(),
-            Arc::new(crate::runtime::NoopTacacsPlusFilter::default()),
+            Arc::new(crate::runtime::NoopTacacsPlusFilter),
         );
         supervisor
             .initialize_until(std::future::pending())
@@ -512,10 +512,16 @@ async fn downstream_credential_preparation_and_publication_preserve_active_gener
     let mut invalid = source.clone();
     invalid.proxy_shared_secret = Some(SecretString::new(String::new()));
     assert!(prepare_proxy_policy(&invalid, None).is_err());
+    let duplicate = Arc::new(test_server("primary:49"));
+    let replacement_key = {
+        let mut replacement = source.clone();
+        replacement.proxy_shared_secret = Some(SecretString::new("rejected-key".to_owned()));
+        prepare_proxy_policy(&replacement, None).unwrap()
+    };
     assert!(service
         .reload_materialized_servers_with_proxy_downstream_obfuscation(
-            Vec::new(),
-            PreparedProxyPolicy::unavailable(),
+            vec![Arc::clone(&duplicate), duplicate],
+            replacement_key,
         )
         .await
         .is_err());
@@ -794,19 +800,17 @@ fn service_rejects_no_enabled_runtime_services() {
 }
 
 #[test]
-fn service_rejects_proxy_service_without_proxy_endpoint() {
+fn proxy_service_without_an_endpoint_waits_for_one() {
     let endpoint = test_endpoint("tacacs-service-proxy-without-endpoint");
     let mut config = service_config(endpoint, vec![test_server("primary:49")]);
     config.settings.local_services.client_api_enabled = false;
     config.settings.local_services.tacacs_proxy_enabled = true;
 
-    let Err(error) = test_service(config) else {
-        panic!("the service must reject proxy mode without an IPC endpoint");
-    };
+    let service = test_service(config).expect("a proxy without an endpoint must wait");
+    let local = service.local_services.current();
 
-    assert!(error
-        .to_string()
-        .contains("The proxy endpoint must be present exactly when"));
+    assert!(local.prepared().tacacs_proxy_enabled());
+    assert!(local.prepared().tacacs_proxy().is_none());
 }
 
 fn test_endpoint(socket_name: &str) -> IpcEndpoint {
@@ -1136,7 +1140,13 @@ async fn ephemeral_proxy_binding_guards_production_clients_after_reload_and_shut
     })
     .await
     .unwrap();
-    let bound_address = service.proxy_loop_guard.bound_endpoint().unwrap().unwrap();
+    let bound_endpoints = service
+        .local_services
+        .proxy_loop_guard()
+        .bound_endpoints()
+        .unwrap();
+    assert_eq!(bound_endpoints.len(), 1);
+    let bound_address = bound_endpoints[0];
     assert_ne!(bound_address.port(), 0);
     service
         .reload_materialized_servers_with_proxy_downstream_obfuscation(
@@ -1162,7 +1172,8 @@ async fn ephemeral_proxy_binding_guards_production_clients_after_reload_and_shut
         .unwrap()
         .unwrap();
     assert!(service
-        .proxy_loop_guard
+        .local_services
+        .proxy_loop_guard()
         .check_destination(bound_address)
         .is_err());
     assert!(bound.connection.open_conversation().await.is_err());
@@ -1170,20 +1181,14 @@ async fn ephemeral_proxy_binding_guards_production_clients_after_reload_and_shut
 
 #[tokio::test]
 #[cfg_attr(miri, ignore)] // Miri does not support Unix domain sockets or TCP listeners.
-async fn listener_bind_failure_aborts_sibling_without_publishing_readiness() {
+async fn listener_bind_failure_retries_while_the_sibling_serves() {
     let occupied = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
-        .expect("the test must occupy the proxy IPC endpoint");
+        .expect("the test must occupy the proxy endpoint");
     let occupied_address = occupied
         .local_addr()
-        .expect("the occupied IPC endpoint must have an address");
-    let endpoint = test_endpoint("tacacs-service-bind-failure");
-    let socket_path = match &endpoint {
-        IpcEndpoint::Unix(path) => path.clone(),
-        IpcEndpoint::Tcp(_) => {
-            unreachable!("the test IPC endpoint must be a Unix domain socket")
-        }
-    };
+        .expect("the occupied endpoint must have an address");
+    let endpoint = test_endpoint("tacacs-service-bind-retry");
     let mut config = service_config(endpoint, vec![test_server("primary:49")]);
     config.settings.local_services.client_api_enabled = true;
     config.settings.local_services.tacacs_proxy_enabled = true;
@@ -1196,20 +1201,47 @@ async fn listener_bind_failure_aborts_sibling_without_publishing_readiness() {
     });
     let connector =
         Arc::new(FakeConnector::new(HashMap::from([(upstream.address.clone(), upstream)])));
-    let service = TacacsClientService::new_with_connector(config, connector, health.clone())
-        .expect("the service must build");
+    let service = Arc::new(
+        TacacsClientService::new_with_connector(config, connector, health.clone())
+            .expect("the service must build"),
+    );
     let shutdown = ShutdownCoordinator::new(health.clone());
+    let task = {
+        let service = Arc::clone(&service);
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move { service.serve_with_shutdown_for_test(&shutdown).await })
+    };
+    let mut changes = health.subscribe();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        changes.wait_for(|snapshot| {
+            snapshot.listener(RuntimeService::ClientApi) == ListenerState::Bound
+                && snapshot.listener(RuntimeService::TacacsProxy) == ListenerState::Binding
+        }),
+    )
+    .await
+    .expect("the proxy must report a pending bind")
+    .unwrap();
+    assert!(!health.snapshot().is_startup_serving());
 
-    let result = service.serve_with_shutdown_for_test(&shutdown).await;
+    drop(occupied);
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        changes.wait_for(|snapshot| {
+            snapshot.listener(RuntimeService::TacacsProxy) == ListenerState::Bound
+        }),
+    )
+    .await
+    .expect("the proxy must bind after the endpoint is free")
+    .unwrap();
+    assert!(health.snapshot().is_startup_serving());
 
-    assert!(result.is_err());
-    assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Failed);
-    assert!(!health.snapshot().is_readiness_serving());
-    assert_eq!(health.snapshot().listener(RuntimeService::ClientApi), ListenerState::Stopped,);
-    assert_eq!(health.snapshot().listener(RuntimeService::TacacsProxy), ListenerState::Stopped,);
-    assert!(!tokio::fs::try_exists(socket_path)
+    shutdown.initiate_shutdown();
+    tokio::time::timeout(Duration::from_secs(5), task)
         .await
-        .expect("the socket inspection must succeed"));
+        .unwrap()
+        .unwrap()
+        .unwrap();
 }
 
 #[tokio::test]

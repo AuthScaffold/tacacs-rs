@@ -8,6 +8,7 @@
 use futures_util::future::BoxFuture;
 use std::sync::Arc;
 use crate::runtime::candidate_preparation::{CandidateAdmission, Preparation};
+use crate::runtime::ActiveLocalServices;
 
 use super::{
     CancellationToken, ChangeNotificationMode, ConfigChangeEvent, ConfigSupervisor,
@@ -33,9 +34,10 @@ impl ConfigSupervisor {
                     Ok(ConfigChangeEvent::Changed(change)) => {
                         let admission = CandidateAdmission::new(self.service.candidate_limits());
                         drop(candidate.take());
-                        if let Ok(admission) = admission {
-                            if let Some((source, revision)) = self.admit_observation(change.config, admission).await {
-                                candidate = Some(Box::pin(self.prepare_observation(source, revision, admission)));
+                        let local = self.candidate_local_services(change.local_services.as_deref());
+                        if let (Ok(admission), Some(local)) = (admission, local) {
+                            if let Some((source, revision)) = self.admit_observation(change.config, admission, &local).await {
+                                candidate = Some(Box::pin(self.prepare_observation(source, revision, admission, local)));
                             }
                         } else {
                             self.materialization_coordinator.reject_observation(&self.health).await;
@@ -48,9 +50,6 @@ impl ConfigSupervisor {
                             .reject_observation(&self.health)
                             .await;
                     }
-                    Ok(ConfigChangeEvent::RestartRequired { required }) => self
-                        .health
-                        .set_degraded(DegradationReason::RestartRequired, required),
                     Err(()) => {
                         drop(candidate.take());
                         self.observation.lock().await.take();
@@ -73,22 +72,19 @@ impl ConfigSupervisor {
     }
 
     pub(super) async fn load_and_apply(&self) -> Result<PublicationOutcome, ()> {
-        loop {
-            match self.next_observation_event().await? {
-                ConfigChangeEvent::Changed(change) => {
-                    return self.apply_observation(change.config).await
-                }
-                ConfigChangeEvent::CandidateRejected => {
-                    self.materialization_coordinator
-                        .reject_observation(&self.health)
-                        .await;
-                    return Err(());
-                }
-                ConfigChangeEvent::RestartRequired { required } => self
-                    .health
-                    .set_degraded(DegradationReason::RestartRequired, required),
-            }
-        }
+        let ConfigChangeEvent::Changed(change) = self.next_observation_event().await? else {
+            self.materialization_coordinator
+                .reject_observation(&self.health)
+                .await;
+            return Err(());
+        };
+        let Some(local) = self.candidate_local_services(change.local_services.as_deref()) else {
+            self.materialization_coordinator
+                .reject_observation(&self.health)
+                .await;
+            return Err(());
+        };
+        self.apply_observation(change.config, local).await
     }
 
     async fn next_observation_event(&self) -> Result<ConfigChangeEvent, ()> {
@@ -139,26 +135,56 @@ impl ConfigSupervisor {
         &self,
         candidate: TacacsPlus,
     ) -> Result<PublicationOutcome, ()> {
-        self.apply_observation(Arc::new(candidate)).await
+        self.apply_observation(Arc::new(candidate), self.service.active_local_services())
+            .await
+    }
+
+    /// Prepares the local services of a datastore change.
+    ///
+    /// A change without local services keeps the active local services.
+    /// Returns `None` when the local services are not valid.
+    fn candidate_local_services(
+        &self,
+        source: Option<&tacacsrs_config::tacacsrs::LocalServices>,
+    ) -> Option<Arc<ActiveLocalServices>> {
+        let Some(source) = source else {
+            return Some(self.service.active_local_services());
+        };
+        match self.service.prepare_local_services_candidate(source) {
+            Ok(local) => Some(local),
+            Err(error) => {
+                log::warn!(
+                    "Datastore '{}' local services were rejected: {error:#}",
+                    self.datastore.label(),
+                );
+                None
+            }
+        }
     }
 
     async fn apply_observation(
         &self,
         candidate: Arc<TacacsPlus>,
+        local: Arc<ActiveLocalServices>,
     ) -> Result<PublicationOutcome, ()> {
         let admission = CandidateAdmission::new(self.service.candidate_limits()).map_err(|_| ())?;
         let (candidate, revision) = self
-            .admit_observation(candidate, admission)
+            .admit_observation(candidate, admission, &local)
             .await
             .ok_or(())?;
-        self.prepare_observation(candidate, revision, admission)
+        self.prepare_observation(candidate, revision, admission, local)
             .await
     }
 
+    /// Admits a candidate source.
+    ///
+    /// When no source is available for publication, the local services
+    /// publish without servers.
     async fn admit_observation(
         &self,
         source: Arc<TacacsPlus>,
         admission: CandidateAdmission,
+        local: &Arc<ActiveLocalServices>,
     ) -> Option<(Arc<TacacsPlus>, crate::SourceRevision)> {
         let policy = self.datastore.runtime_policy().empty_servers;
         let retained = source.server.is_empty()
@@ -169,6 +195,7 @@ impl ConfigSupervisor {
             .await;
         if selected.is_none() {
             log::warn!("Datastore has no upstreams or previously published source; waiting for configuration");
+            self.service.publish_local_services(Arc::clone(local));
         }
         self.health
             .set_degraded(DegradationReason::RetainedAfterClear, retained && selected.is_some());
@@ -180,6 +207,7 @@ impl ConfigSupervisor {
         candidate: Arc<TacacsPlus>,
         revision: crate::SourceRevision,
         admission: CandidateAdmission,
+        local: Arc<ActiveLocalServices>,
     ) -> Result<PublicationOutcome, ()> {
         let coordinator = &self.materialization_coordinator;
         let accepted = async {
@@ -190,18 +218,21 @@ impl ConfigSupervisor {
                 "candidate preparation was superseded"
             );
             let known_copies = tacacsrs_config::prepare::source_payload_bytes(&candidate)?
-                .checked_add(self.config_filter.known_payload_copies(&candidate)?)
+                .checked_add(
+                    self.config_filter
+                        .known_payload_copies(&candidate, local.settings())?,
+                )
                 .ok_or_else(|| anyhow::anyhow!("candidate payload size overflow"))?;
             preparation.with_ledger(|ledger| ledger.retain_extra(known_copies))?;
             let filtered = coordinator
-                .run_source(revision, admission, self.config_filter.filter((*candidate).clone()))
+                .run_source(
+                    revision,
+                    admission,
+                    self.config_filter
+                        .filter((*candidate).clone(), local.settings()),
+                )
                 .await??;
-            let proxy_bytes = u64::try_from(
-                filtered
-                    .proxy_downstream_obfuscation
-                    .shared_secret()?
-                    .map_or(0, |secret| secret.expose_secret().len()),
-            )?;
+            let proxy_bytes = u64::try_from(filtered.proxy_downstream_obfuscation.secret_len())?;
             let bytes = tacacsrs_config::prepare::source_payload_bytes(&filtered.tacacs_plus)?
                 .checked_add(proxy_bytes)
                 .ok_or_else(|| anyhow::anyhow!("candidate payload size overflow"))?;
@@ -211,21 +242,25 @@ impl ConfigSupervisor {
                     revision,
                     filtered.tacacs_plus,
                     filtered.proxy_downstream_obfuscation,
+                    Some(Arc::clone(&local)),
                 ))
                 .await?;
             Ok::<_, anyhow::Error>((attempt, preparation))
         }
         .await;
-        let Ok((attempt, preparation)) = accepted else {
-            log::warn!(
-                "Datastore '{}' configuration candidate was rejected during filtering or projection acceptance",
-                self.datastore.label(),
-            );
-            return if coordinator.reject_source(revision, &self.health).await {
-                Err(())
-            } else {
-                Ok(PublicationOutcome::Superseded)
-            };
+        let (attempt, preparation) = match accepted {
+            Ok(accepted) => accepted,
+            Err(error) => {
+                log::warn!(
+                    "Datastore '{}' configuration candidate was rejected during filtering or projection acceptance: {error:#}",
+                    self.datastore.label(),
+                );
+                return if coordinator.reject_source(revision, &self.health).await {
+                    Err(())
+                } else {
+                    Ok(PublicationOutcome::Superseded)
+                };
+            }
         };
         let Some(attempt) = attempt else {
             return Ok(PublicationOutcome::Superseded);

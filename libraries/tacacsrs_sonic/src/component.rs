@@ -2,29 +2,30 @@
 
 use std::sync::Arc;
 
-use anyhow::Context;
 use async_trait::async_trait;
 
 use tacacsrs_composition::{Component, Composition};
 use tacacsrs_config::local_services::LocalServicesPatch;
 use tacacsrs_provider::SourceDatastore;
 
-use crate::{SonicConfigDb, SonicConnection, SonicForwarderSettings};
+use crate::{SonicConfigDb, SonicConnection};
 
 /// Supplies the datastore, credentials, and local services of SONiC ConfigDB.
 ///
-/// Preparation waits until ConfigDB contains a valid forwarder row. The
-/// component then shares these values:
+/// The component does not read ConfigDB. It shares these values:
 ///
-/// - a [`SourceDatastore`] that compares later forwarder rows with the bound
-///   row
+/// - a [`SourceDatastore`] that reads the forwarder row with each
+///   configuration candidate and gives the local services of that row
 /// - the SONiC [`CredentialProvider`](tacacsrs_provider::CredentialProvider)
-/// - the [`LocalServices`](tacacsrs_config::tacacsrs::LocalServices) of the
-///   forwarder row, with the listener patch of the host
+/// - the bootstrap SONiC [`LocalServices`](tacacsrs_config::tacacsrs::LocalServices),
+///   with the listener patch of the host and without a proxy endpoint
+///
+/// The client API and health serve at once. The proxy waits until a
+/// forwarder row gives its endpoint. When the forwarder row changes, the
+/// runtime moves the proxy to the new endpoint.
 pub struct SonicSource {
     connection: SonicConnection,
     listener_patch: LocalServicesPatch,
-    forwarder: Option<SonicForwarderSettings>,
 }
 
 impl SonicSource {
@@ -37,15 +38,15 @@ impl SonicSource {
         Self {
             connection,
             listener_patch: LocalServicesPatch::default(),
-            forwarder: None,
         }
     }
 
     /// Sets the host listener settings that apply to the forwarder row.
     ///
-    /// The source checks the patch at once, before it waits for ConfigDB. It
-    /// compares the proxy endpoint with the forwarder row when the row is
-    /// available. See [`SonicForwarderSettings::local_services_with`].
+    /// The source checks the patch at once. If the patch sets a proxy
+    /// endpoint, the datastore rejects a forwarder row with a different
+    /// endpoint. See
+    /// [`SonicForwarderSettings::local_services_with`](crate::SonicForwarderSettings::local_services_with).
     ///
     /// # Errors
     /// Returns an error when the patch disables a local service, sets an
@@ -65,22 +66,13 @@ impl Component for SonicSource {
         Self::NAME
     }
 
-    async fn prepare(&mut self) -> anyhow::Result<()> {
-        self.forwarder = Some(crate::wait_for_forwarder(&self.connection).await);
-        Ok(())
-    }
-
     fn register(self: Box<Self>, composition: &mut Composition) -> anyhow::Result<()> {
-        let forwarder = self
-            .forwarder
-            .context("The SONiC forwarder row is not prepared")?;
-        let local_services = forwarder
-            .local_services_with(&self.listener_patch)
-            .context("The host listener settings conflict with the SONiC forwarder row")?;
+        let (local_services, _) = crate::mapping::deferred_local_services(&self.listener_patch)?;
         composition.shared(Arc::new(crate::credentials(&self.connection)))?;
         composition.shared(Arc::new(local_services))?;
-        composition.shared(Arc::new(SourceDatastore(Arc::new(
-            SonicConfigDb::with_bound_forwarder(self.connection, forwarder),
-        ))))
+        composition.shared(Arc::new(SourceDatastore(Arc::new(SonicConfigDb::with_listener_patch(
+            self.connection,
+            self.listener_patch,
+        )))))
     }
 }

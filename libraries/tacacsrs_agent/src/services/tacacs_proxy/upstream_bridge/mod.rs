@@ -25,7 +25,6 @@ use self::session::ProxyConversation;
 #[cfg(test)]
 use self::session_mapping::rewrite_session_id;
 use crate::config::{PolicyService, PreparedProxyPolicy};
-use crate::runtime::RequestGuard;
 use crate::upstream::OperationRouter;
 use crate::upstream::manager::UpstreamManager;
 use crate::upstream::UpstreamConnection;
@@ -68,7 +67,6 @@ where
         &self,
         stream: Stream,
         peer_label: String,
-        _request_guard: RequestGuard,
     ) -> anyhow::Result<()>
     where
         Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static,

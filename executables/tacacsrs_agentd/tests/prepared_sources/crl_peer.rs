@@ -39,7 +39,11 @@ impl tacacsrs_config::source::ConfigObservation for SourceObservation {
         let config = self.snapshots.borrow_and_update().clone();
         let delta = ConfigDelta::diff(self.previous.as_deref(), &config);
         self.previous = Some(config.clone());
-        Ok(Some(ConfigChangeEvent::Changed(ConfigChange { config, delta })))
+        Ok(Some(ConfigChangeEvent::Changed(ConfigChange {
+            config,
+            delta,
+            local_services: None,
+        })))
     }
 }
 
@@ -158,7 +162,7 @@ async fn provider_crl_validity_refreshes_before_expiry_without_notifications() -
         source.clone(),
         service.clone(),
         health.clone(),
-        Arc::new(NoopTacacsPlusFilter::default()),
+        Arc::new(NoopTacacsPlusFilter),
     )
     .with_credential_resolver(resolver.clone());
     supervisor.initialize_until(std::future::pending()).await?;
@@ -1314,7 +1318,7 @@ async fn crl_expiry_withdraws_supervised_catalog_without_source_failure() -> Res
         datastore.clone(),
         service.clone(),
         health.clone(),
-        Arc::new(NoopTacacsPlusFilter::default()),
+        Arc::new(NoopTacacsPlusFilter),
     );
     supervisor.initialize_until(std::future::pending()).await?;
     assert_eq!(service.server_count(), 1);
@@ -1401,7 +1405,7 @@ async fn committed_crl_refresh_interrupts_active_peer_without_waiting_for_reques
         datastore.clone(),
         service.clone(),
         health.clone(),
-        Arc::new(tacacsrs_agent::runtime::NoopTacacsPlusFilter::default()),
+        Arc::new(tacacsrs_agent::runtime::NoopTacacsPlusFilter),
     );
     supervisor.initialize_until(std::future::pending()).await?;
     let (received, observed) = tokio::sync::oneshot::channel();

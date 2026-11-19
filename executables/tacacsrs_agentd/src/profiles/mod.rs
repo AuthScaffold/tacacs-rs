@@ -211,6 +211,7 @@ mod tests {
                     let config = Arc::new(source);
                     sender
                         .send(ConfigChangeEvent::Changed(ConfigChange {
+                            local_services: None,
                             delta: ConfigDelta::diff(None, &config),
                             config,
                         }))

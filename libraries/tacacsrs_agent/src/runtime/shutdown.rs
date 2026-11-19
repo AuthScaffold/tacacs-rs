@@ -69,6 +69,11 @@ pub struct ShutdownReceiver {
 }
 
 impl ShutdownReceiver {
+    /// Creates a receiver from a shutdown flag that another owner controls.
+    pub(crate) fn from_flag(receiver: watch::Receiver<bool>) -> Self {
+        Self { receiver }
+    }
+
     /// Waits until shutdown is broadcast or the coordinator is dropped.
     pub async fn wait(mut self) {
         if *self.receiver.borrow() {
@@ -103,24 +108,20 @@ impl ListenerRegistration {
     /// Registers an enabled listener and publishes `Binding` before bind work.
     #[must_use]
     pub fn new(health: RuntimeHealthPublisher, service: RuntimeService) -> Self {
-        let accepted = health.set_listener(service, ListenerState::Binding);
-        debug_assert!(accepted, "cannot register a disabled listener");
+        health.set_listener(service, ListenerState::Binding);
         Self { health, service }
     }
 
     /// Publishes that the IPC endpoint is bound and accepts work.
     pub fn mark_bound(&self) {
-        let accepted = self.health.set_listener(self.service, ListenerState::Bound);
-        debug_assert!(accepted, "cannot bind a disabled listener");
+        self.health.set_listener(self.service, ListenerState::Bound);
     }
 }
 
 impl Drop for ListenerRegistration {
     fn drop(&mut self) {
-        let accepted = self
-            .health
+        self.health
             .set_listener(self.service, ListenerState::Stopped);
-        debug_assert!(accepted, "cannot stop a disabled listener");
     }
 }
 

@@ -20,13 +20,17 @@ use tacacsrs_credential_resolution::{
 use tacacsrs_lifecycle::{HostedService, ShutdownSignal};
 use tacacsrs_provider::CredentialProvider;
 
-use crate::{DatastoreState, ListenerRegistration, RuntimeLifecycle, RuntimeService, ShutdownReceiver};
+use crate::{
+    DatastoreState, DegradationReason, ListenerRegistration, ListenerState, RuntimeLifecycle,
+    RuntimeService, ShutdownReceiver,
+};
 use super::*;
 
 enum ListenerMode {
     Drain,
     Stall,
     Fail,
+    Complete,
 }
 
 struct Listener {
@@ -42,6 +46,14 @@ impl Drop for Listener {
 
 #[async_trait]
 impl RuntimeListenerService for Listener {
+    fn name(&self) -> &'static str {
+        "fixture listener"
+    }
+
+    fn service(&self) -> Option<RuntimeService> {
+        Some(RuntimeService::ClientApi)
+    }
+
     async fn serve(
         self: Box<Self>,
         shutdown: ShutdownReceiver,
@@ -56,6 +68,7 @@ impl RuntimeListenerService for Listener {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 anyhow::bail!("fixture listener failed");
             }
+            ListenerMode::Complete => {}
         }
         Ok(())
     }
@@ -77,6 +90,7 @@ fn bundle() -> SourceBundle {
         datastore: Arc::new(StaticDatastore::new(TacacsPlus::empty())),
         credentials: CredentialProvider::none(),
         local_services: LocalServices::default(),
+        local_services_overlays: Vec::new(),
     }
 }
 
@@ -186,9 +200,30 @@ async fn listener_failure_starts_service_cleanup_without_a_second_budget() {
     assert!(service.ensure_open().is_err());
 }
 
+#[tokio::test(start_paused = true)]
+async fn completed_listener_and_hosted_service_do_not_stop_the_application() {
+    let runtime = runtime(bundle()).await;
+    let health = runtime.health().clone();
+    let (completed, _) = listener(ListenerMode::Complete);
+    let (draining, dropped) = listener(ListenerMode::Drain);
+    let short_lived = hosted("Short-lived service", |_| async { Ok(()) });
+    let started = tokio::time::Instant::now();
+    runtime
+        .run_until(
+            tokio::time::sleep(Duration::from_secs(10)),
+            vec![completed, draining],
+            vec![short_lived],
+        )
+        .await
+        .unwrap();
+    assert_eq!(started.elapsed(), Duration::from_secs(10));
+    assert!(dropped.load(Ordering::Acquire));
+    assert_eq!(health.snapshot().lifecycle(), RuntimeLifecycle::Stopped);
+}
+
 #[tokio::test]
-async fn critical_return_error_and_panic_are_named_and_join_siblings() {
-    for mode in 0..3 {
+async fn hosted_error_and_panic_are_named_and_join_siblings() {
+    for mode in 1..3 {
         let runtime = runtime(bundle()).await;
         let health = runtime.health().clone();
         let finished = Arc::new(AtomicBool::new(false));
@@ -200,7 +235,6 @@ async fn critical_return_error_and_panic_are_named_and_join_siblings() {
         });
         let failure = hosted("Critical fixture", move |_| async move {
             match mode {
-                0 => Ok(()),
                 1 => anyhow::bail!("fixture error"),
                 _ => panic!("fixture panic"),
             }
@@ -464,6 +498,7 @@ async fn provider_notifications_credentials_and_hosted_service_use_the_same_runt
     let change = |source| {
         let config = Arc::new(source);
         ConfigChangeEvent::Changed(ConfigChange {
+            local_services: None,
             delta: ConfigDelta::diff(None, &config),
             config,
         })
@@ -509,4 +544,194 @@ async fn provider_notifications_credentials_and_hosted_service_use_the_same_runt
     .unwrap()
     .unwrap();
     assert!(cleaned.load(Ordering::Acquire));
+}
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+fn proxy_only(endpoint: Option<String>) -> LocalServices {
+    LocalServices {
+        client_api_enabled: false,
+        tacacs_proxy_enabled: true,
+        tacacs_proxy_endpoint: endpoint,
+        ..LocalServices::default()
+    }
+}
+
+async fn accepts(port: u16) -> bool {
+    tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .is_ok()
+}
+
+async fn eventually<F, Fut>(description: &str, condition: F)
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = bool>,
+{
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !condition().await {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{description}"));
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri does not support TCP listeners.
+async fn datastore_local_services_move_the_proxy_and_reject_invalid_values() {
+    let (sender, receiver) = mpsc::channel(4);
+    let servers = Arc::new(
+        TacacsPlusBuilder::new()
+            .with_server_builder(
+                TacacsPlusServerBuilder::new(
+                    "fixture",
+                    TacacsPlusServerType::all(),
+                    "192.0.2.10",
+                    49,
+                )
+                .with_shared_secret("test-key"),
+            )
+            .build()
+            .unwrap(),
+    );
+    let change = |local_services: LocalServices| {
+        ConfigChangeEvent::Changed(ConfigChange {
+            local_services: Some(Arc::new(local_services)),
+            delta: ConfigDelta::diff(None, &servers),
+            config: Arc::clone(&servers),
+        })
+    };
+    let mut source = bundle();
+    source.local_services = proxy_only(None);
+    source.datastore = Arc::new(Notifications(tokio::sync::Mutex::new(Some(receiver))));
+    let runtime = runtime(source).await;
+    let health = runtime.health().clone();
+    let listener = runtime.service().tacacs_proxy_listener();
+    assert_eq!(health.snapshot().listener(RuntimeService::TacacsProxy), ListenerState::Pending);
+
+    let (first, second) = (free_port(), free_port());
+    let stop = async {
+        sender
+            .send(change(proxy_only(Some(format!("127.0.0.1:{first}")))))
+            .await
+            .unwrap();
+        eventually("the proxy must bind the first endpoint", move || accepts(first)).await;
+
+        sender
+            .send(change(proxy_only(Some(format!("127.0.0.1:{second}")))))
+            .await
+            .unwrap();
+        eventually("the proxy must move to the second endpoint", move || async move {
+            accepts(second).await && !accepts(first).await
+        })
+        .await;
+
+        let mut invalid = proxy_only(Some(format!("127.0.0.1:{first}")));
+        invalid.max_connections = 0;
+        sender.send(change(invalid)).await.unwrap();
+        let mut changes = health.subscribe();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            changes.wait_for(|snapshot| {
+                snapshot
+                    .degradation_reasons()
+                    .contains(&DegradationReason::CandidateConfigurationRejected)
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(accepts(second).await, "a rejected value must keep the proxy");
+        assert!(!accepts(first).await);
+        assert_eq!(health.snapshot().listener(RuntimeService::TacacsProxy), ListenerState::Bound);
+    };
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        runtime.run_until(stop, vec![listener], Vec::new()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri does not support TCP listeners.
+async fn a_local_proxy_row_proxy_applies_servers_while_it_waits_for_an_endpoint() {
+    use tacacsrs_config::tacacsrs::ProxyCredentialSource;
+
+    let (sender, receiver) = mpsc::channel(4);
+    let port = free_port();
+    let upstream =
+        TacacsPlusServerBuilder::new("fixture", TacacsPlusServerType::all(), "192.0.2.10", 49)
+            .with_shared_secret("test-key");
+    let local_row =
+        TacacsPlusServerBuilder::new("local-proxy", TacacsPlusServerType::all(), "127.0.0.1", port)
+            .with_shared_secret("proxy-key");
+    let change = |servers: TacacsPlus, endpoint: Option<String>| {
+        let servers = Arc::new(servers);
+        ConfigChangeEvent::Changed(ConfigChange {
+            local_services: Some(Arc::new(LocalServices {
+                proxy_credential_source: ProxyCredentialSource::LocalProxyRow,
+                ..proxy_only(endpoint)
+            })),
+            delta: ConfigDelta::diff(None, &servers),
+            config: servers,
+        })
+    };
+    let mut source = bundle();
+    source.local_services = LocalServices {
+        proxy_credential_source: ProxyCredentialSource::LocalProxyRow,
+        ..proxy_only(None)
+    };
+    source.datastore = Arc::new(Notifications(tokio::sync::Mutex::new(Some(receiver))));
+    let runtime = runtime(source).await;
+    let health = runtime.health().clone();
+    let listener = runtime.service().tacacs_proxy_listener();
+
+    let stop = async {
+        let waiting = TacacsPlusBuilder::new()
+            .with_server_builder(upstream.clone())
+            .build()
+            .unwrap();
+        sender.send(change(waiting, None)).await.unwrap();
+        let mut changes = health.subscribe();
+        let snapshot = tokio::time::timeout(
+            Duration::from_secs(5),
+            changes.wait_for(|snapshot| snapshot.datastore() == DatastoreState::Current),
+        )
+        .await
+        .expect("a waiting proxy must not reject the server set")
+        .unwrap()
+        .clone();
+        assert!(!snapshot
+            .degradation_reasons()
+            .contains(&DegradationReason::CandidateConfigurationRejected));
+        assert_eq!(snapshot.listener(RuntimeService::TacacsProxy), ListenerState::Pending);
+
+        let bound = TacacsPlusBuilder::new()
+            .with_server_builder(upstream.clone())
+            .with_server_builder(local_row.clone())
+            .build()
+            .unwrap();
+        sender
+            .send(change(bound, Some(format!("127.0.0.1:{port}"))))
+            .await
+            .unwrap();
+        eventually("the proxy must bind after the local proxy row arrives", move || accepts(port))
+            .await;
+    };
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        runtime.run_until(stop, vec![listener], Vec::new()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
 }

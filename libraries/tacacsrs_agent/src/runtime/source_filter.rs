@@ -2,7 +2,6 @@
 
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
 
 use anyhow::{Context, ensure};
 use futures_util::future::{BoxFuture, FutureExt};
@@ -13,44 +12,25 @@ use tacacsrs_config::tacacsrs::LocalServices;
 use tacacsrs_config::{TacacsPlus, TacacsPlusServer, TacacsPlusServerExt};
 
 /// Filter that removes upstream servers targeting the local TCP proxy endpoint.
-#[derive(Debug, Clone)]
-pub(crate) struct ProxySelfLoopFilter {
-    proxy_endpoint: SocketAddr,
-    source: LocalServices,
-}
+///
+/// The filter reads the proxy endpoint from the local services of each
+/// candidate. Without a TCP proxy endpoint, the filter keeps every server and
+/// only derives the proxy policy.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct ProxySelfLoopFilter;
 
 impl ProxySelfLoopFilter {
-    /// Create a filter for the local TCP proxy endpoint.
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) fn new(proxy_endpoint: SocketAddr) -> Self {
-        Self::new_with_policy(
-            proxy_endpoint,
-            LocalServices {
-                tacacs_proxy_enabled: true,
-                tacacs_proxy_endpoint: Some(proxy_endpoint.to_string()),
-                proxy_credential_source:
-                    tacacsrs_config::tacacsrs::ProxyCredentialSource::LocalProxyRow,
-                ..LocalServices::default()
-            },
-        )
-    }
-
-    #[must_use]
-    pub(crate) fn new_with_policy(proxy_endpoint: SocketAddr, source: LocalServices) -> Self {
-        Self {
-            proxy_endpoint,
-            source,
-        }
-    }
-
     async fn filter_proxy_self_loop_servers(
-        &self,
         mut tacacs_plus: TacacsPlus,
+        source: &LocalServices,
     ) -> anyhow::Result<FilteredTacacsPlus> {
+        let prepared = prepare_local_services(source)?;
+        let Some(ListenerEndpoint::Tcp(proxy_endpoint)) = prepared.tacacs_proxy().cloned() else {
+            return NoopTacacsPlusFilter.filter(tacacs_plus, source).await;
+        };
         let original_server_count = tacacs_plus.server.len();
         tacacsrs_config::validate_credential_references(&tacacs_plus)?;
-        let local_addresses = if self.proxy_endpoint.ip().to_canonical().is_unspecified() {
+        let local_addresses = if proxy_endpoint.ip().to_canonical().is_unspecified() {
             if_addrs::get_if_addrs()
                 .context("read local interfaces for proxy loop validation")?
                 .into_iter()
@@ -70,7 +50,7 @@ impl ProxySelfLoopFilter {
             };
             if upstream_server_targets_proxy_endpoint(
                 server,
-                self.proxy_endpoint,
+                proxy_endpoint,
                 &local_addresses,
                 resolution,
             )
@@ -85,7 +65,7 @@ impl ProxySelfLoopFilter {
                     server.name,
                     server.address,
                     server.port,
-                    self.proxy_endpoint,
+                    proxy_endpoint,
                 );
                 filtered_names.insert(server.name.clone());
                 if selected_proxy_server.is_none() {
@@ -94,8 +74,7 @@ impl ProxySelfLoopFilter {
             }
         }
 
-        let proxy_downstream_obfuscation =
-            prepare_proxy_policy(&self.source, selected_proxy_server)?;
+        let proxy_downstream_obfuscation = prepare_proxy_policy(source, selected_proxy_server)?;
 
         tacacs_plus
             .server
@@ -106,13 +85,13 @@ impl ProxySelfLoopFilter {
         if filtered_count > 0 {
             log::info!(
                 "Filtered {filtered_count} upstream TACACS+ server(s) that target the local proxy endpoint {}",
-                self.proxy_endpoint,
+                proxy_endpoint,
             );
         }
         if original_server_count > 0 && tacacs_plus.server.is_empty() {
             log::warn!(
                 "All configured upstream TACACS+ servers target the local proxy endpoint {}. The daemon waits for a non-looping upstream configuration.",
-                self.proxy_endpoint,
+                proxy_endpoint,
             );
         }
         Ok(FilteredTacacsPlus {
@@ -123,11 +102,14 @@ impl ProxySelfLoopFilter {
 }
 
 impl TacacsPlusFilter for ProxySelfLoopFilter {
-    fn known_payload_copies(&self, source: &TacacsPlus) -> anyhow::Result<u64> {
-        let bytes = match self.source.proxy_credential_source {
+    fn known_payload_copies(
+        &self,
+        source: &TacacsPlus,
+        local_services: &LocalServices,
+    ) -> anyhow::Result<u64> {
+        let bytes = match local_services.proxy_credential_source {
             tacacsrs_config::tacacsrs::ProxyCredentialSource::Unobfuscated => 0,
-            tacacsrs_config::tacacsrs::ProxyCredentialSource::Inline => self
-                .source
+            tacacsrs_config::tacacsrs::ProxyCredentialSource::Inline => local_services
                 .proxy_shared_secret
                 .as_ref()
                 .map_or(0, |secret| secret.expose_secret().len()),
@@ -142,21 +124,12 @@ impl TacacsPlusFilter for ProxySelfLoopFilter {
         Ok(u64::try_from(bytes)?)
     }
 
-    fn filter(&self, tacacs_plus: TacacsPlus) -> BoxFuture<'_, anyhow::Result<FilteredTacacsPlus>> {
-        async move { self.filter_proxy_self_loop_servers(tacacs_plus).await }.boxed()
-    }
-}
-
-/// Composes the runtime configuration filter for the selected daemon services.
-pub(crate) fn config_filter_from_local_services(
-    source: &LocalServices,
-) -> anyhow::Result<Arc<dyn TacacsPlusFilter>> {
-    let prepared = prepare_local_services(source)?;
-    match prepared.tacacs_proxy() {
-        Some(ListenerEndpoint::Tcp(address)) => {
-            Ok(Arc::new(ProxySelfLoopFilter::new_with_policy(*address, source.clone())))
-        }
-        _ => Ok(Arc::new(NoopTacacsPlusFilter::new(source.clone()))),
+    fn filter<'a>(
+        &'a self,
+        tacacs_plus: TacacsPlus,
+        local_services: &'a LocalServices,
+    ) -> BoxFuture<'a, anyhow::Result<FilteredTacacsPlus>> {
+        Self::filter_proxy_self_loop_servers(tacacs_plus, local_services).boxed()
     }
 }
 
@@ -199,11 +172,9 @@ async fn upstream_server_targets_proxy_endpoint(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        config_filter_from_local_services, NoopTacacsPlusFilter, ProxySelfLoopFilter,
-        TacacsPlusFilter,
-    };
-    use std::sync::Arc;
+    use std::net::SocketAddr;
+
+    use super::{NoopTacacsPlusFilter, ProxySelfLoopFilter, TacacsPlusFilter};
     use tacacsrs_config::tacacsrs::{LocalServices, ProxyCredentialSource};
     use tacacsrs_config::proxy_policy::prepare_proxy_policy;
     use crate::{EnabledServices, PreparedProxyPolicy};
@@ -271,11 +242,41 @@ mod tests {
         }
     }
 
+    /// Runs the runtime filter with fixed local services.
+    struct TestFilter(LocalServices);
+
+    impl TestFilter {
+        fn new(proxy_endpoint: SocketAddr) -> Self {
+            Self::new_with_policy(
+                proxy_endpoint,
+                LocalServices {
+                    tacacs_proxy_enabled: true,
+                    proxy_credential_source: ProxyCredentialSource::LocalProxyRow,
+                    ..LocalServices::default()
+                },
+            )
+        }
+
+        fn new_with_policy(proxy_endpoint: SocketAddr, mut source: LocalServices) -> Self {
+            source
+                .tacacs_proxy_endpoint
+                .get_or_insert_with(|| proxy_endpoint.to_string());
+            Self(source)
+        }
+
+        async fn filter(
+            &self,
+            config: TacacsPlus,
+        ) -> anyhow::Result<crate::runtime::FilteredTacacsPlus> {
+            ProxySelfLoopFilter.filter(config, &self.0).await
+        }
+    }
+
     fn config_filter_from_runtime_options(
         enabled: EnabledServices,
         endpoint: Option<&IpcEndpoint>,
         secret: Option<&str>,
-    ) -> Arc<dyn TacacsPlusFilter> {
+    ) -> TestFilter {
         let mut source = credential_source(secret);
         source.client_api_enabled = enabled.client_api();
         source.tacacs_proxy_enabled = enabled.tacacs_proxy();
@@ -283,7 +284,7 @@ mod tests {
             IpcEndpoint::Tcp(address) => address.to_string(),
             IpcEndpoint::Unix(path) => path.to_str().unwrap().to_owned(),
         });
-        config_filter_from_local_services(&source).unwrap()
+        TestFilter(source)
     }
 
     #[tokio::test]
@@ -314,7 +315,7 @@ mod tests {
             tacacs_proxy_endpoint: Some("0.0.0.0:9050".to_owned()),
             ..LocalServices::default()
         };
-        let filter = config_filter_from_local_services(&source).unwrap();
+        let filter = TestFilter(source);
         let upstream = test_config_from_host_ports(&[("127.0.0.1", 9050), ("192.0.2.20", 9050)]);
         let filtered = filter.filter(upstream).await.unwrap();
         assert_eq!(filtered.tacacs_plus.server.len(), 1);
@@ -329,7 +330,7 @@ mod tests {
         ]);
         assert_eq!(canonical.server.len(), 2);
         let original = canonical.clone();
-        let filter = ProxySelfLoopFilter::new("127.0.0.1:49".parse().unwrap());
+        let filter = TestFilter::new("127.0.0.1:49".parse().unwrap());
         let filtered = filter.filter(canonical.clone()).await.unwrap();
         assert_eq!(filtered.tacacs_plus.server.len(), 1);
         assert_eq!(filtered.tacacs_plus.server[0].address, "192.0.2.20");
@@ -441,10 +442,8 @@ mod tests {
                 .with_tls_server_authentication()
                 .build();
         let canonical = source.clone();
-        let filter = ProxySelfLoopFilter::new_with_policy(
-            "127.0.0.1:49".parse().unwrap(),
-            credential_source(None),
-        );
+        let filter =
+            TestFilter::new_with_policy("127.0.0.1:49".parse().unwrap(), credential_source(None));
         assert!(filter.filter(source).await.is_err());
         assert!(canonical.server[0].client_identity.is_none());
         assert!(canonical.server[0].server_authentication.is_some());
@@ -496,8 +495,8 @@ mod tests {
     async fn noop_filter_preserves_all_servers() {
         let config = test_config_from_host_ports(&[("127.0.0.1", 9050)]);
 
-        let filtered = NoopTacacsPlusFilter::default()
-            .filter(config)
+        let filtered = NoopTacacsPlusFilter
+            .filter(config, &LocalServices::default())
             .await
             .expect("filter must succeed");
 
@@ -509,7 +508,7 @@ mod tests {
     #[tokio::test]
     async fn proxy_filter_removes_matching_ipv4_endpoint() {
         let config = test_config_from_host_ports(&[("127.0.0.1", 9050), ("192.0.2.20", 49)]);
-        let filter = ProxySelfLoopFilter::new("127.0.0.1:9050".parse().expect("socket must parse"));
+        let filter = TestFilter::new("127.0.0.1:9050".parse().expect("socket must parse"));
 
         let filtered = filter.filter(config).await.expect("filter must succeed");
 
@@ -521,7 +520,7 @@ mod tests {
     #[tokio::test]
     async fn proxy_filter_removes_matching_ipv6_endpoint() {
         let config = test_config_from_host_ports(&[("::1", 9050), ("192.0.2.20", 49)]);
-        let filter = ProxySelfLoopFilter::new("[::1]:9050".parse().expect("socket must parse"));
+        let filter = TestFilter::new("[::1]:9050".parse().expect("socket must parse"));
 
         let filtered = filter.filter(config).await.expect("filter must succeed");
 
@@ -538,7 +537,7 @@ mod tests {
             .next()
             .expect("localhost must have at least one address");
         let config = test_config_from_host_ports(&[("localhost", 9050), ("192.0.2.20", 49)]);
-        let filter = ProxySelfLoopFilter::new(proxy_endpoint);
+        let filter = TestFilter::new(proxy_endpoint);
 
         let filtered = filter.filter(config).await.expect("filter must succeed");
 
@@ -550,10 +549,8 @@ mod tests {
     #[tokio::test]
     async fn proxy_filter_preserves_different_loopback_port() {
         let config = test_config_from_host_ports(&[("127.0.0.1", 9051), ("192.0.2.20", 49)]);
-        let filter = ProxySelfLoopFilter::new_with_policy(
-            "127.0.0.1:9050".parse().unwrap(),
-            credential_source(None),
-        );
+        let filter =
+            TestFilter::new_with_policy("127.0.0.1:9050".parse().unwrap(), credential_source(None));
 
         let filtered = filter.filter(config).await.expect("filter must succeed");
 
@@ -564,10 +561,8 @@ mod tests {
     #[tokio::test]
     async fn proxy_filter_preserves_non_loopback_same_port() {
         let config = test_config_from_host_ports(&[("192.0.2.20", 9050)]);
-        let filter = ProxySelfLoopFilter::new_with_policy(
-            "127.0.0.1:9050".parse().unwrap(),
-            credential_source(None),
-        );
+        let filter =
+            TestFilter::new_with_policy("127.0.0.1:9050".parse().unwrap(), credential_source(None));
 
         let filtered = filter.filter(config).await.expect("filter must succeed");
 
@@ -605,7 +600,7 @@ mod tests {
             ("127.0.0.1", 9050, Some("local-row-secret")),
             ("192.0.2.20", 49, Some("upstream-secret")),
         ]);
-        let filter = ProxySelfLoopFilter::new_with_policy(
+        let filter = TestFilter::new_with_policy(
             "127.0.0.1:9050".parse().expect("socket must parse"),
             credential_source(Some("cli-proxy-secret")),
         );
@@ -626,7 +621,7 @@ mod tests {
             ("localhost", 9050, Some("lower-priority-secret")),
             ("192.0.2.20", 49, Some("upstream-secret")),
         ]);
-        let filter = ProxySelfLoopFilter::new("127.0.0.1:9050".parse().expect("socket must parse"));
+        let filter = TestFilter::new("127.0.0.1:9050".parse().expect("socket must parse"));
 
         let filtered = filter.filter(config).await.expect("filter must succeed");
 
@@ -645,14 +640,14 @@ mod tests {
             ("localhost", 9050, Some("lower-priority-secret")),
             ("192.0.2.20", 49, Some("upstream-secret")),
         ]);
-        let filter = ProxySelfLoopFilter::new("127.0.0.1:9050".parse().expect("socket must parse"));
+        let filter = TestFilter::new("127.0.0.1:9050".parse().expect("socket must parse"));
 
         assert!(filter.filter(config).await.is_err());
     }
 
     #[tokio::test]
     async fn row_policy_rejects_missing_and_empty_replacements_without_mutating_source() {
-        let filter = ProxySelfLoopFilter::new("127.0.0.1:9050".parse().unwrap());
+        let filter = TestFilter::new("127.0.0.1:9050".parse().unwrap());
         let source = test_config_from_host_ports_and_secrets(&[
             ("127.0.0.1", 9050, Some("original-local-key")),
             ("192.0.2.20", 49, Some("upstream-key")),

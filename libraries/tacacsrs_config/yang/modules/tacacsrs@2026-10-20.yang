@@ -259,7 +259,7 @@ module tacacsrs {
       "Local TACACS+ service policy, separate from the ordered upstream server list.";
     container local-services {
       description
-        "Startup listener configuration. Changes require a service restart.";
+        "Local listener configuration. The agent applies changes at runtime.";
       leaf max-connections {
         type uint16 { range "1..max"; }
         default 64;
@@ -279,8 +279,7 @@ module tacacsrs {
            The listener closes the connection at expiry, even when requests remain active.";
       }
       must "client-api-enabled = 'true' or tacacs-proxy-enabled = 'true'";
-      must "(tacacs-proxy-enabled = 'true' and tacacs-proxy-endpoint) or
-            (tacacs-proxy-enabled = 'false' and not(tacacs-proxy-endpoint))";
+      must "tacacs-proxy-enabled = 'true' or not(tacacs-proxy-endpoint)";
       must "tacacs-proxy-enabled = 'true' or proxy-credential-source = 'unobfuscated'";
       must "(proxy-credential-source = 'inline' and proxy-shared-secret) or
         (proxy-credential-source != 'inline' and not(proxy-shared-secret))";
@@ -300,7 +299,7 @@ module tacacsrs {
         type boolean;
         default false;
         description
-          "Enables the raw TACACS+ proxy.";
+          "Enables the raw TACACS+ proxy. Without an endpoint, the proxy waits for one.";
       }
       leaf tacacs-proxy-endpoint {
         type string { length "1..max"; }

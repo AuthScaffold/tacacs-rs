@@ -373,7 +373,7 @@ mod tests {
         let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
         health.set_applied_configuration(true);
         health.set_eligible_server_count(1);
-        assert!(health.set_listener(RuntimeService::ClientApi, ListenerState::Bound));
+        health.set_listener(RuntimeService::ClientApi, ListenerState::Bound);
         health
     }
 
@@ -469,7 +469,7 @@ mod tests {
             ..Default::default()
         });
         let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
-        assert!(health.set_listener(RuntimeService::ClientApi, ListenerState::Bound));
+        health.set_listener(RuntimeService::ClientApi, ListenerState::Bound);
         assert!(!health.snapshot().is_readiness_serving());
         let integration = SystemdIntegration::select(
             SystemdMode::Required,

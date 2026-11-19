@@ -99,7 +99,8 @@ enum DegradationReason {
   DEGRADATION_REASON_SOURCE_CONFIGURATION_INVALID = 11;
   // Credential resolution failed for a candidate configuration.
   DEGRADATION_REASON_CREDENTIAL_RESOLUTION_FAILED = 12;
-  // Listener or host-binding settings changed and need a process restart.
+  // Reserved for compatibility. The agent applies listener changes at runtime
+  // and does not send this value.
   DEGRADATION_REASON_RESTART_REQUIRED = 13;
   // Each eligible server failed an authoritative connection attempt.
   DEGRADATION_REASON_UPSTREAMS_UNAVAILABLE = 14;
