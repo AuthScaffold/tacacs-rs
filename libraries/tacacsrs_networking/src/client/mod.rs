@@ -37,6 +37,7 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
+use crate::connection::failure::combine_results;
 use crate::endpoint::PreparedEndpoint;
 use crate::single_connect::{NegotiationState, SharedConnectionCache, SingleConnectionState};
 
@@ -156,7 +157,7 @@ impl TacacsClient {
         self.lifecycle.force_close_transports();
         self.lifecycle.wait_for_transports().await;
         let expiry_result = self.lifecycle.join_evidence_expiries(deadline).await;
-        setup_result.and(driver_result).and(expiry_result)
+        combine_results(combine_results(setup_result, driver_result), expiry_result)
     }
 
     /// Retires and joins the currently cached and previously retired shared drivers.

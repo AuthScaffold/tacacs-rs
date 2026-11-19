@@ -6,6 +6,7 @@ use anyhow::{Context, ensure};
 use tokio::sync::oneshot;
 
 use crate::{PreparedEndpoint, RequestDeadline};
+use crate::connection::failure::record_failure;
 use crate::connection::task::DriverTask;
 use crate::transport::BoxedTransport;
 use crate::transport::managed::{TransportActivity, TransportControl};
@@ -122,9 +123,7 @@ impl ClientLifecycle {
         let mut failure = None;
         for task in setups {
             if let Err(error) = task.join_until(deadline).await {
-                if failure.is_none() {
-                    failure = Some(error);
-                }
+                record_failure(&mut failure, error);
             }
         }
         self.state
@@ -152,7 +151,7 @@ impl ClientLifecycle {
         let mut failure = None;
         for task in tasks {
             if let Err(error) = task.join_until(deadline).await {
-                failure.get_or_insert(error);
+                record_failure(&mut failure, error);
             }
         }
         self.state

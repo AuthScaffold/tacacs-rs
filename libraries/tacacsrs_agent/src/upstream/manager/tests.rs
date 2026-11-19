@@ -1496,3 +1496,75 @@ async fn test_concurrent_failover_coalesces_connection_attempts() {
     assert_eq!(connector.connect_attempts_for(&second.address).await, 1);
     assert_eq!(connector.max_in_flight_connects(), 1);
 }
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri does not support Tokio tasks.
+async fn shutdown_suppresses_only_delivered_connection_failures() {
+    struct FailingJoinConnector {
+        connection: Arc<FakeConnection>,
+        error: fn() -> anyhow::Error,
+    }
+
+    #[async_trait]
+    impl tacacsrs_networking::routed::EndpointConnector for FailingJoinConnector {
+        type Connection = dyn crate::upstream::UpstreamConnection;
+
+        async fn connect(
+            &self,
+            _: tacacsrs_networking::PreparedEndpoint,
+            _: OperationKind,
+        ) -> anyhow::Result<Arc<Self::Connection>> {
+            Ok(self.connection.clone())
+        }
+
+        async fn retire(&self, _: &Self::Connection) {}
+
+        fn close(&self, connection: &Self::Connection) {
+            connection.close();
+        }
+
+        async fn close_and_join(
+            &self,
+            connection: &Self::Connection,
+            _: tacacsrs_networking::RequestDeadline,
+        ) -> anyhow::Result<()> {
+            connection.close();
+            Err((self.error)())
+        }
+    }
+
+    async fn shutdown_with(error: fn() -> anyhow::Error) -> anyhow::Result<()> {
+        let state = UpstreamManager::from_connector(
+            vec![Arc::new(test_server("server-a:49"))],
+            PreparedProxyPolicy::unobfuscated(),
+            RuntimePolicy::default(),
+            FailingJoinConnector {
+                connection: Arc::new(FakeConnection {
+                    address: "server-a:49".to_owned(),
+                    usable: AtomicBool::new(true),
+                    fail_next_request: AtomicBool::new(false),
+                }),
+                error,
+            },
+            test_health(),
+            tacacsrs_config::prepare::PrepareOptions::default(),
+        )
+        .unwrap();
+        let _bound = state.bind_server_for_new_session().await.unwrap();
+        state
+            .close_and_join(tacacsrs_networking::RequestDeadline::after(Duration::ZERO).unwrap())
+            .await
+    }
+
+    shutdown_with(|| {
+        anyhow::anyhow!("failed to read TACACS+ packet header")
+            .context(tacacsrs_networking::ConnectionFailure)
+    })
+    .await
+    .unwrap();
+
+    let error = shutdown_with(|| anyhow::anyhow!("join upstream driver"))
+        .await
+        .unwrap_err();
+    assert_eq!(error.to_string(), "join upstream driver");
+}

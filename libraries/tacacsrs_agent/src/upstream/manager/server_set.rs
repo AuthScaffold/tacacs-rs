@@ -233,10 +233,12 @@ impl<Connector: EndpointConnector> BoundServer<Connector> {
         self.binding.note_success().await;
     }
 
+    /// Arms deadline-aware failure reporting for upstream I/O.
     pub(crate) fn observe_failure(
         &self,
+        deadline: tacacsrs_networking::RequestDeadline,
     ) -> tacacsrs_networking::routed::FailureObservation<Connector> {
-        self.binding.observe_failure()
+        self.binding.observe_failure(deadline)
     }
 
     /// Returns the configured upstream server selected for this request.

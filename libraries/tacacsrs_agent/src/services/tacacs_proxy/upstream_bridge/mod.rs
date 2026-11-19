@@ -75,18 +75,23 @@ where
         let router =
             OperationRouter::new(Arc::clone(&self.upstream_manager), PolicyService::TacacsProxy);
         log::debug!("Accepted TACACS+ proxy client {peer_label}");
-        proxy_multiplexed_connection(
+        match proxy_multiplexed_connection(
             stream,
             transport.read_timeout(),
             downstream_obfuscation_key(transport.downstream_obfuscation())?,
             Arc::new(UpstreamConversationProvider::new(router)),
         )
         .await
-        .map_err(|error| match error {
-            ProxyConnectionError::Upstream(error) | ProxyConnectionError::Downstream(error) => {
-                error
+        {
+            Ok(()) => Ok(()),
+            // Client resets, malformed frames, and idle timeouts are normal
+            // client behavior. They are not agent faults.
+            Err(ProxyConnectionError::Downstream(error)) => {
+                log::info!("Closed TACACS+ proxy client {peer_label}: {error:#}");
+                Ok(())
             }
-        })
+            Err(ProxyConnectionError::Upstream(error)) => Err(error),
+        }
     }
 }
 
@@ -129,6 +134,14 @@ where
                     Ok((session_id, Ok(()))) => {
                         session_senders.remove(&session_id);
                     }
+                    Ok((session_id, Err(ProxyConnectionError::Upstream(error)))) => {
+                        // One failed session must not end the other sessions
+                        // that share this connection.
+                        session_senders.remove(&session_id);
+                        log::warn!(
+                            "Ended TACACS+ proxy session {session_id:#x} without a reply: {error:#}"
+                        );
+                    }
                     Ok((session_id, Err(error))) => {
                         session_senders.remove(&session_id);
                         break Err(error);
@@ -142,7 +155,18 @@ where
             }
             packet_result = downstream.next_packet() => {
                 let received = match packet_result {
-                    Ok(packet) => packet,
+                    Ok(Some(packet)) => packet,
+                    Ok(None) => {
+                        if session_tasks.is_empty() {
+                            log::debug!("The TACACS+ proxy client closed the connection");
+                        } else {
+                            log::debug!(
+                                "The TACACS+ proxy client closed the connection with {} sessions in flight",
+                                session_tasks.len()
+                            );
+                        }
+                        break Ok(());
+                    }
                     Err(error) => break Err(error),
                 };
                 let session_id = received.packet.header().session_id;
@@ -169,7 +193,7 @@ where
                 let reservation = match provider.reserve(&routing, packet.packet.body().len()) {
                     Ok(reservation) => reservation,
                     Err(error) => {
-                        let reply = match local_error_reply(&packet.packet, &error.to_string()) {
+                        let reply = match local_error_reply(packet.packet.header(), &error.to_string()) {
                             Ok(reply) => reply,
                             Err(error) => break Err(ProxyConnectionError::Downstream(error)),
                         };
@@ -287,7 +311,8 @@ where
 
     loop {
         let downstream_packet = match downstream.next_packet().await {
-            Ok(packet) => packet,
+            Ok(Some(packet)) => packet,
+            Ok(None) => return Ok(()),
             Err(error) => return Err(error),
         };
         let downstream_reply_obfuscation = downstream_packet.reply_obfuscation;
@@ -685,7 +710,7 @@ mod tests {
             .reserve(tacacsrs_networking::RequestDeadline::after(Duration::from_secs(1)).unwrap())
             .is_err());
         drop(peer);
-        assert!(proxy.await.unwrap().is_err());
+        proxy.await.unwrap().unwrap();
         provider
             .admission
             .acquire(tacacsrs_networking::RequestDeadline::after(Duration::from_secs(1)).unwrap())
@@ -857,11 +882,14 @@ mod tests {
             .await;
             read_packet(&mut downstream).await;
             manager.reload_runtime_policy(policy(Duration::from_secs(10)));
-            assert!(
-                proxy.await.unwrap().is_err(),
+            assert_eq!(
+                upstream.read(&mut [0; 1]).await.unwrap(),
+                0,
                 "waiting for a continuation must consume the captured budget"
             );
-            assert_eq!(upstream.read(&mut [0; 1]).await.unwrap(), 0);
+            assert!(!proxy.is_finished(), "one expired session must not close the connection");
+            drop(downstream);
+            proxy.await.unwrap().unwrap();
             let next = provider.capture_request(OperationKind::Authentication);
             provider
                 .admit(&next, provider.reserve(&next, 1).unwrap())
@@ -1064,7 +1092,16 @@ mod tests {
                     .await;
                     read_packet(&mut upstream).await;
                 }
-                assert!(proxy.await.unwrap().is_err());
+                let expired = read_packet(&mut client).await;
+                assert_eq!(expired.header().session_id, 1);
+                assert_eq!(
+                    AuthenticationReply::from_packet(&expired).unwrap().status,
+                    TacacsAuthenticationStatus::TacPlusAuthenStatusError,
+                    "an expired request must receive a local ERROR reply"
+                );
+                assert!(!proxy.is_finished(), "one expired session must not close the connection");
+                drop(client);
+                proxy.await.unwrap().unwrap();
                 let unexpected_backup = backup.accept();
                 tokio::pin!(unexpected_backup);
                 std::future::poll_fn(|context| {
@@ -1103,7 +1140,7 @@ mod tests {
                 .await;
                 assert_eq!(read_packet(&mut next_client).await.header().session_id, 2);
                 drop(next_client);
-                assert!(next_proxy.await.unwrap().is_err());
+                next_proxy.await.unwrap().unwrap();
             })
             .await
             .expect("proxy timeout and failover must finish");

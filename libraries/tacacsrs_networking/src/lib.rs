@@ -80,4 +80,5 @@ pub use transport::tls::{
 pub use transport::tls_psk::{PskClientConfig, PskHash, PskDheGroup};
 pub use establish::{ConnectOptions, ConnectPreflight, PreparedTransport};
 pub use exchange_error::{FixedExchangeError, TransmissionState};
+pub use connection::failure::ConnectionFailure;
 pub use session::ClientConversation;

@@ -91,6 +91,8 @@ struct Options {
     connect_timeout_seconds: u64,
     /// Content of the `tacacsrs:runtime-policy` object.
     policy: serde_json::Value,
+    /// Servers after the preferred server, in failover order.
+    backup_servers: Vec<SocketAddr>,
 }
 
 impl Default for Options {
@@ -99,14 +101,19 @@ impl Default for Options {
             dedicated_upstream: false,
             connect_timeout_seconds: 5,
             policy: serde_json::json!({}),
+            backup_servers: Vec::new(),
         }
     }
 }
+
+const LISTENER_LOG_TARGET: &str = "tacacsrs_agent::services::tacacs_proxy::listener::tcp";
+const LISTENER_MESSAGE: &str = "The TACACS+ proxy listener accepts clients on TCP ";
 
 struct Daemon {
     child: Child,
     port: u16,
     stderr: Arc<Mutex<Vec<u8>>>,
+    stderr_reader: Option<tokio::task::JoinHandle<()>>,
     _directory: ProcessDirectory,
 }
 
@@ -129,7 +136,6 @@ impl Daemon {
         let policy = directory.0.join("policy.json");
         let document = serde_json::json!({ "tacacsrs:runtime-policy": options.policy });
         std::fs::write(&policy, document.to_string()).unwrap();
-        let port = free_port();
         let mut command = Command::new(env!("CARGO_BIN_EXE_tacacsrs-agentd"));
         command
             .kill_on_drop(true)
@@ -137,15 +143,20 @@ impl Daemon {
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             // Set `PROXY_TRAFFIC_LOG=debug` to see more daemon output on failure.
+            // The tests read the bound proxy port from this info message.
             .env(
                 "RUST_LOG",
-                std::env::var("PROXY_TRAFFIC_LOG").unwrap_or_else(|_| "warn".to_owned()),
+                format!(
+                    "{},{LISTENER_LOG_TARGET}=info",
+                    std::env::var("PROXY_TRAFFIC_LOG").unwrap_or_else(|_| "warn".to_owned())
+                ),
             )
             .arg("-v")
             .args(["--server-addr", &upstream.to_string()])
             .args(["--shared-secret", UPSTREAM_KEY])
             .args(["--service-mode", "tacacs-proxy"])
-            .args(["--proxy-endpoint", &format!("127.0.0.1:{port}")])
+            // Port 0 lets the kernel select a free port without a race.
+            .args(["--proxy-endpoint", "127.0.0.1:0"])
             .args(["--proxy-shared-secret", DOWNSTREAM_KEY])
             .args(["--host-integration", "none"])
             .args([
@@ -156,6 +167,9 @@ impl Daemon {
             .arg(directory.0.join("agent.sock"))
             .arg("--runtime-policy")
             .arg(&policy);
+        for backup in &options.backup_servers {
+            command.args(["--server-addr", &backup.to_string()]);
+        }
         if options.dedicated_upstream {
             command.arg("--dedicated");
         }
@@ -165,7 +179,7 @@ impl Daemon {
         let stderr = Arc::new(Mutex::new(Vec::new()));
         let mut pipe = child.stderr.take().unwrap();
         let sink = Arc::clone(&stderr);
-        tokio::spawn(async move {
+        let stderr_reader = tokio::spawn(async move {
             let mut buffer = [0_u8; 8192];
             while let Ok(read) = pipe.read(&mut buffer).await {
                 if read == 0 {
@@ -177,8 +191,9 @@ impl Daemon {
 
         let mut daemon = Self {
             child,
-            port,
+            port: 0,
             stderr,
+            stderr_reader: Some(stderr_reader),
             _directory: directory,
         };
         daemon.wait_ready().await;
@@ -191,7 +206,9 @@ impl Daemon {
             if let Some(status) = self.child.try_wait().unwrap() {
                 panic!("daemon exited during startup ({status}): {}", self.log());
             }
-            if TcpStream::connect(("127.0.0.1", self.port)).await.is_ok() {
+            if let Some(address) = self.bound_address() {
+                self.port = address.port();
+                TcpStream::connect(address).await.unwrap();
                 return;
             }
             assert!(
@@ -201,6 +218,14 @@ impl Daemon {
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    /// Returns the proxy address from the first listener message in the log.
+    fn bound_address(&self) -> Option<SocketAddr> {
+        self.log().lines().find_map(|line| {
+            let (_, address) = line.split_once(LISTENER_MESSAGE)?;
+            address.trim().parse().ok()
+        })
     }
 
     fn log(&self) -> String {
@@ -235,6 +260,10 @@ impl Daemon {
             .await
             .unwrap_or_else(|_| panic!("daemon did not stop: {}", self.log()))
             .unwrap();
+        // The daemon can print its final error after the last log line.
+        if let Some(reader) = self.stderr_reader.take() {
+            let _ = tokio::time::timeout(Duration::from_secs(1), reader).await;
+        }
         assert!(exit.success(), "daemon exited with {exit}: {}", self.log());
         started.elapsed()
     }
@@ -256,7 +285,8 @@ impl Daemon {
     }
 }
 
-fn free_port() -> u16 {
+/// Returns a port that no process listens on at the time of the call.
+fn unused_port() -> u16 {
     StdTcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -628,11 +658,10 @@ async fn healthy_traffic_dedicated_upstream_connections() {
 
 
 // One upstream fault opens the circuit of its operation for
-// `failover-recovery-interval-seconds` (30 seconds by default). With one
-// server, the proxy then closes new connections for that operation without a
-// reply. The fault scenarios use a short interval so that recovery is fast and
-// observable. The ignored `finding_*` tests reproduce the problems that this
-// behavior causes.
+// `failover-recovery-interval-seconds` (30 seconds by default). The agent
+// still uses a server with an open circuit when no other server is available.
+// The fault scenarios use a short interval so that they also exercise the
+// recovery trial. The regression tests at the end use the default interval.
 const RECOVERY_INTERVAL_SECONDS: u64 = 1;
 
 // Recovery must complete within this time after the upstream becomes healthy.
@@ -1076,9 +1105,8 @@ async fn sigterm_during_slow_traffic_stops_promptly_without_hung_clients() {
     assert!(stopped_after < SHUTDOWN_LIMIT);
 }
 
-// The tests below reproduce problems that the scenarios above found. They use
-// the default 30-second recovery interval, as production does. Run them with
-// `cargo test -p tacacsrs-agentd --test proxy_traffic -- --ignored`.
+// The regression tests below cover problems that the scenarios above found.
+// They use the default 30-second recovery interval, as production does.
 
 /// Checks that a request immediately after one fault succeeds on one server.
 async fn assert_single_fault_is_contained(fault: Fault, kind: Kind) {
@@ -1109,26 +1137,22 @@ async fn assert_single_fault_is_contained(fault: Fault, kind: Kind) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "finding: an upstream ERROR reply opens the circuit of the only server"]
-async fn finding_upstream_error_reply_disables_the_only_server() {
+async fn upstream_error_reply_does_not_disable_the_only_server() {
     assert_single_fault_is_contained(Fault::Error, Kind::Authorization).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "finding: one dropped upstream connection opens the circuit of the only server"]
-async fn finding_upstream_connection_close_disables_the_only_server() {
+async fn upstream_connection_close_does_not_disable_the_only_server() {
     assert_single_fault_is_contained(Fault::Close, Kind::Authentication).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "finding: one timed-out request opens the circuit of the only server"]
-async fn finding_upstream_timeout_disables_the_only_server() {
+async fn upstream_timeout_does_not_disable_the_only_server() {
     assert_single_fault_is_contained(Fault::Hang, Kind::Accounting).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "finding: a downstream disconnect opens the circuit of a healthy upstream"]
-async fn finding_abandoned_downstream_request_disables_a_healthy_server() {
+async fn abandoned_downstream_request_does_not_disable_a_healthy_server() {
     let upstream = Upstream::start(SingleConnect::Accept).await;
     let daemon = Daemon::start(upstream.address(), Options::default()).await;
     abandon_slow_requests(&daemon, &upstream).await;
@@ -1143,26 +1167,38 @@ async fn finding_abandoned_downstream_request_disables_a_healthy_server() {
     daemon.stop().await;
 }
 
+/// Checks that the client gets an `ERROR` reply when no server can answer.
+///
+/// RFC 8907 section 4.4 tells the client to treat `ERROR` as an unreachable
+/// server and to try its backup servers. A closed connection without a reply
+/// gives the client less information.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "finding: the proxy closes the connection without a reply when no server is available"]
-async fn finding_unavailable_server_closes_the_connection_without_a_reply() {
-    let upstream = Upstream::start(SingleConnect::Accept).await;
-    let daemon = Daemon::start(upstream.address(), Options::default()).await;
-    upstream.set_plan(once(Kind::Authorization, Fault::Error));
-    single_request(daemon.port, Kind::Authorization, &format!("{USER_PREFIX}first")).await;
-    // The circuit is now open. Admission failures already get a local ERROR
-    // reply. An unavailable server must get the same treatment.
-    let outcome = single_request(daemon.port, Kind::Authorization, "unavailable").await;
-    assert!(
-        matches!(
-            outcome,
-            Outcome::Reply {
-                status: Status::Error,
-                ..
-            }
-        ),
-        "expected a local ERROR reply, got {outcome:?}"
-    );
+async fn unreachable_server_gets_a_local_error_reply() {
+    let unreachable = SocketAddr::from(([127, 0, 0, 1], unused_port()));
+    let daemon = Daemon::start(
+        unreachable,
+        Options {
+            connect_timeout_seconds: 1,
+            ..Options::default()
+        },
+    )
+    .await;
+    for kind in Kind::ALL {
+        for attempt in 0..2 {
+            let user = format!("{USER_PREFIX}unreachable/{kind:?}/{attempt}");
+            let outcome = single_request(daemon.port, kind, &user).await;
+            assert!(
+                matches!(
+                    outcome,
+                    Outcome::Reply {
+                        status: Status::Error,
+                        ..
+                    }
+                ),
+                "expected a local ERROR reply for {kind:?}, got {outcome:?}"
+            );
+        }
+    }
     daemon.stop().await;
 }
 
@@ -1171,8 +1207,7 @@ async fn finding_unavailable_server_closes_the_connection_without_a_reply() {
 /// The downstream client multiplexes authentication, authorization, and
 /// accounting on one connection. Only authorization hangs upstream.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "finding: one failed session closes every multiplexed session on its connection"]
-async fn finding_hanging_authorization_breaks_other_multiplexed_sessions() {
+async fn hanging_authorization_does_not_break_other_multiplexed_sessions() {
     let upstream = Upstream::start(SingleConnect::Accept).await;
     let daemon = Daemon::start(
         upstream.address(),
@@ -1200,5 +1235,90 @@ async fn finding_hanging_authorization_breaks_other_multiplexed_sessions() {
          (sample: {:?}): {tally:#?}",
         tally.sample_transport_error
     );
+    daemon.stop().await;
+}
+
+/// Starts a preferred and a backup upstream behind one daemon.
+async fn start_failover_pair(strategy: &str) -> (Upstream, Upstream, Daemon) {
+    let primary = Upstream::start(SingleConnect::Accept).await;
+    let backup = Upstream::start(SingleConnect::Accept).await;
+    let daemon = Daemon::start(
+        primary.address(),
+        Options {
+            policy: serde_json::json!({ "tacacs-proxy-failover-strategy": strategy }),
+            backup_servers: vec![backup.address()],
+            ..Options::default()
+        },
+    )
+    .await;
+    for kind in Kind::ALL {
+        let outcome = single_request(daemon.port, kind, &format!("{USER_PREFIX}warm")).await;
+        assert!(succeeded(&outcome), "{kind:?} warm-up failed: {outcome:?}");
+        assert_eq!(primary.received(kind), 1, "{kind:?} did not use the preferred server");
+    }
+    assert_eq!(backup.received_total(), 0);
+    (primary, backup, daemon)
+}
+
+/// Checks that an `ERROR` affects only the operation type that received it.
+///
+/// RFC 8907 section 4.4 tells the client to treat an `ERROR` reply as an
+/// unreachable server. The proxy must stop new sessions on the failed
+/// connection for that operation, close it, and send new requests of that
+/// operation to the backup. The other operation types keep the preferred server.
+async fn assert_error_isolated_to_operation(primary: &Upstream, backup: &Upstream, port: u16) {
+    for kind in [Kind::Authentication, Kind::Accounting] {
+        let before = primary.received(kind);
+        let outcome = single_request(port, kind, &format!("{USER_PREFIX}other")).await;
+        assert!(succeeded(&outcome), "{kind:?} failed after an authorization ERROR: {outcome:?}");
+        assert_eq!(primary.received(kind), before + 1, "{kind:?} left the preferred server");
+        assert_eq!(backup.received(kind), 0, "{kind:?} moved to the backup server");
+    }
+    // Only the retired authorization connection closes.
+    wait_until("the failed authorization connection closes", || primary.open_connections() == 2)
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deferred_failover_forwards_an_error_and_moves_only_that_operation() {
+    let (primary, backup, daemon) = start_failover_pair("deferred-failover").await;
+    assert_eq!(primary.open_connections(), 3);
+    primary.set_plan(once(Kind::Authorization, Fault::Error));
+
+    let failed = single_request(daemon.port, Kind::Authorization, &format!("{USER_PREFIX}e")).await;
+    assert!(
+        matches!(
+            failed,
+            Outcome::Reply {
+                status: Status::Error,
+                ..
+            }
+        ),
+        "deferred-failover must forward the server ERROR to the client: {failed:?}"
+    );
+    assert_eq!(backup.received_total(), 0, "deferred-failover replayed the request");
+
+    let next = single_request(daemon.port, Kind::Authorization, &format!("{USER_PREFIX}n")).await;
+    assert!(succeeded(&next), "the next authorization failed: {next:?}");
+    assert_eq!(backup.received(Kind::Authorization), 1, "authorization did not fail over");
+    assert_eq!(primary.received(Kind::Authorization), 2);
+
+    assert_error_isolated_to_operation(&primary, &backup, daemon.port).await;
+    daemon.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ordered_safe_retry_replays_an_error_on_the_backup_server() {
+    let (primary, backup, daemon) = start_failover_pair("ordered-safe-retry").await;
+    assert_eq!(primary.open_connections(), 3);
+    primary.set_plan(once(Kind::Authorization, Fault::Error));
+
+    let retried =
+        single_request(daemon.port, Kind::Authorization, &format!("{USER_PREFIX}r")).await;
+    assert!(succeeded(&retried), "the backup server did not answer the retry: {retried:?}");
+    assert_eq!(primary.injected(Fault::Error), 1);
+    assert_eq!(backup.received(Kind::Authorization), 1, "the request was not replayed");
+
+    assert_error_isolated_to_operation(&primary, &backup, daemon.port).await;
     daemon.stop().await;
 }

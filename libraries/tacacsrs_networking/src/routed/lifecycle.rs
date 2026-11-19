@@ -6,6 +6,7 @@ use anyhow::{Context, ensure};
 use tokio::sync::oneshot;
 
 use crate::{PreparedEndpoint, RequestDeadline};
+use crate::connection::failure::{combine_results, record_failure};
 use crate::connection::task::DriverTask;
 
 use super::{Endpoint, EndpointConnector, OperationKind};
@@ -280,7 +281,7 @@ impl<Connector: EndpointConnector> EndpointLifecycle<Connector> {
         let mut failure = None;
         for task in setups {
             if let Err(error) = task.join_until(deadline).await {
-                failure.get_or_insert(error);
+                record_failure(&mut failure, error);
             }
         }
         let (cleanups, connections) = {
@@ -292,12 +293,12 @@ impl<Connector: EndpointConnector> EndpointLifecycle<Connector> {
         };
         for task in cleanups {
             if let Err(error) = task.join_until(deadline).await {
-                failure.get_or_insert(error);
+                record_failure(&mut failure, error);
             }
         }
         for connection in connections {
             if let Err(error) = self.connector.close_and_join(&connection, deadline).await {
-                failure.get_or_insert(error);
+                record_failure(&mut failure, error);
             }
         }
         let mut state = self
@@ -346,7 +347,7 @@ impl<Connector: EndpointConnector> EndpointLifecycle<Connector> {
         if let Some(task) = retirement {
             task.abort();
             let joined = task.join_until(deadline).await;
-            return result.and(joined);
+            return combine_results(result, joined);
         }
         result
     }
@@ -500,7 +501,7 @@ impl<Connector: EndpointConnector> RoutingRuntime<Connector> {
         let mut failure = None;
         for endpoint in endpoints {
             if let Err(error) = endpoint.close_and_join(deadline).await {
-                failure.get_or_insert(error);
+                record_failure(&mut failure, error);
             }
         }
         failure.map_or(Ok(()), Err)

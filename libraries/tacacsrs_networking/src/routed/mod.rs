@@ -8,10 +8,15 @@
 //!
 //! Use [`BoundEndpoint::connection`] for typed exchanges or raw conversations.
 //! Report outcomes through the binding, not through a newly published catalog.
-//! Arm [`BoundEndpoint::observe_failure`] only during upstream I/O. Disarm it
-//! after a valid reply or local validation failure. Dropping an armed guard
-//! invalidates the captured connection before the next bind and schedules owned,
-//! bounded retirement. Do not keep it armed during downstream waits.
+//! Arm [`BoundEndpoint::observe_failure`] only during upstream I/O, with the
+//! deadline that bounds that I/O. Disarm it after a valid reply or local
+//! validation failure. Call [`FailureObservation::fail`] after an upstream
+//! failure. A recorded failure invalidates the captured connection before the
+//! next bind and schedules owned, bounded retirement. Dropping an armed guard
+//! records a failure only after its deadline expires, so caller cancellation
+//! does not open a circuit. Do not keep it armed during downstream waits.
+//! When every eligible endpoint has an open circuit, [`RoutedClient::bind`]
+//! still tries those endpoints as a last resort.
 //! Combine bindings with [`crate::retry`] for conservative, bounded retries.
 //! Schedule [`RoutedClient::retire_replaced_until`] when publishing a replacement.
 //! Removed endpoints remain usable by captured catalogs until that cutoff.

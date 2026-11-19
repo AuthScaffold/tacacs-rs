@@ -209,7 +209,13 @@ Upstream failover does not change downstream credentials. Source preparation pub
 
 TACACS+ has no general in-band request to drain an established single-connect connection. Clearing the single-connect flag after negotiation has no effect. In this proxy, a TACACS+ `ERROR` is session-scoped and does not close the downstream connection.
 
+When no server completes a request, the proxy sends a local `ERROR` reply for that session. This failure includes an unreachable server, a dropped or truncated upstream reply, and an expired request deadline. RFC 8907 section 4.4 tells the client to treat `ERROR` like an unreachable server and to try its next server. The failure of one session does not close the downstream connection or the other sessions that it multiplexes.
+
+A downstream client that closes its connection at a packet boundary ends normally, and the daemon logs this event at the info level.
+
 An explicit upstream `ERROR` on the first request is safe to replay. With `ordered-safe-retry`, the proxy closes that upstream session and tries the next eligible server. If another server succeeds, the downstream client receives that result instead of the first `ERROR`. The default `deferred-failover` strategy returns the `ERROR` for the current session and moves the next session to the fallback route. An `ERROR` after a continuing authentication session is pinned does not retry another server.
+
+With both strategies, an upstream `ERROR` affects only the operation type that received it. The proxy stops new sessions on that server's connection for the operation, lets established sessions finish, and then closes the connection. New sessions of that operation use the next eligible server. The other operation types continue to use their current server.
 
 To retire a downstream connection, the server must close the TCP transport. Close idle connections when possible because closing a connection with active sessions interrupts those sessions.
 
@@ -397,6 +403,9 @@ preferred route
       v
 open circuit and select the next eligible server
       |
+      +-- no other eligible server --> use the failed server as a last resort
+      |                                  (success closes the circuit)
+      |
       | recovery interval expires
       v
 allow one real operation as a recovery trial
@@ -405,6 +414,10 @@ allow one real operation as a recovery trial
       |
       +-- failure --> reopen the circuit
 ```
+
+The recovery interval controls only how long a healthy server is preferred over a failed one. When every eligible server for an operation has an open circuit, the daemon tries those servers in route order without waiting. Therefore, one fault on the only server does not block that operation for the recovery interval. Concurrent requests share one connection attempt for each server, so this fallback does not cause a connection storm.
+
+A request records a server failure only when the server fails or the request deadline expires. A downstream client that disconnects or cancels a request does not change server health.
 
 ### Failover Strategies
 

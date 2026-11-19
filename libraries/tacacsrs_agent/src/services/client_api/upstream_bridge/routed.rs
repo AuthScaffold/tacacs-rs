@@ -128,10 +128,12 @@ where
         let attempt_deadline = deadline.capped(bound_server.timeout_duration());
         let response = attempt_deadline
             .run(async {
-                let mut observation = bound_server.observe_failure();
+                let mut observation = bound_server.observe_failure(attempt_deadline);
                 let response = Operation::send(&*bound_server.connection, self.exchange, attempt_deadline).await;
                 if response.is_ok() || matches!(&response, Err(error) if error.kind() == AttemptFailureKind::InvalidRequest) {
                     observation.disarm();
+                } else {
+                    observation.fail();
                 }
                 response
             })

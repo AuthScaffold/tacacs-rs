@@ -392,7 +392,10 @@ module tacacsrs {
         units "seconds";
         default 30;
         description
-          "Interval before a failed route receives one recovery trial.";
+          "Interval before a failed route receives one recovery trial.
+           When no other eligible server is available for the
+           operation, the agent uses the failed server without
+           waiting.";
       }
       leaf client-api-failover-strategy {
         type failover-strategy;

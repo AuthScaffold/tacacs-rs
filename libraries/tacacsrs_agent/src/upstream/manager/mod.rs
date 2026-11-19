@@ -373,15 +373,30 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         self.current_server_set().client.cancel();
     }
 
+    /// Closes admission and joins the upstream client tasks.
+    ///
+    /// An upstream connection can fail before shutdown, for example when a server
+    /// sends a truncated reply. The connection driver gives that error to the
+    /// affected sessions and keeps it until shutdown joins the driver. Shutdown
+    /// logs this [`ConnectionFailure`](tacacsrs_networking::ConnectionFailure)
+    /// and continues. Every other join error, including a task panic, is returned.
     pub(crate) async fn close_and_join(
         &self,
         deadline: tacacsrs_networking::RequestDeadline,
     ) -> anyhow::Result<()> {
         self.close();
-        self.current_server_set()
+        let result = self
+            .current_server_set()
             .client
             .close_and_join(deadline)
-            .await
+            .await;
+        match result {
+            Err(error) if tacacsrs_networking::ConnectionFailure::is_delivered(&error) => {
+                log::warn!("An upstream connection ended with an error before shutdown: {error:#}");
+                Ok(())
+            }
+            result => result,
+        }
     }
 
     fn current_server_set(&self) -> Arc<ServerSet<Connector>> {

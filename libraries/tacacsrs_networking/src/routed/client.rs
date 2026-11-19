@@ -251,6 +251,19 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
 
     /// Selects an eligible endpoint and obtains its operation-isolated connection.
     ///
+    /// The selection order is:
+    ///
+    /// 1. An endpoint with an open circuit whose `recovery_interval` has
+    ///    elapsed. One request at a time receives this recovery trial.
+    /// 2. An endpoint with a closed circuit, in route order from the active
+    ///    position.
+    /// 3. An endpoint with an open circuit, as a last resort. This step runs
+    ///    only when no other eligible endpoint can connect. Thus, an operation
+    ///    with one eligible endpoint does not wait for the recovery interval
+    ///    after one failure. A success on this binding closes the circuit.
+    ///
+    /// Each endpoint receives at most one connection attempt per call.
+    ///
     /// # Errors
     /// Returns an error if no endpoint is eligible or available for the operation.
     pub async fn bind(
@@ -267,6 +280,7 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
             .active_position
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut attempted = Vec::with_capacity(route.indices.len());
         for index in &route.indices {
             let slot = &self.catalog.endpoints[*index];
             let Some(permit) = slot
@@ -276,8 +290,16 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
             else {
                 continue;
             };
+            attempted.push(*index);
             match self.ensure_connection(slot, operation).await {
-                Ok(cached) => return Ok(self.binding(*index, operation, cached, Some(permit))),
+                Ok(cached) => {
+                    return Ok(self.binding(
+                        *index,
+                        operation,
+                        cached,
+                        Some(RecoveryClaim::Trial(permit)),
+                    ))
+                }
                 Err(error) => {
                     log::warn!(
                         "{} recovery connection to {} failed: {:#}",
@@ -293,9 +315,10 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
             let position = (start + offset) % route.indices.len();
             let index = route.indices[position];
             let slot = &self.catalog.endpoints[index];
-            if slot.operation(operation).circuit.is_open() {
+            if attempted.contains(&index) || slot.operation(operation).circuit.is_open() {
                 continue;
             }
+            attempted.push(index);
             match self.ensure_connection(slot, operation).await {
                 Ok(cached) => {
                     *route
@@ -315,6 +338,42 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
                 }
             }
         }
+        for offset in 0..route.indices.len() {
+            let position = (start + offset) % route.indices.len();
+            let index = route.indices[position];
+            if attempted.contains(&index) {
+                continue;
+            }
+            let slot = &self.catalog.endpoints[index];
+            let Some(revision) = slot.operation(operation).circuit.open_revision() else {
+                continue;
+            };
+            attempted.push(index);
+            log::debug!(
+                "Using {} for {} although its circuit is open because no other server is available",
+                slot.endpoint.prepared().address(),
+                operation.name()
+            );
+            match self.ensure_connection(slot, operation).await {
+                Ok(cached) => {
+                    return Ok(self.binding(
+                        index,
+                        operation,
+                        cached,
+                        Some(RecoveryClaim::LastResort(revision)),
+                    ));
+                }
+                Err(error) => {
+                    log::warn!(
+                        "{} last-resort connection to {} failed: {:#}",
+                        operation.name(),
+                        slot.endpoint.prepared().address(),
+                        error.source
+                    );
+                    self.note_failure(index, operation, error.generation).await;
+                }
+            }
+        }
         bail!("No TACACS+ server is available for {}", operation.name())
     }
 
@@ -323,14 +382,14 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
         index: usize,
         operation: OperationKind,
         cached: CachedConnection<Connector::Connection>,
-        recovery_permit: Option<RecoveryPermit>,
+        recovery: Option<RecoveryClaim>,
     ) -> BoundEndpoint<Connector> {
         BoundEndpoint {
             client: self.clone(),
             index,
             operation,
             cached,
-            recovery_permit,
+            recovery,
         }
     }
 
@@ -456,15 +515,34 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
     }
 }
 
-/// Reports an interrupted upstream attempt unless explicitly disarmed.
+/// How a binding with an open circuit can close that circuit.
+enum RecoveryClaim {
+    /// The single recovery trial after the recovery interval.
+    Trial(RecoveryPermit),
+    /// A last-resort binding, valid while the circuit keeps this revision.
+    LastResort(u64),
+}
+
+/// Reports an upstream attempt that its deadline interrupted.
 ///
-/// Dropping this guard updates its captured connection generation synchronously.
-/// Connector retirement remains owned by the endpoint lifecycle.
+/// Call [`Self::disarm`] after a valid reply or a local validation failure.
+/// Call [`Self::fail`] after an upstream I/O failure.
+///
+/// If the guard is dropped while armed, the outcome depends on the deadline.
+/// After the deadline expires, the drop records a failure, because the server
+/// did not reply in time. Before the deadline expires, the drop records
+/// nothing, because the caller cancelled the attempt. For example, a
+/// downstream client disconnected. A cancellation is not evidence that the
+/// server failed, so it must not open the circuit of a healthy server.
+///
+/// A recorded failure updates the captured connection generation
+/// synchronously. Connector retirement remains owned by the endpoint lifecycle.
 pub struct FailureObservation<Connector: EndpointConnector> {
     client: RoutedClient<Connector>,
     index: usize,
     operation: OperationKind,
     generation: u64,
+    deadline: crate::RequestDeadline,
     armed: bool,
 }
 
@@ -473,19 +551,29 @@ impl<Connector: EndpointConnector> FailureObservation<Connector> {
     pub fn disarm(&mut self) {
         self.armed = false;
     }
+
+    /// Records an upstream failure now, whether or not the deadline expired.
+    pub fn fail(mut self) {
+        self.armed = false;
+        self.record_failure();
+    }
+
+    fn record_failure(&self) {
+        if let Some(connection) =
+            self.client
+                .invalidate_failure(self.index, self.operation, self.generation)
+        {
+            self.client.catalog.endpoints[self.index]
+                .lifecycle
+                .retire_failed(connection);
+        }
+    }
 }
 
 impl<Connector: EndpointConnector> Drop for FailureObservation<Connector> {
     fn drop(&mut self) {
-        if self.armed {
-            if let Some(connection) =
-                self.client
-                    .invalidate_failure(self.index, self.operation, self.generation)
-            {
-                self.client.catalog.endpoints[self.index]
-                    .lifecycle
-                    .retire_failed(connection);
-            }
+        if self.armed && self.deadline.check().is_err() {
+            self.record_failure();
         }
     }
 }
@@ -496,18 +584,25 @@ pub struct BoundEndpoint<Connector: EndpointConnector = NativeConnector> {
     index: usize,
     operation: OperationKind,
     cached: CachedConnection<Connector::Connection>,
-    recovery_permit: Option<RecoveryPermit>,
+    recovery: Option<RecoveryClaim>,
 }
 
 impl<Connector: EndpointConnector> BoundEndpoint<Connector> {
-    /// Arms cancellation-safe failure reporting for upstream I/O only.
+    /// Arms deadline-aware failure reporting for upstream I/O only.
+    ///
+    /// Use the deadline that bounds the observed I/O. See
+    /// [`FailureObservation`] for the drop rules.
     #[must_use]
-    pub fn observe_failure(&self) -> FailureObservation<Connector> {
+    pub fn observe_failure(
+        &self,
+        deadline: crate::RequestDeadline,
+    ) -> FailureObservation<Connector> {
         FailureObservation {
             client: self.client.clone(),
             index: self.index,
             operation: self.operation,
             generation: self.cached.generation,
+            deadline,
             armed: true,
         }
     }
@@ -545,7 +640,14 @@ impl<Connector: EndpointConnector> BoundEndpoint<Connector> {
         reason = "Retain the async reporting API while committing failure state without yielding."
     )]
     pub async fn note_failure(&self) {
-        drop(self.observe_failure());
+        if let Some(connection) =
+            self.client
+                .invalidate_failure(self.index, self.operation, self.cached.generation)
+        {
+            self.client.catalog.endpoints[self.index]
+                .lifecycle
+                .retire_failed(connection);
+        }
     }
 
     /// Completes a recovery trial after a successful real request.
@@ -555,7 +657,7 @@ impl<Connector: EndpointConnector> BoundEndpoint<Connector> {
         reason = "Retain the async reporting API while committing success state without yielding."
     )]
     pub async fn note_success(&self) {
-        let Some(permit) = &self.recovery_permit else {
+        let Some(recovery) = &self.recovery else {
             return;
         };
         let state = self.client.catalog.endpoints[self.index].operation(self.operation);
@@ -572,7 +674,11 @@ impl<Connector: EndpointConnector> BoundEndpoint<Connector> {
         {
             return;
         }
-        if !permit.succeed() {
+        let closed = match recovery {
+            RecoveryClaim::Trial(permit) => permit.succeed(),
+            RecoveryClaim::LastResort(revision) => state.circuit.close_if_unchanged(*revision),
+        };
+        if !closed {
             return;
         }
         let route = self.client.catalog.route(self.operation);
@@ -955,8 +1061,9 @@ mod tests {
             .bind(OperationKind::Accounting, Duration::ZERO)
             .await
             .unwrap();
-        let delayed = first.observe_failure();
-        drop(first.observe_failure());
+        let expired = crate::RequestDeadline::after(Duration::ZERO).unwrap();
+        let delayed = first.observe_failure(expired);
+        drop(first.observe_failure(expired));
         let recovered = client
             .bind(OperationKind::Accounting, Duration::ZERO)
             .await
@@ -972,6 +1079,116 @@ mod tests {
         assert!(Arc::ptr_eq(next.connection(), recovered.connection()));
     }
 
+    #[tokio::test]
+    async fn cancelled_failure_guard_keeps_circuit_closed() {
+        let client = controlled_client(ControlledConnector::default());
+        let bound = client
+            .bind(OperationKind::Accounting, Duration::ZERO)
+            .await
+            .unwrap();
+        drop(
+            bound.observe_failure(crate::RequestDeadline::after(Duration::from_secs(60)).unwrap()),
+        );
+        assert!(!client.catalog.endpoints[0]
+            .operation(OperationKind::Accounting)
+            .circuit
+            .is_open());
+        assert_eq!(client.connector.retired.load(Ordering::Acquire), 0);
+
+        bound
+            .observe_failure(crate::RequestDeadline::after(Duration::from_secs(60)).unwrap())
+            .fail();
+        assert!(client.catalog.endpoints[0]
+            .operation(OperationKind::Accounting)
+            .circuit
+            .is_open());
+    }
+
+    #[tokio::test]
+    async fn only_server_is_used_as_last_resort_and_success_closes_circuit() {
+        let client = controlled_client(ControlledConnector::default());
+        let circuit = || {
+            client.catalog.endpoints[0]
+                .operation(OperationKind::Accounting)
+                .circuit
+                .is_open()
+        };
+        let first = client
+            .bind(OperationKind::Accounting, Duration::from_secs(30))
+            .await
+            .unwrap();
+        first.note_failure().await;
+        assert!(circuit());
+
+        let last_resort = client
+            .bind(OperationKind::Accounting, Duration::from_secs(30))
+            .await
+            .unwrap();
+        assert_ne!(first.connection_generation(), last_resort.connection_generation());
+        assert!(circuit());
+        last_resort.note_success().await;
+        assert!(!circuit());
+    }
+
+    #[tokio::test]
+    async fn last_resort_success_does_not_close_newer_failure() {
+        let client = controlled_client(ControlledConnector::default());
+        let first = client
+            .bind(OperationKind::Accounting, Duration::from_secs(30))
+            .await
+            .unwrap();
+        first.note_failure().await;
+        let stale = client
+            .bind(OperationKind::Accounting, Duration::from_secs(30))
+            .await
+            .unwrap();
+        stale.note_failure().await;
+        let current = client
+            .bind(OperationKind::Accounting, Duration::from_secs(30))
+            .await
+            .unwrap();
+        stale.note_success().await;
+        let state = client.catalog.endpoints[0].operation(OperationKind::Accounting);
+        assert!(state.circuit.is_open());
+        current.note_success().await;
+        assert!(!state.circuit.is_open());
+    }
+
+    #[tokio::test]
+    async fn healthy_alternative_is_preferred_over_open_circuit() {
+        let endpoint = |name| {
+            Endpoint::new(
+                name,
+                PreparedEndpoint::new(
+                    crate::ServerAddress::parse("127.0.0.1:49", 49).unwrap(),
+                    crate::PreparedTransport::Tcp,
+                    false,
+                    None,
+                    ConnectOptions::default(),
+                ),
+                OperationKind::ALL,
+            )
+        };
+        let client = RoutedClient::with_connector(
+            vec![endpoint("primary"), endpoint("secondary")],
+            ControlledConnector::default(),
+        );
+        let primary = client
+            .bind(OperationKind::Accounting, Duration::from_secs(30))
+            .await
+            .unwrap();
+        assert_eq!(primary.endpoint().name(), "primary");
+        primary.note_failure().await;
+        for _ in 0..3 {
+            let next = client
+                .bind(OperationKind::Accounting, Duration::from_secs(30))
+                .await
+                .unwrap();
+            assert_eq!(next.endpoint().name(), "secondary");
+            next.note_success().await;
+        }
+    }
+
     #[test]
     fn failure_guard_can_be_dropped_outside_runtime_context() {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -982,7 +1199,7 @@ mod tests {
         let bound = runtime
             .block_on(client.bind(OperationKind::Accounting, Duration::ZERO))
             .unwrap();
-        drop(bound.observe_failure());
+        drop(bound.observe_failure(crate::RequestDeadline::after(Duration::ZERO).unwrap()));
         runtime.block_on(async {
             tokio::time::timeout(Duration::from_secs(1), async {
                 while client.connector.retired.load(Ordering::Acquire) == 0 {

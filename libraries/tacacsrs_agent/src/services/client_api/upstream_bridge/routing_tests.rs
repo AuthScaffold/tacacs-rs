@@ -712,10 +712,16 @@ async fn deadline_includes_admission_and_retry_and_survives_policy_reload() {
             .await,
         1
     );
-    assert!(bridge
-        .execute_accounting_request(accounting())
-        .await
-        .is_err());
+    // Both circuits are open. The next request still uses the servers as a
+    // last resort, so the backup answers it.
+    assert_eq!(
+        bridge
+            .execute_accounting_request(accounting())
+            .await
+            .unwrap()
+            .server,
+        "backup:49"
+    );
     tokio::time::advance(Duration::from_secs(30)).await;
     assert_eq!(
         bridge

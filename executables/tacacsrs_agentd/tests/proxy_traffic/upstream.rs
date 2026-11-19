@@ -189,6 +189,10 @@ impl Upstream {
         self.state.received.total()
     }
 
+    pub(crate) fn received(&self, kind: Kind) -> u64 {
+        self.state.received.get(kind)
+    }
+
     /// Returns the number of requests that received `fault`.
     pub(crate) fn injected(&self, fault: Fault) -> u64 {
         fault

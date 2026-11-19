@@ -22,6 +22,7 @@ use std::sync::{Arc, OnceLock};
 use anyhow::Context;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 use tacacsrs_secrets::SecretBytes;
+use crate::connection::failure::ConnectionFailure;
 use crate::connection::task::DriverTask;
 
 use crate::codec::{PacketReadResult, PacketReader, PacketWriter};
@@ -122,7 +123,10 @@ impl MultiplexedConnection {
             let cleanup = SessionCleanup(Arc::clone(&self.session_manager));
             DriverTask::spawn(async move {
                 let _cleanup = cleanup;
-                runtime.handle_connection_with_halves(reader, writer).await
+                runtime
+                    .handle_connection_with_halves(reader, writer)
+                    .await
+                    .map_err(|error| error.context(ConnectionFailure))
             })
         });
     }

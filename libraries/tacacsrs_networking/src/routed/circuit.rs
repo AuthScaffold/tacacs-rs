@@ -37,6 +37,30 @@ impl OperationCircuit {
         state.revision = state.revision.wrapping_add(1);
     }
 
+    /// Returns the circuit revision while the circuit is open.
+    pub(super) fn open_revision(&self) -> Option<u64> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.opened_at.map(|_| state.revision)
+    }
+
+    /// Closes the circuit if no other outcome changed it after `revision`.
+    pub(super) fn close_if_unchanged(&self, revision: u64) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.revision != revision || state.opened_at.is_none() {
+            return false;
+        }
+        state.opened_at = None;
+        state.recovery_trial_active = false;
+        state.revision = state.revision.wrapping_add(1);
+        true
+    }
+
     fn resolve_recovery(&self, revision: u64, succeeded: Option<bool>) -> bool {
         let mut state = self
             .state

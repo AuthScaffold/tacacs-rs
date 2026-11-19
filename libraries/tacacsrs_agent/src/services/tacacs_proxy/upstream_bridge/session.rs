@@ -11,6 +11,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use tacacsrs_protocol::header::Header;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
 use tacacsrs_networking::{ClientConversation, RequestDeadline};
 use tacacsrs_networking::retry::{
@@ -118,6 +119,8 @@ pub(super) struct ManagedProxyConversation<
 > {
     bound_server: BoundServer<Connector>,
     conversation: ClientConversation,
+    /// Request deadline. A failure guard dropped before it records nothing.
+    deadline: RequestDeadline,
 }
 
 #[async_trait]
@@ -151,17 +154,19 @@ where
         request: &Self::Request,
     ) -> anyhow::Result<Self::Conversation> {
         let bound_server = request.bind().await?;
-        let mut observation = bound_server.observe_failure();
+        let deadline = request.deadline();
+        let mut observation = bound_server.observe_failure(deadline);
         match bound_server.connection.open_conversation().await {
             Ok(conversation) => {
                 observation.disarm();
                 Ok(ManagedProxyConversation {
                     bound_server,
                     conversation,
+                    deadline,
                 })
             }
             Err(error) => {
-                bound_server.note_failure().await;
+                observation.fail();
                 Err(error)
             }
         }
@@ -199,10 +204,12 @@ impl<Connector: EndpointConnector> ProxyConversation for ManagedProxyConversatio
     }
 
     async fn round_trip(&mut self, packet: Packet) -> anyhow::Result<Packet> {
-        let mut observation = self.bound_server.observe_failure();
+        let mut observation = self.bound_server.observe_failure(self.deadline);
         let result = self.conversation.round_trip(packet).await;
         if result.is_ok() {
             observation.disarm();
+        } else {
+            observation.fail();
         }
         result
     }
@@ -342,19 +349,71 @@ pub(super) async fn run_proxy_session<Provider>(
 where
     Provider: ProxyConversationProvider,
 {
-    provider
-        .deadline(&routing)
+    let deadline = provider.deadline(&routing);
+    let mut channel = SessionChannel {
+        packets,
+        replies,
+        pending: None,
+    };
+    let result = deadline
         .run(run_captured_proxy_session(
             downstream_session_id,
             timeout,
             provider,
             routing,
             reservation,
-            packets,
-            replies,
+            &mut channel,
         ))
-        .await
-        .map_err(|error| ProxyConnectionError::Upstream(error.into()))?
+        .await;
+    let Err(elapsed) = result else {
+        return result.unwrap_or(Ok(()));
+    };
+    let Some(request) = channel.pending else {
+        log::info!(
+            "Ended TACACS+ proxy session {downstream_session_id:#x} while it waited for the client: {elapsed}"
+        );
+        return Ok(());
+    };
+    log::warn!(
+        "TACACS+ proxy session {downstream_session_id:#x} did not complete a request: {elapsed}"
+    );
+    // The request deadline has expired, so the reply uses the downstream
+    // write budget instead.
+    let write_deadline =
+        RequestDeadline::after(timeout).map_err(ProxyConnectionError::Downstream)?;
+    send_local_error(
+        &channel.replies,
+        &request.header,
+        request.obfuscation,
+        request.advertise_single_connect,
+        write_deadline,
+    )
+    .await
+}
+
+/// The downstream side of one proxy session.
+struct SessionChannel {
+    packets: mpsc::Receiver<SessionPacket>,
+    replies: mpsc::Sender<SessionReply>,
+    /// The request that does not have a reply yet.
+    pending: Option<PendingRequest>,
+}
+
+/// A downstream request that does not have a reply yet.
+struct PendingRequest {
+    header: Header,
+    obfuscation: packet_io::DownstreamObfuscation,
+    advertise_single_connect: bool,
+}
+
+impl PendingRequest {
+    fn new(packet: &SessionPacket) -> Self {
+        Self {
+            header: packet.packet.header().clone(),
+            obfuscation: packet.reply_obfuscation,
+            advertise_single_connect: packet.advertise_single_connect,
+        }
+    }
 }
 
 async fn run_captured_proxy_session<Provider: ProxyConversationProvider>(
@@ -363,12 +422,12 @@ async fn run_captured_proxy_session<Provider: ProxyConversationProvider>(
     provider: &Provider,
     routing: Provider::Request,
     reservation: Provider::Reservation,
-    mut packets: mpsc::Receiver<SessionPacket>,
-    replies: mpsc::Sender<SessionReply>,
+    channel: &mut SessionChannel,
 ) -> Result<(), ProxyConnectionError> {
-    let Some(first_request) = packets.recv().await else {
+    let Some(first_request) = channel.packets.recv().await else {
         return Ok(());
     };
+    channel.pending = Some(PendingRequest::new(&first_request));
     let operation = OperationKind::try_from(first_request.packet.header().tacacs_type)
         .expect("each TACACS+ packet type maps to an operation");
     let _admission_permit = match provider.admit(&routing, reservation).await {
@@ -378,10 +437,10 @@ async fn run_captured_proxy_session<Provider: ProxyConversationProvider>(
                 "Rejected a local proxy {} request before upstream routing: {error}",
                 operation.name()
             );
-            let reply = local_error_reply(&first_request.packet, &error.to_string())
+            let reply = local_error_reply(first_request.packet.header(), &error.to_string())
                 .map_err(ProxyConnectionError::Downstream)?;
             send_proxy_reply(
-                &replies,
+                &channel.replies,
                 first_request.reply_obfuscation,
                 first_request.advertise_single_connect,
                 reply,
@@ -396,6 +455,7 @@ async fn run_captured_proxy_session<Provider: ProxyConversationProvider>(
 
     let plan = provider.failover_plan(&routing);
     let max_attempts = plan.max_attempts();
+    let first_header = first_request.packet.header().clone();
     let SessionPacket {
         packet: first_packet,
         reply_obfuscation,
@@ -410,21 +470,34 @@ async fn run_captured_proxy_session<Provider: ProxyConversationProvider>(
         fallback_timeout: timeout,
     };
 
-    let (mut conversation, first_reply) = match run_with_failover(plan, &mut attempt).await {
-        FailoverOutcome::Accepted(value) | FailoverOutcome::Rejected(value) => value,
-        FailoverOutcome::Failed(error) | FailoverOutcome::Aborted(error) => {
-            return Err(ProxyConnectionError::Upstream(error));
-        }
-        FailoverOutcome::NoAttempt => {
-            return Err(ProxyConnectionError::Upstream(anyhow::anyhow!(
-                "No TACACS+ server completed the proxy request"
-            )));
+    let failure = match run_with_failover(plan, &mut attempt).await {
+        FailoverOutcome::Accepted(value) | FailoverOutcome::Rejected(value) => Ok(value),
+        FailoverOutcome::Failed(error) | FailoverOutcome::Aborted(error) => Err(error),
+        FailoverOutcome::NoAttempt => Err(anyhow::anyhow!("No TACACS+ server was eligible")),
+    };
+    let (mut conversation, first_reply) = match failure {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!(
+                "No TACACS+ server completed the proxy {} request: {error:#}",
+                operation.name()
+            );
+            channel.pending = None;
+            return send_local_error(
+                &channel.replies,
+                &first_header,
+                reply_obfuscation,
+                advertise_single_connect,
+                provider.deadline(&routing),
+            )
+            .await;
         }
     };
 
     let action = reply_action(&first_reply);
+    channel.pending = None;
     send_proxy_reply(
-        &replies,
+        &channel.replies,
         reply_obfuscation,
         advertise_single_connect,
         first_reply,
@@ -454,8 +527,7 @@ async fn run_captured_proxy_session<Provider: ProxyConversationProvider>(
                 &routing,
                 provider,
                 &mut conversation,
-                &mut packets,
-                &replies,
+                channel,
             )
             .await;
             conversation.complete().await;
@@ -470,8 +542,7 @@ async fn run_pinned_proxy_session<Conversation, Provider>(
     routing: &Provider::Request,
     provider: &Provider,
     conversation: &mut Conversation,
-    packets: &mut mpsc::Receiver<SessionPacket>,
-    replies: &mpsc::Sender<SessionReply>,
+    channel: &mut SessionChannel,
 ) -> Result<(), ProxyConnectionError>
 where
     Conversation: ProxyConversation,
@@ -482,17 +553,19 @@ where
             "The TACACS+ server session completed before the proxy session continued"
         ))
     })?;
-    while let Some(request) = packets.recv().await {
+    while let Some(request) = channel.packets.recv().await {
+        channel.pending = Some(PendingRequest::new(&request));
         let SessionPacket {
             packet: request_packet,
             reply_obfuscation,
             advertise_single_connect,
         } = request;
         if let Err(error) = provider.validate_body_length(routing, request_packet.body().len()) {
-            let reply = local_error_reply(&request_packet, &error.to_string())
+            channel.pending = None;
+            let reply = local_error_reply(request_packet.header(), &error.to_string())
                 .map_err(ProxyConnectionError::Downstream)?;
             send_proxy_reply(
-                replies,
+                &channel.replies,
                 reply_obfuscation,
                 advertise_single_connect,
                 reply,
@@ -503,29 +576,56 @@ where
             .await?;
             return Ok(());
         }
+        let request_header = request_packet.header().clone();
         let upstream_packet = rewrite_session_id(request_packet, upstream_session_id);
         let attempt_timeout = conversation.timeout().unwrap_or(timeout);
-        let upstream_reply =
-            tokio::time::timeout(attempt_timeout, conversation.round_trip(upstream_packet))
-                .await
-                .map_err(|_| {
-                    ProxyConnectionError::Upstream(anyhow::anyhow!(
-                "The TACACS+ server did not complete a round trip within {attempt_timeout:?}"
-            ))
-                })?
-                .map_err(|error| {
-                    ProxyConnectionError::Upstream(
-                        error.context("Failed to complete a TACACS+ server round trip"),
-                    )
-                })?;
+        let upstream_reply = match tokio::time::timeout(
+            attempt_timeout,
+            conversation.round_trip(upstream_packet),
+        )
+        .await
+        {
+            Ok(Ok(reply)) => reply,
+            Ok(Err(error)) => {
+                log::warn!(
+                    "A continuing TACACS+ proxy round trip failed: {:#}",
+                    error.context("Failed to complete a TACACS+ server round trip")
+                );
+                channel.pending = None;
+                return send_local_error(
+                    &channel.replies,
+                    &request_header,
+                    reply_obfuscation,
+                    advertise_single_connect,
+                    provider.deadline(routing),
+                )
+                .await;
+            }
+            Err(_) => {
+                conversation.note_failure().await;
+                log::warn!(
+                        "The TACACS+ server did not complete a continuing proxy round trip within {attempt_timeout:?}"
+                    );
+                channel.pending = None;
+                return send_local_error(
+                    &channel.replies,
+                    &request_header,
+                    reply_obfuscation,
+                    advertise_single_connect,
+                    provider.deadline(routing),
+                )
+                .await;
+            }
+        };
         let action = reply_action(&upstream_reply);
+        channel.pending = None;
         if is_error_reply(&upstream_reply) {
             conversation.note_failure().await;
         } else {
             conversation.note_success().await;
         }
         send_proxy_reply(
-            replies,
+            &channel.replies,
             reply_obfuscation,
             advertise_single_connect,
             upstream_reply,
@@ -548,6 +648,32 @@ where
         }
     }
     Ok(())
+}
+
+/// Sends a local `ERROR` reply when no server completed a request.
+///
+/// RFC 8907 section 4.4 directs the client to treat this reply as if it could
+/// not reach the server, and to try its backup servers. The message is generic
+/// so that it does not disclose upstream details. The failure is logged.
+async fn send_local_error(
+    replies: &mpsc::Sender<SessionReply>,
+    request: &Header,
+    obfuscation: packet_io::DownstreamObfuscation,
+    advertise_single_connect: bool,
+    deadline: RequestDeadline,
+) -> Result<(), ProxyConnectionError> {
+    let reply = local_error_reply(request, "No TACACS+ server completed the request")
+        .map_err(ProxyConnectionError::Downstream)?;
+    send_proxy_reply(
+        replies,
+        obfuscation,
+        advertise_single_connect,
+        reply,
+        request.session_id,
+        false,
+        deadline,
+    )
+    .await
 }
 
 async fn send_proxy_reply(

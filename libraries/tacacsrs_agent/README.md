@@ -618,6 +618,8 @@ return protobuf response envelope
 Each operation has an independent ordered server catalog. IPC and proxy requests
 share one cursor for each operation. A retryable failure opens the applicable
 server-operation circuit and advances only that operation cursor.
+When no other server is eligible, the operation uses the failed server without waiting for the recovery interval.
+A failure guard that is dropped before its request deadline, for example after a downstream disconnect, does not open a circuit.
 
 ```text
 active operation route
@@ -628,6 +630,9 @@ open server-operation circuit
         |
         v
 select next eligible server
+        |
+        +-- no other eligible server --> last-resort use of the failed server
+        |                                  (success closes the circuit)
         |
         | recovery interval expires
         v

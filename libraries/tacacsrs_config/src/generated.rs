@@ -1798,6 +1798,9 @@ pub mod tacacsrs {
         #[serde(default = "default_runtime_policy_source_stale_timeout_seconds")]
         pub source_stale_timeout_seconds: u32,
         /// Interval before a failed route receives one recovery trial.
+        /// When no other eligible server is available for the
+        /// operation, the agent uses the failed server without
+        /// waiting.
         #[serde(rename = "failover-recovery-interval-seconds")]
         #[serde(default = "default_runtime_policy_failover_recovery_interval_seconds")]
         pub failover_recovery_interval_seconds: u32,

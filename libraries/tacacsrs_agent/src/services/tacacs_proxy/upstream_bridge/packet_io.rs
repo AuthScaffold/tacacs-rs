@@ -71,9 +71,14 @@ where
 
     /// Reads the next complete downstream packet.
     ///
+    /// Returns `None` when the client closes the connection between packets.
+    /// A close inside a packet is an error.
+    ///
     /// The read deadline covers one whole packet, so a client cannot hold the
     /// connection open by sending a frame one byte at a time.
-    pub(super) async fn next_packet(&mut self) -> Result<DownstreamPacket, ProxyConnectionError> {
+    pub(super) async fn next_packet(
+        &mut self,
+    ) -> Result<Option<DownstreamPacket>, ProxyConnectionError> {
         // Buffered bytes often already hold a whole packet. Completing here
         // avoids arming and disarming a timer for every request.
         if let Some(result) = self.poll_read_frame_once() {
@@ -101,7 +106,7 @@ where
     /// Polls one read attempt without registering a real waker.
     ///
     /// Partial progress stays in `self`, so discarding the future is safe.
-    fn poll_read_frame_once(&mut self) -> Option<anyhow::Result<DownstreamPacket>> {
+    fn poll_read_frame_once(&mut self) -> Option<anyhow::Result<Option<DownstreamPacket>>> {
         let mut context = TaskContext::from_waker(Waker::noop());
         match pin!(self.read_frame()).poll(&mut context) {
             Poll::Ready(result) => Some(result),
@@ -109,7 +114,7 @@ where
         }
     }
 
-    async fn read_frame(&mut self) -> anyhow::Result<DownstreamPacket> {
+    async fn read_frame(&mut self) -> anyhow::Result<Option<DownstreamPacket>> {
         while self.header_filled < TACACS_HEADER_LENGTH {
             let Self {
                 stream,
@@ -122,6 +127,9 @@ where
                 .await
                 .context("Failed to read TACACS+ proxy header")?;
             if read == 0 {
+                if *header_filled == 0 {
+                    return Ok(None);
+                }
                 bail!("Failed to read TACACS+ proxy header: early eof");
             }
             *header_filled += read;
@@ -199,10 +207,10 @@ where
             }
         }
 
-        Ok(DownstreamPacket {
+        Ok(Some(DownstreamPacket {
             packet,
             reply_obfuscation,
-        })
+        }))
     }
 }
 
