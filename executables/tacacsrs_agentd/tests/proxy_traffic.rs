@@ -14,6 +14,9 @@
 #[path = "proxy_traffic/upstream.rs"]
 mod upstream;
 
+#[path = "proxy_traffic/coverage.rs"]
+mod coverage;
+
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -93,6 +96,9 @@ struct Options {
     policy: serde_json::Value,
     /// Servers after the preferred server, in failover order.
     backup_servers: Vec<SocketAddr>,
+    /// YANG JSON server configuration for `--config`. It replaces the
+    /// `--server-addr`, `--shared-secret`, and `--dedicated` options.
+    config: Option<serde_json::Value>,
 }
 
 impl Default for Options {
@@ -102,6 +108,7 @@ impl Default for Options {
             connect_timeout_seconds: 5,
             policy: serde_json::json!({}),
             backup_servers: Vec::new(),
+            config: None,
         }
     }
 }
@@ -114,7 +121,7 @@ struct Daemon {
     port: u16,
     stderr: Arc<Mutex<Vec<u8>>>,
     stderr_reader: Option<tokio::task::JoinHandle<()>>,
-    _directory: ProcessDirectory,
+    directory: ProcessDirectory,
 }
 
 impl Drop for Daemon {
@@ -152,8 +159,6 @@ impl Daemon {
                 ),
             )
             .arg("-v")
-            .args(["--server-addr", &upstream.to_string()])
-            .args(["--shared-secret", UPSTREAM_KEY])
             .args(["--service-mode", "tacacs-proxy"])
             // Port 0 lets the kernel select a free port without a race.
             .args(["--proxy-endpoint", "127.0.0.1:0"])
@@ -167,11 +172,20 @@ impl Daemon {
             .arg(directory.0.join("agent.sock"))
             .arg("--runtime-policy")
             .arg(&policy);
-        for backup in &options.backup_servers {
-            command.args(["--server-addr", &backup.to_string()]);
-        }
-        if options.dedicated_upstream {
-            command.arg("--dedicated");
+        if let Some(config) = &options.config {
+            let path = directory.0.join("config.json");
+            std::fs::write(&path, config.to_string()).unwrap();
+            command.arg("--config").arg(path);
+        } else {
+            command
+                .args(["--server-addr", &upstream.to_string()])
+                .args(["--shared-secret", UPSTREAM_KEY]);
+            for backup in &options.backup_servers {
+                command.args(["--server-addr", &backup.to_string()]);
+            }
+            if options.dedicated_upstream {
+                command.arg("--dedicated");
+            }
         }
         let mut child = command.spawn().unwrap();
 
@@ -194,7 +208,7 @@ impl Daemon {
             port: 0,
             stderr,
             stderr_reader: Some(stderr_reader),
-            _directory: directory,
+            directory,
         };
         daemon.wait_ready().await;
         daemon
@@ -226,6 +240,13 @@ impl Daemon {
             let (_, address) = line.split_once(LISTENER_MESSAGE)?;
             address.trim().parse().ok()
         })
+    }
+
+    /// Replaces the `--config` file atomically, as an operator tool would.
+    fn rewrite_config(&self, config: &serde_json::Value) {
+        let staged = self.directory.0.join("config.json.new");
+        std::fs::write(&staged, config.to_string()).unwrap();
+        std::fs::rename(staged, self.directory.0.join("config.json")).unwrap();
     }
 
     fn log(&self) -> String {
@@ -508,6 +529,8 @@ struct Traffic {
     single_connect: bool,
     /// Selects the operation of request `index`.
     kinds: fn(usize) -> Kind,
+    /// Uses two-step ASCII logins for authentication requests instead of PAP.
+    ascii_authentication: bool,
 }
 
 impl Traffic {
@@ -549,13 +572,14 @@ async fn run_traffic(port: u16, traffic: Traffic, label: &str) -> Tally {
                         let kind = (traffic.kinds)(index);
                         let user = format!("{USER_PREFIX}{label}/c{client_index}/o{index}");
                         let started = Instant::now();
-                        let outcome = tokio::time::timeout(
-                            OPERATION_LIMIT,
-                            run_operation(&client, kind, &user),
-                        )
-                        .await
-                        .ok()
-                        .map(|result| result.unwrap());
+                        let operation = async {
+                            if traffic.ascii_authentication && kind == Kind::Authentication {
+                                coverage::ascii_login(&client, &user, GOOD_PASSWORD).await
+                            } else {
+                                run_operation(&client, kind, &user).await.unwrap()
+                            }
+                        };
+                        let outcome = tokio::time::timeout(OPERATION_LIMIT, operation).await.ok();
                         tally.record(kind, &user, started.elapsed(), outcome);
                     }
                 });
@@ -581,6 +605,7 @@ const fn heavy(single_connect: bool) -> Traffic {
         concurrency: 4,
         single_connect,
         kinds: mixed,
+        ascii_authentication: false,
     }
 }
 
@@ -591,6 +616,7 @@ const fn recovery(single_connect: bool) -> Traffic {
         concurrency: 2,
         single_connect,
         kinds: mixed,
+        ascii_authentication: false,
     }
 }
 
@@ -829,6 +855,7 @@ async fn slow_authorization_does_not_delay_other_operations() {
         concurrency: 3,
         single_connect: true,
         kinds: mixed,
+        ascii_authentication: false,
     };
     let tally = run_traffic(daemon.port, traffic, "slow-authz").await;
     tally.assert_all_succeeded(traffic.total());
@@ -872,6 +899,7 @@ async fn hanging_authorization_is_bounded_and_isolated_on_dedicated_clients() {
         concurrency: 1,
         single_connect: false,
         kinds: mixed,
+        ascii_authentication: false,
     };
     let tally = run_traffic(daemon.port, traffic, "hang").await;
     tally.assert_sound(traffic.total());
@@ -926,6 +954,7 @@ async fn broken_upstream_case(fault: Fault, mode: SingleConnect) {
         concurrency: 1,
         single_connect: false,
         kinds: mixed,
+        ascii_authentication: false,
     };
     let tally = run_traffic(daemon.port, traffic, "broken").await;
     tally.assert_sound(traffic.total());
@@ -993,6 +1022,7 @@ async fn admission_limit_bounds_upstream_concurrency_and_sheds_excess_load() {
         concurrency: 3,
         single_connect: true,
         kinds: mixed,
+        ascii_authentication: false,
     };
     run_traffic(daemon.port, within, "within")
         .await
@@ -1005,6 +1035,7 @@ async fn admission_limit_bounds_upstream_concurrency_and_sheds_excess_load() {
         concurrency: 4,
         single_connect: true,
         kinds: mixed,
+        ascii_authentication: false,
     };
     let tally = run_traffic(daemon.port, over, "over").await;
     tally.assert_sound(over.total());
@@ -1090,6 +1121,7 @@ async fn sigterm_during_slow_traffic_stops_promptly_without_hung_clients() {
             concurrency: 4,
             single_connect: true,
             kinds: mixed,
+            ascii_authentication: false,
         },
         "shutdown",
     ));
@@ -1224,6 +1256,7 @@ async fn hanging_authorization_does_not_break_other_multiplexed_sessions() {
         concurrency: 6,
         single_connect: true,
         kinds: mixed,
+        ascii_authentication: false,
     };
     let tally = run_traffic(daemon.port, traffic, "collateral").await;
     tally.assert_sound(traffic.total());

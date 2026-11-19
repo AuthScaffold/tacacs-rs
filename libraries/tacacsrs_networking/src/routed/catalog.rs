@@ -179,6 +179,8 @@ impl<Connector: EndpointConnector> Drop for EndpointSlot<Connector> {
 pub(super) struct Catalog<Connector: EndpointConnector> {
     pub(super) endpoints: Vec<Arc<EndpointSlot<Connector>>>,
     routes: [OperationRoute; 3],
+    /// The catalog published after this one. Links point only to newer catalogs.
+    successor: StateMutex<Option<Arc<Self>>>,
 }
 
 impl<Connector: EndpointConnector> Catalog<Connector> {
@@ -191,7 +193,46 @@ impl<Connector: EndpointConnector> Catalog<Connector> {
                 .collect(),
             active_position: StateMutex::new(0),
         });
-        Self { endpoints, routes }
+        Self {
+            endpoints,
+            routes,
+            successor: StateMutex::new(None),
+        }
+    }
+
+    /// Records the catalog that replaced this one after publication.
+    pub(super) fn supersede(&self, successor: &Arc<Self>) {
+        *self
+            .successor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(successor));
+    }
+
+    /// Reports whether any operation routes to the slot in the newest catalog that retains it.
+    ///
+    /// Bindings from an older catalog use this check when they finish, so
+    /// that a reload which moves every operation away from an endpoint can
+    /// retire its connection.
+    pub(super) fn routes_to(self: &Arc<Self>, slot: &Arc<EndpointSlot<Connector>>) -> bool {
+        let mut current = Arc::clone(self);
+        loop {
+            let next = current
+                .successor
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            match next {
+                Some(next) if next.endpoints.iter().any(|other| Arc::ptr_eq(other, slot)) => {
+                    current = next;
+                }
+                _ => break,
+            }
+        }
+        current
+            .endpoints
+            .iter()
+            .position(|other| Arc::ptr_eq(other, slot))
+            .is_some_and(|index| current.is_active_anywhere(index))
     }
 
     pub(super) fn route(&self, operation: OperationKind) -> &OperationRoute {

@@ -3,7 +3,10 @@
 //! A dedicated session can carry a [`SingleConnectPromotion`] when the server
 //! configuration requested TACACS+ single-connection mode. The session still
 //! runs as a normal request/response exchange. The promotion transfers the
-//! connection after the session completes.
+//! connection after the session completes. A session that completes while a
+//! request still awaits its reply shuts the connection down instead. A
+//! cancelled read can leave the stream inside a packet, and a shared reader
+//! would then misread every later frame.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -189,6 +192,11 @@ impl DedicatedSession {
         let Some(mut connection) = self.connection.lock().await.take() else {
             return;
         };
+        // A request that still awaits its reply leaves the stream position
+        // unknown. A cancelled read can consume part of a frame, so a shared
+        // reader would start inside a packet. Such a connection is never shared.
+        let reply_pending = self.expected_response_sequence.lock().await.is_some();
+        let promotion = promotion.filter(|_| !reply_pending);
 
         if let Some(promotion) = promotion {
             promotion.promote_if_confirmed(connection).await;
@@ -604,6 +612,48 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_probe_with_an_unanswered_request_is_not_promoted() {
+        let mock = MockTransport::new();
+        let coordinator = mock.coordinator();
+        let shared_connection = Arc::default();
+        let state = Arc::new(NegotiationState::new(SingleConnectionState::Initial));
+        let session = DedicatedSession::new(
+            BoxedTransport::new(mock),
+            None,
+            SingleConnectPromotion::begin(Arc::clone(&shared_connection), Arc::clone(&state)),
+        );
+        let supported =
+            TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG | TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG;
+        coordinator
+            .add_reply(test_packet(session.session_id(), 2, supported, b"reply"))
+            .await
+            .unwrap();
+        for sequence in [1, 3] {
+            session
+                .send_packet(test_packet(
+                    session.session_id(),
+                    sequence,
+                    TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
+                    b"request",
+                ))
+                .await
+                .unwrap();
+            if sequence == 1 {
+                session.receive_packet().await.unwrap();
+            }
+        }
+        // The second reply never arrives, like a server that stalls mid-frame.
+        let read =
+            tokio::time::timeout(std::time::Duration::from_millis(20), session.receive_packet())
+                .await;
+        assert!(read.is_err(), "the second reply must stay pending");
+
+        session.complete().await;
+        assert!(shared_connection.current().await.is_none());
+        assert_eq!(state.snapshot(), SingleConnectionState::Initial);
     }
 
     #[tokio::test]

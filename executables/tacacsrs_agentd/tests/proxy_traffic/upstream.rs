@@ -4,7 +4,14 @@
 //! including error replies. A client can therefore detect a reply that the
 //! proxy delivered to the wrong session. A replaceable fault plan selects the
 //! behavior of each request from its operation and its per-operation index.
+//!
+//! PAP authentication completes in one round trip. ASCII authentication asks
+//! for the password with `GETPASS` and completes with the `CONTINUE` packet.
+//! The fixture can also send malformed replies: wrong session identifiers,
+//! wrong sequence numbers, invalid headers, oversized lengths, unknown
+//! statuses, and bodies that use the wrong shared secret.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -13,14 +20,18 @@ use std::time::Duration;
 use tacacsrs_networking::{PacketReadResult, PacketReader, PacketWriteResult, PacketWriter};
 use tacacsrs_protocol::accounting::reply::AccountingReply;
 use tacacsrs_protocol::accounting::request::AccountingRequest;
-use tacacsrs_protocol::authentication::reply::AuthenticationReply;
+use tacacsrs_protocol::accounting::reply::ACCOUNTING_REPLY_STATUS_OFFSET;
+use tacacsrs_protocol::authentication::continue_packet::AuthenticationContinue;
+use tacacsrs_protocol::authentication::reply::{
+    AUTHENTICATION_REPLY_STATUS_OFFSET, AuthenticationReply,
+};
 use tacacsrs_protocol::authentication::start::AuthenticationStart;
-use tacacsrs_protocol::authorization::reply::AuthorizationReply;
+use tacacsrs_protocol::authorization::reply::{AUTHORIZATION_REPLY_STATUS_OFFSET, AuthorizationReply};
 use tacacsrs_protocol::authorization::request::AuthorizationRequest;
 use tacacsrs_protocol::body::TacacsBodyTrait;
 use tacacsrs_protocol::enumerations::{
     TacacsAccountingStatus, TacacsAuthenticationReplyFlags, TacacsAuthenticationStatus,
-    TacacsAuthorizationStatus, TacacsFlags, TacacsType,
+    TacacsAuthenticationType, TacacsAuthorizationStatus, TacacsFlags, TacacsType,
 };
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
 use tacacsrs_secrets::SecretBytes;
@@ -33,7 +44,7 @@ use tokio_util::sync::CancellationToken;
 /// Shared secret between the daemon and this upstream fixture.
 pub(crate) const UPSTREAM_KEY: &str = "upstream-fixture-key";
 
-/// Password that the fixture accepts for PAP authentication.
+/// Password that the fixture accepts for PAP and ASCII authentication.
 pub(crate) const GOOD_PASSWORD: &[u8] = b"fixture-password";
 
 /// Response of the fixture to a single-connection request from the daemon.
@@ -71,6 +82,10 @@ pub(crate) struct Request {
     pub(crate) kind: Kind,
     /// Zero-based arrival index of this request within its operation.
     pub(crate) index: u64,
+    /// True for an authentication `CONTINUE` packet of an ASCII login.
+    pub(crate) continuation: bool,
+    /// User name of the request, or of the login that a `CONTINUE` belongs to.
+    pub(crate) user: String,
 }
 
 /// Behavior of the fixture for one request.
@@ -88,6 +103,18 @@ pub(crate) enum Fault {
     Hang,
     /// Send half of a reply header and then stall.
     PartialHeader,
+    /// Replace the status byte of the normal reply.
+    Status(u8),
+    /// Send the normal reply with a different session identifier.
+    WrongSession,
+    /// Send the normal reply with a sequence number that skips ahead.
+    WrongSequence,
+    /// Send a header that announces a body above the RFC 8907 limit, then stall.
+    OversizedLength,
+    /// Send a header with an unknown major version, then stall.
+    BadHeader,
+    /// Obfuscate the normal reply with a different shared secret.
+    BadKey,
 }
 
 impl Fault {
@@ -98,6 +125,12 @@ impl Fault {
             Self::Close => Some(1),
             Self::Hang => Some(2),
             Self::PartialHeader => Some(3),
+            Self::Status(_) => Some(4),
+            Self::WrongSession => Some(5),
+            Self::WrongSequence => Some(6),
+            Self::OversizedLength => Some(7),
+            Self::BadHeader => Some(8),
+            Self::BadKey => Some(9),
         }
     }
 }
@@ -130,7 +163,7 @@ struct State {
     mode: SingleConnect,
     plan: Mutex<Plan>,
     received: PerKind,
-    injected: [PerKind; 4],
+    injected: [PerKind; 10],
     connections: AtomicU64,
     open_connections: AtomicUsize,
     in_flight: [AtomicUsize; 3],
@@ -155,6 +188,28 @@ impl Drop for Upstream {
 impl Upstream {
     pub(crate) async fn start(mode: SingleConnect) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        Self::serve(mode, listener)
+    }
+
+    /// Starts a fixture on a fixed address, for example to restart a server.
+    ///
+    /// The bind retries for a short time because a dropped fixture releases
+    /// its listener asynchronously.
+    pub(crate) async fn start_on(mode: SingleConnect, address: SocketAddr) -> Self {
+        let mut attempts = 0;
+        loop {
+            match TcpListener::bind(address).await {
+                Ok(listener) => return Self::serve(mode, listener),
+                Err(error) => {
+                    attempts += 1;
+                    assert!(attempts < 100, "could not bind {address} again: {error}");
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+        }
+    }
+
+    fn serve(mode: SingleConnect, listener: TcpListener) -> Self {
         let address = listener.local_addr().unwrap();
         let state = Arc::new(State {
             mode,
@@ -315,6 +370,7 @@ async fn serve_connection(
         let connection = connection.clone();
         async move {
             let packet_reader = PacketReader::new(Some(key()));
+            let logins = Logins::default();
             let mut single_connect = false;
             let mut first = true;
             loop {
@@ -337,6 +393,7 @@ async fn serve_connection(
                     Arc::clone(&state),
                     packet,
                     single_connect,
+                    Arc::clone(&logins),
                     output.clone(),
                     connection.clone(),
                 );
@@ -345,11 +402,17 @@ async fn serve_connection(
                     continue;
                 }
                 // A connection without single-connect carries one session.
-                // A read during the session detects a peer that gave up.
+                // A read during a reply detects a peer that gave up. The
+                // session ends after its last reply unless the reply asks the
+                // client for more data.
                 tokio::pin!(handler);
                 let mut probe = [0_u8; 1];
                 tokio::select! {
-                    () = &mut handler => {
+                    biased;
+                    continues = &mut handler => {
+                        if continues {
+                            continue;
+                        }
                         let _sent = output.send(Output::Close);
                         return;
                     }
@@ -365,22 +428,44 @@ async fn serve_connection(
     tokio::join!(writer_task, reader_task);
 }
 
+/// User names of ASCII logins that wait for a `CONTINUE`, by session identifier.
+type Logins = Arc<Mutex<HashMap<u32, String>>>;
+
+/// Answers one request and returns true when the session expects another packet.
 async fn respond(
     state: Arc<State>,
     request: Packet,
     single_connect: bool,
+    logins: Logins,
     output: mpsc::UnboundedSender<Output>,
     connection: CancellationToken,
-) {
+) -> bool {
     let kind = Kind::from_type(request.header().tacacs_type);
     let index = state.received.add(kind);
     let _in_flight = InFlight::new(&state, kind);
     let plan = Arc::clone(&state.plan.lock().unwrap());
-    let fault = plan(&Request { kind, index });
+    let continuation = kind == Kind::Authentication && request.header().seq_no > 1;
+    let fault = plan(&Request {
+        kind,
+        index,
+        continuation,
+        user: request_user(&request, &logins),
+    });
     if let Some(counter) = fault.counter() {
         state.injected[counter].add(kind);
     }
-    let reply = |error: bool| reply(&request, single_connect, error);
+    let normal = reply(&request, single_connect, &logins, false);
+    let continues = !matches!(fault, Fault::Error | Fault::Status(_))
+        && AuthenticationReply::status_from_packet(&normal)
+            == Some(TacacsAuthenticationStatus::TacPlusAuthenStatusGetpass as u8)
+        && kind == Kind::Authentication;
+    let reply = |error: bool| {
+        if error {
+            reply(&request, single_connect, &logins, true)
+        } else {
+            normal.clone()
+        }
+    };
     match fault {
         Fault::None => {
             let _sent = output.send(Output::Packet(reply(false)));
@@ -407,31 +492,80 @@ async fn respond(
             let _sent = output.send(Output::Raw(bytes[..6].to_vec()));
             connection.cancelled().await;
         }
+        Fault::Status(status) => {
+            let reply = reply(false);
+            let offset = match kind {
+                Kind::Authentication => AUTHENTICATION_REPLY_STATUS_OFFSET,
+                Kind::Authorization => AUTHORIZATION_REPLY_STATUS_OFFSET,
+                Kind::Accounting => ACCOUNTING_REPLY_STATUS_OFFSET,
+            };
+            let mut body = reply.body().to_vec();
+            body[offset] = status;
+            let packet = Packet::new(reply.header().clone(), body).unwrap();
+            let _sent = output.send(Output::Packet(packet));
+        }
+        Fault::WrongSession | Fault::WrongSequence => {
+            let reply = reply(false);
+            let mut header = reply.header().clone();
+            if fault == Fault::WrongSession {
+                header.session_id = header.session_id.wrapping_add(0x1000_0000);
+            } else {
+                header.seq_no = header.seq_no.wrapping_add(2);
+            }
+            let packet = Packet::new(header, reply.body().to_vec()).unwrap();
+            let _sent = output.send(Output::Packet(packet));
+        }
+        Fault::OversizedLength | Fault::BadHeader => {
+            let mut bytes = reply(false)
+                .to_obfuscated(UPSTREAM_KEY.as_bytes())
+                .to_bytes();
+            bytes.truncate(12);
+            if fault == Fault::OversizedLength {
+                bytes[8..12].copy_from_slice(&u32::MAX.to_be_bytes());
+            } else {
+                bytes[0] = 0x00;
+            }
+            let _sent = output.send(Output::Raw(bytes));
+            connection.cancelled().await;
+        }
+        Fault::BadKey => {
+            let bytes = reply(false)
+                .to_obfuscated(b"a-different-fixture-key")
+                .to_bytes();
+            let _sent = output.send(Output::Raw(bytes));
+        }
     }
+    continues
 }
 
 fn key() -> SecretBytes {
     SecretBytes::new(UPSTREAM_KEY.as_bytes().to_vec())
 }
 
-fn reply(request: &Packet, single_connect: bool, error: bool) -> Packet {
+fn request_user(request: &Packet, logins: &Logins) -> String {
+    match request.header().tacacs_type {
+        TacacsType::TacPlusAuthentication if request.header().seq_no > 1 => logins
+            .lock()
+            .unwrap()
+            .get(&request.header().session_id)
+            .cloned()
+            .unwrap_or_default(),
+        TacacsType::TacPlusAuthentication => AuthenticationStart::from_packet(request)
+            .map(|start| start.user.clone())
+            .unwrap_or_default(),
+        TacacsType::TacPlusAuthorisation => AuthorizationRequest::from_packet(request)
+            .map(|request| request.user.clone())
+            .unwrap_or_default(),
+        TacacsType::TacPlusAccounting => AccountingRequest::from_packet(request)
+            .map(|request| request.user.clone())
+            .unwrap_or_default(),
+    }
+}
+
+fn reply(request: &Packet, single_connect: bool, logins: &Logins, error: bool) -> Packet {
     let body = match request.header().tacacs_type {
         TacacsType::TacPlusAuthentication => {
-            let start = AuthenticationStart::from_packet(request).unwrap();
-            let status = if error {
-                TacacsAuthenticationStatus::TacPlusAuthenStatusError
-            } else if start.data == GOOD_PASSWORD {
-                TacacsAuthenticationStatus::TacPlusAuthenStatusPass
-            } else {
-                TacacsAuthenticationStatus::TacPlusAuthenStatusFail
-            };
-            AuthenticationReply {
-                status,
-                flags: TacacsAuthenticationReplyFlags::empty(),
-                server_msg: start.user.clone(),
-                data: Vec::new(),
-            }
-            .to_bytes()
+            authentication_reply(request, logins, error).to_bytes()
         }
         TacacsType::TacPlusAuthorisation => {
             let request = AuthorizationRequest::from_packet(request).unwrap();
@@ -470,4 +604,47 @@ fn reply(request: &Packet, single_connect: bool, error: bool) -> Packet {
         header.flags |= TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG;
     }
     Packet::new(header, body).unwrap()
+}
+
+/// Answers a PAP `START`, an ASCII `START`, or the `CONTINUE` of an ASCII login.
+fn authentication_reply(request: &Packet, logins: &Logins, error: bool) -> AuthenticationReply {
+    let session_id = request.header().session_id;
+    let (user, password) = if request.header().seq_no == 1 {
+        let start = AuthenticationStart::from_packet(request).unwrap();
+        if start.authen_type == TacacsAuthenticationType::TacPlusAuthenTypeAscii && !error {
+            logins
+                .lock()
+                .unwrap()
+                .insert(session_id, start.user.clone());
+            return AuthenticationReply {
+                status: TacacsAuthenticationStatus::TacPlusAuthenStatusGetpass,
+                flags: TacacsAuthenticationReplyFlags::TAC_PLUS_REPLY_FLAG_NOECHO,
+                server_msg: start.user.clone(),
+                data: Vec::new(),
+            };
+        }
+        (start.user.clone(), start.data.clone())
+    } else {
+        let next = AuthenticationContinue::from_packet(request).unwrap();
+        let user = logins
+            .lock()
+            .unwrap()
+            .get(&session_id)
+            .cloned()
+            .unwrap_or_default();
+        (user, next.data.clone())
+    };
+    let status = if error {
+        TacacsAuthenticationStatus::TacPlusAuthenStatusError
+    } else if password == GOOD_PASSWORD {
+        TacacsAuthenticationStatus::TacPlusAuthenStatusPass
+    } else {
+        TacacsAuthenticationStatus::TacPlusAuthenStatusFail
+    };
+    AuthenticationReply {
+        status,
+        flags: TacacsAuthenticationReplyFlags::empty(),
+        server_msg: user,
+        data: Vec::new(),
+    }
 }

@@ -92,6 +92,11 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
     }
 
     /// Builds a replacement catalog, retaining state for cloned endpoint identities.
+    ///
+    /// Each operation starts at the first endpoint in the new order whose
+    /// circuit is closed. The previous active endpoint stays active only while
+    /// every endpoint before it has an open circuit, so a reload that adds or
+    /// moves a healthy server ahead of the current one uses that server.
     pub async fn with_endpoints(&self, endpoints: Vec<Endpoint>) -> Self {
         let slots = endpoints
             .into_iter()
@@ -125,8 +130,12 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
         for operation in OperationKind::ALL {
             if let Some(previous) = self.active_endpoint(operation).await {
                 let route = replacement.catalog.route(operation);
+                // Keep the previous active endpoint only while every endpoint before it has an
+                // open circuit. A new or healthy endpoint earlier in the order becomes active.
                 if let Some(position) = route.indices.iter().position(|index| {
-                    replacement.catalog.endpoints[*index].endpoint.name() == previous.name()
+                    let slot = &replacement.catalog.endpoints[*index];
+                    slot.endpoint.same_identity(previous)
+                        || !slot.operation(operation).circuit.is_open()
                 }) {
                     *route
                         .active_position
@@ -165,7 +174,13 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
     /// Retires cached connections absent from a published replacement catalog.
     ///
     /// Existing bindings retain their connection handles and can finish.
+    /// Retained endpoints that no operation routes to in the replacement also
+    /// retire their idle connection, either now or when their last binding ends.
     pub async fn retire_replaced(&self, replacement: &Self) {
+        self.catalog.supersede(&replacement.catalog);
+        for index in 0..replacement.catalog.endpoints.len() {
+            replacement.retire_if_unused(index);
+        }
         for slot in self.catalog.endpoints.iter().filter(|old| {
             !replacement
                 .catalog
@@ -583,13 +598,14 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
     /// Retires an endpoint's shared connection when nothing can use it.
     ///
     /// The connection stays while any operation route prefers the endpoint or
-    /// any binding still holds a connection from it. The last binding to drop
-    /// repeats this check.
+    /// any binding still holds a connection from it. After a reload, the check
+    /// uses the routes of the newest catalog that retains the endpoint. The
+    /// last binding to drop repeats this check.
     fn retire_if_unused(&self, index: usize) {
-        if self.catalog.is_active_anywhere(index) {
+        let slot = &self.catalog.endpoints[index];
+        if self.catalog.routes_to(slot) {
             return;
         }
-        let slot = &self.catalog.endpoints[index];
         let detached = {
             let mut cache = slot
                 .connection
@@ -1185,6 +1201,48 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn replacement_prefers_an_earlier_endpoint_with_a_closed_circuit() {
+        let endpoint = |name: &str, port: u16| {
+            Endpoint::new(
+                name,
+                PreparedEndpoint::new(
+                    crate::ServerAddress::parse(&format!("127.0.0.1:{port}"), port).unwrap(),
+                    crate::PreparedTransport::Tcp,
+                    false,
+                    None,
+                    ConnectOptions::default(),
+                ),
+                OperationKind::ALL,
+            )
+        };
+        let (a, b) = (endpoint("a", 49), endpoint("b", 50));
+        let client = RoutedClient::with_connector(
+            vec![a.clone(), b.clone()],
+            ControlledConnector::default(),
+        );
+        let operation = OperationKind::Authorization;
+        client.catalog.endpoints[0]
+            .operation(operation)
+            .circuit
+            .open();
+        client.catalog.route(operation).advance_if_active(0);
+        let active = |client: &RoutedClient<ControlledConnector>, operation| {
+            let route = client.catalog.route(operation);
+            route
+                .active_index()
+                .map(|index| client.catalog.endpoints[index].endpoint.name().to_owned())
+        };
+
+        let kept = client.with_endpoints(vec![a.clone(), b.clone()]).await;
+        assert_eq!(active(&kept, operation).as_deref(), Some("b"));
+        assert_eq!(active(&kept, OperationKind::Authentication).as_deref(), Some("a"));
+
+        let inserted = kept.with_endpoints(vec![endpoint("c", 51), a, b]).await;
+        assert_eq!(active(&inserted, operation).as_deref(), Some("c"));
+        assert_eq!(active(&inserted, OperationKind::Authentication).as_deref(), Some("c"));
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn selective_retirement_reaches_older_generations_but_not_unpublished_candidates() {
         use crate::RequestDeadline;
         let endpoint = || {
@@ -1644,6 +1702,51 @@ mod tests {
         let next = client.bind(operation, HOLD).await.unwrap();
         assert_eq!(next.endpoint().name(), "primary");
         assert!(Arc::ptr_eq(next.connection(), trial.connection()));
+    }
+
+    #[tokio::test]
+    async fn reload_retires_the_connection_of_an_endpoint_that_no_operation_routes_to() {
+        let endpoint = |name: &str, port: u16| {
+            Endpoint::new(
+                name,
+                PreparedEndpoint::new(
+                    crate::ServerAddress::parse(&format!("127.0.0.1:{port}"), port).unwrap(),
+                    crate::PreparedTransport::Tcp,
+                    false,
+                    None,
+                    ConnectOptions::default(),
+                ),
+                OperationKind::ALL,
+            )
+        };
+        let retained = endpoint("b", 50);
+        let client =
+            RoutedClient::with_connector(vec![retained.clone()], ControlledConnector::default());
+        let held = client.bind(OperationKind::Accounting, HOLD).await.unwrap();
+        for operation in OperationKind::ALL {
+            let binding = client.bind(operation, HOLD).await.unwrap();
+            assert!(Arc::ptr_eq(binding.connection(), held.connection()));
+        }
+
+        let replacement = client
+            .with_endpoints(vec![endpoint("a", 49), retained])
+            .await;
+        client.retire_replaced(&replacement).await;
+        // The old catalog still routes to "b", but its binding must not keep the connection.
+        tokio::task::yield_now().await;
+        assert_eq!(client.connector.retired.load(Ordering::Acquire), 0);
+        drop(held);
+        wait_for_retired(&client, 1).await;
+        assert!(replacement.catalog.endpoints[1]
+            .connection
+            .lock()
+            .unwrap()
+            .is_none());
+        let next = replacement
+            .bind(OperationKind::Accounting, HOLD)
+            .await
+            .unwrap();
+        assert_eq!(next.endpoint().name(), "a");
     }
 
     #[tokio::test]
