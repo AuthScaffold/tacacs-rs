@@ -622,6 +622,8 @@ share one cursor for each operation. A retryable failure opens the applicable
 server-operation circuit and advances only that operation cursor.
 When no other server is eligible, the operation uses the failed server without waiting for the recovery interval.
 A failure guard that is dropped before its request deadline, for example after a downstream disconnect, does not open a circuit.
+A lost connection that already completed a valid exchange keeps the circuit closed, and the next request reconnects to the same server.
+When a recovered server becomes active, the operation's cached connections to the other servers are retired.
 
 ```text
 active operation route

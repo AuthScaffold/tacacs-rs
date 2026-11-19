@@ -1307,6 +1307,28 @@ async fn deferred_failover_forwards_an_error_and_moves_only_that_operation() {
     daemon.stop().await;
 }
 
+/// Checks that a dropped connection that served valid replies reconnects to the same server.
+///
+/// A lost connection is a transport fault. If the server accepts the next
+/// connection, the operation stays on the preferred server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dropped_proven_connection_reconnects_to_the_preferred_server() {
+    let (primary, backup, daemon) = start_failover_pair("deferred-failover").await;
+    let accepted = primary.connections_accepted();
+    primary.set_plan(once(Kind::Authorization, Fault::Close));
+
+    let dropped =
+        single_request(daemon.port, Kind::Authorization, &format!("{USER_PREFIX}c")).await;
+    assert!(!succeeded(&dropped), "the dropped request reported success: {dropped:?}");
+
+    let next = single_request(daemon.port, Kind::Authorization, &format!("{USER_PREFIX}n")).await;
+    assert!(succeeded(&next), "the next authorization failed: {next:?}");
+    assert_eq!(primary.connections_accepted(), accepted + 1, "authorization did not reconnect");
+    assert_eq!(backup.received_total(), 0, "a transport fault moved traffic to the backup");
+    assert_eq!(backup.connections_accepted(), 0);
+    daemon.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ordered_safe_retry_replays_an_error_on_the_backup_server() {
     let (primary, backup, daemon) = start_failover_pair("ordered-safe-retry").await;

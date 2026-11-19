@@ -111,6 +111,8 @@ pub(super) struct OperationSlot<Connection: ?Sized> {
     pub(super) completed_connect_attempts: AtomicU64,
     pub(super) connection_generation: AtomicU64,
     pub(super) failed_generation: AtomicU64,
+    /// The latest connection generation that completed a valid exchange.
+    pub(super) proven_generation: AtomicU64,
     pub(super) circuit: Arc<OperationCircuit>,
 }
 
@@ -122,6 +124,7 @@ impl<Connection: ?Sized> Default for OperationSlot<Connection> {
             completed_connect_attempts: AtomicU64::new(0),
             connection_generation: AtomicU64::new(0),
             failed_generation: AtomicU64::new(u64::MAX),
+            proven_generation: AtomicU64::new(u64::MAX),
             circuit: Arc::new(OperationCircuit::default()),
         }
     }

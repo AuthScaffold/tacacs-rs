@@ -194,7 +194,8 @@ impl<Connector: EndpointConnector> EndpointLifecycle<Connector> {
             })));
     }
 
-    pub(super) fn retire_failed(&self, connection: Arc<Connector::Connection>) {
+    /// Stops new sessions on a detached connection and lets established sessions finish.
+    pub(super) fn retire_detached(&self, connection: Arc<Connector::Connection>) {
         let mut state = self
             .state
             .lock()

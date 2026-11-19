@@ -378,7 +378,9 @@ Each operation (authentication, authorization, or accounting) has its own active
 
 ### State transitions
 
-A closed circuit lets a server receive new sessions. A failed connection attempt, a lost upstream connection, a truncated reply, an upstream `ERROR`, or a timeout during an upstream exchange opens the circuit. The routed client discards the cached connection. If the failed server was active, the route advances one position. A downstream disconnect alone leaves the circuit unchanged.
+A closed circuit lets a server receive new sessions. A failed connection attempt, an upstream `ERROR`, or a timeout during an upstream exchange opens the circuit. The routed client discards the cached connection. If the failed server was active, the route advances one position. A downstream disconnect alone leaves the circuit unchanged.
+
+A lost connection or a truncated reply is a transport fault. If the connection already completed a valid exchange for that operation, the routed client discards the connection and keeps the circuit closed. The next session of that operation reconnects to the same server. The session that was in progress on the lost connection fails. The circuit opens only if the reconnect fails, the server times out, or the server returns `ERROR`. A transport fault on a connection that has not completed a valid exchange opens the circuit, so a server that accepts connections and then drops them cannot keep traffic.
 
 For each new binding, the routed client tries each eligible server at most once across three passes:
 
@@ -386,7 +388,7 @@ For each new binding, the routed client tries each eligible server at most once 
 2. **Healthy servers.** The client tries closed circuits from the active position and wraps to the start of the route. The first server that connects becomes active.
 3. **Last resort.** If neither pass found a connection, the client tries the remaining open circuits from the active position, without waiting for recovery.
 
-A connection failure in any pass opens that server's circuit or keeps it open, and selection continues within the same call. If another server connects and answers in time, the downstream client receives its reply. Concurrent callers share a connection attempt for the same server and operation. After a successful exchange on a recovery trial or last-resort binding, the circuit closes and that server becomes active.
+A connection failure in any pass opens that server's circuit or keeps it open, and selection continues within the same call. If another server connects and answers in time, the downstream client receives its reply. Concurrent callers share a connection attempt for the same server and operation. After a successful exchange on a recovery trial or last-resort binding, the circuit closes. That server becomes active if it comes before the active server in configuration order, or if the active server's circuit is open. The routed client then retires the cached connections for that operation on the other servers. Each retired connection refuses new sessions and closes after its active sessions finish. For example, when authentication returns from B to A, the authentication connection to B closes, and the authorization and accounting connections to A are not affected.
 
 ### Failover strategies
 
