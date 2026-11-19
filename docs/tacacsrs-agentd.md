@@ -374,32 +374,19 @@ Atomic replacement prevents partial reports but does not make filesystem I/O har
 
 ## Failover behavior
 
-The routed client tracks failures separately for authentication, authorization, and accounting on each server. Each operation uses the eligible servers in configuration order. IPC and proxy requests share the active route for that operation. With single-connect, the client can reuse one upstream connection per server for each operation.
-
-A refused connection, a dropped connection, a truncated reply, or an upstream `ERROR` opens the circuit for that server and operation. The routed client removes the cached connection. If the failed server was active, new sessions of that operation use the next eligible server. For example, an authorization `ERROR` leaves authentication and accounting on their current routes. A downstream disconnect alone does not mark the upstream server as failed.
+Each operation (authentication, authorization, or accounting) has its own active route and its own circuit on each server. The route contains only servers that support the operation, in configuration order. IPC and proxy requests share that route. With single-connect, they can reuse one upstream connection per server and operation.
 
 ### State transitions
 
-```
-preferred route
-      |
-      | retryable operation failure
-      v
-open circuit and select the next eligible server
-      |
-      +-- no other eligible server --> use the failed server as a last resort
-      |                                  (success closes the circuit)
-      |
-      | recovery interval expires
-      v
-allow one real operation as a recovery trial
-      |
-      +-- success --> restore the higher-priority route
-      |
-      +-- failure --> reopen the circuit
-```
+A closed circuit lets a server receive new sessions. A failed connection attempt, a lost upstream connection, a truncated reply, an upstream `ERROR`, or a timeout during an upstream exchange opens the circuit. The routed client discards the cached connection. If the failed server was active, the route advances one position. A downstream disconnect alone leaves the circuit unchanged.
 
-If every eligible server for an operation has an open circuit, the routed client tries those servers in route order without waiting. Even the only eligible server can serve the next request immediately. The recovery interval (30 seconds by default) applies to trials of a failed server while another server is available. Concurrent requests for a given server and operation share one connection attempt.
+For each new binding, the routed client tries each eligible server at most once across three passes:
+
+1. **Recovery trial.** In configuration order, the client tries open circuits whose `failover-recovery-interval-seconds` has elapsed (default: 30 seconds). Each circuit allows one recovery trial at a time.
+2. **Healthy servers.** The client tries closed circuits from the active position and wraps to the start of the route. The first server that connects becomes active.
+3. **Last resort.** If neither pass found a connection, the client tries the remaining open circuits from the active position, without waiting for recovery.
+
+A connection failure in any pass opens that server's circuit or keeps it open, and selection continues within the same call. If another server connects and answers in time, the downstream client receives its reply. Concurrent callers share a connection attempt for the same server and operation. After a successful exchange on a recovery trial or last-resort binding, the circuit closes and that server becomes active.
 
 ### Failover strategies
 
@@ -407,25 +394,38 @@ Under [RFC 8907 section 4.4](https://www.rfc-editor.org/rfc/rfc8907#section-4.4)
 
 The `tacacs-proxy-failover-strategy` policy controls how the proxy handles the first packet of a session:
 
-- `deferred-failover` (default) makes one attempt and forwards an upstream `ERROR` to the downstream client. If a backup is available, the next session of that operation uses it. If the whole server fails, each operation still using it encounters a failed request of its own before it switches servers.
-- `ordered-safe-retry` retries the first packet on the next eligible server after an upstream `ERROR`. It also permits a retry after proven non-delivery. If the backup succeeds, the client receives its reply. If the final attempt returns an `ERROR`, the proxy forwards that reply. The proxy stops after an unknown outcome because replay can duplicate accounting records or affect audit or lockout state.
+- `deferred-failover` (default) allows one first-packet attempt. The proxy forwards an upstream `ERROR`. The next session uses the updated route.
+- `ordered-safe-retry` retries on the next eligible server after a first-packet `ERROR` or proven non-delivery. The attempt budget equals the number of eligible servers. If the last attempt returns `ERROR`, the proxy forwards it. A timeout after transmission or a lost reply leaves the outcome unknown. The proxy stops because replay can duplicate accounting records or affect audit or lockout state.
 
-After an authentication challenge, the session stays on the server that sent the challenge. Under either strategy, the proxy forwards a later `ERROR` and moves new authentication sessions to the next eligible server. If the proxy has no upstream reply to forward, it sends a local `ERROR` for that session. Examples include an unreachable server, a lost reply, or an expired request deadline.
+After an authentication challenge, the session stays on the server that sent the challenge. Under either strategy, the proxy forwards a later `ERROR`. If the proxy has no upstream reply to forward, it sends a local `ERROR`. An upstream failure ends only the affected session. Other sessions can continue on the same downstream connection.
 
 For a connection-related `ERROR` in single-connect mode, section 4.4 requires the connection to refuse new sessions. Established sessions can finish, then the connection must close. The proxy retires the shared upstream connection on any `ERROR`, even on the first packet. The connection stops accepting new sessions and closes once active sessions finish. If the connector takes more than one second to initiate retirement, the routed client forces closure. Sessions that have already started to drain have no separate one-second cutoff.
 
-[RFC 8907 section 3.6](https://www.rfc-editor.org/rfc/rfc8907#section-3.6) also calls for `ERROR` for an unsupported or unrecognized option. The status alone cannot distinguish this case from a server fault. One such request can therefore move its operation to a backup. If it has only one eligible server, the next request can use that server immediately.
+[RFC 8907 section 3.6](https://www.rfc-editor.org/rfc/rfc8907#section-3.6) also calls for `ERROR` for an unsupported or unrecognized option. The status alone cannot distinguish this case from a server fault. One such request can therefore move its operation to a backup.
 
-### Preferred Server Recovery
+### Preferred server recovery
 
-The daemon does not use a cross-operation probe. After the recovery interval,
-one real request tests a higher-priority server. Other requests continue to use
-the active fallback during this trial.
+A recovery trial uses a real request and takes priority over a healthy server. While the trial runs, other requests can use the active server. If the trial server refuses the connection, the same request continues to the next candidate. If the trial server accepts the connection but returns `ERROR`, drops the reply, or times out, the recovery interval starts again.
 
-### Reconnect Behavior
+While a healthy server remains available, each persistently unhealthy server can cost about one failed trial request per operation per recovery interval. With deferred failover, the client receives `ERROR` for that exchange. With ordered safe retry, a backup can answer a first-packet `ERROR`. Neither strategy replays a request after a lost reply or a timeout after transmission.
 
-One connection attempt runs for each server and operation. Concurrent callers
-share its result instead of starting duplicate TLS handshakes.
+### Server selection scenarios
+
+The examples describe new proxy sessions. If a slow server answers before both the server timeout and the request deadline, it still counts as healthy. The proxy does not compare response times. In the [runtime policy](#runtime-policy), `request-timeout-seconds` sets the total budget for each operation (default: 30 seconds). Admission, connection setup, retries, and authentication continuations share that budget. A shorter server timeout can end an exchange earlier.
+
+| Eligible servers | Where requests go | What the client sees |
+| --- | --- | --- |
+| One healthy or slow server | Every request uses that server. | The client waits for its reply. |
+| One unhealthy server | The next request tries the same server immediately. Before the recovery interval expires, it uses the last-resort pass. | A refusal produces a local `ERROR`. If the server accepts but never replies, each exchange waits until its timeout or deadline. |
+| Two responsive servers (fast or slow) | The first server stays active while it answers in time. A faster backup does not attract traffic. | The active server determines the response time. |
+| One healthy server and one unhealthy server | If the healthy server is active, it keeps new sessions. If the other server fails first, the healthy server takes over. | A refusal can be invisible to the client. A failure after connection follows the [failover strategy](#failover-strategies). |
+| One slow server and one unhealthy server | The slow server keeps new sessions between recovery trials as long as it answers in time. | The client waits for the slow reply. If that server also times out, both servers now have open circuits. |
+| Three or more servers, some responsive | Selection skips failed servers between recovery trials. The first responsive server on the active route keeps traffic. | The client receives that server’s reply. Only recovery trials revisit failed servers while a healthy route remains available. |
+| Two or more servers, all unhealthy | Each new session tries due recovery trials, then any remaining servers as a last resort. Selection stops at the first connection. | The proxy forwards the final upstream `ERROR`. Without a reply, it sends a local `ERROR`. A session can fail before every server receives a packet. |
+
+For example, the configuration lists A, B, then C. A returns `ERROR`, B accepts the request but times out, and C is healthy. Assume that no recovery trial is due yet. With deferred failover, the first session receives A’s `ERROR`, the second receives a local `ERROR` after B’s timeout, and the third uses C. With ordered safe retry, the first session retries on B after A’s `ERROR` and stops at B’s timeout. The next session uses C.
+
+In both cases, new sessions stay on C between recovery trials. If A’s recovery interval expires during B’s timeout, A can receive a trial before C serves its first request.
 
 ## Startup Warm-up
 
@@ -665,7 +665,9 @@ tacacsrs-agentd \
     --listen-endpoint /run/tacacs/tacacs.sock
 ```
 
-### Multiple Servers with Fast Failover
+### Multiple servers with fast failover
+
+See [server selection scenarios](#server-selection-scenarios) for how the proxy uses these three servers.
 
 ```bash
 tacacsrs-agentd \

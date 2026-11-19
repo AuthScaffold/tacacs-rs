@@ -251,18 +251,13 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
 
     /// Selects an eligible endpoint and obtains its operation-isolated connection.
     ///
-    /// The selection order is:
+    /// Each call tries eligible endpoints in three passes. It makes at most one connection attempt per endpoint:
     ///
-    /// 1. An endpoint with an open circuit whose `recovery_interval` has
-    ///    elapsed. One request at a time receives this recovery trial.
-    /// 2. An endpoint with a closed circuit, in route order from the active
-    ///    position.
-    /// 3. An endpoint with an open circuit, as a last resort. This step runs
-    ///    only when no other eligible endpoint can connect. Thus, an operation
-    ///    with one eligible endpoint does not wait for the recovery interval
-    ///    after one failure. A success on this binding closes the circuit.
+    /// 1. Try open circuits due for recovery in configuration order. Each endpoint allows one trial at a time for this operation.
+    /// 2. Try closed circuits in route order from the active position. The first endpoint that connects becomes active.
+    /// 3. Try remaining open circuits in the same route order without waiting for `recovery_interval`.
     ///
-    /// Each endpoint receives at most one connection attempt per call.
+    /// After a successful recovery or last-resort exchange, [`BoundEndpoint::note_success`] closes the circuit and selects that endpoint as active.
     ///
     /// # Errors
     /// Returns an error if no endpoint is eligible or available for the operation.
