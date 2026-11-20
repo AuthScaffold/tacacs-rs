@@ -5,11 +5,40 @@
 .DESCRIPTION
     Runs the SONiC virtual-switch image with qemu-system-x86_64.
     The VM starts from a qcow2 overlay on the read-only base image.
-    If the base image is missing, the script downloads and extracts it.
+    If no local image exists, the script downloads the latest successful SONiC VS build.
+    Existing base or compressed images are reused without a build lookup.
     A second qcow2 disk stores persistent user data at /data in the guest.
     Host port 2222 forwards SSH traffic to guest port 22.
 
     Move files between Windows and the guest via scp/sftp on port 2222.
+
+    TACACS+ actions configure the running guest over SSH without changing VM state.
+    Add and remove default to 10.0.2.2, the host address on the QEMU user network.
+    Enable selects TACACS-only login. Disable restores local login and keeps servers.
+    Authorization, accounting, and authentication failthrough remain unchanged.
+
+.PARAMETER ImageUrl
+    An explicit artifact URL that bypasses latest-build discovery.
+.PARAMETER BuildApiUrl
+    The Azure DevOps build API root used for image discovery.
+.PARAMETER BuildDefinitionId
+    The build definition used for image discovery. The default is 142.
+.PARAMETER ImageArtifactName
+    The artifact to select from the latest successful build. The default is sonic-buildimage.vs.
+.PARAMETER ImageArtifactSubPath
+    The image path inside the artifact. The default is /target/sonic-vs.img.gz.
+.PARAMETER TacacsServer
+    The server's IPv4 or IPv6 address. The default reaches the QEMU host from the guest.
+.PARAMETER TacacsPort
+    The server's TCP port. The default is 49.
+.PARAMETER TacacsPriority
+    The server's priority, from 1 to 64. The default is 1.
+.PARAMETER TacacsTimeoutSeconds
+    An optional response timeout, from 1 to 60 seconds. Omission retains native inheritance.
+.PARAMETER TacacsPasskey
+    An optional shared secret from Read-Host -AsSecureString. Omission retains native inheritance.
+.PARAMETER SaveConfig
+    Saves the whole running configuration after a successful TACACS+ change.
 
 .EXAMPLE
     .\sonic-vm.ps1 -Action Up        # Start in the background and wait for SSH.
@@ -17,18 +46,33 @@
     .\sonic-vm.ps1 -Action Mount      # If necessary, format the disk. Then mount /data.
     .\sonic-vm.ps1 -Action Ssh       # Start an interactive shell.
     .\sonic-vm.ps1 -Action Stop
+.EXAMPLE
+    .\sonic-vm.ps1 -Action AddTacacsServer
+.EXAMPLE
+    .\sonic-vm.ps1 -Action AddTacacsServer -TacacsPasskey (Read-Host 'Shared secret' -AsSecureString)
+.EXAMPLE
+    .\sonic-vm.ps1 -Action RemoveTacacsServer
+.EXAMPLE
+    .\sonic-vm.ps1 -Action EnableTacacs -SaveConfig
+.EXAMPLE
+    .\sonic-vm.ps1 -Action DisableTacacs
 #>
 [CmdletBinding()]
 param(
     [ValidateSet('Start','Up','Stop','Ssh','InstallKey','CopyKey','Mount','Umount','Status',
-                 'Reset','Snapshot','Restore','ListSnapshots')]
+                 'Reset','Snapshot','Restore','ListSnapshots',
+                 'AddTacacsServer','RemoveTacacsServer','EnableTacacs','DisableTacacs')]
     [string]$Action = 'Up',
 
     [string]$QemuExe       = 'C:\Program Files\qemu\qemu-system-x86_64.exe',
     [string]$QemuImgExe    = 'C:\Program Files\qemu\qemu-img.exe',
     [string]$ImagePath     = 'sonic-vs.img',
     [string]$CompressedImagePath = 'sonic-vs.img.gz',
-    [string]$ImageUrl      = 'https://artprodcus3.artifacts.visualstudio.com/Af91412a5-a906-4990-9d7c-f697b81fc04d/be1b070f-be15-4154-aade-b1d3bfb17054/_apis/artifact/cGlwZWxpbmVhcnRpZmFjdDovL21zc29uaWMvcHJvamVjdElkL2JlMWIwNzBmLWJlMTUtNDE1NC1hYWRlLWIxZDNiZmIxNzA1NC9idWlsZElkLzEwNjQ4NDEvYXJ0aWZhY3ROYW1lL3NvbmljLWJ1aWxkaW1hZ2UudnM1/content?format=zip',
+    [string]$ImageUrl,
+    [string]$BuildApiUrl = 'https://dev.azure.com/mssonic/build/_apis/build',
+    [ValidateRange(1, [int]::MaxValue)]
+    [int]$BuildDefinitionId = 142,
+    [string]$ImageArtifactName = 'sonic-buildimage.vs',
     [string]$ImageArtifactSubPath = '/target/sonic-vs.img.gz',
     [string]$OverlayPath   = 'overlay.qcow2',
     [bool]  $UseOverlay    = $true,
@@ -49,6 +93,16 @@ param(
     [string]$User          = 'admin',
     [string]$Password      = 'YourPaSsWoRd',
     [string]$PublicKeyPath,
+
+    [string]$TacacsServer = '10.0.2.2',
+    [ValidateRange(1, 65535)]
+    [int]$TacacsPort = 49,
+    [ValidateRange(1, 64)]
+    [int]$TacacsPriority = 1,
+    [ValidateRange(1, 60)]
+    [int]$TacacsTimeoutSeconds,
+    [Security.SecureString]$TacacsPasskey,
+    [switch]$SaveConfig,
 
     [switch]$Daemon
 )
@@ -358,11 +412,33 @@ function Get-ImageDownloadUrl {
     $builder.Uri.AbsoluteUri
 }
 
+function Get-LatestSuccessfulImageArtifactUrl {
+    $buildsUrl = '{0}/builds?definitions={1}&statusFilter=completed&resultFilter=succeeded&%24top=1&queryOrder=finishTimeDescending&api-version=7.1' -f `
+        $BuildApiUrl.TrimEnd('/'), $BuildDefinitionId
+    $builds = Invoke-RestMethod -Uri $buildsUrl -UseBasicParsing
+    $build = $builds.value | Select-Object -First 1
+    if ($null -eq $build) {
+        throw "No successful build was found for definition $BuildDefinitionId."
+    }
+
+    $artifactsUrl = '{0}/builds/{1}/artifacts?api-version=7.1' -f $BuildApiUrl.TrimEnd('/'), $build.id
+    $artifacts = Invoke-RestMethod -Uri $artifactsUrl -UseBasicParsing
+    $artifact = $artifacts.value | Where-Object { $_.name -ceq $ImageArtifactName } | Select-Object -First 1
+    if ($null -eq $artifact) {
+        throw "Build $($build.id) does not contain the '$ImageArtifactName' artifact."
+    }
+
+    $downloadUrl = $artifact.resource.downloadUrl
+    if ([string]::IsNullOrWhiteSpace($downloadUrl)) {
+        throw "Build $($build.id) artifact '$ImageArtifactName' has no download URL."
+    }
+
+    Write-Host "Use SONiC build $($build.id), artifact '$ImageArtifactName'."
+    $downloadUrl
+}
+
 function Ensure-BaseImage {
     if (Test-Path $ImagePath) { return }
-    if ([string]::IsNullOrWhiteSpace($ImageUrl)) {
-        throw "Base image not found at $ImagePath and -ImageUrl is empty."
-    }
 
     $imageDirectory = Split-Path $ImagePath
     if (-not (Test-Path $imageDirectory)) {
@@ -383,7 +459,12 @@ function Ensure-BaseImage {
         Write-Host "The base image is missing: $ImagePath"
         Write-Host "Download the SONiC image to $CompressedImagePath."
         Write-Host "The download can take several minutes."
-        $downloadUrl = Get-ImageDownloadUrl -Url $ImageUrl -SubPath $ImageArtifactSubPath
+        $artifactUrl = if ([string]::IsNullOrWhiteSpace($ImageUrl)) {
+            Get-LatestSuccessfulImageArtifactUrl
+        } else {
+            $ImageUrl
+        }
+        $downloadUrl = Get-ImageDownloadUrl -Url $artifactUrl -SubPath $ImageArtifactSubPath
         Invoke-WebRequest -Uri $downloadUrl -OutFile $temporaryDownloadPath -UseBasicParsing
         Move-Item -Force $temporaryDownloadPath $CompressedImagePath
     } else {
@@ -562,6 +643,191 @@ function Invoke-RemoteScript {
     }
 }
 
+function Invoke-TacacsConfiguration {
+    param([Parameter(Mandatory)][Collections.IDictionary]$Options)
+
+    . $PSScriptRoot\SonicVm.Common.ps1
+
+    $Action = switch ($Action) {
+        'AddTacacsServer' { 'AddTacacsServer' }
+        'RemoveTacacsServer' { 'RemoveTacacsServer' }
+        'EnableTacacs' { 'EnableTacacs' }
+        'DisableTacacs' { 'DisableTacacs' }
+    }
+
+    if ($Action -ne 'AddTacacsServer') {
+        foreach ($name in @('TacacsPort', 'TacacsPriority', 'TacacsTimeoutSeconds', 'TacacsPasskey')) {
+            if ($Options.ContainsKey($name)) {
+                throw "-$name applies only to AddTacacsServer."
+            }
+        }
+    }
+    if ($Action -in @('AddTacacsServer', 'RemoveTacacsServer')) {
+        $address = $null
+        if ([string]::IsNullOrWhiteSpace($TacacsServer) -or
+            -not [Net.IPAddress]::TryParse($TacacsServer, [ref]$address) -or
+            $TacacsServer.Contains('%') -or $TacacsServer -ne $TacacsServer.Trim()) {
+            throw '-TacacsServer must be an IPv4 or IPv6 address without a scope ID.'
+        }
+    } elseif ($Options.ContainsKey('TacacsServer')) {
+        throw '-TacacsServer applies only to AddTacacsServer and RemoveTacacsServer.'
+    }
+
+    Test-Tool ssh
+    $passkey = ''
+    $passkeyPointer = [IntPtr]::Zero
+    try {
+        if ($null -ne $TacacsPasskey) {
+            $passkeyPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($TacacsPasskey)
+            $passkey = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($passkeyPointer)
+            if ($passkey -notmatch '\A[\x21-\x7e]{1,256}\z' -or $passkey.Contains('#') -or $passkey.Contains(',')) {
+                throw 'The TACACS+ passkey must contain 1 to 256 printable ASCII characters without spaces, "#" or ",".'
+            }
+        }
+
+        $quotedServer = Quote-SonicShellArgument $TacacsServer
+        $quotedAction = Quote-SonicShellArgument $Action
+        $quotedPasskey = if ($passkey.Length -gt 0) { Quote-SonicShellArgument $passkey } else { "''" }
+        $saveValue = if ($SaveConfig) { '1' } else { '0' }
+        $script = @"
+set -euo pipefail
+action=$quotedAction
+server=$quotedServer
+port=$TacacsPort
+priority=$TacacsPriority
+timeout_seconds=$TacacsTimeoutSeconds
+passkey=$quotedPasskey
+save_config=$saveValue
+server_key="TACPLUS_SERVER|`$server"
+
+fail() {
+    printf '%s\n' "`$1" >&2
+    exit 1
+}
+
+db() {
+    redis-cli --raw -e -n 4 "`$@"
+}
+
+native_config() {
+    local status
+    if sudo -n config "`$@" </dev/null >/dev/null 2>&1; then
+        return 0
+    else
+        status=`$?
+    fi
+    printf 'SONiC config %s failed (exit code %s). Diagnostics are suppressed to protect shared secrets.\n' "`$1" "`$status" >&2
+    return "`$status"
+}
+
+verify_field() {
+    local actual
+    actual=`$(db HGET "`$server_key" "`$1") || return `$?
+    [ "`$actual" = "`$2" ] || fail "SONiC did not apply the requested TACACS+ `$1."
+}
+
+if ! sudo -n true; then
+    fail 'TACACS+ management requires passwordless sudo in the guest.'
+fi
+
+case "`$action" in
+    AddTacacsServer)
+        exists=`$(db EXISTS "`$server_key")
+        [ "`$exists" = '0' ] || fail "TACACS+ server `$server already exists. Remove it before changing its configuration."
+        args=(tacacs add -o "`$port" -p "`$priority")
+        if [ "`$timeout_seconds" -gt 0 ]; then
+            args+=(-t "`$timeout_seconds")
+        fi
+        if [ -n "`$passkey" ]; then
+            args+=(-k "`$passkey")
+        fi
+        native_config "`${args[@]}" "`$server"
+        verify_field tcp_port "`$port"
+        verify_field priority "`$priority"
+        if [ "`$timeout_seconds" -gt 0 ]; then
+            verify_field timeout "`$timeout_seconds"
+        fi
+        if [ -n "`$passkey" ]; then
+            verify_field passkey "`$passkey"
+        fi
+        result="Added TACACS+ server `$server on TCP port `$port."
+        ;;
+    RemoveTacacsServer)
+        exists=`$(db EXISTS "`$server_key")
+        [ "`$exists" = '1' ] || fail "TACACS+ server `$server does not exist."
+        servers=`$(db --scan --pattern 'TACPLUS_SERVER|*' | sort -u)
+        login=`$(db HGET 'AAA|authentication' login)
+        if [ "`$servers" = "`$server_key" ]; then
+            case ",`$login," in
+                *,tacacs+,*) printf '%s\n' 'WARNING: This removes the final server while TACACS+ login is active. New logins can fail.' >&2 ;;
+            esac
+        fi
+        native_config tacacs delete "`$server"
+        exists=`$(db EXISTS "`$server_key")
+        [ "`$exists" = '0' ] || fail "SONiC did not remove TACACS+ server `$server."
+        result="Removed TACACS+ server `$server."
+        ;;
+    EnableTacacs|DisableTacacs)
+        if [ "`$action" = 'EnableTacacs' ]; then
+            servers=`$(db --scan --pattern 'TACPLUS_SERVER|*')
+            if [ -z "`$servers" ]; then
+                printf '%s\n' 'WARNING: No TACACS+ servers are configured. New logins can fail.' >&2
+            fi
+            method='tacacs+'
+        else
+            method='local'
+        fi
+        native_config aaa authentication login "`$method"
+        login=`$(db HGET 'AAA|authentication' login)
+        [ "`$login" = "`$method" ] || fail 'SONiC did not apply the requested login authentication method.'
+        result="Login authentication is `$method. Configured servers remain unchanged."
+        ;;
+esac
+
+if [ "`$save_config" = '1' ]; then
+    if native_config save -y; then
+        printf '%s\n' 'Saved the whole running SONiC configuration.'
+    else
+        fail 'The running change is active, but saving the configuration failed.'
+    fi
+fi
+printf '%s\n' "`$result"
+"@
+
+        $common = Get-KeySshArgs
+        $target = Get-SshTarget
+        $OutputEncoding = [Text.UTF8Encoding]::new($false)
+        $PSNativeCommandUseErrorActionPreference = $false
+        if ($Action -eq 'EnableTacacs') {
+            Write-Warning 'TACACS-only login can block new access. Keep a working session or console available.'
+        }
+        $ErrorActionPreference = 'Continue'
+        $script.Replace("`r`n", "`n") | & ssh @common $target 'bash -s' 2>&1 | ForEach-Object {
+            $text = $_.ToString()
+            if ($passkey.Length -gt 0) {
+                $text = $text.Replace($quotedPasskey, '[REDACTED]').Replace($passkey, '[REDACTED]')
+            }
+            if ($text.StartsWith('WARNING: ')) {
+                Write-Warning $text.Substring(9)
+            } else {
+                Write-Output $text
+            }
+        }
+        $exitCode = $LASTEXITCODE
+        $ErrorActionPreference = 'Stop'
+        if ($exitCode -ne 0) {
+            throw "TACACS+ action '$Action' returned exit code $exitCode."
+        }
+    } finally {
+        if ($passkeyPointer -ne [IntPtr]::Zero) {
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passkeyPointer)
+        }
+        $passkey = ''
+        $quotedPasskey = ''
+        $script = ''
+    }
+}
+
 function Mount-DataDisk {
     $expectedSizeBytes = [int64]$DataDiskSizeGB * 1GB
     $script = @"
@@ -721,6 +987,10 @@ switch ($Action) {
     'Snapshot'      { Snapshot-Overlay }
     'Restore'       { Restore-Snapshot }
     'ListSnapshots' { List-Snapshots }
+    'AddTacacsServer'    { Invoke-TacacsConfiguration -Options $PSBoundParameters }
+    'RemoveTacacsServer' { Invoke-TacacsConfiguration -Options $PSBoundParameters }
+    'EnableTacacs'       { Invoke-TacacsConfiguration -Options $PSBoundParameters }
+    'DisableTacacs'      { Invoke-TacacsConfiguration -Options $PSBoundParameters }
     'Up' {
         $Daemon = $true
         Start-Vm
