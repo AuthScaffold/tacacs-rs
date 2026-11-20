@@ -15,7 +15,7 @@ tokio = { version = "1.52.3", features = ["io-util", "macros", "net", "parking_l
 tacacsrs-protocol = { path = "../tacacsrs_protocol" }
 rand = "0.10.1"
 log = "0.4.30"
-parking_lot = "0.12.5"
+parking_lot = "0.13.0"
 openssl = "0.10.80"
 openssl-sys = "0.9.116"
 tokio-openssl = "0.6.5"
