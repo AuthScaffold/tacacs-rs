@@ -77,8 +77,7 @@ impl SelectedProfile {
 
     /// Selects the components of a profile that the command line configures.
     ///
-    /// The profile gets the HTTP credential evidence sources of the command
-    /// line. `source` returns the source components.
+    /// `source` returns the source components.
     ///
     /// # Errors
     /// Returns a source or selection error.
@@ -93,7 +92,6 @@ impl SelectedProfile {
                 .upstream_watchdog_interval_seconds
                 .map(|seconds| Duration::from_secs(seconds.get())),
             protected_inputs: protected_inputs(&cli),
-            http_evidence: crate::http_evidence::settings(&cli)?,
         };
         let policy = cli
             .runtime_policy
@@ -124,21 +122,6 @@ fn protected_inputs(cli: &Cli) -> Vec<PathBuf> {
             .iter()
             .chain(cli.client_key.iter())
             .map(PathBuf::from),
-    );
-    protected_inputs.extend(
-        cli.http_crl_certificate
-            .chunks_exact(2)
-            .map(|values| PathBuf::from(&values[1])),
-    );
-    protected_inputs.extend(
-        cli.http_ocsp_source
-            .chunks_exact(4)
-            .flat_map(|values| [PathBuf::from(&values[2]), PathBuf::from(&values[3])]),
-    );
-    protected_inputs.extend(
-        cli.http_ocsp_certificate
-            .chunks_exact(3)
-            .flat_map(|values| [PathBuf::from(&values[1]), PathBuf::from(&values[2])]),
     );
     protected_inputs
 }

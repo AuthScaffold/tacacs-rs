@@ -8,7 +8,7 @@ use openssl::ssl::SslContext;
 use openssl::x509::X509;
 use tokio::net::TcpStream;
 
-use super::{connect_tls, RevocationEvidenceLifetime, TlsConfigurationBuilder};
+use super::{connect_tls, RevocationCheck, TlsConfigurationBuilder};
 use crate::transport::BoxedTransport;
 
 /// DER encoding of a client private key.
@@ -60,27 +60,20 @@ pub enum CertificateVerification {
     /// Disables trust and peer identity verification for controlled development use.
     ///
     /// CAUTION: This policy permits server impersonation. Do not use it in production.
-    /// Authentication certificate dates still apply. Required revocation evidence is rejected.
+    /// Authentication certificate dates still apply. Revocation is not checked.
     DisabledForDevelopment,
 }
 
 /// Reusable certificate TLS configuration with private native context ownership.
 ///
-/// Attach required OCSP and CRL evidence before finalizing an endpoint.
+/// Revocation checks come from a verifier attached to the endpoint or connector.
 #[derive(Clone)]
 pub struct TlsClientConfig {
     context: SslContext,
     peer_identity: String,
     sni_name: Option<String>,
     has_client_intermediates: bool,
-    pub(crate) evidence_lifetime: Option<RevocationEvidenceLifetime>,
-    crls: Option<std::sync::Arc<super::revocation::crls::CrlEvidence>>,
-    peer_pins: bool,
-    pub(crate) revocation: super::CertificateRevocationPolicy,
-    revocation_issuers: Vec<X509>,
     verification: CertificateVerification,
-    provided_ocsp: Option<super::revocation::ProvidedResponse>,
-    payload: crate::PreparationPayload,
 }
 
 impl std::fmt::Debug for TlsClientConfig {
@@ -90,9 +83,6 @@ impl std::fmt::Debug for TlsClientConfig {
             .field("peer_identity", &self.peer_identity)
             .field("sni_name", &self.sni_name)
             .field("verification", &self.verification)
-            .field("revocation", &self.revocation)
-            .field("crls", &self.crls.is_some())
-            .field("fetched_ocsp", &self.provided_ocsp.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -157,8 +147,6 @@ impl TlsClientConfig {
             .with_certificate_verification_disabled(
                 verification == CertificateVerification::DisabledForDevelopment,
             );
-        let peer_pins = matches!(&trust, CertificateTrust::Certificates { end_entities, .. } if !end_entities.is_empty());
-        let mut revocation_issuers = Vec::new();
         if let CertificateTrust::Certificates {
             authorities,
             end_entities,
@@ -188,10 +176,6 @@ impl TlsClientConfig {
                     ))
                 })
                 .collect::<Result<Vec<_>>>()?;
-            revocation_issuers = authorities
-                .iter()
-                .map(|(certificate, _)| certificate.clone())
-                .collect();
             builder = builder.with_certificate_trust(authorities, end_entities);
         }
         let mut has_client_intermediates = false;
@@ -239,53 +223,16 @@ impl TlsClientConfig {
         Ok(Self {
             context,
             has_client_intermediates,
-            crls: None,
-            peer_pins,
-            revocation: super::CertificateRevocationPolicy::disabled(),
-            revocation_issuers,
             verification,
-            provided_ocsp: None,
-            evidence_lifetime: None,
             peer_identity: peer_identity.to_owned(),
             sni_name: sni_name.map(str::to_owned),
-            payload,
         })
     }
 
-    /// Requires stapled OCSP independently of fetched evidence.
-    ///
-    /// # Errors
-    /// Rejects required evidence when certificate verification is disabled.
-    pub fn with_revocation_policy(
-        mut self,
-        policy: super::CertificateRevocationPolicy,
-    ) -> Result<Self> {
-        anyhow::ensure!(
-            self.verification == CertificateVerification::Required
-                || policy.maximum_response_age().is_none(),
-            "Required OCSP evidence cannot be combined with disabled certificate verification"
-        );
-        self.revocation = policy;
-        Ok(self)
-    }
-
-    /// Attaches fresh full CRLs and explicitly paired deltas for CA authentication.
-    ///
-    /// # Errors
-    /// Rejects invalid evidence, exact peer pins, or disabled verification.
-    pub fn with_crls(mut self, lists: &[&[u8]], maximum_age: std::time::Duration) -> Result<Self> {
-        anyhow::ensure!(
-            self.verification == CertificateVerification::Required && !self.peer_pins,
-            "CRL mode requires CA authentication with certificate verification enabled"
-        );
-        let evidence =
-            super::revocation::crls::CrlEvidence::prepare(lists, maximum_age, &self.payload)?;
-        self.evidence_lifetime = Some(match self.evidence_lifetime {
-            Some(lifetime) => lifetime.intersect(evidence.lifetime)?,
-            None => evidence.lifetime,
-        });
-        self.crls = Some(std::sync::Arc::new(evidence));
-        Ok(self)
+    /// Returns the server certificate verification policy.
+    #[must_use]
+    pub const fn verification(&self) -> CertificateVerification {
+        self.verification
     }
 
     pub(crate) fn validate_client_certificate_dates(&self) -> Result<()> {
@@ -305,41 +252,19 @@ impl TlsClientConfig {
         Some(digest.iter().map(|byte| format!("{byte:02x}")).collect())
     }
 
-    fn local_authentication_certificates(&self) -> Result<Vec<Vec<u8>>> {
-        let mut certificates = self
-            .context
-            .certificate()
-            .map(|certificate| certificate.to_der())
-            .transpose()?
-            .into_iter()
-            .collect::<Vec<_>>();
-        if self.has_client_intermediates {
-            certificates.extend(
-                self.context
-                    .extra_chain_certs()
-                    .iter()
-                    .map(openssl::x509::X509Ref::to_der)
-                    .collect::<Result<Vec<_>, _>>()?,
-            );
-        }
-        Ok(certificates)
-    }
-
-    pub(crate) async fn connect(&self, tcp_stream: TcpStream) -> Result<BoxedTransport> {
+    pub(crate) async fn connect(
+        &self,
+        tcp_stream: TcpStream,
+        revocation: Option<&RevocationCheck>,
+    ) -> Result<BoxedTransport> {
         self.validate_client_certificate_dates()
             .context(crate::statistics::CertificateFailure)?;
-        let (stream, verified_evidence) = connect_tls(
+        let stream = connect_tls(
             &self.context,
             tcp_stream,
             &self.peer_identity,
             self.sni_name.as_deref(),
-            super::revocation::ConnectionRevocation::new(
-                self.revocation,
-                &self.revocation_issuers,
-                self.local_authentication_certificates()?,
-                self.provided_ocsp.clone(),
-            ),
-            self.crls.clone(),
+            revocation,
         )
         .await
         .context("Failed to establish TLS connection")?;
@@ -349,52 +274,15 @@ impl TlsClientConfig {
             .context("TLS peer certificate is missing")?;
         if self.verification == CertificateVerification::DisabledForDevelopment {
             let now = std::time::SystemTime::now();
-            let valid_from = super::validity::system_time(peer.not_before())?;
-            let valid_until = super::validity::system_time(peer.not_after())?;
+            let valid_from = super::validity::asn1_system_time(peer.not_before())?;
+            let valid_until = super::validity::asn1_system_time(peer.not_after())?;
             if !(valid_from <= now && now < valid_until) {
                 return Err(anyhow::anyhow!("Peer certificate validity excludes the current time")
                     .context(crate::statistics::CertificateFailure));
             }
         }
-        let lifetime = match verified_evidence {
-            Some(validity) => {
-                let verified = RevocationEvidenceLifetime::new(validity)?;
-                Some(
-                    self.evidence_lifetime
-                        .map_or(Ok(verified), |prepared| prepared.intersect(verified))?,
-                )
-            }
-            None => self.evidence_lifetime,
-        };
         let details = crate::TlsDetails::from_ssl(stream.ssl());
-        let transport = BoxedTransport::new(stream).with_tls_details(details);
-        Ok(match lifetime {
-            Some(lifetime) => transport.with_revocation_evidence_lifetime(lifetime),
-            None => transport,
-        })
-    }
-
-    /// Attaches fetched OCSP evidence without replacing a mandatory staple policy.
-    ///
-    /// # Errors
-    /// Rejects invalid or stale evidence and disabled certificate verification.
-    pub fn with_ocsp_response(
-        mut self,
-        encoded: &[u8],
-        maximum_age: std::time::Duration,
-    ) -> Result<Self> {
-        anyhow::ensure!(
-            self.verification == CertificateVerification::Required,
-            "Fetched OCSP requires certificate verification"
-        );
-        let response =
-            super::revocation::ProvidedResponse::prepare(encoded, maximum_age, &self.payload)?;
-        self.evidence_lifetime = Some(match self.evidence_lifetime {
-            Some(current) => current.intersect(response.lifetime)?,
-            None => response.lifetime,
-        });
-        self.provided_ocsp = Some(response);
-        Ok(self)
+        Ok(BoxedTransport::new(stream).with_tls_details(details))
     }
 }
 
@@ -647,39 +535,6 @@ mod tests {
     }
 
     #[test]
-    fn development_verification_rejects_all_required_revocation_evidence() {
-        let config = TlsClientConfig::prepare(
-            "localhost",
-            None,
-            CertificateTrust::Platform,
-            None,
-            CertificateVerification::DisabledForDevelopment,
-        )
-        .unwrap();
-        let maximum_age = std::time::Duration::from_secs(300);
-        assert!(config
-            .clone()
-            .with_revocation_policy(
-                super::super::CertificateRevocationPolicy::require_stapled_ocsp(maximum_age)
-                    .unwrap(),
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("disabled certificate verification"));
-        assert!(config
-            .clone()
-            .with_crls(&[], maximum_age)
-            .unwrap_err()
-            .to_string()
-            .contains("verification enabled"));
-        assert!(config
-            .with_ocsp_response(&[], maximum_age)
-            .unwrap_err()
-            .to_string()
-            .contains("requires certificate verification"));
-    }
-
-    #[test]
     fn explicit_empty_trust_is_rejected_even_with_verification_disabled() {
         for verification in [
             CertificateVerification::Required,
@@ -764,7 +619,7 @@ mod tests {
                 let tcp = TcpStream::connect(listener.local_addr().unwrap())
                     .await
                     .unwrap();
-                config.connect(tcp).await
+                config.connect(tcp, None).await
             };
             let (result, ()) =
                 tokio::time::timeout(Duration::from_secs(5), async { tokio::join!(connect, peer) })

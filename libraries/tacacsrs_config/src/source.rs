@@ -50,7 +50,8 @@ pub struct ConfigDelta {
     pub removed_servers: Vec<String>,
     /// Server names whose definitions changed between snapshots.
     pub modified_servers: Vec<String>,
-    /// `true` when root data such as a shared credential bundle changed.
+    /// `true` when root data changed, such as a shared credential bundle or the
+    /// `certificate-revocation` policy.
     ///
     /// If this field is `true`, consumers must use the complete configuration.
     pub root_metadata_changed: bool,
@@ -79,7 +80,8 @@ impl ConfigDelta {
                 removed_servers: Vec::new(),
                 modified_servers: Vec::new(),
                 root_metadata_changed: !new.client_credentials.is_empty()
-                    || !new.server_credentials.is_empty(),
+                    || !new.server_credentials.is_empty()
+                    || new.certificate_revocation.is_some(),
             };
         };
 
@@ -103,7 +105,8 @@ impl ConfigDelta {
             .collect::<Vec<_>>();
 
         let root_metadata_changed = previous.client_credentials != new.client_credentials
-            || previous.server_credentials != new.server_credentials;
+            || previous.server_credentials != new.server_credentials
+            || previous.certificate_revocation != new.certificate_revocation;
 
         Self {
             added_servers: added,
@@ -384,6 +387,23 @@ mod tests {
         assert!(delta.removed_servers.is_empty());
         assert!(delta.modified_servers.is_empty());
         assert!(!delta.root_metadata_changed);
+    }
+
+    #[test]
+    fn delta_reports_revocation_policy_change_without_server_changes() {
+        let previous = sample_config("192.0.2.1");
+        let mut new = previous.clone();
+        new.certificate_revocation = Some(crate::tacacsrs::CertificateRevocation {
+            enforcement: crate::tacacsrs::Enforcement::WarnOnly,
+            allowed_distribution_point: vec!["http://crl.example.com/**".to_owned()],
+            ..Default::default()
+        });
+
+        let delta = ConfigDelta::diff(Some(&previous), &new);
+
+        assert!(delta.root_metadata_changed);
+        assert!(delta.modified_servers.is_empty());
+        assert!(!delta.is_empty());
     }
 
     #[test]

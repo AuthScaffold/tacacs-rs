@@ -162,9 +162,6 @@ fn psk_context(key: &'static [u8], dhe: bool) -> SslContext {
 
 fn trust_store() -> TlsClientServerAuthentication {
     TlsClientServerAuthentication {
-        require_crls: None,
-        require_ocsp: None,
-        require_stapled_ocsp: None,
         credentials_reference: None,
         ca_certs: Some(ServerAuthenticationCaCerts {
             inline_definition: Some(tacacsrs_config::truststore::CertsInlineDefinition {

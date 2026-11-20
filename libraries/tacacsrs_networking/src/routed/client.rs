@@ -54,7 +54,7 @@ impl RoutedClient {
     /// Creates a native routed client without opening connections.
     #[must_use]
     pub fn new(endpoints: Vec<Endpoint>) -> Self {
-        Self::with_connector(endpoints, NativeConnector)
+        Self::with_connector(endpoints, NativeConnector::new())
     }
 }
 

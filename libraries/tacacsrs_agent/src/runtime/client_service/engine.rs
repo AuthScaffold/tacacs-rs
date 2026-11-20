@@ -55,6 +55,8 @@ pub(crate) struct ServiceRuntime<
     pub(super) reload_publication_lock: Mutex<()>,
     /// Shared protocol-neutral runtime health publisher.
     pub(super) health: RuntimeHealthPublisher,
+    /// Revocation settings channel shared with the network connector.
+    pub(super) revocation: crate::UpstreamRevocation,
     #[cfg(test)]
     pub(super) implicit_reload_pause:
         std::sync::Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
@@ -125,7 +127,10 @@ impl ServiceRuntime<ServiceConnector> {
             servers.into_iter().map(Arc::new).collect(),
             configuration_applied,
             Vec::new(),
-            |guard| ServiceConnector(NetworkUpstreamConnector::new(guard).erased()),
+            crate::UpstreamRevocation::default(),
+            |guard, revocation| {
+                ServiceConnector(NetworkUpstreamConnector::new(guard, revocation).erased())
+            },
         )
     }
 
@@ -142,7 +147,8 @@ impl ServiceRuntime<ServiceConnector> {
             servers.into_iter().map(Arc::new).collect(),
             true,
             Vec::new(),
-            |_| ServiceConnector(connector),
+            crate::UpstreamRevocation::default(),
+            |_, _| ServiceConnector(connector),
         )
     }
 }
@@ -157,13 +163,14 @@ where
         servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
         configuration_applied: bool,
         local_services_overlays: Vec<Arc<dyn LocalServicesOverlay>>,
-        factory: impl FnOnce(ProxyLoopGuard) -> Connector,
+        revocation: crate::UpstreamRevocation,
+        factory: impl FnOnce(ProxyLoopGuard, crate::UpstreamRevocation) -> Connector,
     ) -> anyhow::Result<Self> {
         let local_services = LocalServicesState::new(
             ActiveLocalServices::new(config.local_services.clone())?,
             local_services_overlays,
         );
-        let connector = factory(local_services.proxy_loop_guard().clone());
+        let connector = factory(local_services.proxy_loop_guard().clone(), revocation.clone());
         let proxy_policy = if !configuration_applied
             && config.local_services.proxy_credential_source
                 == tacacsrs_config::tacacsrs::ProxyCredentialSource::LocalProxyRow
@@ -190,6 +197,7 @@ where
             manager,
             reload_publication_lock: Mutex::new(()),
             health,
+            revocation,
             #[cfg(test)]
             implicit_reload_pause: std::sync::Mutex::new(None),
         })
@@ -277,6 +285,9 @@ where
                 Ok(update) => log::debug!("The source runtime policy was not applied: {update:?}"),
                 Err(error) => log::debug!("The source runtime policy was not applied: {error:#}"),
             }
+        }
+        if let Some(settings) = &sections.revocation {
+            self.revocation.publish(settings);
         }
         self.local_services
             .publish(Arc::clone(&sections.local_services));

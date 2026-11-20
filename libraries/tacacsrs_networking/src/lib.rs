@@ -55,6 +55,7 @@ mod exchange_error;
 mod destination;
 mod binding;
 pub mod retry;
+pub mod revocation;
 pub mod routed;
 mod connection;
 mod session;
@@ -74,8 +75,12 @@ pub use preparation_payload::{PreparationPayload, PreparationPayloadLedger};
 pub use destination::ServerAddress;
 pub use binding::{BindingPolicy, LocalBinding, SourceBinding};
 pub use transport::tls::{
-    CertificateIdentity, CertificateTrust, CertificateVerification, CertificateRevocationPolicy,
-    PrivateKeyEncoding, RevocationEvidenceValidity, TlsClientConfig,
+    CertificateIdentity, CertificateTrust, CertificateVerification, PrivateKeyEncoding,
+    TlsClientConfig, asn1_system_time,
+};
+pub use revocation::{
+    DistributionPointPattern, DistributionPointUrl, RevocationDecision, RevocationEnforcement,
+    RevocationNetwork, RevocationRejection, RevocationSettings, RevocationVerifier, VerifiedPath,
 };
 pub use transport::tls_psk::{PskClientConfig, PskHash, PskDheGroup};
 pub use establish::{ConnectOptions, ConnectPreflight, PreparedTransport};

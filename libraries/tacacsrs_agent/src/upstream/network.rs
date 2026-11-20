@@ -14,7 +14,7 @@ use tacacsrs_networking::{PreparedEndpoint, TacacsClient};
 use super::connection::UpstreamConnection;
 #[cfg(test)]
 use super::connection::UpstreamConnector;
-use super::{OperationKind, UpstreamRequestError};
+use super::{OperationKind, UpstreamRequestError, UpstreamRevocation};
 use crate::runtime::ProxyLoopGuard;
 
 /// Production connector backed by [`tacacsrs_networking`].
@@ -23,11 +23,18 @@ use crate::runtime::ProxyLoopGuard;
 #[derive(Debug, Clone)]
 pub(crate) struct NetworkUpstreamConnector {
     proxy_loop_guard: ProxyLoopGuard,
+    revocation: UpstreamRevocation,
 }
 
 impl NetworkUpstreamConnector {
-    pub(crate) const fn new(proxy_loop_guard: ProxyLoopGuard) -> Self {
-        Self { proxy_loop_guard }
+    pub(crate) const fn new(
+        proxy_loop_guard: ProxyLoopGuard,
+        revocation: UpstreamRevocation,
+    ) -> Self {
+        Self {
+            proxy_loop_guard,
+            revocation,
+        }
     }
 
     #[cfg(test)]
@@ -60,10 +67,11 @@ impl tacacsrs_networking::routed::EndpointConnector for NetworkUpstreamConnector
         _operation: OperationKind,
     ) -> anyhow::Result<Arc<Self::Connection>> {
         let address = endpoint.address().to_string();
-        let connection = TacacsClient::connect_prepared(
-            endpoint.with_connection_guard(self.proxy_loop_guard.clone()),
-        )
-        .await?;
+        let endpoint = self
+            .revocation
+            .attach(endpoint.with_connection_guard(self.proxy_loop_guard.clone()))
+            .with_context(|| format!("Refused a new connection to {address}"))?;
+        let connection = TacacsClient::connect_prepared(endpoint).await?;
 
         Ok(Arc::new(TacacsUpstreamConnection {
             server_address: address,

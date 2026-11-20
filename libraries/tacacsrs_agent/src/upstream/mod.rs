@@ -30,6 +30,7 @@ mod connection;
 pub(crate) mod manager;
 mod network;
 mod proxy_transport;
+mod revocation;
 mod router;
 
 pub(crate) use connection::UpstreamConnection;
@@ -39,5 +40,6 @@ pub(crate) use attempt::{AttemptFailureKind, UpstreamRequestError};
 pub(crate) use admission::{AdmissionError, AdmissionPermit};
 pub(crate) use network::NetworkUpstreamConnector;
 pub(crate) use proxy_transport::ProxyTransportSettings;
+pub use revocation::UpstreamRevocation;
 pub(crate) use router::{OperationRouter, RequestRouting};
 pub use tacacsrs_networking::routed::OperationKind;

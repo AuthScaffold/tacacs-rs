@@ -832,7 +832,8 @@ mod tests {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let manager = Arc::new(UpstreamManager::new(
                 vec![native_server(&listener)],
-                NetworkUpstreamConnector::new(ProxyLoopGuard::new(None)).erased(),
+                NetworkUpstreamConnector::new(ProxyLoopGuard::new(None), Default::default())
+                    .erased(),
                 Duration::from_secs(30),
                 RuntimeHealthPublisher::new(EnabledServices::TACACS_PROXY),
             ));
@@ -928,7 +929,8 @@ mod tests {
             };
             let manager = Arc::new(UpstreamManager::new(
                 vec![native_server(&primary), native_server(&backup)],
-                NetworkUpstreamConnector::new(ProxyLoopGuard::new(None)).erased(),
+                NetworkUpstreamConnector::new(ProxyLoopGuard::new(None), Default::default())
+                    .erased(),
                 Duration::from_secs(30),
                 RuntimeHealthPublisher::new(EnabledServices::TACACS_PROXY),
             ));
@@ -1037,7 +1039,8 @@ mod tests {
                 primary_server.timeout = 1;
                 let manager = Arc::new(UpstreamManager::new(
                     vec![primary_server, native_server(&backup)],
-                    NetworkUpstreamConnector::new(ProxyLoopGuard::new(None)).erased(),
+                    NetworkUpstreamConnector::new(ProxyLoopGuard::new(None), Default::default())
+                        .erased(),
                     Duration::from_secs(30),
                     RuntimeHealthPublisher::new(EnabledServices::TACACS_PROXY),
                 ));

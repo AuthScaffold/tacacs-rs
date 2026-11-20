@@ -3,7 +3,6 @@
 use clap::ValueEnum;
 
 use tacacsrs_agent::PolicyInput;
-use tacacsrs_agent::components::HttpEvidenceSettings;
 use tacacsrs_kubesonic::environment::Environment;
 use tacacsrs_networking::CertificateVerification;
 
@@ -33,7 +32,6 @@ fn from_environment(input: Environment) -> anyhow::Result<SelectedProfile> {
             input.credentials.ca_file.clone(),
             input.credentials.ca_directory.clone(),
         ],
-        http_evidence: HttpEvidenceSettings::default(),
     };
     let policy = PolicyInput::Canonical(input.runtime_policy.clone());
     SelectedProfile::new(

@@ -12,11 +12,11 @@ The profile defaults to both local services, mounted kubelet identity, explicit 
 
 ## Source registration and ownership
 
-The [source registry](src/source_registry.rs) lists inline CLI, YANG file, SONiC, and KubeSONiC profiles. That list supplies source selectors, profile parsers, and arguments for the generated man page. Every profile returns a `SelectedProfile` with process controls and a list of [components](../../libraries/tacacsrs_composition/README.md). The [agent host](../../libraries/tacacsrs_agent/README.md#component-host) prepares, validates, and runs these components. The daemon does not select providers by concrete type. The daemon supplies no components of its own. It converts its arguments to settings for the library components.
+The [source registry](src/source_registry.rs) lists inline CLI, YANG file, SONiC, and KubeSONiC profiles. That list supplies source selectors, profile parsers, and arguments for the generated man page. Every profile returns a `SelectedProfile` with process controls and a list of [components](../../libraries/tacacsrs_composition/README.md). The [agent host](../../libraries/tacacsrs_agent/README.md#component-host) prepares, validates, and runs these components. The daemon does not select providers by concrete type. The daemon has one component of its own, `RevocationComponent`. For the other components, it converts its arguments to settings for the library components.
 
 A profile parses its startup inputs before Tokio starts. `SelectedProfile::new` puts the components in this order:
 
-1. The host components from `HOST_COMPONENTS`. These are the [standard components](../../libraries/tacacsrs_agent/README.md#standard-components) of `tacacsrs-agent`, for example systemd, statistics, the client API, and HTTP credential evidence.
+1. The host components from `HOST_COMPONENTS`. These are `RevocationComponent` and the [standard components](../../libraries/tacacsrs_agent/README.md#standard-components) of `tacacsrs-agent`, for example systemd, statistics, and the client API.
 2. The runtime policy and the certificate verification values.
 3. The source components.
 
@@ -34,15 +34,16 @@ Datastore observation owns the baseline, notifications, and any background worke
 
 ## Components
 
-A component adds inputs, credential layers, local services overlays, startup checks, listeners, hosted services, or health members. The host code does not know the concrete component types. The daemon supplies no components of its own. Its [selection list](src/components/mod.rs) converts the arguments to settings for these [standard components](../../libraries/tacacsrs_agent/README.md#standard-components) of `tacacsrs-agent`:
+A component adds inputs, credential layers, local services overlays, startup checks, listeners, hosted services, or health members. The host code does not know the concrete component types. The daemon has one component of its own, `RevocationComponent`. Its [selection list](src/components/mod.rs) selects that component and converts the arguments to settings for these [standard components](../../libraries/tacacsrs_agent/README.md#standard-components) of `tacacsrs-agent`:
 
 - `SystemdComponent` sends systemd notifications. `--host-integration auto` selects `SystemdMode::Auto`, and `systemd` selects `SystemdMode::Required`. `none` selects no component.
 - `StatisticsComponent` writes the statistics file. Its startup check protects the statistics file from the listener paths. The daemon selects it when `--statistics-file` is set.
 - `ClientApiComponent` adds the listener factory for the client API. The factory returns no listener when the client API is disabled.
 - `TacacsProxyComponent` adds the listener factory for the TACACS+ proxy. The factory returns no listener when the proxy is disabled.
-- `HttpCredentialComponent` adds the HTTP credential layer when HTTP evidence retrieval is configured. Only the inline, file, and SONiC profiles supply these settings.
 - `UpstreamWatchdogComponent` sends periodic upstream probes when a watchdog interval is set.
 - `InvalidSourceShutdownComponent` stops the daemon with an error when the runtime reports `SourceConfigurationInvalid`. The daemon always selects it.
+
+The daemon always selects `RevocationComponent` for all profiles. The component creates the CRL verifier of [`tacacsrs-revocation`](../../libraries/tacacsrs_revocation/README.md) and registers it as `UpstreamRevocation`. It also runs the "CRL revocation refresh" hosted service. See [certificate revocation](#certificate-revocation).
 
 The inline and file profiles convert the listener arguments to a `LocalServicesPatch` for `DatastoreSourceComponent`. The SONiC profile gives the same patch to `SonicSource::with_listener_patch`, which applies it to the SONiC local services. The SONiC forwarder row supplies the proxy endpoint later.
 
@@ -147,17 +148,11 @@ KubeSONiC uses `TACACSD_TLS_CLIENT_CERTIFICATE` and `TACACSD_TLS_CLIENT_KEY` ins
 - Windows "export with private key" workflows commonly produce PKCS#12 (`.pfx` / `.p12`) bundles. These flags do not accept that container format. Provide PEM or DER certificate and private-key material instead.
 - This PEM-or-DER behavior applies only to the CLI flags. If upstream TLS material comes from `--config`, the YANG-backed `tacacsrs-config` path remains DER-only.
 
-## HTTP CRL Registration
+## Certificate Revocation
 
-Use `--http-crl-source REFERENCE URL` to register public HTTP(S) CRL locations at startup.
-Repeat the reference to supply an ordered issuer set. Canonical `tacacsrs:require-crls` policy retains the opaque reference.
-Registration does not enable verification by itself. URL-map changes require a process restart.
+The global `tacacsrs:certificate-revocation` YANG container enables CRL checks for certificate TLS servers. The daemon has no command-line flags for revocation. In KubeSONiC mode, the `TACACSD_REVOCATION_` environment variables set the same container. Enforcement is `disabled` by default.
 
-The provider uses a whole-set timeout and byte and concurrency limits. HTTPS requires trusted, matching certificates.
-Locations must contain no secrets. URL credentials, queries, fragments, redirects, and environment proxies are not supported.
-The existing supervisor refreshes evidence and enforces failure and expiry policy. Host signals cancel pending retrieval.
-SONiC credential resolution and notifications remain available through provider composition.
-See [HTTP CRL registration](../../docs/tacacsrs-agentd.md#http-crl-registration) for limits and examples.
+The daemon checks revocation only when it establishes a new connection. It never closes an established connection because a CRL expires, a refresh fails, or a refreshed CRL lists the server. See [certificate revocation](../../docs/tacacsrs-agentd.md#certificate-revocation) for the enforcement modes and statistics, and the [YANG guide](../../docs/yang-config-guide.md#certificate-revocation) for the leaves.
 
 ## TLS 1.3 PSK
 

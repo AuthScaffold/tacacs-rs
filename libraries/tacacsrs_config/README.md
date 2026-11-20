@@ -93,7 +93,7 @@ These direct helpers use caller-unowned work scopes and do not enforce a global 
 Supervised callers use `materialize_planned_servers` with preflighted typed plans and their registered work scope.
 They supply a nonblocking admission check before each typed installation.
 `ConfigurationMaterialBudget` supplies checked request counts, logical payload, retained-copy charges, and high-water checks without Tokio.
-Borrowed payload sizing covers decoded secrets, keys, certificates, intermediates, trust bags, CRLs, and OCSP responses.
+Borrowed payload sizing covers decoded secrets, keys, certificates, intermediates, and trust bags.
 Names, opaque references, metadata, and allocator slack are excluded.
 This configuration-only sizing does not exempt Rust payload created by endpoint preparation.
 `PrepareOptions::with_payload_ledger` supplies the same candidate ledger to networking through `PreparationPayloadLedger`.
@@ -137,9 +137,9 @@ Set a different timeout in the canonical YANG source or with `TacacsPlusServerBu
 Schema-free callers use `PreparedEndpoint::new` with one `PreparedTransport` and a validated `ServerAddress`.
 `ConnectOptions` controls the TCP timeout, optional preflight, and derived local binding.
 `TlsClientConfig::prepare` takes `CertificateVerification`, peer identity, trust, and optional SNI. It does not accept a verification boolean.
-Disabled verification emits a warning and rejects required revocation evidence. Credential validation and authentication certificate dates still apply.
-Attach stapled OCSP, fetched OCSP, and CRLs to that configuration before endpoint construction.
-The endpoint has no security-selection or evidence-attachment methods.
+Disabled verification emits a warning and skips revocation checks. Credential validation and authentication certificate dates still apply.
+The endpoint has no security-selection methods. A host attaches a revocation verifier with `PreparedEndpoint::with_revocation_verifier`.
+`revocation_settings` converts the global `tacacsrs:certificate-revocation` container to networking `RevocationSettings`. This crate does not create or inject a verifier.
 `PskClientConfig::prepare` validates and retains optional SNI with the PSK context.
 `PreparedTransport::Psk` accepts only that prepared configuration, with no separate SNI override.
 
@@ -170,7 +170,7 @@ Native callers pass `CertificateTrust::Platform` or `CertificateTrust::Certifica
 The explicit variant separates authority DER from exact peer DER. Its collections cannot both be empty.
 OpenSSL still enforces peer identity, validity, purpose, and path checks. The trust-role callback never changes failed native verification into success.
 Direct trust accepts a CA-signed leaf without requiring its issuer. A renewed certificate with the same key needs a new exact entry or CA trust.
-These changes do not add revocation retrieval or client certificate-chain provisioning.
+These changes do not add client certificate-chain provisioning. For CRL checks, see the [YANG guide](../../docs/yang-config-guide.md#certificate-revocation).
 
 Each certificate field contains exactly one DER certificate. Native preparation rejects concatenated certificates and trailing bytes, including with verification disabled.
 CLI PEM input likewise requires exactly one certificate. DER input is normalized without modification, then checked during native preparation.

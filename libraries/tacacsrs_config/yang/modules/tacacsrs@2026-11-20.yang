@@ -25,6 +25,12 @@ module tacacsrs {
   description
     "Project-owned TACACS+ configuration extensions for tacacs-rs.";
 
+  revision 2026-11-20 {
+    description
+      "Replaces per-server CRL and OCSP evidence with global CRL
+       revocation checking for certificate TLS servers.";
+  }
+
   revision 2026-10-20 {
     description "Adds explicit egress selection and local binding failure policy.";
   }
@@ -161,7 +167,7 @@ module tacacsrs {
       leaf last-attempt { type yang:date-and-time; description "Most recent transport attempt."; }
       leaf last-success { type yang:date-and-time; description "Most recent completed transport establishment."; }
       leaf last-disconnect { type yang:date-and-time; description "Most recent established-transport close."; }
-      leaf last-disconnect-reason { type enumeration { enum graceful; enum peer; enum malformed-packet; enum no-response; enum write-error; enum read-error; enum credential-expired; enum other; } description "First observed close cause; cleanup does not overwrite it."; }
+      leaf last-disconnect-reason { type enumeration { enum graceful; enum peer; enum malformed-packet; enum no-response; enum write-error; enum read-error; enum other; } description "First observed close cause; cleanup does not overwrite it."; }
       list connection { key connection-id; max-elements 32; description "Bounded active connection details."; uses diagnostic-connection; }
       leaf connections-omitted { type uint64; description "Active transports omitted from the bounded detail list."; }
       container last-connection { presence "A connection completed establishment."; description "Last established connection, which may no longer be active."; uses diagnostic-connection; }
@@ -183,7 +189,6 @@ module tacacsrs {
       leaf peer-disconnects { type yang:counter64; description "Peer EOF or reset closes."; }
       leaf malformed-disconnects { type yang:counter64; description "Protocol or framing violation closes."; }
       leaf no-response-disconnects { type yang:counter64; description "Timeout-induced connection closes."; }
-      leaf credential-expiry-disconnects { type yang:counter64; description "Credential lifetime closes."; }
       leaf other-disconnects { type yang:counter64; description "Other aborts, including local shutdown cancellation and I/O failures."; }
       leaf packets-since-reset-sent { type yang:counter64; description "Complete packets sent since the most recent endpoint connection reset."; }
       leaf packets-since-reset-received { type yang:counter64; description "Complete packets received since the most recent endpoint connection reset."; }
@@ -195,6 +200,9 @@ module tacacsrs {
       leaf tls-write-errors { type yang:counter64; description "Write failures on TLS transports."; }
       leaf tls-certificate-errors { type yang:counter64; description "Certificate-related TLS establishment failures."; }
       leaf tls-revoked-certificates { type yang:counter64; description "Native verification failures identified as revoked certificates."; }
+      leaf revocation-evidence-waits { type yang:counter64; description "TLS handshakes paused while CRL evidence was obtained."; }
+      leaf revocation-unverified-accepts { type yang:counter64; description "Connections accepted without fresh CRL evidence under the soft-fail or warn-only policy."; }
+      leaf revocation-pinned-skips { type yang:counter64; description "Connections to exactly pinned peers that had no issuer path for a CRL check."; }
       leaf tls-untrusted-ca { type yang:counter64; description "Native verification failures identified as untrusted issuers."; }
       leaf tls-expired-certificates { type yang:counter64; description "Native verification failures identified as invalid certificate dates."; }
       leaf tls-protocol-mismatches { type yang:counter64; description "Native SSL reason codes identifying unsupported or mismatched protocol versions."; }
@@ -241,6 +249,133 @@ module tacacsrs {
       config false;
       type uint64;
       description "Runtime generation captured for this operational snapshot.";
+    }
+  }
+
+  typedef distribution-point-pattern {
+    type string {
+      length "1..2048";
+      pattern 'https?://[^/?#]+(/.*)?';
+    }
+    description
+      "An HTTP or HTTPS URL pattern for CRL distribution points.
+       In the host, '*' matches exactly one DNS label and '**' matches
+       one or more labels. Wildcards must be whole labels on the left.
+       At least two literal labels must follow the last wildcard.
+       In the path, '*' matches characters inside one segment and '**'
+       matches zero or more whole segments. The scheme and port match
+       exactly. Userinfo and fragments are not allowed.";
+  }
+
+  augment "/sys:system/sys-tcs-plus:tacacs-plus" {
+    description "CRL revocation checking for certificate TLS servers.";
+    container certificate-revocation {
+      must "enforcement = 'disabled' or count(allowed-distribution-point) > 0" {
+        error-message
+          "Revocation enforcement requires at least one allowed distribution point.";
+      }
+      description
+        "Global CRL revocation policy for certificate TLS servers.
+         The agent reads CRL distribution points from each server
+         certificate path, fetches allowed CRLs, and caches them.
+         Revocation is checked only when a connection is established.
+         An established connection is not closed when a CRL expires,
+         when a refresh fails, or when a refreshed CRL lists the server.
+         The host must supply a revocation verifier when enforcement
+         is not disabled.";
+      leaf enforcement {
+        type enumeration {
+          enum disabled {
+            description "Do not check revocation.";
+          }
+          enum hard-fail {
+            description
+              "Reject the server unless fresh CRL evidence shows that
+               no certificate in the path is revoked.";
+          }
+          enum soft-fail {
+            description
+              "As hard-fail, but accept a previously validated CRL for
+               soft-fail-grace-seconds after its nextUpdate when a fresh
+               CRL cannot be obtained.";
+          }
+          enum warn-only {
+            description
+              "Reject a certificate that a CRL lists. Accept the server
+               and log a warning when CRL evidence is unavailable.";
+          }
+        }
+        default disabled;
+        description "Revocation enforcement policy.";
+      }
+      leaf soft-fail-grace-seconds {
+        type uint32 {
+          range "1..2592000";
+        }
+        units "seconds";
+        default 86400;
+        description
+          "Time after a CRL's original nextUpdate during which soft-fail
+           still accepts that CRL. The grace never excuses a listed
+           certificate or an invalid CRL.";
+      }
+      leaf-list allowed-distribution-point {
+        type distribution-point-pattern;
+        ordered-by user;
+        description
+          "URL patterns that the agent may fetch CRLs from. A distribution
+           point that matches no pattern is not fetched. LDAP distribution
+           points are always ignored.";
+      }
+      leaf-list prefetch-distribution-point {
+        type string {
+          length "1..2048";
+          pattern 'https?://[^/?#*]+(/[^*]*)?';
+        }
+        ordered-by user;
+        description
+          "Exact CRL URLs that the agent fetches at startup and keeps
+           fresh. Each URL must match an allowed distribution point.
+           A prefetched CRL is used only for a certificate whose
+           distribution points reference it.";
+      }
+      leaf allow-private-addresses {
+        type boolean;
+        default true;
+        description
+          "Allow CRL fetches to private (RFC 1918 and unique local)
+           addresses. Loopback, link-local, unspecified, and multicast
+           addresses are always rejected.";
+      }
+      leaf fetch-timeout-seconds {
+        type uint16 {
+          range "1..60";
+        }
+        units "seconds";
+        default 5;
+        description
+          "Maximum time for one CRL fetch, including DNS, connect, and
+           the complete body. A request deadline can shorten it.";
+      }
+      leaf max-crl-bytes {
+        type uint32 {
+          range "1024..67108864";
+        }
+        units "bytes";
+        default 16777216;
+        description "Maximum size of one fetched CRL.";
+      }
+      leaf cache-directory {
+        type string {
+          length "1..4096";
+          pattern '/.*';
+        }
+        description
+          "Absolute directory for a persistent CRL cache. When present,
+           the agent stores validated CRLs and loads them at startup, so
+           soft-fail works after a restart while the CRL server is
+           unreachable. Loaded CRLs are validated again before use.";
+      }
     }
   }
 
@@ -514,107 +649,6 @@ module tacacsrs {
          with the issuer of cert-data. Each entry contains one X.509
          certificate. Do not include the leaf or a self-signed root.";
     }
-  }
-
-  grouping certificate-revocation-policy {
-    description
-      "Required revocation evidence for certificate TLS peer authentication.";
-    container require-crls {
-      presence "Require fresh CRLs for certificate TLS server authentication.";
-      description
-        "Require complete CRL evidence for the verified server certificate path.
-         An unpartitioned base can advertise one explicitly supplied delta.
-         Both lists must be fresh and match issuer, scope, and authority key
-         identifier. CRL numbers must identify a compatible increasing update.
-         Direct CRLs can restrict certificate type and distribution-point scope.
-         Multiple scopes for one issuer must cover disjoint certificate types.
-         Within each scope, reason partitions must be disjoint.
-         At most 128 lists and 4 MiB are accepted.
-         Native verification requires complete reason and path coverage.
-         Exact peer pins and PSK authentication are not supported in this mode.
-         Unavailable, invalid, stale, or incomplete evidence fails closed.";
-      leaf max-age-seconds {
-        type uint32 { range "1..max"; }
-        default 300;
-        description
-          "Maximum seconds since each CRL thisUpdate. The earlier of this
-           limit and nextUpdate bounds evidence use without stale grace.";
-      }
-      choice evidence {
-        mandatory true;
-        case inline {
-          leaf-list crl {
-            type binary { length "1..max"; }
-            min-elements 1;
-            description "One full or delta DER CRL per entry.";
-          }
-        }
-        case provider {
-          leaf evidence-reference {
-            type string { length "1..max"; }
-            mandatory true;
-            description "Opaque provider reference to a complete CRL set.";
-          }
-        }
-      }
-    }
-    container require-ocsp {
-      presence "Require independently supplied OCSP evidence for the peer leaf.";
-      description
-        "Requires a fetched or inline response independently of any mandatory staple.
-         The actual peer, signer, status, and signed freshness are verified before client authentication.";
-      leaf max-response-age-seconds {
-        type uint32 { range "1..max"; }
-        default 300;
-      }
-      choice evidence {
-        mandatory true;
-        case inline {
-          leaf response { type binary { length "1..65536"; } mandatory true; }
-        }
-        case provider {
-          leaf evidence-reference { type string { length "1..max"; } mandatory true; }
-        }
-      }
-    }
-    container require-stapled-ocsp {
-      presence "Require fresh authenticated OCSP evidence for the peer leaf.";
-      description
-        "Request a stapled OCSP response and fail closed if evidence is
-         unavailable, invalid, stale, unknown, or revoked. Responses must
-         be signed by the issuer or a responder issued directly by it.
-         Delegated responders require OCSP signing usage and either a valid
-         noncritical No Check extension or verified configured CRL evidence.
-         This requirement can be combined with require-crls. Both checks
-         must pass. OCSP covers the peer leaf; CRLs cover the CA path.";
-      leaf max-response-age-seconds {
-        type uint32 { range "1..max"; }
-        default 300;
-        description
-          "Maximum time since thisUpdate. Evidence expires at the earlier
-           of this limit and nextUpdate, when nextUpdate is present.
-           No clock-skew allowance or stale grace extends this interval.";
-      }
-    }
-  }
-
-  augment "/sys:system/sys-tcs-plus:tacacs-plus/"
-        + "sys-tcs-plus:server-credentials" {
-    description
-      "Adds required stapled OCSP to reusable server authentication.";
-    uses certificate-revocation-policy;
-  }
-
-  augment "/sys:system/sys-tcs-plus:tacacs-plus/"
-        + "sys-tcs-plus:server/"
-        + "sys-tcs-plus:security/"
-        + "sys-tcs-plus:tls/"
-        + "sys-tcs-plus:server-authentication/"
-        + "sys-tcs-plus:ref-or-explicit/"
-        + "sys-tcs-plus:explicit" {
-    description
-      "Adds required stapled OCSP to per-server certificate authentication.";
-    uses certificate-revocation-policy;
   }
 
   augment "/sys:system/sys-tcs-plus:tacacs-plus/"

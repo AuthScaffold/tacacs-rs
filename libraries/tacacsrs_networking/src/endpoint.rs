@@ -44,6 +44,7 @@ pub struct PreparedEndpoint {
     pub(crate) transport: PreparedTransport,
     pub(crate) options: ConnectOptions,
     pub(crate) connection_guard: Option<Arc<dyn ConnectionGuard>>,
+    pub(crate) revocation_verifier: Option<Arc<dyn crate::RevocationVerifier>>,
     pub(crate) counters: crate::ServerCounters,
     pub(crate) preparation_payload: crate::PreparationPayload,
 }
@@ -73,26 +74,8 @@ impl PreparedEndpoint {
     /// }
     /// ```
     ///
-    /// ```compile_fail
-    /// use tacacsrs_networking::{PreparedEndpoint, CertificateRevocationPolicy};
-    /// fn attach(endpoint: PreparedEndpoint) {
-    ///     endpoint.with_certificate_revocation(CertificateRevocationPolicy::disabled());
-    /// }
-    /// ```
     ///
-    /// ```compile_fail
-    /// use tacacsrs_networking::PreparedEndpoint;
-    /// fn attach(endpoint: PreparedEndpoint) {
-    ///     endpoint.with_certificate_crls(&[], std::time::Duration::from_secs(300));
-    /// }
-    /// ```
     ///
-    /// ```compile_fail
-    /// use tacacsrs_networking::PreparedEndpoint;
-    /// fn attach(endpoint: PreparedEndpoint) {
-    ///     endpoint.with_certificate_ocsp_response(&[], std::time::Duration::from_secs(300));
-    /// }
-    /// ```
     #[must_use]
     pub fn new(
         address: crate::ServerAddress,
@@ -108,6 +91,7 @@ impl PreparedEndpoint {
             transport,
             options,
             connection_guard: None,
+            revocation_verifier: None,
             counters: crate::ServerCounters::default(),
             preparation_payload: crate::PreparationPayload::default(),
         }
@@ -131,6 +115,33 @@ impl PreparedEndpoint {
     pub fn with_connection_guard(mut self, guard: impl ConnectionGuard + 'static) -> Self {
         self.connection_guard = Some(Arc::new(guard));
         self
+    }
+
+    /// Attaches a revocation verifier to certificate TLS connections.
+    ///
+    /// Each new certificate TLS handshake asks the verifier for a decision.
+    /// Established connections are never closed because of revocation state. TCP
+    /// and PSK endpoints ignore the verifier. Certificate verification disabled
+    /// for development skips the check.
+    #[must_use]
+    pub fn with_revocation_verifier(
+        mut self,
+        verifier: Arc<dyn crate::RevocationVerifier>,
+    ) -> Self {
+        self.revocation_verifier = Some(verifier);
+        self
+    }
+
+    /// Returns whether a revocation verifier is attached.
+    #[must_use]
+    pub fn has_revocation_verifier(&self) -> bool {
+        self.revocation_verifier.is_some()
+    }
+
+    /// Returns whether this endpoint uses certificate TLS with verification enabled.
+    #[must_use]
+    pub fn verifies_server_certificate(&self) -> bool {
+        matches!(&self.transport, PreparedTransport::Tls(config) if config.verification() == crate::CertificateVerification::Required)
     }
 
     /// Returns the prepared host and port without resolving DNS.
@@ -163,17 +174,6 @@ impl PreparedEndpoint {
         self.options.local_binding()
     }
 
-    /// Returns the validity interval for prepared fetched OCSP and CRL evidence.
-    #[must_use]
-    pub fn revocation_evidence_validity(&self) -> Option<crate::RevocationEvidenceValidity> {
-        match &self.transport {
-            PreparedTransport::Tls(config) => {
-                config.evidence_lifetime.map(|lifetime| lifetime.validity)
-            }
-            _ => None,
-        }
-    }
-
     /// Returns the SHA-256 fingerprint of the prepared TLS client certificate.
     ///
     /// The value is the lowercase hex digest of the DER certificate. It is public
@@ -187,26 +187,10 @@ impl PreparedEndpoint {
         }
     }
 
-    /// Returns the original monotonic cutoff for prepared evidence.
-    #[must_use]
-    pub fn revocation_evidence_deadline(&self) -> Option<tokio::time::Instant> {
-        self.revocation_evidence_lifetime()
-            .map(|lifetime| lifetime.deadline.expires_at())
-    }
-
     pub(crate) fn validate_client_certificate_dates(&self) -> anyhow::Result<()> {
         match &self.transport {
             PreparedTransport::Tls(config) => config.validate_client_certificate_dates(),
             PreparedTransport::Tcp | PreparedTransport::Psk(_) => Ok(()),
-        }
-    }
-
-    pub(crate) fn revocation_evidence_lifetime(
-        &self,
-    ) -> Option<crate::transport::tls::RevocationEvidenceLifetime> {
-        match &self.transport {
-            PreparedTransport::Tls(config) => config.evidence_lifetime,
-            PreparedTransport::Tcp | PreparedTransport::Psk(_) => None,
         }
     }
 
@@ -234,35 +218,6 @@ impl fmt::Debug for PreparedEndpoint {
 mod tests {
     use super::*;
     use crate::{CertificateTrust, TlsClientConfig, PskClientConfig, PskHash};
-
-    #[test]
-    fn finalized_tls_retains_mandatory_staple_policy() {
-        let policy =
-            crate::CertificateRevocationPolicy::require_stapled_ocsp(Duration::from_secs(300))
-                .unwrap();
-        let endpoint = PreparedEndpoint::new(
-            crate::ServerAddress::parse("localhost:300", 49).unwrap(),
-            PreparedTransport::Tls(
-                TlsClientConfig::prepare(
-                    "localhost",
-                    None,
-                    CertificateTrust::Platform,
-                    None,
-                    crate::CertificateVerification::Required,
-                )
-                .unwrap()
-                .with_revocation_policy(policy)
-                .unwrap(),
-            ),
-            false,
-            None,
-            ConnectOptions::default(),
-        );
-        let PreparedTransport::Tls(config) = endpoint.transport else {
-            panic!("certificate TLS must remain selected");
-        };
-        assert_eq!(config.revocation, policy);
-    }
 
     struct DenyConnection;
 

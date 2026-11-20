@@ -139,7 +139,8 @@ impl ConfigSupervisor {
             .await
     }
 
-    /// Prepares the local services and the runtime policy of a datastore change.
+    /// Prepares the local services, the runtime policy, and the certificate
+    /// revocation settings of a datastore change.
     ///
     /// A change without a section keeps the active value of that section.
     /// Returns `None` when a section is not valid.
@@ -176,9 +177,20 @@ impl ConfigSupervisor {
                 }
             },
         };
+        let revocation = match tacacsrs_config::revocation_settings(&change.config) {
+            Ok(settings) => settings,
+            Err(error) => {
+                log::warn!(
+                    "Datastore '{}' certificate revocation settings were rejected: {error:#}",
+                    self.datastore.label(),
+                );
+                return None;
+            }
+        };
         Some(Arc::new(CandidateSections {
             local_services,
             runtime_policy,
+            revocation: Some(revocation),
         }))
     }
 

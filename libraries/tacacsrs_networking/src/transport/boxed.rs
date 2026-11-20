@@ -29,7 +29,6 @@ impl<T: Transport> ErasedTransport for T {
 /// such as `TcpStream` or `TlsStream<TcpStream>`.
 pub(crate) struct BoxedTransport {
     transport: Box<dyn ErasedTransport>,
-    revocation_evidence_lifetime: Option<super::tls::RevocationEvidenceLifetime>,
     counters: Option<crate::ServerCounters>,
     connection_record: Option<std::sync::Arc<crate::statistics::ConnectionRecord>>,
     tls_details: Option<crate::TlsDetails>,
@@ -41,7 +40,6 @@ impl BoxedTransport {
         let counters = transport.counters();
         Self {
             transport: Box::new(transport),
-            revocation_evidence_lifetime: None,
             counters,
             connection_record: None,
             tls_details: None,
@@ -68,20 +66,6 @@ impl BoxedTransport {
 
     pub(crate) fn tls_details(&self) -> Option<crate::TlsDetails> {
         self.tls_details.clone()
-    }
-
-    pub(crate) fn with_revocation_evidence_lifetime(
-        mut self,
-        lifetime: super::tls::RevocationEvidenceLifetime,
-    ) -> Self {
-        self.revocation_evidence_lifetime = Some(lifetime);
-        self
-    }
-
-    pub(crate) const fn revocation_evidence_lifetime(
-        &self,
-    ) -> Option<super::tls::RevocationEvidenceLifetime> {
-        self.revocation_evidence_lifetime
     }
 }
 

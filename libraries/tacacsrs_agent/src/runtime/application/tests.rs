@@ -102,6 +102,7 @@ async fn runtime(source: SourceBundle) -> AgentRuntime {
             ..Default::default()
         }),
         certificate_verification: CertificateVerification::Required,
+        revocation: crate::UpstreamRevocation::default(),
     })
     .await
     .unwrap()

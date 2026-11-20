@@ -183,22 +183,22 @@ fn service() -> TacacsClientService {
 }
 
 fn service_with_health(health: RuntimeHealthPublisher) -> TacacsClientService {
-    TacacsClientService::new(
-        ServiceConfig {
-            local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
-            validation_options: ValidationOptions::default(),
-            runtime_policy: crate::RuntimePolicy::new(
-                crate::FailoverStrategy::default(),
-                crate::FailoverStrategy::default(),
-                crate::OperationPolicies::default(),
-                Duration::from_secs(1),
-            )
-            .expect("test runtime policy"),
-            certificate_verification: tacacsrs_networking::CertificateVerification::Required,
-        },
-        health,
-    )
-    .expect("test service")
+    TacacsClientService::new(service_config(), health).expect("test service")
+}
+
+fn service_config() -> ServiceConfig {
+    ServiceConfig {
+        local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
+        validation_options: ValidationOptions::default(),
+        runtime_policy: crate::RuntimePolicy::new(
+            crate::FailoverStrategy::default(),
+            crate::FailoverStrategy::default(),
+            crate::OperationPolicies::default(),
+            Duration::from_secs(1),
+        )
+        .expect("test runtime policy"),
+        certificate_verification: tacacsrs_networking::CertificateVerification::Required,
+    }
 }
 
 fn known(reference: &str) -> CredentialChangeScope {
@@ -573,6 +573,7 @@ async fn candidate_raw_owner_sharing_does_not_relabel_retained_filtered_copy() {
     let coordinator = MaterializationCoordinator::without_resolver(ValidationOptions::default());
     let service = service();
     let canonical = TacacsPlus {
+        certificate_revocation: None,
         client_credentials: Vec::new(),
         server_credentials: Vec::new(),
         server: vec![tacacsrs_config::TacacsPlusServerBuilder::new(
@@ -1181,7 +1182,7 @@ async fn native_preparation_final_fence_preserves_concurrent_transitions() {
         "policy",
         "stop",
         "catalog-aba",
-        "revocation",
+        "tls-replacement",
     ] {
         let coordinator = Arc::new(MaterializationCoordinator::new(
             resolver(&[("object-a", &[7; 16])]),
@@ -1241,16 +1242,14 @@ async fn native_preparation_final_fence_preserves_concurrent_transitions() {
                     service.reload_materialized_servers_with_proxy_downstream_obfuscation(Vec::new(), PreparedProxyPolicy::unobfuscated()).await.unwrap();
                     service.reload_materialized_servers_with_proxy_downstream_obfuscation(coordinator.active_servers().await, PreparedProxyPolicy::unobfuscated()).await.unwrap();
                 }
-                "revocation" => {
+                "tls-replacement" => {
                     let active = coordinator.active_servers().await;
-                    let mut replacement = tacacsrs_config::TacacsPlusServerBuilder::new(
+                    let replacement = tacacsrs_config::TacacsPlusServerBuilder::new(
                         &active[0].name,
                         active[0].server_type,
                         &active[0].address,
                         active[0].port,
                     ).with_tls_server_authentication().build();
-                    replacement.server_authentication.as_mut().unwrap().require_stapled_ocsp =
-                        Some(tacacsrs_config::tacacsrs::RequireStapledOcsp { max_response_age_seconds: 300 });
                     service.reload_materialized_servers_with_proxy_downstream_obfuscation(
                         vec![Arc::new(replacement)], PreparedProxyPolicy::unobfuscated(),
                     ).await.unwrap();
@@ -1584,6 +1583,7 @@ fn sections_with_policy(
             revision: service.admit_policy().unwrap(),
             policy: Arc::new(policy),
         }),
+        revocation: None,
     })
 }
 
@@ -1632,6 +1632,50 @@ async fn cancellation_after_server_commit_publishes_the_sections() {
             .failover_recovery_interval(),
         Duration::from_secs(7)
     );
+}
+
+#[tokio::test]
+async fn revocation_policy_change_publishes_settings_without_retiring_servers() {
+    let coordinator = MaterializationCoordinator::new(
+        resolver(&[("object-a", b"valid-baseline-psk-material")]),
+        ValidationOptions::default(),
+    );
+    let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+    let revocation = crate::UpstreamRevocation::without_verifier();
+    let service = TacacsClientService::with_overlays(
+        service_config(),
+        health.clone(),
+        Vec::new(),
+        revocation.clone(),
+    )
+    .unwrap();
+    let canonical = source("object-a", "192.0.2.20");
+    let attempt = coordinator
+        .accept_source(canonical.clone(), canonical, PreparedProxyPolicy::unobfuscated())
+        .await;
+    let prepared = coordinator.materialize(attempt).await.unwrap();
+    coordinator.publish(prepared, &service).await.unwrap();
+    let servers = coordinator.active_servers().await;
+    let revision = health.snapshot().materialization_revision();
+
+    let mut settings = tacacsrs_networking::RevocationSettings::default();
+    settings.enforcement = tacacsrs_networking::RevocationEnforcement::WarnOnly;
+    let local_services = service
+        .prepare_local_services_candidate(&tacacsrs_config::tacacsrs::LocalServices::default())
+        .unwrap();
+    service
+        .publish_sections(&crate::runtime::CandidateSections {
+            local_services,
+            runtime_policy: None,
+            revocation: Some(settings.clone()),
+        })
+        .await;
+
+    assert_eq!(revocation.settings(), settings);
+    assert_eq!(service.server_count(), 1);
+    assert_eq!(health.snapshot().materialization_revision(), revision);
+    let active = coordinator.active_servers().await;
+    assert!(Arc::ptr_eq(&active[0], &servers[0]), "a policy change must not replace servers");
 }
 
 #[tokio::test]
@@ -1723,6 +1767,7 @@ async fn invalid_native_credentials_cannot_replace_active_generation() {
     let active = coordinator.active_servers().await;
 
     let invalid = TacacsPlus {
+        certificate_revocation: None,
         client_credentials: Vec::new(),
         server_credentials: Vec::new(),
         server: vec![tacacsrs_config::TacacsPlusServerBuilder::new(

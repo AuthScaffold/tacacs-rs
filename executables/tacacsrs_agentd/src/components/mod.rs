@@ -8,17 +8,19 @@
 //! To add a host-wide component, add its selection function to
 //! [`HOST_COMPONENTS`].
 
+mod revocation;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
 use tacacsrs_agent::components::{
-    ClientApiComponent, HttpCredentialComponent, HttpEvidenceSettings,
-    InvalidSourceShutdownComponent, StatisticsComponent, SystemdComponent, SystemdMode,
-    TacacsProxyComponent, UpstreamWatchdogComponent,
+    ClientApiComponent, InvalidSourceShutdownComponent, StatisticsComponent, SystemdComponent,
+    SystemdMode, TacacsProxyComponent, UpstreamWatchdogComponent,
 };
 use tacacsrs_composition::Component;
 
 use crate::cli::HostIntegrationMode;
+use crate::components::revocation::RevocationComponent;
 use crate::process::ProcessOptions;
 
 /// Process inputs that host-wide component selection reads.
@@ -27,7 +29,6 @@ pub(crate) struct HostInputs {
     pub(crate) statistics_file: Option<PathBuf>,
     pub(crate) upstream_watchdog_interval: Option<Duration>,
     pub(crate) protected_inputs: Vec<PathBuf>,
-    pub(crate) http_evidence: HttpEvidenceSettings,
 }
 
 /// Selects one host-wide component, or none.
@@ -36,10 +37,10 @@ pub(crate) type Select = fn(&HostInputs) -> anyhow::Result<Option<Box<dyn Compon
 /// The host-wide components, in registration order.
 pub(crate) const HOST_COMPONENTS: &[Select] = &[
     select_systemd,
+    select_revocation,
     select_statistics,
     select_client_api,
     select_tacacs_proxy,
-    select_http_evidence,
     select_upstream_watchdog,
     select_invalid_source_shutdown,
 ];
@@ -53,6 +54,15 @@ fn select_systemd(host: &HostInputs) -> anyhow::Result<Option<Box<dyn Component>
         HostIntegrationMode::Systemd => SystemdMode::Required,
     };
     Ok(Some(Box::new(SystemdComponent::new(mode))))
+}
+
+/// Selects the CRL revocation verifier.
+///
+/// The daemon always selects the verifier. It does no work while the YANG
+/// `certificate-revocation` enforcement is `disabled`.
+#[expect(clippy::unnecessary_wraps, reason = "Every selection function has the Select signature")]
+fn select_revocation(_: &HostInputs) -> anyhow::Result<Option<Box<dyn Component>>> {
+    Ok(Some(Box::new(RevocationComponent)))
 }
 
 /// Selects statistics publication when a statistics file is configured.
@@ -76,14 +86,6 @@ fn select_client_api(_: &HostInputs) -> anyhow::Result<Option<Box<dyn Component>
 #[expect(clippy::unnecessary_wraps, reason = "Every selection function has the Select signature")]
 fn select_tacacs_proxy(_: &HostInputs) -> anyhow::Result<Option<Box<dyn Component>>> {
     Ok(Some(Box::new(TacacsProxyComponent)))
-}
-
-/// Selects the HTTP credential evidence layer when a source is registered.
-#[expect(clippy::unnecessary_wraps, reason = "Every selection function has the Select signature")]
-fn select_http_evidence(host: &HostInputs) -> anyhow::Result<Option<Box<dyn Component>>> {
-    Ok((!host.http_evidence.is_empty()).then(|| {
-        Box::new(HttpCredentialComponent::new(host.http_evidence.clone())) as Box<dyn Component>
-    }))
 }
 
 /// Selects the upstream watchdog when a probe interval is configured.

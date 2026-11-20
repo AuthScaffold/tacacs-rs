@@ -100,13 +100,18 @@ pub fn map_rows(rows: Vec<ServerRow>, settings: &SourceSettings) -> anyhow::Resu
         servers.push((std::cmp::Reverse(priority), endpoint, server));
     }
     servers.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
-    if servers.is_empty() {
-        return Ok(TacacsPlus::empty());
-    }
-    servers
-        .into_iter()
-        .fold(TacacsPlusBuilder::new(), |builder, (_, _, server)| builder.with_server(server))
-        .build()
+    let mut config = if servers.is_empty() {
+        TacacsPlus::empty()
+    } else {
+        servers
+            .into_iter()
+            .fold(TacacsPlusBuilder::new(), |builder, (_, _, server)| builder.with_server(server))
+            .build()?
+    };
+    config
+        .certificate_revocation
+        .clone_from(&settings.certificate_revocation);
+    Ok(config)
 }
 
 fn decimal(value: Option<&str>, default: u16, maximum: u16) -> anyhow::Result<u16> {
@@ -423,5 +428,29 @@ mod tests {
             .all(|server| server.shared_secret.is_none()));
         assert_eq!(map_rows(Vec::new(), &settings).unwrap().server.len(), 0);
         assert!(map_rows(vec![row("192.0.2.1", "0")], &settings).is_err());
+    }
+
+    #[test]
+    fn every_snapshot_carries_the_revocation_policy() {
+        let settings = Environment::parse(BTreeMap::from([
+            ("TACACSD_REVOCATION_ENFORCEMENT".to_owned(), "soft-fail".to_owned()),
+            (
+                "TACACSD_REVOCATION_ALLOWED_DISTRIBUTION_POINTS".to_owned(),
+                "http://crl.example/*.crl".to_owned(),
+            ),
+        ]))
+        .unwrap()
+        .source;
+        let row = ServerRow {
+            address: "192.0.2.1".into(),
+            port: None,
+            priority: None,
+            valid_hash: true,
+        };
+        for rows in [Vec::new(), vec![row]] {
+            let source = map_rows(rows, &settings).unwrap();
+            assert_eq!(source.certificate_revocation, settings.certificate_revocation);
+            assert!(source.certificate_revocation.is_some());
+        }
     }
 }

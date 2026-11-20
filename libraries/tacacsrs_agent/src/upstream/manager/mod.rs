@@ -66,8 +66,6 @@ pub(crate) struct UpstreamManager<
     connect_options: PrepareOptions,
     /// Serializes generation publication and server-availability observations.
     publication: PublicationController,
-    prepared_history:
-        std::sync::Mutex<Vec<(tacacsrs_networking::routed::Endpoint, Arc<TacacsPlusServer>)>>,
 }
 
 #[cfg(test)]
@@ -158,19 +156,8 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             .into_iter()
             .map(|server| PreparedServer::new(server, connect_options.clone()).map(Arc::new))
             .collect::<anyhow::Result<Vec<_>>>()?;
-        let credential_lifetime = servers
-            .iter()
-            .try_fold(crate::runtime::CredentialLifetime::unbounded(), |lifetime, server| {
-                lifetime.intersect(server.evidence_lifetime)
-            })?;
+        let credential_lifetime = crate::runtime::CredentialLifetime::unbounded();
         let server_set = Arc::new(ServerSet::new(servers, connector));
-        let prepared_history = std::sync::Mutex::new(
-            server_set
-                .servers
-                .iter()
-                .map(|slot| (slot.endpoint.clone(), slot.server.clone()))
-                .collect(),
-        );
         Ok(Self {
             closed: std::sync::atomic::AtomicBool::new(false),
             shutdown_deadlines: std::sync::OnceLock::new(),
@@ -186,7 +173,6 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             })),
             connect_options,
             publication: PublicationController::new(health),
-            prepared_history,
         })
     }
 

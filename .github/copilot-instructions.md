@@ -117,19 +117,19 @@ tacacsrs-sonic -> tacacsrs-composition, tacacsrs-config,
 tacacsrs-kubesonic -> tacacsrs-composition, tacacsrs-config,
                       tacacsrs-credential-resolution, tacacsrs-lifecycle,
                       tacacsrs-provider, tacacsrs-secrets
-tacacsrs-credential-http -> tacacsrs-credential-resolution, tacacsrs-secrets
+tacacsrs-revocation -> tacacsrs-networking
 tacacsrs-ipc -> tacacsrs-protocol, tacacsrs-secrets, tacacsrs-unix-socket
 tacacsrs-agent -> tacacsrs-config, tacacsrs-protocol, tacacsrs-networking,
-                  tacacsrs-credential-resolution, tacacsrs-credential-http,
-                  tacacsrs-composition, tacacsrs-ipc, tacacsrs-lifecycle,
-                  tacacsrs-provider, tacacsrs-secrets, tacacsrs-unix-socket
+                  tacacsrs-credential-resolution, tacacsrs-composition,
+                  tacacsrs-ipc, tacacsrs-lifecycle, tacacsrs-provider,
+                  tacacsrs-secrets, tacacsrs-unix-socket
 tacacsrs-agent-ipc-emulator -> tacacsrs-ipc
 tacacsrs-bash-plugin -> tacacsrs-ipc
 
 tacon -> tacacsrs-ipc (Linux only), tacacsrs-config, tacacsrs-protocol, tacacsrs-networking
 tacacsrs-agentd -> tacacsrs-agent, tacacsrs-composition, tacacsrs-config,
-                   tacacsrs-networking, tacacsrs-secrets, tacacsrs-sonic,
-                   tacacsrs-kubesonic
+                   tacacsrs-lifecycle, tacacsrs-networking, tacacsrs-secrets,
+                   tacacsrs-sonic, tacacsrs-kubesonic, tacacsrs-revocation
 tacacsrs-agent-health -> tacacsrs-ipc
 tacacsrs-agent-ipc-emulatord -> tacacsrs-ipc, tacacsrs-agent-ipc-emulator
 session-wrapper -> tacacsrs-ipc
@@ -142,6 +142,8 @@ session-wrapper -> tacacsrs-ipc
   TACACS+ MD5 XOR obfuscation is not encryption.
 - `tacacsrs-networking` owns prepared endpoints, transports, client selection,
   connection drivers, sessions, single-connect promotion, routed catalogs, and retry.
+  Its `revocation` module defines the `RevocationVerifier` contract that the
+  TLS handshake calls after OpenSSL verifies the server certificate path.
 - `tacacsrs-ipc` owns generated `proto` bindings, conversion, the domain handler,
   bounded Unix server, standard and detailed health, and `ServiceClient`. The client retains a reusable tonic channel.
   Optional read-only routes join the listener through `ListenerServices`.
@@ -150,8 +152,9 @@ session-wrapper -> tacacsrs-ipc
   domain operation ingress, raw proxying, and coordinated shutdown. Its `host`
   module declares the host inputs, roles, and deferred values, and runs
   `AgentRuntime` from components. Its `components` module holds the standard
-  components: datastore source, client API over IPC, HTTP credential evidence,
-  statistics, systemd, upstream watchdog, and invalid-source shutdown.
+  components: datastore source, client API over IPC, statistics, systemd,
+  upstream watchdog, and invalid-source shutdown. A host injects a revocation
+  verifier through `UpstreamRevocation`.
 - `tacacsrs-lifecycle` owns `HostedService`, `ShutdownSignal`, and typed
   `HealthGroup` contracts over `health-checks`. It has no workspace dependencies.
 - `tacacsrs-composition` owns the `Component` contract and the checked Dill
@@ -163,7 +166,9 @@ session-wrapper -> tacacsrs-ipc
 - Configuration's `source` module owns `ConfigDatastore`, observations, and static/file backends.
   Its `input` module normalizes CLI inputs. Parsing functions are re-exported at the crate root.
 - `tacacsrs-credential-resolution` owns provider-neutral material and resolver contracts.
-- `tacacsrs-credential-http` implements explicitly authorized HTTP evidence retrieval.
+- `tacacsrs-revocation` provides `CrlVerifier`, the CRL implementation of
+  `tacacsrs_networking::RevocationVerifier`. It fetches and caches CRLs only
+  from allowed HTTP distribution points.
 - `tacacsrs-sonic` maps SONiC ConfigDB `TACPLUS` / `TACPLUS_SERVER` data into
   the YANG model and implements SONiC-backed configuration loading and watching.
   `SonicSource` is its source component.
@@ -183,8 +188,9 @@ session-wrapper -> tacacsrs-ipc
 - `tacacsrs-agentd` is the local central agent daemon. It can load static JSON or
   SONiC ConfigDB-backed configuration and proxies IPC operations to upstream
   TACACS+ servers. Its profiles convert arguments to component settings and
-  select components, and `tacacsrs_agent::host` runs them. The daemon supplies
-  no components of its own. Add sources, credential layers, overlays, startup checks,
+  select components, and `tacacsrs_agent::host` runs them. The only component
+  of the daemon is `RevocationComponent`, which injects the CRL verifier and
+  runs the CRL refresh service. Add sources, credential layers, overlays, startup checks,
   listeners, hosted services, and health members as components, not as
   host code changes.
 - `tacacsrs-agent-ipc-emulatord` runs the OPA/Rego-driven IPC emulator as a process.

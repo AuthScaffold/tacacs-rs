@@ -51,8 +51,40 @@ pub trait EndpointConnector: Send + Sync + 'static {
 }
 
 /// Native TACACS+ connection factory without host configuration dependencies.
-#[derive(Debug, Default)]
-pub struct NativeConnector;
+///
+/// An optional revocation verifier is attached to every endpoint that the
+/// connector opens. See [`crate::revocation`].
+#[derive(Clone, Default)]
+pub struct NativeConnector {
+    revocation_verifier: Option<Arc<dyn crate::RevocationVerifier>>,
+}
+
+impl NativeConnector {
+    /// Creates a connector without a revocation verifier.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Checks certificate TLS servers with `verifier` on each new connection.
+    #[must_use]
+    pub fn with_revocation_verifier(
+        mut self,
+        verifier: Arc<dyn crate::RevocationVerifier>,
+    ) -> Self {
+        self.revocation_verifier = Some(verifier);
+        self
+    }
+}
+
+impl std::fmt::Debug for NativeConnector {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NativeConnector")
+            .field("revocation_verifier", &self.revocation_verifier.is_some())
+            .finish()
+    }
+}
 
 #[async_trait]
 impl EndpointConnector for NativeConnector {
@@ -63,6 +95,10 @@ impl EndpointConnector for NativeConnector {
         endpoint: PreparedEndpoint,
         _operation: OperationKind,
     ) -> anyhow::Result<Arc<Self::Connection>> {
+        let endpoint = match &self.revocation_verifier {
+            Some(verifier) => endpoint.with_revocation_verifier(Arc::clone(verifier)),
+            None => endpoint,
+        };
         TacacsClient::connect_prepared(endpoint).await.map(Arc::new)
     }
 

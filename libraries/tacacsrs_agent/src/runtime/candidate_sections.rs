@@ -17,6 +17,9 @@ pub(crate) struct CandidateSections {
     pub(crate) local_services: Arc<ActiveLocalServices>,
     /// The runtime policy of the change. `None` keeps the active policy.
     pub(crate) runtime_policy: Option<SourcePolicy>,
+    /// The certificate revocation settings of the change. `None` keeps the
+    /// active settings.
+    pub(crate) revocation: Option<tacacsrs_networking::RevocationSettings>,
 }
 
 /// A runtime policy from a datastore change, with the revision that the
@@ -38,6 +41,7 @@ impl CandidateSections {
         Self {
             local_services,
             runtime_policy: None,
+            revocation: None,
         }
     }
 }

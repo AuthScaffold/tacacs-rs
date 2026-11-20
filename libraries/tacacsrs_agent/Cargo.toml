@@ -17,7 +17,6 @@ if-addrs = "0.15.0"
 log = "0.4.30"
 rand = "0.10.0"
 tacacsrs-composition = { path = "../tacacsrs_composition" }
-tacacsrs-credential-http = { path = "../tacacsrs_credential_http" }
 tacacsrs-ipc = { path = "../tacacsrs_ipc" }
 tacacsrs-unix-socket = { path = "../tacacsrs_unix_socket" }
 tacacsrs-config = { path = "../tacacsrs_config" }

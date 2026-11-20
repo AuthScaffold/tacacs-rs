@@ -40,6 +40,9 @@ pub use roles::{ClientApiAccess, ListenerFactory, StartupCheck, TacacsProxyAcces
 /// [`SourceDatastore`], [`CredentialProvider`], [`LocalServices`],
 /// [`PolicyInput`], and [`CertificateVerification`]. The [`LocalServices`]
 /// value is the bootstrap value. A datastore change can replace it at runtime.
+/// A component can also provide one [`UpstreamRevocation`](crate::UpstreamRevocation).
+/// Without that value, the agent rejects new certificate TLS connections while
+/// the configured revocation enforcement is not `disabled`.
 ///
 /// Components can inject these deferred values. The host supplies them after
 /// it prepares the agent runtime: [`DiagnosticsHandle`], [`RuntimeHealth`],
@@ -224,6 +227,11 @@ fn read_inputs(graph: &Graph) -> anyhow::Result<RuntimeInputs> {
         },
         policy: (*graph.one::<PolicyInput>()?).clone(),
         certificate_verification: *graph.one::<CertificateVerification>()?,
+        revocation: if graph.contains::<crate::UpstreamRevocation>() {
+            (*graph.one::<crate::UpstreamRevocation>()?).clone()
+        } else {
+            crate::UpstreamRevocation::without_verifier()
+        },
     })
 }
 

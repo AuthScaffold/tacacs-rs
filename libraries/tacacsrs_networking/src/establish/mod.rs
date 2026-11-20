@@ -170,11 +170,7 @@ async fn establish_transport(
     endpoint
         .validate_client_certificate_dates()
         .context(crate::statistics::CertificateFailure)?;
-    let operation = establish_transport_inner(endpoint, attempt);
-    match endpoint.revocation_evidence_lifetime() {
-        Some(lifetime) => lifetime.run(operation).await,
-        None => operation.await,
-    }
+    establish_transport_inner(endpoint, attempt).await
 }
 
 async fn establish_transport_inner(
@@ -187,7 +183,8 @@ async fn establish_transport_inner(
         "Connecting to TACACS+ server {address} (security: {}, timeout: {timeout:?})",
         endpoint.security_label(),
     );
-    let connection = connect_and_handshake(endpoint, attempt);
+    let deadline = timeout.map(|duration| tokio::time::Instant::now() + duration);
+    let connection = connect_and_handshake(endpoint, attempt, deadline);
     match timeout {
         Some(duration) => tokio::time::timeout(duration, connection)
             .await
@@ -201,9 +198,13 @@ async fn establish_transport_inner(
 }
 
 /// Opens TCP and completes the prepared handshake, without a timeout.
+///
+/// `deadline` is the end of the caller's connection timeout. A revocation
+/// verifier receives it so that an evidence fetch can stop in time.
 async fn connect_and_handshake(
     endpoint: &PreparedEndpoint,
     attempt: &mut crate::statistics::ConnectionAttempt,
+    deadline: Option<tokio::time::Instant>,
 ) -> Result<BoxedTransport> {
     let address = endpoint.address();
     let options = &endpoint.options;
@@ -231,7 +232,20 @@ async fn connect_and_handshake(
         PreparedTransport::Tcp => Ok(BoxedTransport::new(tcp_stream)),
         PreparedTransport::Tls(config) => {
             attempt.handshake();
-            config.connect(tcp_stream).await
+            let revocation =
+                endpoint
+                    .revocation_verifier
+                    .as_ref()
+                    .map(|verifier| tls::RevocationCheck {
+                        verifier: std::sync::Arc::clone(verifier),
+                        network: crate::RevocationNetwork::new(
+                            options.binding.clone(),
+                            endpoint.connection_guard.clone(),
+                        ),
+                        deadline,
+                        counters: endpoint.counters(),
+                    });
+            config.connect(tcp_stream, revocation.as_ref()).await
         }
         PreparedTransport::Psk(config) => {
             attempt.handshake();
@@ -244,72 +258,11 @@ async fn connect_and_handshake(
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, SystemTime};
+    use std::time::Duration;
 
     use tokio::io::AsyncReadExt;
 
     use super::*;
-
-    #[tokio::test(start_paused = true)]
-    async fn evidence_deadline_bounds_stalled_handshake_before_transport_registration() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut endpoint = PreparedEndpoint::new(
-            listener.local_addr().unwrap().try_into().unwrap(),
-            PreparedTransport::Tls(
-                crate::TlsClientConfig::prepare(
-                    "localhost",
-                    None,
-                    crate::CertificateTrust::Platform,
-                    None,
-                    crate::CertificateVerification::DisabledForDevelopment,
-                )
-                .unwrap(),
-            ),
-            false,
-            None,
-            ConnectOptions::default(),
-        );
-        let now = SystemTime::now();
-        let validity = crate::transport::tls::RevocationEvidenceValidity::from_bounds(
-            now - Duration::from_secs(1),
-            now + Duration::from_secs(60),
-        )
-        .unwrap();
-        let PreparedTransport::Tls(config) = &mut endpoint.transport else {
-            panic!("test endpoint must use certificate TLS");
-        };
-        config.evidence_lifetime = Some(crate::transport::tls::RevocationEvidenceLifetime {
-            validity,
-            deadline: crate::RequestDeadline::after(Duration::from_secs(1)).unwrap(),
-        });
-        let (connected, observed) = tokio::sync::oneshot::channel();
-        let peer = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let _ = connected.send(());
-            let mut received = Vec::new();
-            stream.read_to_end(&mut received).await.unwrap();
-            received
-        });
-        let setup = establish_stream(&endpoint);
-        tokio::pin!(setup);
-        tokio::select! {
-            result = &mut setup => match result {
-                Ok(_) => panic!("setup completed before TCP connected"),
-                Err(error) => panic!("setup failed before TCP connected: {error:#}"),
-            },
-            result = observed => result.unwrap(),
-        }
-        tokio::time::advance(Duration::from_secs(1)).await;
-        let error = match setup.await {
-            Ok(_) => panic!("setup completed after evidence expired"),
-            Err(error) => error,
-        };
-        assert!(
-            format!("{error:#}").contains("request deadline expired"),
-            "unexpected setup error: {error:#}"
-        );
-        assert!(!peer.await.unwrap().is_empty(), "TLS must start before evidence expiry");
-    }
 
     #[tokio::test(start_paused = true)]
     async fn connect_timeout_bounds_a_stalled_tls_handshake() {

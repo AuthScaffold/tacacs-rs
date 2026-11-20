@@ -35,11 +35,13 @@ The components must supply exactly one value of each input type:
 
 A component shares an input with `Composition::shared`. `tacacsrs_composition::Value` shares one value that needs no preparation.
 
+`UpstreamRevocation` is an optional input. It holds a certificate revocation verifier and the sender of its `RevocationSettings` watch channel. A host registers it with `composition.shared(Arc::new(UpstreamRevocation::new(verifier, sender)))`. Without this input, the host uses `UpstreamRevocation::without_verifier()`. The agent sends the revocation settings of each accepted configuration change through the channel. A settings change affects only new connections and retires no connection or server. While the active enforcement is not `disabled` and no verifier is present, the agent refuses new certificate TLS connections. `tacacsrs-agentd` supplies the CRL verifier of [`tacacsrs-revocation`](../tacacsrs_revocation/README.md).
+
 ### Roles
 
 A component adds role members with `Composition::member`. Each member type has a unique `Named::NAME`.
 
-- `dyn CredentialLayer` wraps the resolver of the source. For example, `HttpCredentialComponent` puts HTTP evidence retrieval in front of the SONiC resolver.
+- `dyn CredentialLayer` wraps the resolver of the source, for example to put another credential provider in front of it.
 - `dyn LocalServicesOverlay` changes the local services of the source before the runtime prepares them.
 - `dyn StartupCheck` checks the prepared host before any listener binds. A failed check stops startup.
 - `dyn ListenerFactory` creates one runtime listener. A factory can return `None` when it has no listener to supply. The standard listeners always exist and follow the active local services.
@@ -88,7 +90,6 @@ The `components` module contains the components that do not depend on a source p
 | `DatastoreSourceComponent` | Shares a configuration datastore, an empty credential provider, and the local services. `LocalServicesInput` gives the local services as a fixed value, a YANG file, or a `LocalServicesPatch` on the defaults. Preparation does not read the datastore. The runtime applies the proxy loop and credential policy to each configuration candidate. |
 | `ClientApiComponent` | Serves the local client API over IPC while the active local services enable it. The socket moves when the local services change its path. |
 | `TacacsProxyComponent` | Serves the TACACS+ proxy listener while the active local services enable it. If the source gives the proxy endpoint later, the listener reports `Pending` until the endpoint is known. |
-| `HttpCredentialComponent` | Adds HTTP CRL and OCSP evidence retrieval in front of the source credential resolver. `HttpEvidenceSettings` lists the sources. |
 | `StatisticsComponent` | Writes operational statistics to a JSON file once each second. |
 | `SystemdComponent` | Sends readiness, status, and watchdog notifications to systemd. `SystemdMode::Auto` registers nothing without `NOTIFY_SOCKET`. `SystemdMode::Required` stops startup without it. |
 | `UpstreamWatchdogComponent` | Sends periodic upstream accounting probes. |
@@ -160,6 +161,7 @@ async fn run(source: TacacsPlus, stop: tokio_util::sync::CancellationToken) -> a
         },
         policy: PolicyInput::Canonical(Default::default()),
         certificate_verification: CertificateVerification::Required,
+        revocation: tacacsrs_agent::UpstreamRevocation::default(),
     }).await?;
     runtime.run_until(stop.cancelled(), Vec::new(), Vec::new()).await
 }
@@ -368,7 +370,7 @@ Inline-only catalogs do not expire because an unused credential watcher is unava
 At expiry, the runtime withdraws the entire catalog and reports `CredentialsExpired`, while source observation and liveness remain active.
 An attempt started before expiry cannot revive the old material. Complete revalidation can restore service without changing canonical source references.
 Repeated failures and policy changes do not renew grace. Source and credential expiry remain independently enforced after either withdraws the catalog.
-Provider validity and revocation-evidence freshness remain separate limits.
+Provider validity remains a separate limit. CRL checks apply only to new connections and never close an established connection.
 Authentication certificate dates apply to each new TLS connection.
 Established connections and catalogs continue after those certificate dates expire.
 
@@ -422,7 +424,7 @@ The decoded payload charge is `L + E`.
 `L` includes every logical destination, repeated bundle installations, retained servers during partial refresh, and the downstream proxy secret.
 `E` includes additional owned configuration payload, retained filtered projections, and newly prepared Rust payload.
 Prepared payload includes DNS address text, routed names, peer identity, SNI, packet keys, PSK callback identity and keys, and group text.
-It also includes trust callback DER, fetched OCSP bytes, certificate comparison buffers, and CRL scope and delta metadata buffers.
+It also includes trust callback DER and certificate comparison buffers.
 Reused prepared endpoints contribute their retained payload to `L`. Reuse does not remove a destination from the candidate charge.
 Known copies are reserved before cloning. Moves transfer charges, and shared allocation owners add no duplicate allocation charge.
 All selected plans pass request admission before the first provider call, in canonical server and plan order.
@@ -432,7 +434,6 @@ Resolver slots are not HTTP URL requests. Provider response and fan-out limits r
 The raw datastore snapshot, opaque producer internals, existing active and retiring catalogs, allocator overhead, and RSS are outside this measure.
 An opaque result can already own a large allocation at handoff. Rejection prevents retention and further candidate copies, not that earlier allocation.
 Native allocator internals are excluded, but Rust payload owned by a native callback is included.
-CRL metadata encodings reserve the enclosing DER size before allocation. Their live charge then contracts to the returned size.
 The high-water check includes these conservative reservations. It measures admitted payload, not process memory.
 
 ### Rust Payload Owners
@@ -442,7 +443,7 @@ The following costs describe supervised preparation, not unmanaged direct helper
 
 | Owner | Candidate charge and allocation boundary |
 | --- | --- |
-| Materialized configuration | `L` counts each destination's secret, key, certificate, intermediate, trust, CRL, and OCSP bytes. Partial refresh includes unchanged destinations. |
+| Materialized configuration | `L` counts each destination's secret, key, certificate, intermediate, and trust bytes. Partial refresh includes unchanged destinations. |
 | Proxy policy | `L` includes its downstream secret. Policy clones share the secret allocation. |
 | Filtered projection and provider staging | `E` includes retained decoded copies. Known copies reserve before cloning; unknown producer results pass admission at handoff. |
 | Prepared address and names | `E` reserves DNS address bytes, one routed name, and one lifecycle name before construction. IP addresses use fixed-layout storage. |
@@ -450,9 +451,7 @@ The following costs describe supervised preparation, not unmanaged direct helper
 | PSK context | `E` reserves callback identity bytes, callback key bytes, optional SNI bytes, and the colon-separated native group string before allocation. |
 | Certificate TLS context | `E` reserves peer identity and optional SNI. Private keys and decoded certificates live in native objects; their canonical DER remains in `L`. |
 | Trust callbacks | Accounted DER owners reserve each authority and exact-peer certificate length before copying. Callback captures retain those owners. |
-| Fetched OCSP | `E` reserves the encoded response before constructing its shared byte owner. Config and connection clones share that allocation. |
 | Certificate comparisons | Temporary reservations cover DER round trips, explicit public-key comparisons, and all simultaneously retained chain deduplication buffers. Verified input lengths supply the forecasts. |
-| CRL comparisons and metadata | Temporary reservations cover DER round trips, scope identities, delta metadata, authority extensions, and integer bytes. Enclosing DER lengths bound native extension encodings. |
 | Reused prepared endpoints | Their retained byte cost contributes to the new candidate's `L`. Endpoint identities, contexts, callback DER, and keys share existing allocations rather than creating another `E` copy. |
 | Native input, partial output, and queued result | One worker moves or shares these owners. It retains the shared ledger and registered work lease until input, result, and callback payload disposal. |
 | Committed historical endpoints | History shares endpoint and source owners until networking reports completed retirement. The next publication prunes completed entries. This ownership belongs to the committed catalog, not unpublished candidate work. |
@@ -475,7 +474,7 @@ These short commit waits are not lock-free.
 The final fence checks source and credential revisions, source expiry, closure, both validity clocks, current limits, and catalog identity.
 A changed committed catalog rejects a prepared reuse hint. It cannot revive an earlier identity or counter epoch.
 An unchanged catalog can reuse an established connection after its authentication certificate expires.
-Provider and evidence validity still restrict publication. Their earlier monotonic cutoffs cannot renew through wall-clock changes.
+Provider validity still restricts publication. Its earlier monotonic cutoff cannot renew through wall-clock changes.
 All fallible checks precede retirement cutoffs, snapshot replacement, health, and coordinator bookkeeping.
 The commit does not await. Later retirement cannot undo it.
 

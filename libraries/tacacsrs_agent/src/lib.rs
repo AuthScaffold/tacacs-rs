@@ -30,7 +30,7 @@ pub use config::{
     EnabledServices, FailoverStrategy, OperationPolicies, PolicyService, PreparedProxyPolicy,
     RequestLimits, RuntimePolicy, RuntimeCandidateLimits, ServiceConfig,
 };
-pub use upstream::OperationKind;
+pub use upstream::{OperationKind, UpstreamRevocation};
 pub use runtime::{
     ActiveLocalServices, AgentReadinessCheck, AgentRuntime, ConfigView, LocalServicesView,
     RuntimePolicyView, RuntimeInputs, PolicyInput, DiagnosticsHandle, PolicyRevision, PolicyUpdate,

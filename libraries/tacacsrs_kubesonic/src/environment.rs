@@ -13,7 +13,7 @@ use serde_json::{json, Map, Value};
 
 use tacacsrs_config::local_services::parse_local_services;
 use tacacsrs_config::policy::parse_runtime_policy;
-use tacacsrs_config::tacacsrs::{LocalServices, RuntimePolicy};
+use tacacsrs_config::tacacsrs::{CertificateRevocation, LocalServices, RuntimePolicy};
 
 const PREFIX: &str = "TACACSD_";
 
@@ -35,6 +35,9 @@ pub struct SourceSettings {
     pub reconcile_interval: Duration,
     pub retry_initial: Duration,
     pub retry_max: Duration,
+    /// Global CRL revocation policy copied into every ConfigDB snapshot.
+    /// `None` keeps revocation checks disabled.
+    pub certificate_revocation: Option<CertificateRevocation>,
 }
 
 /// Authorized mounted credential paths and observation controls.
@@ -199,6 +202,19 @@ const CANDIDATE_LIMITS: &[&str] = &[
     "max-resolution-requests",
     "max-retained-material-bytes",
 ];
+const REVOCATION_FIELDS: &[(&str, Kind)] = &[
+    ("enforcement", Kind::Text),
+    ("soft-fail-grace-seconds", Kind::Number),
+    ("allow-private-addresses", Kind::Boolean),
+    ("fetch-timeout-seconds", Kind::Number),
+    ("max-crl-bytes", Kind::Number),
+    ("cache-directory", Kind::Text),
+];
+/// List leaves. Each variable holds whitespace-separated values.
+const REVOCATION_LISTS: &[(&str, &str)] = &[
+    ("ALLOWED_DISTRIBUTION_POINTS", "allowed-distribution-point"),
+    ("PREFETCH_DISTRIBUTION_POINTS", "prefetch-distribution-point"),
+];
 const SERVICE_FIELDS: &[(&str, Kind)] = &[
     ("client-api-enabled", Kind::Boolean),
     ("client-api-endpoint", Kind::Text),
@@ -280,6 +296,7 @@ impl Environment {
             )?,
             retry_initial: inputs.duration("CONFIG_RETRY_INITIAL_MILLISECONDS", 250, true)?,
             retry_max: inputs.duration("CONFIG_RETRY_MAX_MILLISECONDS", 30000, true)?,
+            certificate_revocation: revocation(&mut inputs)?,
         };
         ensure!(
             source.debounce <= source.max_delay,
@@ -410,6 +427,38 @@ fn path(inputs: &mut Inputs, suffix: &str, default: &str) -> anyhow::Result<Path
     Ok(path)
 }
 
+/// Maps `TACACSD_REVOCATION_` inputs to the canonical revocation container.
+///
+/// Returns `None` when no revocation input is present.
+fn revocation(inputs: &mut Inputs) -> anyhow::Result<Option<CertificateRevocation>> {
+    let area = format!("{PREFIX}REVOCATION_");
+    if !inputs.0.keys().any(|key| key.starts_with(&area)) {
+        return Ok(None);
+    }
+    let mut object = Map::new();
+    for &(field, kind) in REVOCATION_FIELDS {
+        inputs.canonical("REVOCATION", &mut object, field, kind)?;
+    }
+    for &(suffix, field) in REVOCATION_LISTS {
+        if let Some(value) = inputs.take(&format!("REVOCATION_{suffix}")) {
+            let values: Vec<&str> = value.split_whitespace().collect();
+            ensure!(!values.is_empty(), "{PREFIX}REVOCATION_{suffix} must not be empty");
+            object.insert(field.into(), json!(values));
+        }
+    }
+    let invalid = || {
+        anyhow::anyhow!(
+            "TACACSD_REVOCATION_ inputs violate canonical certificate-revocation constraints"
+        )
+    };
+    let container: CertificateRevocation =
+        serde_json::from_value(Value::Object(object)).map_err(|_| invalid())?;
+    let mut config = tacacsrs_config::TacacsPlus::empty();
+    config.certificate_revocation = Some(container);
+    tacacsrs_config::revocation_settings(&config).map_err(|_| invalid())?;
+    Ok(config.certificate_revocation)
+}
+
 fn policy(inputs: &mut Inputs) -> anyhow::Result<RuntimePolicy> {
     let mut policy = Map::new();
     for field in POLICY_NUMBERS {
@@ -483,6 +532,50 @@ mod tests {
         assert_eq!(input.runtime_policy, expected);
         assert_eq!(input.local_services.unix_socket_mode, 0o600);
         assert_eq!(input.source.retry_initial, Duration::from_millis(125));
+    }
+
+    #[test]
+    fn revocation_inputs_map_to_the_canonical_container() {
+        assert_eq!(parse(&[]).unwrap().source.certificate_revocation, None);
+        let input = parse(&[
+            ("REVOCATION_ENFORCEMENT", "hard-fail"),
+            (
+                "REVOCATION_ALLOWED_DISTRIBUTION_POINTS",
+                "http://**.pki.core.windows.net/**/*.crl  http://crl.microsoft.com/**/*.crl",
+            ),
+            (
+                "REVOCATION_PREFETCH_DISTRIBUTION_POINTS",
+                "http://crl.microsoft.com/eastus2/crls/ca/22/current.crl",
+            ),
+            ("REVOCATION_FETCH_TIMEOUT_SECONDS", "3"),
+            ("REVOCATION_ALLOW_PRIVATE_ADDRESSES", "false"),
+            ("REVOCATION_CACHE_DIRECTORY", "/var/cache/tacacsrs/crl"),
+        ])
+        .unwrap();
+        let container = input.source.certificate_revocation.unwrap();
+        assert_eq!(container.enforcement, tacacsrs_config::tacacsrs::Enforcement::HardFail);
+        assert_eq!(container.allowed_distribution_point.len(), 2);
+        assert_eq!(container.prefetch_distribution_point.len(), 1);
+        assert_eq!(container.fetch_timeout_seconds, 3);
+        assert!(!container.allow_private_addresses);
+        assert_eq!(container.cache_directory.as_deref(), Some("/var/cache/tacacsrs/crl"));
+    }
+
+    #[test]
+    fn rejects_invalid_revocation_inputs() {
+        for pairs in [
+            &[("REVOCATION_ENFORCEMENT", "strict")][..],
+            &[("REVOCATION_ENFORCEMENT", "hard-fail")][..],
+            &[("REVOCATION_ALLOWED_DISTRIBUTION_POINTS", "  ")][..],
+            &[
+                ("REVOCATION_ALLOWED_DISTRIBUTION_POINTS", "http://crl.example/*.crl"),
+                ("REVOCATION_PREFETCH_DISTRIBUTION_POINTS", "http://other.example/a.crl"),
+            ][..],
+            &[("REVOCATION_CACHE_DIRECTORY", "relative")][..],
+            &[("REVOCATION_UNKNOWN", "value")][..],
+        ] {
+            assert!(parse(pairs).is_err(), "{pairs:?}");
+        }
     }
 
     #[test]

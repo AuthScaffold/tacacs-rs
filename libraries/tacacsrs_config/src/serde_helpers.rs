@@ -72,6 +72,7 @@ pub(crate) mod base64_binary {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) mod option_vec_bytes {
         use base64::Engine;
         use serde::{Deserialize, Serialize};

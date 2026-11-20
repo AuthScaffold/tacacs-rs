@@ -73,6 +73,30 @@ Canonical snapshots contain opaque credential references, not private-key bytes.
 
 Rotation changes new upstream handshakes. Existing sessions follow native retirement and drain rules. Invalid replacements retain permitted known-good material without extending certificate validity or credential grace periods.
 
+### Certificate revocation
+
+The optional `TACACSD_REVOCATION_` variables map to the global `tacacsrs:certificate-revocation` container. The profile copies that container into every ConfigDB snapshot. When no `TACACSD_REVOCATION_` variable is set, the snapshots contain no container, and revocation stays disabled.
+
+| Variable | Canonical default | Meaning |
+| --- | --- | --- |
+| `TACACSD_REVOCATION_ENFORCEMENT` | `disabled` | `disabled`, `hard-fail`, `soft-fail`, or `warn-only`. |
+| `TACACSD_REVOCATION_SOFT_FAIL_GRACE_SECONDS` | `86400` | Time after `nextUpdate` during which `soft-fail` accepts a validated CRL. |
+| `TACACSD_REVOCATION_ALLOWED_DISTRIBUTION_POINTS` | Absent | Whitespace-separated `http://` URL patterns that the agent can fetch CRLs from. |
+| `TACACSD_REVOCATION_PREFETCH_DISTRIBUTION_POINTS` | Absent | Whitespace-separated exact CRL URLs that the agent fetches at startup and keeps fresh. |
+| `TACACSD_REVOCATION_ALLOW_PRIVATE_ADDRESSES` | `true` | Allows CRL fetches to RFC 1918 and unique local addresses. |
+| `TACACSD_REVOCATION_FETCH_TIMEOUT_SECONDS` | `5` | Maximum time for one CRL fetch. |
+| `TACACSD_REVOCATION_MAX_CRL_BYTES` | `16777216` | Maximum size of one fetched CRL. |
+| `TACACSD_REVOCATION_CACHE_DIRECTORY` | Absent | Absolute directory for the persistent CRL cache. |
+
+Canonical validation applies to these values. An enabled enforcement requires at least one allowed pattern. Each prefetch URL must match an allowed pattern. An empty list, a relative cache directory, an unknown enforcement value, or an unknown `TACACSD_REVOCATION_` name stops startup. See [certificate revocation](../../docs/yang-config-guide.md#certificate-revocation) for the pattern syntax and the enforcement modes.
+
+```bash
+TACACSD_REVOCATION_ENFORCEMENT=soft-fail
+TACACSD_REVOCATION_ALLOWED_DISTRIBUTION_POINTS="http://*.pki.core.windows.net/** http://crl.microsoft.com/**"
+TACACSD_REVOCATION_PREFETCH_DISTRIBUTION_POINTS=http://primary-cdn.pki.core.windows.net/eastus2/crls/ccmeeastus2pki/ccmeeastus2ica01/22/current.crl
+TACACSD_REVOCATION_CACHE_DIRECTORY=/var/cache/tacacsrs/crl
+```
+
 ### Local services and process
 
 | Variable | Default |

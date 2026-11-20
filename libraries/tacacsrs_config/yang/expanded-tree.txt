@@ -40,7 +40,7 @@ module: ietf-system-tacacs-plus
        |           +--rw target-kdf?                         uint16
        |           +--rw trs:psk-dhe-ke-groups*              psk-dhe-ke-supported-group {psk-dhe-ke-hello-params}?
        +--rw server-credentials* [id] {credential-reference}?
-       |  +--rw id                          string
+       |  +--rw id             string
        |  +--rw ca-certs!
        |  |  +--rw (inline-or-truststore)
        |  |     +--:(inline) {inline-definitions-supported}?
@@ -59,23 +59,7 @@ module: ietf-system-tacacs-plus
        |  |     |        +--rw cert-data    trust-anchor-cert-cms
        |  |     +--:(central-truststore) {central-truststore-supported,certificates}?
        |  |        +--rw central-truststore-reference?   ts:central-certificate-bag-ref
-       |  +--rw tls13-epsks?                empty {tlsc:server-auth-tls13-epsk}?
-       |  +--rw trs:require-crls!
-       |  |  +--rw trs:max-age-seconds?            uint32
-       |  |  +--rw (trs:evidence)
-       |  |     +--:(trs:inline)
-       |  |     |  +--rw trs:crl*                  binary
-       |  |     +--:(trs:provider)
-       |  |        +--rw trs:evidence-reference    string
-       |  +--rw trs:require-ocsp!
-       |  |  +--rw trs:max-response-age-seconds?   uint32
-       |  |  +--rw (trs:evidence)
-       |  |     +--:(trs:inline)
-       |  |     |  +--rw trs:response              binary
-       |  |     +--:(trs:provider)
-       |  |        +--rw trs:evidence-reference    string
-       |  +--rw trs:require-stapled-ocsp!
-       |     +--rw trs:max-response-age-seconds?   uint32
+       |  +--rw tls13-epsks?   empty {tlsc:server-auth-tls13-epsk}?
        +--rw server* [name]
        |  +--rw name                           string
        |  +--rw server-type                    tacacs-plus-server-type
@@ -128,7 +112,7 @@ module: ietf-system-tacacs-plus
        |  |  |  +--rw server-authentication
        |  |  |     +--rw (ref-or-explicit)?
        |  |  |        +--:(ref)
-       |  |  |        |  +--rw credentials-reference?      sys-tcs-plus:server-credentials-ref {credential-reference}?
+       |  |  |        |  +--rw credentials-reference?   sys-tcs-plus:server-credentials-ref {credential-reference}?
        |  |  |        +--:(explicit)
        |  |  |           +--rw ca-certs!
        |  |  |           |  +--rw (inline-or-truststore)
@@ -148,23 +132,7 @@ module: ietf-system-tacacs-plus
        |  |  |           |     |        +--rw cert-data    trust-anchor-cert-cms
        |  |  |           |     +--:(central-truststore) {central-truststore-supported,certificates}?
        |  |  |           |        +--rw central-truststore-reference?   ts:central-certificate-bag-ref
-       |  |  |           +--rw tls13-epsks?                empty {tlsc:server-auth-tls13-epsk}?
-       |  |  |           +--rw trs:require-crls!
-       |  |  |           |  +--rw trs:max-age-seconds?            uint32
-       |  |  |           |  +--rw (trs:evidence)
-       |  |  |           |     +--:(trs:inline)
-       |  |  |           |     |  +--rw trs:crl*                  binary
-       |  |  |           |     +--:(trs:provider)
-       |  |  |           |        +--rw trs:evidence-reference    string
-       |  |  |           +--rw trs:require-ocsp!
-       |  |  |           |  +--rw trs:max-response-age-seconds?   uint32
-       |  |  |           |  +--rw (trs:evidence)
-       |  |  |           |     +--:(trs:inline)
-       |  |  |           |     |  +--rw trs:response              binary
-       |  |  |           |     +--:(trs:provider)
-       |  |  |           |        +--rw trs:evidence-reference    string
-       |  |  |           +--rw trs:require-stapled-ocsp!
-       |  |  |              +--rw trs:max-response-age-seconds?   uint32
+       |  |  |           +--rw tls13-epsks?             empty {tlsc:server-auth-tls13-epsk}?
        |  |  +--:(obfuscation)
        |  |     +--rw shared-secret?           string
        |  +--rw (source-type)?
@@ -242,7 +210,6 @@ module: ietf-system-tacacs-plus
        |  |  +--ro trs:peer-disconnects?                  yang:counter64
        |  |  +--ro trs:malformed-disconnects?             yang:counter64
        |  |  +--ro trs:no-response-disconnects?           yang:counter64
-       |  |  +--ro trs:credential-expiry-disconnects?     yang:counter64
        |  |  +--ro trs:other-disconnects?                 yang:counter64
        |  |  +--ro trs:packets-since-reset-sent?          yang:counter64
        |  |  +--ro trs:packets-since-reset-received?      yang:counter64
@@ -254,6 +221,9 @@ module: ietf-system-tacacs-plus
        |  |  +--ro trs:tls-write-errors?                  yang:counter64
        |  |  +--ro trs:tls-certificate-errors?            yang:counter64
        |  |  +--ro trs:tls-revoked-certificates?          yang:counter64
+       |  |  +--ro trs:revocation-evidence-waits?         yang:counter64
+       |  |  +--ro trs:revocation-unverified-accepts?     yang:counter64
+       |  |  +--ro trs:revocation-pinned-skips?           yang:counter64
        |  |  +--ro trs:tls-untrusted-ca?                  yang:counter64
        |  |  +--ro trs:tls-expired-certificates?          yang:counter64
        |  |  +--ro trs:tls-protocol-mismatches?           yang:counter64
@@ -279,7 +249,16 @@ module: ietf-system-tacacs-plus
        |  |  |  +--ro trs:consecutive-failures?   uint64
        |  |  +--ro trs:unsupported*                       string
        |  +--ro trs:counter-epoch?             uint64
-       +--ro trs:runtime-generation?   uint64
+       +--ro trs:runtime-generation?       uint64
+       +--rw trs:certificate-revocation
+          +--rw trs:enforcement?                   enumeration
+          +--rw trs:soft-fail-grace-seconds?       uint32
+          +--rw trs:allowed-distribution-point*    distribution-point-pattern
+          +--rw trs:prefetch-distribution-point*   string
+          +--rw trs:allow-private-addresses?       boolean
+          +--rw trs:fetch-timeout-seconds?         uint16
+          +--rw trs:max-crl-bytes?                 uint32
+          +--rw trs:cache-directory?               string
 
 module: tacacsrs
 

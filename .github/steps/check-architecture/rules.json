@@ -22,8 +22,8 @@
     "tacacsrs-credential-resolution": [
       "tacacsrs-secrets"
     ],
-    "tacacsrs-credential-http": [
-      "tacacsrs-credential-resolution"
+    "tacacsrs-revocation": [
+      "tacacsrs-networking"
     ],
     "tacacsrs-config": [
       "tacacsrs-credential-resolution",
@@ -52,7 +52,6 @@
     "tacacsrs-agent": [
       "tacacsrs-composition",
       "tacacsrs-config",
-      "tacacsrs-credential-http",
       "tacacsrs-credential-resolution",
       "tacacsrs-ipc",
       "tacacsrs-lifecycle",
@@ -85,10 +84,12 @@
       "tacacsrs-agent",
       "tacacsrs-composition",
       "tacacsrs-config",
+      "tacacsrs-lifecycle",
       "tacacsrs-networking",
       "tacacsrs-secrets",
       "tacacsrs-sonic",
-      "tacacsrs-kubesonic"
+      "tacacsrs-kubesonic",
+      "tacacsrs-revocation"
     ],
     "tacacsrs-agent-health": [
       "tacacsrs-ipc"
@@ -162,7 +163,7 @@
         "tacacsrs-config",
         "tacacsrs-networking",
         "tacacsrs-ipc",
-        "tacacsrs-credential-http",
+        "tacacsrs-revocation",
         "tacacsrs-agent-health",
         "tacacsrs-bash-plugin",
         "tacon"
@@ -180,7 +181,7 @@
         "tacacsrs-config",
         "tacacsrs-networking",
         "tacacsrs-ipc",
-        "tacacsrs-credential-http",
+        "tacacsrs-revocation",
         "tacacsrs-agent-health",
         "tacacsrs-bash-plugin",
         "tacon"
@@ -339,6 +340,19 @@
         "tacacsrs-agent-ipc-emulatord",
         "regorus",
         "libseccomp"
+      ]
+    },
+    {
+      "name": "host-injected-revocation",
+      "description": "Keep the CRL verifier out of the agent runtime and the configuration model. The daemon builds the verifier and injects it through the networking contract.",
+      "roots": [
+        "tacacsrs-agent",
+        "tacacsrs-config",
+        "tacacsrs-networking",
+        "tacon"
+      ],
+      "forbidden": [
+        "tacacsrs-revocation"
       ]
     }
   ]

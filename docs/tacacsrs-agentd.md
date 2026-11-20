@@ -247,60 +247,30 @@ Configured CA trust and exact end-entity trust are now separate. Empty explicit 
 A rejected replacement leaves the previous prepared generation active.
 See [certificate trust](yang-config-guide.md#certificate-trust) for exact-match renewal behavior and additive trust rules.
 
-### HTTP CRL Registration
+### Certificate Revocation
 
-`--http-crl-source REFERENCE URL` authorizes a public HTTP(S) CRL location for one opaque evidence reference.
-Repeat the flag with the same reference to add issuer lists in fetch order:
+The daemon checks upstream server certificates against certificate revocation lists (CRLs). The global `tacacsrs:certificate-revocation` YANG container configures the policy. The daemon has no command-line flags for revocation. In KubeSONiC mode, the `TACACSD_REVOCATION_` environment variables set the same container. See [certificate revocation](yang-config-guide.md#certificate-revocation) for the leaves and an example.
 
-```bash
-tacacsrs-agentd --config /etc/tacacs/upstreams.json \
-    --http-crl-source primary-ca-crls https://pki.example.net/root.crl \
-    --http-crl-source primary-ca-crls https://pki.example.net/issuer.crl
-```
+Both the static or SONiC profile and the KubeSONiC profile select `RevocationComponent`. The component creates the `CrlVerifier` of [`tacacsrs-revocation`](../libraries/tacacsrs_revocation/README.md) and gives it to the agent. It also runs the "CRL revocation refresh" hosted service, which prefetches and refreshes allowed CRLs until shutdown. While `enforcement` is `disabled`, the component does no work.
 
-The canonical `tacacsrs:require-crls/evidence-reference` must contain `primary-ca-crls` for this example.
-Registration does not enable CRL verification by itself or replace the canonical revocation policy.
-The startup map remains fixed until restart. Live source changes can select registered references but cannot authorize new URLs.
-Invalid registrations fail before source bootstrap or listener binding, including in SONiC mode.
+The `enforcement` leaf selects one of these policies:
 
-Each set permits at most 16 unique locations. The daemon uses a 10-second whole-set timeout, a 4 MiB body cap, and four active fetches.
-All locations must succeed. Redirects, environment proxies, decompression, URL credentials, queries, and fragments are disabled or rejected.
-Locations must contain no secrets, including path components. Process arguments and backend diagnostics can expose them.
-Registration authorizes each host and its DNS results; it is not a network sandbox.
-HTTPS verifies platform CA trust and host identity independently of upstream TACACS+ trust configuration.
-Downloaded CRLs still require native signature, freshness, path, and revocation checks.
+- `disabled` is the default. The daemon does not check revocation.
+- `hard-fail` rejects the server when no valid current CRL is available.
+- `soft-fail` accepts a validated CRL for `soft-fail-grace-seconds` after its `nextUpdate`. After that time, the daemon rejects the server. The grace never excuses a listed certificate or an invalid CRL.
+- `warn-only` accepts the server and logs a warning when CRL evidence is unavailable. It still rejects a certificate that a valid CRL lists.
 
-In SONiC mode, HTTP resolution composes with the existing credential provider and retains its notifications.
-Other credential kinds and unregistered references use the SONiC provider. A failed registered HTTP fetch never uses that fallback.
-Outside SONiC mode, unregistered references fail resolution.
+The daemon checks revocation only when it establishes a new certificate TLS connection. When the verifier needs a CRL, the handshake pauses and the verifier fetches the CRL within the connection timeout. The handshake then continues on the same socket. The daemon never closes an established connection because a CRL expires, a refresh fails, or a refreshed CRL lists the server. A policy-only change applies to future handshakes and retires no connection and no server.
 
-The existing `credential-refresh-interval-seconds` policy schedules retrieval without a separate HTTP task or notification source.
-Failed refresh uses the credential-staleness budget, then withdraws readiness. Signed evidence expiry applies independently.
-Successful refresh restores an expired credential catalog without changing canonical references or restarting the process.
-SIGINT and SIGTERM cancel pending retrieval during startup and live refresh.
-See [the YANG CRL guide](yang-config-guide.md#required-full-crls) for evidence requirements and unsupported modes.
+The check applies only to CA-authenticated certificate TLS servers. Exact pinned end-entity trust and disabled `certificate-verification` skip the check. TCP and TLS-PSK servers are not affected.
 
-### Certificate Discovery and OCSP
+`tacacsrs-agent-health statistics` reports these per-server counters next to `tls-revoked-certificates`:
 
-`--http-crl-certificate REFERENCE CERTIFICATE` selects certificate-driven CRL discovery for a registered CRL reference.
-The certificate file must contain one DER certificate. Repeat the option for a chain.
-For that reference, `--http-crl-source` URLs form an exact allowlist, not an instruction to fetch every URL.
-Every discovered full URI must be authorized. Relative distribution points are unsupported.
-
-`--http-ocsp-source REFERENCE URL CERTIFICATE ISSUER` registers an online OCSP query with an explicit responder and DER certificate files.
-Alternatively, `--http-ocsp-certificate REFERENCE CERTIFICATE ISSUER` selects an AIA responder from the certificate.
-Each eligible responder URL must be registered with `--http-ocsp-allow-url URL`.
-All URLs remain public, secret-free, and subject to the same proxy and redirect restrictions as CRL retrieval.
-
-The canonical `tacacsrs:require-ocsp/evidence-reference` selects the OCSP reference.
-The daemon periodically queries the responder through the existing credential refresh loop.
-Responses are limited to 64 KiB and use the shared provider timeout and concurrency cap.
-The supplied response does not replace a separately required TLS staple.
-
-Certificate files are bounded reads at startup. Changes to certificates or authorization maps require restart.
-The provider does not follow arbitrary URLs from live TLS peers. A renewed peer certificate must match freshly registered query material.
-Native verification rejects mismatched evidence before client authentication. Signed expiry still withdraws stale evidence while a fetch is pending.
-Readiness reports configuration availability, not a completed upstream certificate-status check.
+| Counter | Recorded event |
+| --- | --- |
+| `revocation-evidence-waits` | A TLS handshake paused while the verifier obtained CRL evidence |
+| `revocation-unverified-accepts` | A connection accepted without fresh CRL evidence under `soft-fail` or `warn-only` |
+| `revocation-pinned-skips` | A connection to an exactly pinned peer that skipped the CRL check |
 
 ### Timeouts and Failover
 
@@ -490,7 +460,7 @@ Unknown fields, trailing JSON, zero intervals, and zero concurrency limits are r
 Body limits range from 1 through 65536 bytes. Recovery seconds and concurrent-request limits are unsigned 32-bit values.
 An omitted operation or field uses the corresponding YANG default, including authentication's smaller body limit.
 
-The resource is defined by the [project YANG augmentation](../libraries/tacacsrs_config/yang/modules/tacacsrs@2026-10-06.yang) under `ietf-system:system`.
+The resource is defined by the [project YANG augmentation](../libraries/tacacsrs_config/yang/modules/tacacsrs@2026-11-20.yang) under `ietf-system:system`.
 It is a sibling of the upstream `tacacs-plus` resource, not a field inside the server list.
 The policy file remains an independently watched resource. Policy and server changes use the shared runtime-generation publication boundary.
 
@@ -503,7 +473,7 @@ After the first observed stale-source condition, retries, credential refresh, an
 At expiry the agent withdraws the upstream catalog, retires the old endpoints, and reports `SourceExpired`.
 Readiness becomes `NOT_SERVING`; liveness and configuration observation remain active.
 A valid source publication restores service without a process restart. Credential refresh alone cannot revive an expired unavailable source.
-The source budget is independent of provider validity and revocation-evidence freshness.
+The source budget is independent of provider validity.
 
 `credential-stale-timeout-seconds` defaults to 300 seconds and rejects zero.
 Relevant credential invalidation, failed refresh, or notification loss starts a grace period for referenced material.
@@ -512,13 +482,13 @@ Inline-only catalogs are not expired by loss of an unused credential notificatio
 Repeated failures and policy changes cannot renew the current grace period.
 Expiry withdraws the whole upstream catalog and reports `CredentialsExpired`, even if the source remains current.
 Fresh complete revalidation restores service. Pre-expiry work cannot revive withdrawn credentials, and credential recovery cannot bypass an expired source.
-These staleness budgets do not implement provider validity or revocation retrieval.
+These staleness budgets do not implement provider validity or CRL retrieval.
 
 The daemon validates client-certificate dates during preparation and before each new connection.
 It validates peer certificates in the native TLS handshake.
 An established connection continues after an authentication certificate expires.
 Certificate dates do not withdraw a catalog or shorten a request deadline.
-Provider validity, source staleness, OCSP and CRL freshness, and administrative revocation remain independent limits.
+Provider validity, source staleness, and administrative revocation remain independent limits. CRL freshness affects only new connections. See [certificate revocation](#certificate-revocation).
 
 IPC and proxy clients share each operation's active capacity and bounded FIFO admission queue.
 The pending limit equals `max-concurrent-requests`. A full queue returns an immediate overload error without upstream I/O.

@@ -8,7 +8,6 @@
 //!   services.
 //! - [`ClientApiComponent`]: the local client API over IPC.
 //! - [`TacacsProxyComponent`]: the raw TACACS+ proxy.
-//! - [`HttpCredentialComponent`]: HTTP revocation evidence for credentials.
 //! - [`StatisticsComponent`]: a periodic operational statistics file.
 //! - [`SystemdComponent`]: readiness and status for systemd.
 //! - [`UpstreamWatchdogComponent`]: periodic upstream accounting probes.
@@ -20,7 +19,6 @@
 
 mod client_api;
 mod health_details;
-mod http_credentials;
 mod source;
 mod source_guard;
 mod statistics;
@@ -29,9 +27,6 @@ mod tacacs_proxy;
 mod watchdog;
 
 pub use client_api::ClientApiComponent;
-pub use http_credentials::{
-    HttpCredentialComponent, HttpCrlRegistration, HttpEvidenceSettings, HttpOcspRegistration,
-};
 pub use source::{DatastoreSourceComponent, LocalServicesInput};
 pub use source_guard::InvalidSourceShutdownComponent;
 pub use statistics::StatisticsComponent;

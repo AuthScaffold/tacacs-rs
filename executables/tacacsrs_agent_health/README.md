@@ -82,6 +82,12 @@ uint64 values use decimal JSON strings to preserve their full range.
 - TLS categories use native numeric error and verification codes, not diagnostic
     string matching. Unclassified TLS failures increment `tls-other-errors`.
     Certificate subcategories overlap the aggregate certificate failure counter.
+- `revocation-evidence-waits` counts TLS handshakes that paused while the CRL
+    verifier obtained evidence. `revocation-unverified-accepts` counts
+    connections accepted without fresh CRL evidence under `soft-fail` or
+    `warn-only`. `revocation-pinned-skips` counts connections to exactly pinned
+    peers that skipped the CRL check. A listed certificate increments
+    `tls-revoked-certificates`.
 - Runtime generation identifies the captured server set. Counter epoch and
     discontinuity time identify counter lifetime. Unchanged endpoints retain their
     counters across reloads; replacements begin new epochs. Each server's sample

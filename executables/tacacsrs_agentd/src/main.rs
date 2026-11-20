@@ -8,7 +8,6 @@ use clap::Parser;
 
 mod cli;
 mod components;
-mod http_evidence;
 mod local_services;
 mod signals;
 mod source_registry;

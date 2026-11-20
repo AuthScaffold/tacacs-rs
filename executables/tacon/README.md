@@ -162,6 +162,8 @@ tacon \
     "show version"
 ```
 
+Direct mode does not check certificate revocation. `tacon` refuses a configuration whose `tacacsrs:certificate-revocation` enforcement is not `disabled`. To use such a configuration, use agent mode with `--service-endpoint`, or set the enforcement to `disabled`. See [certificate revocation](../../docs/yang-config-guide.md#certificate-revocation).
+
 #### Using TACACS+ over TLS 1.3
 
 ```bash

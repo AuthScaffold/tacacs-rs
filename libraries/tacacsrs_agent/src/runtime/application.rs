@@ -40,6 +40,8 @@ pub struct RuntimeInputs {
     pub policy: PolicyInput,
     /// Upstream certificate verification policy.
     pub certificate_verification: CertificateVerification,
+    /// Host revocation verifier and its settings channel.
+    pub revocation: crate::UpstreamRevocation,
 }
 
 /// A prepared application with no bound listeners or running services.
@@ -62,6 +64,7 @@ impl AgentRuntime {
             source,
             policy,
             certificate_verification,
+            revocation,
         } = inputs;
         let (runtime_policy, policy_observation) = match policy {
             PolicyInput::Canonical(policy) => (RuntimePolicy::try_from(&policy)?, None),
@@ -85,6 +88,7 @@ impl AgentRuntime {
                 config,
                 health.clone(),
                 source.local_services_overlays,
+                revocation,
             )
             .context("Failed to build TACACS+ client service configuration")?,
         );

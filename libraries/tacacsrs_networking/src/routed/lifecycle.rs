@@ -620,8 +620,10 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(2), async {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let lifecycle =
-                Arc::new(EndpointLifecycle::new(Arc::new(super::super::NativeConnector), "test"));
+            let lifecycle = Arc::new(EndpointLifecycle::new(
+                Arc::new(super::super::NativeConnector::new()),
+                "test",
+            ));
             let endpoint = PreparedEndpoint::new(
                 listener.local_addr().unwrap().try_into().unwrap(),
                 crate::PreparedTransport::Tcp,

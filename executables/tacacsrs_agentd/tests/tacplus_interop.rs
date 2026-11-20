@@ -52,9 +52,6 @@ fn server(variable: &str, default_port: u16) -> Result<TacacsPlusServerBuilder> 
 fn trust_store() -> Result<TlsClientServerAuthentication> {
     let ca = X509::from_pem(&std::fs::read(certificates().join("ca.crt"))?)?.to_der()?;
     Ok(TlsClientServerAuthentication {
-        require_crls: None,
-        require_ocsp: None,
-        require_stapled_ocsp: None,
         credentials_reference: None,
         ca_certs: Some(ServerAuthenticationCaCerts {
             inline_definition: Some(tacacsrs_config::truststore::CertsInlineDefinition {
