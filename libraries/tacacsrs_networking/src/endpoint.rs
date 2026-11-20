@@ -174,6 +174,19 @@ impl PreparedEndpoint {
         }
     }
 
+    /// Returns the SHA-256 fingerprint of the prepared TLS client certificate.
+    ///
+    /// The value is the lowercase hex digest of the DER certificate. It is public
+    /// data and identifies which certificate the endpoint presents. The value is
+    /// `None` for TCP, PSK, and TLS endpoints without a client certificate.
+    #[must_use]
+    pub fn client_certificate_sha256(&self) -> Option<String> {
+        match &self.transport {
+            PreparedTransport::Tls(config) => config.client_certificate_sha256(),
+            PreparedTransport::Tcp | PreparedTransport::Psk(_) => None,
+        }
+    }
+
     /// Returns the original monotonic cutoff for prepared evidence.
     #[must_use]
     pub fn revocation_evidence_deadline(&self) -> Option<tokio::time::Instant> {

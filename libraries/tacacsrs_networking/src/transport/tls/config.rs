@@ -295,6 +295,16 @@ impl TlsClientConfig {
         )
     }
 
+    /// Returns the lowercase hex SHA-256 digest of the DER client certificate.
+    pub(crate) fn client_certificate_sha256(&self) -> Option<String> {
+        let digest = self
+            .context
+            .certificate()?
+            .digest(openssl::hash::MessageDigest::sha256())
+            .ok()?;
+        Some(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+    }
+
     fn local_authentication_certificates(&self) -> Result<Vec<Vec<u8>>> {
         let mut certificates = self
             .context
@@ -493,6 +503,47 @@ mod tests {
             assert!(!rendered.contains("private_key"));
             assert!(!rendered.contains("context"));
         }
+    }
+
+    #[test]
+    fn client_certificate_fingerprint_is_the_der_sha256() {
+        let certificate = X509::from_pem(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../lde/containers/config/certificates/client.crt",
+        )))
+        .unwrap()
+        .to_der()
+        .unwrap();
+        let key = PKey::private_key_from_pem(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../lde/containers/config/certificates/client.key",
+        )))
+        .unwrap()
+        .private_key_to_pkcs8()
+        .unwrap();
+        let prepare = |identity| {
+            TlsClientConfig::prepare(
+                "localhost",
+                Some("server.example"),
+                CertificateTrust::Platform,
+                identity,
+                CertificateVerification::Required,
+            )
+            .unwrap()
+        };
+        let expected: String = openssl::sha::sha256(&certificate)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let config = prepare(Some(CertificateIdentity {
+            certificate: &certificate,
+            intermediates: &[],
+            public_key_info: None,
+            private_key: &key,
+            private_key_encoding: PrivateKeyEncoding::Pkcs8,
+        }));
+        assert_eq!(config.client_certificate_sha256(), Some(expected));
+        assert_eq!(prepare(None).client_certificate_sha256(), None);
     }
 
     #[test]

@@ -73,6 +73,7 @@ pub(crate) fn render(json: &str, format: OutputFormat) -> anyhow::Result<String>
             "Connection timeout (seconds)",
             &diagnostics["connection-timeout-seconds"],
         )?;
+        row(&mut output, "Client certificate SHA-256", &diagnostics["client-certificate-sha256"])?;
         row(&mut output, "Source address", &diagnostics["source-address"])?;
         row(&mut output, "Routing instance", &diagnostics["routing-instance"])?;
         row(&mut output, "Counter epoch", &server["tacacsrs:counter-epoch"])?;

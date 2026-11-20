@@ -96,6 +96,9 @@ pub struct ServerDiagnostics {
     pub routing_instance: Option<String>,
     pub configured_single_connect: bool,
     pub connection_timeout_seconds: u16,
+    /// Lowercase hex SHA-256 digest of the prepared DER client certificate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_certificate_sha256: Option<String>,
     pub state: &'static str,
     pub routing: Vec<RoutingStatus>,
     #[serde(serialize_with = "counter64")]
@@ -193,6 +196,7 @@ impl ServerDiagnostics {
             routing_instance: server.vrf_instance.clone(),
             configured_single_connect: server.single_connection,
             connection_timeout_seconds: server.timeout,
+            client_certificate_sha256: None,
             state: if value.connected > 0 {
                 "connected"
             } else if value.connecting > 0 {
@@ -253,5 +257,12 @@ impl ServerDiagnostics {
                 "fips-state",
             ],
         }
+    }
+
+    /// Records the fingerprint of the client certificate that the endpoint presents.
+    #[must_use]
+    pub fn with_client_certificate_sha256(mut self, fingerprint: Option<String>) -> Self {
+        self.client_certificate_sha256 = fingerprint;
+        self
     }
 }

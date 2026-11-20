@@ -11,6 +11,7 @@ pub(super) struct PreparedServer {
     pub(super) endpoint: Endpoint,
     pub(super) evidence_lifetime: crate::runtime::CredentialLifetime,
     pub(super) counters: tacacsrs_networking::ServerCounters,
+    pub(super) client_certificate_sha256: Option<String>,
 }
 
 impl PreparedServer {
@@ -20,6 +21,7 @@ impl PreparedServer {
     ) -> anyhow::Result<Self> {
         let prepared = tacacsrs_config::prepare::prepare_endpoint(&server, options)?;
         let counters = prepared.counters();
+        let client_certificate_sha256 = prepared.client_certificate_sha256();
         let mut evidence_lifetime = match prepared.revocation_evidence_validity() {
             Some(validity) => crate::runtime::CredentialLifetime::new(
                 tacacsrs_credential_resolution::CredentialValidity::new(
@@ -51,6 +53,7 @@ impl PreparedServer {
             endpoint,
             evidence_lifetime,
             counters,
+            client_certificate_sha256,
         })
     }
 

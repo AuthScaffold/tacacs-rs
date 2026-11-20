@@ -197,6 +197,7 @@ module: ietf-system-tacacs-plus
        |  |  +--ro trs:routing-instance?                  string
        |  |  +--ro trs:configured-single-connect?         boolean
        |  |  +--ro trs:connection-timeout-seconds?        uint16
+       |  |  +--ro trs:client-certificate-sha256?         string
        |  |  +--ro trs:state?                             enumeration
        |  |  +--ro trs:connecting?                        uint64
        |  |  +--ro trs:connected?                         uint64

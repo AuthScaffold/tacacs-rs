@@ -258,24 +258,29 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                     tacacsrs_config::ServerOperationalStatistics {
                         name: server.server.name.clone(),
                         counter_epoch: snapshot.epoch,
-                        diagnostics: Some(tacacsrs_config::ServerDiagnostics::new(
-                            &server.server,
-                            snapshot.diagnostics.clone(),
-                            tacacsrs_networking::routed::OperationKind::ALL
-                                .into_iter()
-                                .map(|operation| {
-                                    let circuit = runtime
-                                        .server_set
-                                        .client
-                                        .circuit_open(&server.server.name, operation);
-                                    tacacsrs_config::RoutingStatus {
-                                        operation: operation.name(),
-                                        eligible: circuit.is_some(),
-                                        on_hold: circuit.unwrap_or(false),
-                                    }
-                                })
-                                .collect(),
-                        )),
+                        diagnostics: Some(
+                            tacacsrs_config::ServerDiagnostics::new(
+                                &server.server,
+                                snapshot.diagnostics.clone(),
+                                tacacsrs_networking::routed::OperationKind::ALL
+                                    .into_iter()
+                                    .map(|operation| {
+                                        let circuit = runtime
+                                            .server_set
+                                            .client
+                                            .circuit_open(&server.server.name, operation);
+                                        tacacsrs_config::RoutingStatus {
+                                            operation: operation.name(),
+                                            eligible: circuit.is_some(),
+                                            on_hold: circuit.unwrap_or(false),
+                                        }
+                                    })
+                                    .collect(),
+                            )
+                            .with_client_certificate_sha256(
+                                server.client_certificate_sha256.clone(),
+                            ),
+                        ),
                         statistics: snapshot.into(),
                     }
                 })

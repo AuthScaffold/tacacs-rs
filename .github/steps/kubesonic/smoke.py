@@ -2,6 +2,7 @@
 
 import argparse
 import contextlib
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -53,6 +54,16 @@ def servers(path):
     return [server["name"] for server in find(json.loads(path.read_text()), "server") or []]
 
 
+def diagnostics(path, name):
+    """Returns the diagnostics of one published server, or None before publication."""
+    if not path.exists():
+        return None
+    for server in find(json.loads(path.read_text()), "server") or []:
+        if server["name"] == name:
+            return find(server, "diagnostics")
+    return None
+
+
 class Fixture:
     def __init__(self, directory, binaries, stack):
         self.root = directory
@@ -84,19 +95,34 @@ class Fixture:
             "TACACSD_LOG_STYLE": "never",
         })
         (directory / "trust").mkdir()
-        def openssl(*arguments):
-            subprocess.run(["openssl", *arguments], check=True,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
-                "-subj", "/CN=smoke-ca", "-keyout", str(directory / "ca.key"),
-                "-out", str(directory / "ca.pem"))
-        openssl("req", "-new", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=smoke-client",
-                "-keyout", str(directory / "client.key"), "-out", str(directory / "client.csr"))
-        openssl("x509", "-req", "-in", str(directory / "client.csr"), "-CA", str(directory / "ca.pem"),
-                "-CAkey", str(directory / "ca.key"), "-set_serial", "2", "-days", "1",
-                "-out", str(directory / "client.crt"))
-        (directory / "client.pem").write_bytes(
+        self.openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+                     "-subj", "/CN=smoke-ca", "-keyout", str(directory / "ca.key"),
+                     "-out", str(directory / "ca.pem"))
+        self.fingerprint = self.issue_client_certificate(serial=2)
+
+    @staticmethod
+    def openssl(*arguments):
+        return subprocess.run(["openssl", *arguments], check=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
+
+    def issue_client_certificate(self, serial):
+        """Atomically replaces client.pem and returns the certificate SHA-256 fingerprint."""
+        directory = self.root
+        self.openssl("req", "-new", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=smoke-client",
+                     "-keyout", str(directory / "client.key"), "-out", str(directory / "client.csr"))
+        self.openssl("x509", "-req", "-in", str(directory / "client.csr"),
+                     "-CA", str(directory / "ca.pem"), "-CAkey", str(directory / "ca.key"),
+                     "-set_serial", str(serial), "-days", "1",
+                     "-out", str(directory / "client.crt"))
+        staged = directory / "client.pem.tmp"
+        staged.write_bytes(
             (directory / "client.crt").read_bytes() + (directory / "client.key").read_bytes())
+        os.replace(staged, directory / "client.pem")
+        der = self.openssl("x509", "-in", str(directory / "client.crt"), "-outform", "DER")
+        return hashlib.sha256(der).hexdigest()
+
+    def server_diagnostic(self, name, leaf):
+        return (diagnostics(self.statistics, name) or {}).get(leaf)
 
     def spawn(self, name, arguments, **options):
         log = self.stack.enter_context((self.root / f"{name}.log").open("ab"))
@@ -161,10 +187,17 @@ class Fixture:
         self.redis_command("HSET", second, "tcp_port", 449, "priority", 2)
         wait(lambda: servers(self.statistics) == ["192.0.2.11", "192.0.2.10"],
              "Live server addition in priority order")
-        initial = generation(self.statistics)
-        # The statistics file does not show ports. A new generation is the observable result.
+        assert self.server_diagnostic("192.0.2.10", "port") == 449
+        assert self.server_diagnostic("192.0.2.10", "client-certificate-sha256") == self.fingerprint
         self.redis_command("HSET", key, "tcp_port", 450)
-        wait(lambda: self.changed(initial), "Live server update")
+        wait(lambda: self.server_diagnostic("192.0.2.10", "port") == 450, "Live server update")
+        assert self.server_diagnostic("192.0.2.11", "port") == 449
+        rotated = self.issue_client_certificate(serial=3)
+        assert rotated != self.fingerprint
+        wait(lambda: all(self.server_diagnostic(name, "client-certificate-sha256") == rotated
+                         for name in ("192.0.2.10", "192.0.2.11")),
+             "Client certificate rotation")
+        self.fingerprint = rotated
         assert self.api.stat().st_ino == inode
         initial = generation(self.statistics)
         self.redis_command("DEL", key, second)
@@ -215,8 +248,10 @@ def main():
         except BaseException:
             for log in Path(directory).glob("*.log"):
                 print(f"--- {log.name} ---\n{log.read_text()}")
+            if fixture.statistics.exists():
+                print(f"--- {fixture.statistics.name} ---\n{fixture.statistics.read_text()}")
             raise
-    print("PASS: native KubeSONiC startup, live updates, both clear policies, reconnect, registration, and shutdown")
+    print("PASS: native KubeSONiC startup, live updates, certificate rotation, both clear policies, reconnect, registration, and shutdown")
 
 
 if __name__ == "__main__":

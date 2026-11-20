@@ -153,6 +153,7 @@ module tacacsrs {
       leaf routing-instance { type string; description "Configured routing instance when present."; }
       leaf configured-single-connect { type boolean; description "Configured negotiation policy, not observed server support."; }
       leaf connection-timeout-seconds { type uint16; units "seconds"; description "Configured connection timeout."; }
+      leaf client-certificate-sha256 { type string { pattern '[0-9a-f]{64}'; } description "Lowercase hex SHA-256 digest of the prepared DER client certificate. Absent for TCP, PSK, and TLS without a client certificate."; }
       leaf state { type enumeration { enum connected; enum connecting; enum disconnected; enum not-attempted; } description "Transport state, distinct from routing eligibility and agent readiness."; }
       leaf connecting { type uint64; description "Transport attempts in progress."; }
       leaf connected { type uint64; description "Established transports not yet closed."; }
