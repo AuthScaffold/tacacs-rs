@@ -168,6 +168,41 @@ async fn observes_complete_snapshots_and_final_removal_without_notifications() {
     assert!(datastore.load().await.unwrap().server.is_empty());
 }
 
+async fn next(
+    observation: &mut Box<dyn tacacsrs_config::source::ConfigObservation>,
+) -> Result<ConfigChangeEvent, tokio::time::error::Elapsed> {
+    tokio::time::timeout(Duration::from_millis(500), observation.next())
+        .await
+        .map(|event| event.unwrap().unwrap())
+}
+
+#[tokio::test]
+#[ignore = "requires redis-server"]
+async fn unchanged_snapshots_emit_only_after_a_rejection() {
+    let redis = Redis::start().await;
+    let key = "TACPLUS_SERVER|192.0.2.1";
+    redis
+        .command::<()>(redis::cmd("HSET").arg(key).arg("priority").arg(2))
+        .await;
+    let datastore = KubeSonicConfigDb::new(redis.settings.clone()).unwrap();
+    let mut observation = datastore.observe().await.unwrap();
+    assert!(matches!(next(&mut observation).await, Ok(ConfigChangeEvent::Changed(_))));
+    assert!(next(&mut observation).await.is_err(), "An unchanged snapshot emitted a candidate");
+    redis
+        .command::<()>(
+            redis::cmd("HSET")
+                .arg(key)
+                .arg("priority")
+                .arg("x".repeat(17)),
+        )
+        .await;
+    assert!(matches!(next(&mut observation).await, Ok(ConfigChangeEvent::CandidateRejected)));
+    redis
+        .command::<()>(redis::cmd("HSET").arg(key).arg("priority").arg(2))
+        .await;
+    assert!(matches!(next(&mut observation).await, Ok(ConfigChangeEvent::Changed(_))));
+}
+
 #[tokio::test]
 #[ignore = "requires redis-server"]
 async fn registration_owns_only_complete_unchanged_rows() {
@@ -175,9 +210,12 @@ async fn registration_owns_only_complete_unchanged_rows() {
     let key = "TACPLUS_SERVER|127.0.0.1";
     let mut registration = LoopbackRegistration::new(redis.settings.clone(), 32, 5049);
     registration.remove_stale().await.unwrap();
-    assert!(!registration.reconcile(false).await.unwrap());
+    assert_eq!(
+        registration.reconcile(false).await.unwrap(),
+        RegistrationState::WaitingForReadiness
+    );
     assert!(!redis.command::<bool>(redis::cmd("EXISTS").arg(key)).await);
-    assert!(registration.reconcile(true).await.unwrap());
+    assert_eq!(registration.reconcile(true).await.unwrap(), RegistrationState::Registered);
     let values: Vec<String> = redis
         .command(redis::cmd("HMGET").arg(key).arg("tcp_port").arg("priority"))
         .await;
@@ -191,6 +229,35 @@ async fn registration_owns_only_complete_unchanged_rows() {
     registration.reconcile(true).await.unwrap();
     registration.cleanup().await.unwrap();
     assert!(!redis.command::<bool>(redis::cmd("EXISTS").arg(key)).await);
+}
+
+#[tokio::test]
+#[ignore = "requires redis-server"]
+async fn a_different_row_is_a_conflict_and_is_preserved() {
+    let redis = Redis::start().await;
+    let key = "TACPLUS_SERVER|127.0.0.1";
+    redis
+        .command::<()>(
+            redis::cmd("HSET")
+                .arg(key)
+                .arg("tcp_port")
+                .arg(49)
+                .arg("priority")
+                .arg(32),
+        )
+        .await;
+    let mut registration = LoopbackRegistration::new(redis.settings.clone(), 32, 5049);
+    assert_eq!(registration.reconcile(true).await.unwrap(), RegistrationState::Conflict);
+    registration.cleanup().await.unwrap();
+    let port: String = redis
+        .command(redis::cmd("HGET").arg(key).arg("tcp_port"))
+        .await;
+    assert_eq!(port, "49");
+    redis.command::<()>(redis::cmd("DEL").arg(key)).await;
+    redis
+        .command::<()>(redis::cmd("SET").arg(key).arg("text"))
+        .await;
+    assert_eq!(registration.reconcile(true).await.unwrap(), RegistrationState::Conflict);
 }
 
 #[tokio::test]

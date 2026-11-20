@@ -170,6 +170,10 @@ impl SourceSettings {
 }
 
 // Bound one script's reply and work independently of operator-supplied row fields.
+// The script checks the key and field lengths before it copies the field values.
+// SCAN visits every key in the database, so the script cost grows with the whole
+// keyspace. Redis serves no other command while the script runs. The observation
+// debounces notifications, so a burst of writes causes one scan.
 const SNAPSHOT: &str = r"
 local cursor = '0'
 local rows = {}
@@ -181,7 +185,12 @@ repeat
         if not seen[key] then
             seen[key] = true
             if #rows >= 4096 then return redis.error_reply('upstream row limit exceeded') end
+            if #key > 512 then return redis.error_reply('upstream key too long') end
             local valid = redis.call('TYPE', key).ok == 'hash'
+            if valid and (redis.call('HSTRLEN', key, 'tcp_port') > 16
+                or redis.call('HSTRLEN', key, 'priority') > 16) then
+                return redis.error_reply('upstream field too long')
+            end
             local fields = valid and redis.call('HMGET', key, 'tcp_port', 'priority') or {false, false}
             rows[#rows + 1] = {key, fields[1], fields[2], valid and 1 or 0}
         end
@@ -252,6 +261,7 @@ impl ConfigDatastore for KubeSonicConfigDb {
             signals,
             pump,
             previous: None,
+            rejected: false,
             read: None,
             due: Instant::now(),
             burst: None,
@@ -265,6 +275,9 @@ struct Observation {
     signals: watch::Receiver<()>,
     pump: JoinHandle<()>,
     previous: Option<Arc<TacacsPlus>>,
+    // A rejection degrades the source. The next valid snapshot must clear that
+    // state, even when it equals the previous one.
+    rejected: bool,
     read: Option<BoxFuture<'static, anyhow::Result<TacacsPlus>>>,
     due: Instant,
     burst: Option<Instant>,
@@ -315,6 +328,10 @@ impl ConfigObservation for Observation {
             match result {
                 Ok(config) => {
                     self.due = Instant::now() + self.settings.reconcile_interval;
+                    if !self.rejected && self.previous.as_deref() == Some(&config) {
+                        continue;
+                    }
+                    self.rejected = false;
                     let config = Arc::new(config);
                     let delta = ConfigDelta::diff(self.previous.as_deref(), &config);
                     self.previous = Some(config.clone());
@@ -330,6 +347,7 @@ impl ConfigObservation for Observation {
                         "KubeSONiC ConfigDB snapshot rejected; retaining known-good configuration"
                     );
                     self.due = Instant::now() + self.settings.retry_interval;
+                    self.rejected = true;
                     return Ok(Some(ConfigChangeEvent::CandidateRejected));
                 }
             }

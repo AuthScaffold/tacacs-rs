@@ -42,6 +42,11 @@ pub enum RegistrationState {
     Registered = 2,
     /// The latest ConfigDB operation of the registrar failed.
     Unavailable = 3,
+    /// Another writer owns a loopback row with a different port or priority.
+    ///
+    /// The registrar does not change this row. SONiC can send traffic to an
+    /// endpoint other than the local proxy.
+    Conflict = 4,
 }
 
 /// Shares the latest [`RegistrationState`] with health checks.
@@ -59,6 +64,7 @@ impl RegistrationStatus {
             1 => RegistrationState::WaitingForReadiness,
             2 => RegistrationState::Registered,
             3 => RegistrationState::Unavailable,
+            4 => RegistrationState::Conflict,
             _ => RegistrationState::Starting,
         }
     }
@@ -70,7 +76,8 @@ impl RegistrationStatus {
     /// Returns the secret-free health result of the latest state.
     ///
     /// A registered row is healthy. A registrar that starts or waits for
-    /// readiness is degraded. A ConfigDB failure is unhealthy.
+    /// readiness is degraded. A ConfigDB failure or a conflicting row is
+    /// unhealthy.
     #[must_use]
     pub fn health(&self) -> HealthCheckResult {
         match self.state() {
@@ -83,6 +90,8 @@ impl RegistrationStatus {
             }
             RegistrationState::Unavailable => HealthCheckResult::unhealthy()
                 .with_description("The latest ConfigDB operation of the registrar failed."),
+            RegistrationState::Conflict => HealthCheckResult::unhealthy()
+                .with_description("A loopback row with a different port or priority exists."),
         }
     }
 }
@@ -216,8 +225,16 @@ impl HostedService for LoopbackRegistrar {
                     row.reconcile(ready).await.map(Some)
                 };
                 match operation.await {
-                    Ok(Some(true)) => self.status.set(RegistrationState::Registered),
-                    Ok(Some(false)) => self.status.set(RegistrationState::WaitingForReadiness),
+                    Ok(Some(state)) => {
+                        if state == RegistrationState::Conflict
+                            && self.status.state() != RegistrationState::Conflict
+                        {
+                            log::warn!(
+                                "The loopback row has a different port or priority; preserving it"
+                            );
+                        }
+                        self.status.set(state);
+                    }
                     Ok(None) => {}
                     Err(_) => {
                         self.status.set(RegistrationState::Unavailable);
@@ -281,15 +298,18 @@ impl LoopbackRegistration {
 
     /// Registers or repairs a missing row only after local readiness.
     ///
-    /// Returns `true` when the row is present after the operation.
+    /// Returns [`RegistrationState::Registered`] when a row with the desired
+    /// port and priority is present after the operation. Returns
+    /// [`RegistrationState::Conflict`] when a row is present with a different
+    /// Redis type, port, or priority. Returns
+    /// [`RegistrationState::WaitingForReadiness`] when the row is absent.
     ///
     /// # Errors
     /// Returns an error when ConfigDB cannot complete the comparison.
-    pub async fn reconcile(&mut self, ready: bool) -> anyhow::Result<bool> {
-        let exists: bool = self.command(redis::cmd("EXISTS").arg(KEY)).await?;
-        if exists {
+    pub async fn reconcile(&mut self, ready: bool) -> anyhow::Result<RegistrationState> {
+        if let Some(state) = self.compare().await? {
             anyhow::ensure!(!self.uncertain, "A previous loopback registration outcome is unknown");
-            return Ok(true);
+            return Ok(state);
         }
         self.owned = false;
         if ready {
@@ -307,14 +327,45 @@ impl LoopbackRegistration {
             self.uncertain = false;
             if self.owned {
                 log::info!("Registered ready loopback proxy");
-            } else {
-                log::warn!("Another writer created the loopback row; preserving it");
+                return Ok(RegistrationState::Registered);
+            }
+            log::warn!("Another writer created the loopback row; preserving it");
+            if let Some(state) = self.compare().await? {
+                return Ok(state);
             }
         }
-        Ok(ready)
+        Ok(RegistrationState::WaitingForReadiness)
     }
 
+    /// Compares a present row with the desired port and priority.
+    ///
+    /// The comparison uses read commands only, so a paused ConfigDB writer
+    /// cannot block it.
+    async fn compare(&self) -> anyhow::Result<Option<RegistrationState>> {
+        let kind: String = self.command(redis::cmd("TYPE").arg(KEY)).await?;
+        match kind.as_str() {
+            "none" => return Ok(None),
+            "hash" => {}
+            _ => return Ok(Some(RegistrationState::Conflict)),
+        }
+        let fields: Vec<Option<String>> = self
+            .command(redis::cmd("HMGET").arg(KEY).arg("tcp_port").arg("priority"))
+            .await?;
+        let desired = [Some(self.port.to_string()), Some(self.priority.to_string())];
+        Ok(Some(if fields == desired {
+            RegistrationState::Registered
+        } else {
+            RegistrationState::Conflict
+        }))
+    }
+
+
     /// Removes an owned row only while its complete contents remain unchanged.
+    ///
+    /// The row has no owner field, because SONiC defines the fields of a
+    /// `TACPLUS_SERVER` row. Ownership therefore depends on the row contents.
+    /// If another writer deletes the row and creates an identical row, cleanup
+    /// removes that new row.
     ///
     /// # Errors
     /// Returns an error when ConfigDB cannot complete cleanup.

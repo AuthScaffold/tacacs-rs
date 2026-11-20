@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::fs::{Metadata, OpenOptions};
 use std::io::Read;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{ensure, Context};
 use async_trait::async_trait;
@@ -248,6 +248,10 @@ impl CredentialChangeSource for MountedCredentials {
             self.settings.ca_file.clone(),
         ];
         let trust_directory = self.settings.ca_directory.clone();
+        let file_directories: Vec<PathBuf> = files
+            .iter()
+            .filter_map(|file| file.parent().map(Path::to_path_buf))
+            .collect();
         let mut watcher = RecommendedWatcher::new(
             move |event: Result<notify::Event, notify::Error>| {
                 if event
@@ -262,7 +266,8 @@ impl CredentialChangeSource for MountedCredentials {
                             files.iter().any(|file| {
                                 file == path
                                     || file.canonicalize().is_ok_and(|target| target == *path)
-                            }) || *path == trust_directory
+                            }) || kubelet_projection_entry(path, &file_directories)
+                                || *path == trust_directory
                                 || (path.parent() == Some(trust_directory.as_path())
                                     && path
                                         .file_name()
@@ -312,6 +317,20 @@ impl CredentialChangeSource for MountedCredentials {
             });
         Ok(Box::pin(tokio_stream::once(CredentialChangeEvent::Recovered).chain(changes)))
     }
+}
+
+/// Returns whether a path is a kubelet projection entry beside a watched file.
+///
+/// The kubelet publishes a Secret volume update as one rename of `..data_tmp`
+/// to `..data`. The visible file names are symbolic links through `..data`, so
+/// the update produces no event for the visible names.
+fn kubelet_projection_entry(path: &Path, directories: &[PathBuf]) -> bool {
+    path.parent()
+        .is_some_and(|parent| directories.iter().any(|directory| directory == parent))
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(".."))
 }
 
 #[cfg(test)]
@@ -412,6 +431,47 @@ mod tests {
             Some(CredentialChangeEvent::Changed(_))
         ));
         std::fs::write(trust.join("012abcde.0"), "changed trust").unwrap();
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+                .await
+                .unwrap(),
+            Some(CredentialChangeEvent::Changed(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn kubelet_secret_updates_notify_through_the_data_link_swap() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let volume = root.join("volume");
+        let first = volume.join("..2024_01_01");
+        let second = volume.join("..2024_01_02");
+        for (generation, content) in [(&first, "first"), (&second, "second")] {
+            std::fs::create_dir_all(generation).unwrap();
+            for name in ["tls.crt", "tls.key", "ca.crt"] {
+                std::fs::write(generation.join(name), content).unwrap();
+            }
+        }
+        std::os::unix::fs::symlink("..2024_01_01", volume.join("..data")).unwrap();
+        for name in ["tls.crt", "tls.key", "ca.crt"] {
+            std::os::unix::fs::symlink(format!("..data/{name}"), volume.join(name)).unwrap();
+        }
+        let trust = root.join("trust");
+        std::fs::create_dir(&trust).unwrap();
+        let mut settings = crate::environment::Environment::parse(Default::default())
+            .unwrap()
+            .credentials;
+        settings.certificate = volume.join("tls.crt");
+        settings.key = volume.join("tls.key");
+        settings.ca_file = volume.join("ca.crt");
+        settings.ca_directory = trust;
+        settings.debounce = std::time::Duration::from_millis(10);
+        settings.reconcile_interval = std::time::Duration::from_secs(60);
+        let mut stream = MountedCredentials::new(settings).subscribe().await.unwrap();
+        assert!(matches!(stream.next().await, Some(CredentialChangeEvent::Recovered)));
+
+        std::os::unix::fs::symlink("..2024_01_02", volume.join("..data_tmp")).unwrap();
+        std::fs::rename(volume.join("..data_tmp"), volume.join("..data")).unwrap();
         assert!(matches!(
             tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
                 .await

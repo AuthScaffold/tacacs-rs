@@ -21,27 +21,36 @@ def wait(predicate, label, timeout=15):
     raise AssertionError(f"Deadline expired: {label}")
 
 
+def find(value, name):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key.split(":")[-1] == name:
+                return child
+            result = find(child, name)
+            if result is not None:
+                return result
+    if isinstance(value, list):
+        for child in value:
+            result = find(child, name)
+            if result is not None:
+                return result
+    return None
+
+
 def generation(path):
     if not path.exists():
         return None
-    def find(value):
-        if isinstance(value, dict):
-            for key, child in value.items():
-                if key.split(":")[-1] == "runtime-generation":
-                    return int(child)
-                result = find(child)
-                if result is not None:
-                    return result
-        if isinstance(value, list):
-            for child in value:
-                result = find(child)
-                if result is not None:
-                    return result
-        return None
-    result = find(json.loads(path.read_text()))
+    result = find(json.loads(path.read_text()), "runtime-generation")
     if result is None:
         raise AssertionError("Statistics omitted runtime-generation")
-    return result
+    return int(result)
+
+
+def servers(path):
+    """Returns the published server names in routing order."""
+    if not path.exists():
+        return None
+    return [server["name"] for server in find(json.loads(path.read_text()), "server") or []]
 
 
 class Fixture:
@@ -146,15 +155,21 @@ class Fixture:
         key = "TACPLUS_SERVER|192.0.2.10"
         self.redis_command("HSET", key, "tcp_port", 449, "priority", 1)
         wait(lambda: self.health("readiness"), "Initial native publication")
-        wait(lambda: generation(self.statistics) is not None, "Initial statistics")
+        wait(lambda: servers(self.statistics) == ["192.0.2.10"], "Initial statistics")
         inode = self.api.stat().st_ino
+        second = "TACPLUS_SERVER|192.0.2.11"
+        self.redis_command("HSET", second, "tcp_port", 449, "priority", 2)
+        wait(lambda: servers(self.statistics) == ["192.0.2.11", "192.0.2.10"],
+             "Live server addition in priority order")
         initial = generation(self.statistics)
+        # The statistics file does not show ports. A new generation is the observable result.
         self.redis_command("HSET", key, "tcp_port", 450)
         wait(lambda: self.changed(initial), "Live server update")
         assert self.api.stat().st_ino == inode
         initial = generation(self.statistics)
-        self.redis_command("DEL", key)
+        self.redis_command("DEL", key, second)
         wait(lambda: self.changed(initial), "Retain-on-clear publication")
+        assert servers(self.statistics) == ["192.0.2.11", "192.0.2.10"]
         assert self.health("readiness")
         self.stop(self.redis)
         self.start_redis()
