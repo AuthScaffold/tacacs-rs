@@ -426,10 +426,7 @@ impl TacacsClientService {
     /// the first client request. Each probe result updates runtime health.
     #[must_use]
     pub fn upstream_probe(&self) -> UpstreamProbe {
-        UpstreamProbe::new(
-            UpstreamBridge::new(Arc::clone(&self.runtime.manager)),
-            self.runtime.health.clone(),
-        )
+        UpstreamProbe::new(self.client_api_handle(), self.runtime.health.clone())
     }
 
     /// Serves until an embedding host requests shutdown, without installing signals.

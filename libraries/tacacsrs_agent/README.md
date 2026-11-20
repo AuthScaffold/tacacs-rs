@@ -96,7 +96,9 @@ The `components` module contains the components that do not depend on a source p
 
 ### Upstream watchdog
 
-`UpstreamWatchdogComponent` is an optional component. Its `ArmUpstreamWatchdog` startup check arms the probe before the listeners bind, so readiness waits for the first probe. The component also runs a hosted service that calls `UpstreamProbe` after each new server set and then once in each interval. The probes run in sequence, so they cannot overlap. Each probe tries every eligible accounting server once. Its deadline is the request timeout multiplied by the number of servers. A reply with any accounting status counts as a success. A failed probe withdraws readiness until a later probe succeeds. A probe failure never stops the service.
+`UpstreamWatchdogComponent` is an optional component. Its `ArmUpstreamWatchdog` startup check arms the probe before the listeners bind, so readiness waits for the first probe. The hosted service calls `UpstreamProbe` after each new server set and then once in each interval. The probes run in sequence and cannot overlap.
+
+The watchdog acts as an in-process client. Each tick submits one accounting `WATCHDOG` record through `ClientApiHandle`. Normal accounting admission, deadlines, failover policy, and networking recovery apply. The watchdog does not select servers or manage circuits. A final reply with any accounting status counts as connectivity success. A failed probe withdraws readiness until a later probe succeeds. No eligible accounting upstream produces a failed probe. A probe failure never stops the service.
 
 ### Invalid source shutdown
 
@@ -130,7 +132,9 @@ For component-based hosting, use the `host` module. The rest of this section des
 
 `AgentRuntime::prepare` validates canonical local services, loads the initial policy, and validates the provider settings. It starts no hosted services and binds no listeners. Its cancellable future owns local resources. `run_until` starts the configuration supervisor, the hosted services, and the listeners together. An unavailable source is never fatal. Runtime health reports it, and the supervisor retries with backoff. A request before the first configuration receives a retryable unavailable error. A source without change notifications cannot correct a rejected configuration. For this source, the supervisor adds the final `DegradationReason::SourceConfigurationInvalid` and stops its retries. A credential resolver failure still retries. The agent does not stop itself. A host component can stop the application when this reason appears.
 
-`TacacsClientService::upstream_probe` returns an `UpstreamProbe`. `UpstreamProbe::arm` adds `DegradationReason::UpstreamWatchdogPending`, so readiness waits for the first probe result. Each new server set adds the pending reason again. Each probe sends one accounting `WATCHDOG` record and tries every eligible accounting server once, independent of the failover strategy. The probe does not use client admission slots. An admission or cancellation error gives an inconclusive result and does not change health. A result for an old server set has no effect. A reply with any accounting status counts as a success. A failed probe adds `DegradationReason::UpstreamWatchdogFailed` and withdraws readiness until a later probe succeeds. `RuntimeHealthSnapshot::is_listening` reports a live process with bound listeners, without a configuration requirement.
+`TacacsClientService::upstream_probe` returns an `UpstreamProbe`. `UpstreamProbe::arm` adds `DegradationReason::UpstreamWatchdogPending`, so readiness waits for the first probe result. Each new server set adds the pending reason again. The probe uses the normal client API accounting path. Capacity pressure or cancellation produces an inconclusive result and leaves health unchanged. A result for an old server set has no effect.
+
+A final accounting reply counts as probe success. Normal retry can discard an intermediate `ERROR`, so that reply does not override a later failed attempt. No eligible accounting server produces probe failure. A failed probe adds `DegradationReason::UpstreamWatchdogFailed` and withdraws readiness until a later probe succeeds. `RuntimeHealthSnapshot::is_listening` reports a live process with bound listeners, without a configuration requirement.
 
 ```rust,no_run
 use std::sync::Arc;
@@ -230,6 +234,8 @@ tacacsrs_agent
 │       │   ├── tcp   - loopback TCP binding
 │       │   └── unix  - Unix socket binding and cleanup
 │       └── upstream_bridge
+│           ├── conversation
+│           │          - managed conversations, upstream deadlines, and I/O observation
 │           ├── packet_io
 │           │          - downstream/upstream TACACS+ packet read/write helpers
 │           ├── reply_action
@@ -268,6 +274,10 @@ The agent does not keep duplicate routing or retry state.
 
 Each ingress path implements `FailoverAttempt` and returns one `Attempt` value for each try.
 The networking executor decides whether another attempt is permitted. Unknown outcomes are never replayed automatically.
+
+One networking bind can try several connections before it selects a server. Each bind tries an eligible endpoint at most once. Later operation attempts can select that endpoint again, including a due recovery trial. The attempt budget does not guarantee distinct endpoint coverage. A new request to the only upstream can use the last-resort pass while its circuit remains open.
+
+Bindings report upstream `ERROR` and server timeout through `note_server_failure`. Deadline-aware I/O observations report transport failures. Networking applies the circuit, reconnect, and retirement effects. The proxy conversation adapter owns those observations and the effective upstream I/O deadline. Downstream forwarding owns reply handling and conversation pinning.
 
 Services reach routing and admission through `upstream::OperationRouter`. The
 router binds one `PolicyService` identity at construction. A service therefore

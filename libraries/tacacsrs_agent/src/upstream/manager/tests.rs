@@ -622,7 +622,7 @@ async fn operation_failure_does_not_move_other_operation_cursors() {
         .bind_server_for_operation(OperationKind::Authentication)
         .await
         .expect("primary authentication route");
-    authentication.note_failure().await;
+    authentication.note_server_failure().await;
 
     let authorization = state
         .bind_server_for_operation(OperationKind::Authorization)
@@ -1158,7 +1158,7 @@ async fn binding_outcomes_outlive_router_and_manager() {
     let router = OperationRouter::new(manager.clone(), PolicyService::ClientApi);
     let request = router.capture_request(OperationKind::Authentication);
     let initial = request.bind().await.unwrap();
-    initial.note_failure().await;
+    initial.note_server_failure().await;
     tokio::time::advance(Duration::from_secs(5)).await;
     let recovery = request.bind().await.unwrap();
     assert_eq!(recovery.connection.server_address(), primary.address);
@@ -1175,7 +1175,7 @@ async fn binding_outcomes_outlive_router_and_manager() {
         .await
         .unwrap();
     assert_eq!(restored.connection().server_address(), primary.address);
-    recovery.note_failure().await;
+    recovery.note_server_failure().await;
     let fallback = client
         .bind(OperationKind::Authentication, Duration::from_secs(5))
         .await
@@ -1210,7 +1210,7 @@ async fn real_request_recovers_a_higher_priority_operation_route() {
         .bind_server_for_operation(OperationKind::Authentication)
         .await
         .expect("initial primary route");
-    initial.note_failure().await;
+    initial.note_server_failure().await;
     let fallback = state
         .bind_server_for_operation(OperationKind::Authentication)
         .await
@@ -1267,7 +1267,7 @@ async fn stale_failure_does_not_invalidate_a_recovered_connection() {
         .bind_server_for_operation(OperationKind::Authentication)
         .await
         .expect("initial binding");
-    stale_binding.note_failure().await;
+    stale_binding.note_server_failure().await;
     tokio::time::advance(Duration::from_secs(5)).await;
     let recovered = state
         .bind_server_for_operation(OperationKind::Authentication)
@@ -1275,7 +1275,7 @@ async fn stale_failure_does_not_invalidate_a_recovered_connection() {
         .expect("recovered binding");
     recovered.note_success().await;
 
-    stale_binding.note_failure().await;
+    stale_binding.note_server_failure().await;
     let current = state
         .bind_server_for_operation(OperationKind::Authentication)
         .await

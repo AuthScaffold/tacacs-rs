@@ -391,6 +391,8 @@ For each new binding, the routed client tries each eligible server at most once 
 
 A connection failure in any pass opens that server's circuit or keeps it open, and selection continues within the same call. If another server connects and answers in time, the downstream client receives its reply. Concurrent callers share a connection attempt for the same server, whatever their operations. After a successful exchange on a recovery trial or last-resort binding, the circuit closes. That server becomes active if it comes before the active server in configuration order, or if the active server's circuit is open.
 
+Each operation attempt makes a new binding. A later binding can revisit an endpoint, including a due recovery trial. The attempt budget does not guarantee one attempt per endpoint. With one upstream, later requests can use that upstream through the last-resort pass without a recovery delay.
+
 ### Connection sharing and retirement
 
 An operation that moves to a server with an open connection uses that connection. It does not open a second one. The routed client retires a server's connection when no operation's route has that server active and no session holds the connection. A retired connection refuses new sessions and closes after its active sessions finish.
@@ -443,9 +445,7 @@ In both cases, new sessions stay on C between recovery trials. If A’s recovery
 
 ## Startup Warm-up
 
-The daemon creates server connections on first use. The optional upstream
-watchdog sends only accounting `WATCHDOG` records. It does not test
-authentication or authorization routes.
+The daemon creates server connections on first use. The optional upstream watchdog acts as an in-process client and submits accounting `WATCHDOG` records. It uses normal client API admission, request deadlines, retry policy, and networking recovery. The watchdog does not select endpoints or change circuits itself. It does not test authentication or authorization routes.
 
 ## Runtime Policy
 
@@ -602,7 +602,11 @@ The health endpoint exists only when `client-api` is enabled. A proxy-only proce
 
 `--host-integration auto` selects systemd only when `NOTIFY_SOCKET` is present. `none` never invokes a host API and is the container setting. Explicit `systemd` requires both `NOTIFY_SOCKET` and `systemd-notify`. Missing prerequisites and runtime notification failures are fatal. Systemd receives `READY=1` exactly once, after the enabled listeners bind. `READY=1` does not wait for configuration or upstream health, so a start timeout cannot stop the daemon while its source is unavailable. Status updates report the wait for configuration, a failed upstream watchdog probe, and other degraded states. Systemd receives `STOPPING=1` before listener drain.
 
-The daemon does not exit because the initial configuration is unavailable. It binds its listeners, reports that it is not ready, and retries. One exception applies. If the runtime rejects the configuration of a static source, the configuration cannot change. The runtime then adds the `SourceConfigurationInvalid` degradation reason, and the daemon exits with a failure status. A credential resolver failure does not cause this exit. Use the readiness health name to find this state. The optional upstream watchdog (`--upstream-watchdog-interval-seconds`) also gates readiness. Readiness waits for the first successful probe after each new server set. A policy reload does not start a new server set. Each probe tries every eligible accounting server once, independent of the configured failover strategy. The probe does not use client admission slots, so a busy daemon does not report a false failure. A reply with any accounting status counts as a success, so a server that rejects the record does not withdraw readiness. If no server replies, the daemon withdraws readiness until a later probe succeeds. If the server set has no accounting server, the watchdog sends nothing and does not gate readiness. Each new server set withdraws readiness until its first probe ends, so frequent server changes can make readiness change state for a short time.
+The daemon does not exit because the initial configuration is unavailable. It binds its listeners, reports that it is not ready, and retries. One exception applies. If the runtime rejects the configuration of a static source, the configuration cannot change. The runtime then adds the `SourceConfigurationInvalid` degradation reason, and the daemon exits with a failure status. A credential resolver failure does not cause this exit. Use the readiness health name to find this state.
+
+The optional upstream watchdog (`--upstream-watchdog-interval-seconds`) also gates readiness. Readiness waits for the first successful probe after each new server set. A policy reload does not start a new server set. Each tick submits one logical accounting operation through the normal client API path. The operation shares admission capacity, its total request deadline, and the configured client API failover strategy with other accounting requests. Unknown delivery stops the request without special watchdog replay.
+
+A final valid accounting reply counts as connectivity success, regardless of its status. Normal retry can discard an intermediate `ERROR` and then fail on another attempt. The watchdog reports that final failure. No eligible accounting upstream also produces a failed probe. A failed probe withdraws readiness until a later probe succeeds. Capacity pressure or cancellation produces an inconclusive result and leaves watchdog health unchanged. A result from an old server set has no effect. Frequent server changes can briefly withdraw readiness while the watchdog waits for a new result.
 
 ## IPC Protocol
 

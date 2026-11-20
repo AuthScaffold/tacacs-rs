@@ -32,16 +32,12 @@ pub(super) struct RuntimeRoutingSnapshot<
     pub(super) credential_lifetime: crate::runtime::CredentialLifetime,
 }
 
-/// Returns the deadline for `attempts` request timeouts of `operation`.
-///
-/// The credential lifetime of the snapshot caps the deadline.
+/// Returns the operation deadline, capped by the snapshot's credential lifetime.
 fn request_deadline<Connector: EndpointConnector>(
     runtime: &RuntimeRoutingSnapshot<Connector>,
     operation: OperationKind,
-    attempts: usize,
 ) -> RequestDeadline {
     let timeout = runtime.runtime_policy.limits(operation).request_timeout();
-    let timeout = timeout.saturating_mul(u32::try_from(attempts).unwrap_or(u32::MAX));
     let deadline = RequestDeadline::after(timeout)
         .unwrap_or_else(|_| RequestDeadline::at(tokio::time::Instant::now()));
     runtime
@@ -69,30 +65,12 @@ impl<Connector: EndpointConnector> RoutingLease<Connector> {
         let plan = runtime
             .runtime_policy
             .failover_plan(service, runtime.server_set.client.eligible_count(operation));
-        let deadline = request_deadline(&runtime, operation, 1);
+        let deadline = request_deadline(&runtime, operation);
         Self {
             runtime,
             operation,
             plan,
             deadline,
-        }
-    }
-
-    /// Converts this lease for a probe that has no side effects on the server.
-    ///
-    /// The probe can try every eligible server, also after an unknown outcome.
-    /// Each server gets one request timeout of the operation in the deadline.
-    pub(crate) fn into_side_effect_free_probe(self) -> Self {
-        let attempts = self
-            .runtime
-            .server_set
-            .client
-            .eligible_count(self.operation)
-            .max(1);
-        Self {
-            plan: FailoverPlan::side_effect_free(attempts),
-            deadline: request_deadline(&self.runtime, self.operation, attempts),
-            ..self
         }
     }
 
@@ -224,8 +202,8 @@ pub(crate) struct BoundServer<
 
 impl<Connector: EndpointConnector> BoundServer<Connector> {
     /// Records failure for this binding's connection generation and operation.
-    pub(crate) async fn note_failure(&self) {
-        self.binding.note_failure().await;
+    pub(crate) async fn note_server_failure(&self) {
+        self.binding.note_server_failure().await;
     }
 
     /// Completes this binding's recovery trial after a successful request.

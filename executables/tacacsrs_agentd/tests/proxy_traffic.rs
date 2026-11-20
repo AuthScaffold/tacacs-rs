@@ -105,6 +105,7 @@ struct Options {
     /// Value of `--service-mode`. `both` also serves the IPC client API at
     /// [`Daemon::socket`].
     service_mode: &'static str,
+    upstream_watchdog_interval_seconds: Option<u64>,
 }
 
 impl Default for Options {
@@ -116,6 +117,7 @@ impl Default for Options {
             backup_servers: Vec::new(),
             config: None,
             service_mode: "tacacs-proxy",
+            upstream_watchdog_interval_seconds: None,
         }
     }
 }
@@ -186,6 +188,12 @@ impl Daemon {
             .arg(directory.0.join("agent.sock"))
             .arg("--runtime-policy")
             .arg(&policy);
+        if let Some(interval) = options.upstream_watchdog_interval_seconds {
+            command.args([
+                "--upstream-watchdog-interval-seconds",
+                &interval.to_string(),
+            ]);
+        }
         if let Some(config) = &options.config {
             let path = directory.0.join("config.json");
             std::fs::write(&path, config.to_string()).unwrap();

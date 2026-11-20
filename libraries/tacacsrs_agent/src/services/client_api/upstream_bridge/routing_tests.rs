@@ -305,6 +305,37 @@ fn accounting() -> AccountingOperation {
 }
 
 #[tokio::test]
+async fn accounting_record_preserves_watchdog_body_and_reuses_the_client_connection() {
+    use tacacsrs_protocol::body::TacacsBodyTrait;
+    use tacacsrs_protocol::enumerations::TacacsAccountingFlags;
+
+    let primary = Arc::new(ScriptedConnection::successful("primary:49"));
+    let backup = Arc::new(ScriptedConnection::successful("backup:49"));
+    let connector = Arc::new(OperationConnector::new(operation_map(
+        primary.clone(),
+        backup,
+        OperationKind::Accounting,
+    )));
+    let bridge = bridge(connector.clone(), FailoverStrategy::default());
+    bridge
+        .execute_accounting_request(accounting())
+        .await
+        .unwrap();
+    let mut record = accounting().to_request();
+    record.flags = TacacsAccountingFlags::WATCHDOG;
+    let expected = record.to_bytes().unwrap();
+    bridge.execute_accounting_record(record).await.unwrap();
+    let bodies = primary.bodies.lock().await;
+    assert_eq!(bodies[1], expected);
+    assert_eq!(
+        connector
+            .attempts("primary:49", OperationKind::Accounting)
+            .await,
+        1
+    );
+}
+
+#[tokio::test]
 async fn prepared_admission_matches_all_transmitted_bodies_at_the_exact_limit() {
     use crate::config::RequestLimits;
     let authorization = crate::test_support::build_authorization_request();

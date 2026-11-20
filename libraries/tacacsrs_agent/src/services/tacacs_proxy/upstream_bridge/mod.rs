@@ -14,14 +14,12 @@ use tokio::task::JoinSet;
 use self::error::ProxyConnectionError;
 use self::error_reply::local_error_reply;
 use self::packet_io::{DownstreamReader, write_downstream_packet};
-use self::session::{
-    ProxyConversationProvider, SessionPacket, SessionReply, UpstreamConversationProvider,
-    run_proxy_session,
-};
+use self::conversation::{ProxyConversationProvider, UpstreamConversationProvider};
+use self::session::{SessionPacket, SessionReply, run_proxy_session};
 #[cfg(test)]
 use self::reply_action::{ReplyAction, reply_action};
 #[cfg(test)]
-use self::session::ProxyConversation;
+use self::conversation::ProxyConversation;
 #[cfg(test)]
 use self::session_mapping::rewrite_session_id;
 use crate::config::{PolicyService, PreparedProxyPolicy};
@@ -31,6 +29,7 @@ use crate::upstream::UpstreamConnection;
 use tacacsrs_networking::routed::EndpointConnector;
 
 mod error;
+mod conversation;
 mod error_reply;
 mod packet_io;
 mod reply_action;
@@ -1025,19 +1024,26 @@ mod tests {
         use crate::upstream::NetworkUpstreamConnector;
         use crate::EnabledServices;
 
-        for continuation in [false, true] {
+        for (continuation, request_timeout) in [
+            (false, Duration::from_millis(200)),
+            (true, Duration::from_millis(200)),
+            (false, Duration::from_secs(2)),
+            (true, Duration::from_secs(2)),
+        ] {
             tokio::time::timeout(Duration::from_secs(3), async {
                 let primary = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
                 let backup = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let mut primary_server = native_server(&primary);
+                primary_server.timeout = 1;
                 let manager = Arc::new(UpstreamManager::new(
-                    vec![native_server(&primary), native_server(&backup)],
+                    vec![primary_server, native_server(&backup)],
                     NetworkUpstreamConnector::new(ProxyLoopGuard::new(None)).erased(),
                     Duration::from_secs(30),
                     RuntimeHealthPublisher::new(EnabledServices::TACACS_PROXY),
                 ));
                 let limits = RequestLimits::new(1024, 2)
                     .unwrap()
-                    .with_request_timeout(Duration::from_millis(200))
+                    .with_request_timeout(request_timeout)
                     .unwrap();
                 manager.reload_runtime_policy(
                     RuntimePolicy::new(

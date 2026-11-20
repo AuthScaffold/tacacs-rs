@@ -33,13 +33,8 @@ pub(super) trait RoutedOperation: Send + Sync + 'static {
     const NAME: &'static str;
     /// Operation name with display capitalization for log messages.
     const DISPLAY_NAME: &'static str;
-    /// TACACS+ operation used for routing and connection isolation.
+    /// TACACS+ operation used for routing and circuit isolation.
     const OPERATION: OperationKind;
-    /// Marks an agent-local probe that has no side effects on the server.
-    ///
-    /// A probe skips client admission, tries every eligible server, and also
-    /// retries after an unknown outcome. Client requests keep the default.
-    const SIDE_EFFECT_FREE_PROBE: bool = false;
     /// Sends the operation through the selected server connection.
     async fn send<Connection: UpstreamConnection + ?Sized>(
         connection: &Connection,
@@ -142,7 +137,7 @@ where
             .and_then(std::convert::identity);
         match response {
             Ok(response) if Operation::is_server_error(&response) => {
-                bound_server.note_failure().await;
+                bound_server.note_server_failure().await;
                 Attempt::Rejected(response)
             }
             Ok(response) => {
@@ -176,7 +171,6 @@ where
                         .with_server(bound_server.connection.server_address()),
                     attempt_index,
                 );
-                bound_server.note_failure().await;
                 Attempt::Failed {
                     error: service_error,
                     disposition,
@@ -202,10 +196,18 @@ where
     where
         Operation: RoutedOperation,
     {
-        let mut routing = self.router.capture_request(Operation::OPERATION);
-        if Operation::SIDE_EFFECT_FREE_PROBE {
-            routing = routing.into_side_effect_free_probe();
-        }
+        self.execute_preparing::<Operation>(move || Operation::prepare(&request))
+            .await
+    }
+
+    pub(super) async fn execute_preparing<Operation>(
+        &self,
+        prepare: impl FnOnce() -> Result<Operation::Exchange, UpstreamRequestError> + Send,
+    ) -> Result<Operation::Response, ServiceError>
+    where
+        Operation: RoutedOperation,
+    {
+        let routing = self.router.capture_request(Operation::OPERATION);
         let check_deadline = || {
             routing.deadline().check().map_err(|error| {
                 ServiceError::new(
@@ -220,21 +222,15 @@ where
             })
         };
         check_deadline()?;
-        let prepared = Operation::prepare(&request);
-        drop(request);
+        let prepared = prepare();
         check_deadline()?;
         let exchange = prepared.map_err(UpstreamRequestError::into_service_error)?;
         let body_length = exchange.request_body().as_bytes().len();
-        // One sequential probe must not compete with client requests for permits.
-        let _admission_permit = if Operation::SIDE_EFFECT_FREE_PROBE {
-            None
-        } else {
-            Some(routing.admit(body_length).await.map_err(|error| {
-                error
-                    .into_service_error()
-                    .with_runtime_generation(routing.generation())
-            })?)
-        };
+        let _admission_permit = routing.admit(body_length).await.map_err(|error| {
+            error
+                .into_service_error()
+                .with_runtime_generation(routing.generation())
+        })?;
 
         let plan = routing.failover_plan();
         let generation = routing.generation();

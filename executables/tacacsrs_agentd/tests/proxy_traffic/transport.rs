@@ -800,6 +800,72 @@ async fn ipc_and_proxy_traffic_share_upstream_connections() {
     daemon.stop().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn watchdog_shares_client_connections_and_recovers_on_a_later_tick() {
+    let upstream = Upstream::start(SingleConnect::Accept).await;
+    let mut options = ipc_options("ordered-safe-retry", 3, Vec::new());
+    options.upstream_watchdog_interval_seconds = Some(1);
+    let daemon = Daemon::start(upstream.address(), options).await;
+    let endpoint = IpcEndpoint::Unix(daemon.socket());
+    let mut health = tacacsrs_ipc::HealthClient::connect(&endpoint)
+        .await
+        .unwrap();
+
+    for (fault, ready) in [
+        (Fault::None, true),
+        (Fault::Close, false),
+        (Fault::None, true),
+    ] {
+        upstream.set_plan(Arc::new(move |request| {
+            if request.user == "tacacsrs-agent" {
+                fault
+            } else {
+                Fault::None
+            }
+        }));
+        tokio::time::timeout(OPERATION_LIMIT, async {
+            loop {
+                let details = health.details().await.unwrap();
+                assert!(details.watchdog.as_ref().unwrap().armed);
+                if details.readiness == ready {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("watchdog readiness did not become {ready}: {}", daemon.log()));
+
+        if ready && upstream.injected(Fault::Close) == 0 {
+            let ipc = ipc_client(&daemon.socket()).await;
+            let reply = ipc_operation(&ipc, Kind::Authorization, "watchdog-ipc").await;
+            assert!(matches!(
+                reply.outcome,
+                Ok(Outcome::Reply {
+                    status: Status::Success,
+                    ..
+                })
+            ));
+            let proxy = super::proxy_client(daemon.port, true).await.unwrap();
+            let reply = super::run_operation(&proxy, Kind::Accounting, "watchdog-proxy")
+                .await
+                .unwrap();
+            assert!(matches!(
+                reply,
+                Outcome::Reply {
+                    status: Status::Success,
+                    ..
+                }
+            ));
+            assert_eq!(upstream.connections_accepted(), 1);
+        }
+    }
+
+    assert!(upstream.injected(Fault::Close) > 0);
+    assert!(upstream.received(Kind::Accounting) >= 3);
+    daemon.stop().await;
+}
+
 /// Checks that IPC requests are bounded when the upstream hangs or fails.
 ///
 /// With one server, an upstream `ERROR` reaches the IPC caller as an `ERROR`

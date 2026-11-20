@@ -22,8 +22,10 @@ use crate::host::StartupCheck;
 /// before the first client request.
 ///
 /// Watchdog records go to the accounting servers and count in their endpoint
-/// statistics. A reply with any accounting status counts as a success, because
-/// it proves the connection, the transport security, and the shared secret.
+/// statistics. The watchdog uses normal client API accounting policy. A final
+/// reply with any accounting status counts as connectivity success. Admission
+/// pressure or cancellation leaves health unchanged. No accounting upstream
+/// produces a failed probe.
 pub struct UpstreamWatchdogComponent {
     interval: Duration,
 }

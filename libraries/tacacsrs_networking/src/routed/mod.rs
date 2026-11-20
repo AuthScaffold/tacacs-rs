@@ -9,7 +9,7 @@
 //! Each endpoint has one cached connection. Every operation that routes to the
 //! endpoint shares it. Circuits and active positions are kept per operation.
 //!
-//! Report a TACACS+ `ERROR` through [`BoundEndpoint::note_failure`] even after the
+//! Report a TACACS+ `ERROR` through [`BoundEndpoint::note_server_failure`] even after the
 //! first reply. A failure opens the circuit for that endpoint and operation and
 //! moves that operation to the next endpoint. The shared connection stays open
 //! for the other operations. If the next endpoint already has a connection, the
@@ -34,6 +34,8 @@
 //! connection. For example, after every operation returns to a recovered
 //! endpoint, the backup endpoint's connection closes.
 //! Combine bindings with [`crate::retry`] for conservative, bounded retries.
+//! Each bind tries an endpoint at most once. Later operation attempts can
+//! revisit it through live selection, including a due recovery trial.
 //! Schedule [`RoutedClient::retire_replaced_until`] when publishing a replacement.
 //! Removed endpoints remain usable by captured catalogs until that cutoff.
 //! Use [`RoutedClient::retire_replaced_with_deadlines`] to select cutoffs per endpoint,
@@ -46,6 +48,7 @@
 //! Run the agent-free loopback example with:
 //! `cargo run -p tacacsrs-networking --example routed_accounting`.
 
+mod binding;
 mod circuit;
 mod catalog;
 mod client;
@@ -54,6 +57,7 @@ mod lifecycle;
 mod operation;
 
 pub use catalog::Endpoint;
-pub use client::{BoundEndpoint, FailureObservation, RoutedClient};
+pub use binding::{BoundEndpoint, FailureObservation};
+pub use client::RoutedClient;
 pub use connector::{EndpointConnector, NativeConnector};
 pub use operation::OperationKind;

@@ -6,6 +6,7 @@ use tacacsrs_protocol::operations::{
 };
 use tacacsrs_protocol::failure::ServiceError;
 use tacacsrs_protocol::exchange::accounting::AccountingExchange;
+use tacacsrs_protocol::accounting::request::AccountingRequest;
 
 use super::UpstreamBridge;
 use super::routed::RoutedOperation;
@@ -46,6 +47,17 @@ impl<Connector: tacacsrs_networking::routed::EndpointConnector> UpstreamBridge<C
 where
     Connector::Connection: UpstreamConnection,
 {
+    /// Runs an accounting record through the normal client API policy.
+    pub(crate) async fn execute_accounting_record(
+        &self,
+        request: AccountingRequest,
+    ) -> Result<AccountingOperationResponse, ServiceError> {
+        self.execute_preparing::<AccountingRoute>(move || {
+            AccountingExchange::new(request).map_err(UpstreamRequestError::invalid_request)
+        })
+        .await
+    }
+
     /// Runs one IPC accounting request against the selected TACACS+ server.
     ///
     /// The networking layer controls connection reuse and single-connection

@@ -477,6 +477,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
     }
 
     /// Returns the number of servers eligible for one operation.
+    #[cfg(test)]
     pub(crate) fn eligible_server_count(&self, operation: OperationKind) -> usize {
         self.current_server_set().client.eligible_count(operation)
     }

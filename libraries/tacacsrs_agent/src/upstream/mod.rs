@@ -18,9 +18,10 @@
 //!
 //! # Connection reuse
 //!
-//! Each operation has an adaptive client. It caches a shared TCP/TLS connection
-//! when both peers negotiate single-connection mode. Otherwise, each session
-//! opens a dedicated connection. Prepared endpoint identities control cache
+//! Each endpoint has one adaptive client shared by all operations. It caches
+//! a TCP/TLS connection when both peers negotiate single-connection mode.
+//! Otherwise, each session opens a dedicated connection. Circuits and active
+//! routes remain per operation. Prepared endpoint identities control cache
 //! reuse across published catalogs.
 
 mod admission;
