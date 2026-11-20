@@ -32,6 +32,20 @@ pub(super) struct RuntimeRoutingSnapshot<
     pub(super) credential_lifetime: crate::runtime::CredentialLifetime,
 }
 
+/// Returns the operation deadline, capped by the snapshot's credential lifetime.
+fn request_deadline<Connector: EndpointConnector>(
+    runtime: &RuntimeRoutingSnapshot<Connector>,
+    operation: OperationKind,
+) -> RequestDeadline {
+    let timeout = runtime.runtime_policy.limits(operation).request_timeout();
+    let deadline = RequestDeadline::after(timeout)
+        .unwrap_or_else(|_| RequestDeadline::at(tokio::time::Instant::now()));
+    runtime
+        .credential_lifetime
+        .deadline
+        .map_or(deadline, |expiry| RequestDeadline::at(deadline.expires_at().min(expiry)))
+}
+
 /// One request's immutable routing and retry-policy inputs.
 pub(crate) struct RoutingLease<
     Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
@@ -51,13 +65,7 @@ impl<Connector: EndpointConnector> RoutingLease<Connector> {
         let plan = runtime
             .runtime_policy
             .failover_plan(service, runtime.server_set.client.eligible_count(operation));
-        let deadline =
-            RequestDeadline::after(runtime.runtime_policy.limits(operation).request_timeout())
-                .unwrap_or_else(|_| RequestDeadline::at(tokio::time::Instant::now()));
-        let deadline = runtime
-            .credential_lifetime
-            .deadline
-            .map_or(deadline, |expiry| RequestDeadline::at(deadline.expires_at().min(expiry)));
+        let deadline = request_deadline(&runtime, operation);
         Self {
             runtime,
             operation,
@@ -194,8 +202,8 @@ pub(crate) struct BoundServer<
 
 impl<Connector: EndpointConnector> BoundServer<Connector> {
     /// Records failure for this binding's connection generation and operation.
-    pub(crate) async fn note_failure(&self) {
-        self.binding.note_failure().await;
+    pub(crate) async fn note_server_failure(&self) {
+        self.binding.note_server_failure().await;
     }
 
     /// Completes this binding's recovery trial after a successful request.
@@ -203,10 +211,12 @@ impl<Connector: EndpointConnector> BoundServer<Connector> {
         self.binding.note_success().await;
     }
 
+    /// Arms deadline-aware failure reporting for upstream I/O.
     pub(crate) fn observe_failure(
         &self,
+        deadline: tacacsrs_networking::RequestDeadline,
     ) -> tacacsrs_networking::routed::FailureObservation<Connector> {
-        self.binding.observe_failure()
+        self.binding.observe_failure(deadline)
     }
 
     /// Returns the configured upstream server selected for this request.
@@ -236,98 +246,8 @@ impl<Connector: EndpointConnector> ServerSet<Connector> {
         self.servers.len()
     }
 
-    pub(super) fn retire_replaced_until(
-        &self,
-        replacement: &Self,
-        deadline: RequestDeadline,
-        urgent: &std::collections::BTreeSet<&str>,
-    ) {
-        let immediate = RequestDeadline::at(tokio::time::Instant::now());
+    pub(super) fn retire_replaced_until(&self, replacement: &Self, deadline: RequestDeadline) {
         self.client
-            .retire_replaced_with_deadlines(&replacement.client, |name| {
-                if urgent.contains(name) {
-                    immediate
-                } else {
-                    deadline
-                }
-            });
-    }
-
-    pub(super) fn changed_revocation_servers(
-        &self,
-        replacement: &Self,
-    ) -> std::collections::BTreeSet<&str> {
-        self.servers
-            .iter()
-            .filter(|old| {
-                replacement
-                    .servers
-                    .iter()
-                    .find(|new| new.server.name == old.server.name)
-                    .is_some_and(|new| revocation_changed(&old.server, &new.server))
-            })
-            .map(|old| old.server.name.as_str())
-            .collect()
-    }
-}
-
-pub(super) fn revocation_changed(
-    old: &tacacsrs_config::TacacsPlusServer,
-    new: &tacacsrs_config::TacacsPlusServer,
-) -> bool {
-    old.server_authentication
-        .as_ref()
-        .map(|auth| (&auth.require_crls, &auth.require_ocsp, &auth.require_stapled_ocsp))
-        != new
-            .server_authentication
-            .as_ref()
-            .map(|auth| (&auth.require_crls, &auth.require_ocsp, &auth.require_stapled_ocsp))
-        && (old.server_authentication.as_ref().is_some_and(|auth| {
-            auth.require_crls.is_some()
-                || auth.require_ocsp.is_some()
-                || auth.require_stapled_ocsp.is_some()
-        }) || new.server_authentication.as_ref().is_some_and(|auth| {
-            auth.require_crls.is_some()
-                || auth.require_ocsp.is_some()
-                || auth.require_stapled_ocsp.is_some()
-        }))
-}
-
-#[cfg(test)]
-mod revocation_tests {
-    use super::revocation_changed;
-
-    #[test]
-    fn fetched_evidence_changes_require_immediate_retirement() {
-        let old = tacacsrs_config::TacacsPlusServerBuilder::new(
-            "revocation",
-            tacacsrs_config::TacacsPlusServerType::all(),
-            "127.0.0.1",
-            300,
-        )
-        .build();
-        let mut changed = old.clone();
-        changed.server_authentication =
-            Some(tacacsrs_config::TlsClientServerAuthentication::default());
-        assert!(!revocation_changed(&old, &changed));
-        changed.server_authentication.as_mut().unwrap().require_ocsp =
-            Some(tacacsrs_config::tacacsrs::RequireOcsp {
-                response: Some(vec![1]),
-                evidence_reference: None,
-                max_response_age_seconds: 300,
-            });
-        assert!(revocation_changed(&old, &changed));
-        assert!(!revocation_changed(&changed, &changed));
-        let previous = changed.clone();
-        changed
-            .server_authentication
-            .as_mut()
-            .unwrap()
-            .require_ocsp
-            .as_mut()
-            .unwrap()
-            .response = Some(vec![2]);
-        assert!(revocation_changed(&previous, &changed));
-        assert!(revocation_changed(&changed, &old));
+            .retire_replaced_until(&replacement.client, deadline);
     }
 }

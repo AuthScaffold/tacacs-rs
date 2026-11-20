@@ -41,6 +41,7 @@ pub mod prepare;
 pub mod policy;
 pub mod local_services;
 pub mod proxy_policy;
+mod revocation;
 mod enumeration;
 mod parse;
 pub(crate) mod serde_helpers;
@@ -50,6 +51,7 @@ pub use parse::{
     parse_root_json, parse_root_json_file, parse_yang_json, parse_yang_json_file,
     parse_yang_json_file_with_options, parse_yang_json_with_options,
 };
+pub use revocation::revocation_settings;
 pub use enumeration::{enumerate_server, enumerate_servers, validate_credential_references};
 pub use central_references::{
     CentralCredentialReference, CentralCredentialSlot, CentralCredentialUsage,

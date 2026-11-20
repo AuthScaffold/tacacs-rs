@@ -6,7 +6,7 @@ use anyhow::Context;
 use tacacsrs_unix_socket::prepare_unix_listener;
 
 use super::{ProxyListener, accept_loop};
-use crate::runtime::{ListenerRegistration, ShutdownReceiver};
+use crate::runtime::{BindSignal, ShutdownReceiver};
 use crate::services::tacacs_proxy::TacacsProxyService;
 
 pub(super) async fn serve<Connector: tacacsrs_networking::routed::EndpointConnector>(
@@ -14,13 +14,13 @@ pub(super) async fn serve<Connector: tacacsrs_networking::routed::EndpointConnec
     service: TacacsProxyService<Connector>,
     options: crate::services::ListenerOptions,
     shutdown: ShutdownReceiver,
-    registration: ListenerRegistration,
+    bound: BindSignal,
 ) -> anyhow::Result<()>
 where
     Connector::Connection: crate::upstream::UpstreamConnection,
 {
     let (listener, socket_guard) = prepare_unix_listener(path, options.socket_mode()).await?;
-    registration.mark_bound();
+    bound.mark_bound();
 
     log::info!(
         "The TACACS+ proxy listener accepts clients on Unix domain socket {}",

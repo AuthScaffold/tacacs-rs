@@ -55,6 +55,8 @@ pub(crate) struct UpstreamManager<
     Connector: EndpointConnector = crate::upstream::NetworkUpstreamConnector,
 > {
     closed: std::sync::atomic::AtomicBool,
+    shutdown_deadlines:
+        std::sync::OnceLock<Result<crate::runtime::shutdown::ShutdownDeadlines, &'static str>>,
     /// Serializes catalog preparation and the snapshot swap. It is the inner
     /// lock, held after the service publication lock.
     catalog_reload_lock: tokio::sync::Mutex<()>,
@@ -64,8 +66,6 @@ pub(crate) struct UpstreamManager<
     connect_options: PrepareOptions,
     /// Serializes generation publication and server-availability observations.
     publication: PublicationController,
-    prepared_history:
-        std::sync::Mutex<Vec<(tacacsrs_networking::routed::Endpoint, Arc<TacacsPlusServer>)>>,
 }
 
 #[cfg(test)]
@@ -156,21 +156,11 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             .into_iter()
             .map(|server| PreparedServer::new(server, connect_options.clone()).map(Arc::new))
             .collect::<anyhow::Result<Vec<_>>>()?;
-        let credential_lifetime = servers
-            .iter()
-            .try_fold(crate::runtime::CredentialLifetime::unbounded(), |lifetime, server| {
-                lifetime.intersect(server.evidence_lifetime)
-            })?;
+        let credential_lifetime = crate::runtime::CredentialLifetime::unbounded();
         let server_set = Arc::new(ServerSet::new(servers, connector));
-        let prepared_history = std::sync::Mutex::new(
-            server_set
-                .servers
-                .iter()
-                .map(|slot| (slot.endpoint.clone(), slot.server.clone()))
-                .collect(),
-        );
         Ok(Self {
             closed: std::sync::atomic::AtomicBool::new(false),
+            shutdown_deadlines: std::sync::OnceLock::new(),
             catalog_reload_lock: tokio::sync::Mutex::new(()),
             active_snapshot: StdRwLock::new(Arc::new(RuntimeRoutingSnapshot {
                 generation: 0,
@@ -183,7 +173,6 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             })),
             connect_options,
             publication: PublicationController::new(health),
-            prepared_history,
         })
     }
 
@@ -255,24 +244,29 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                     tacacsrs_config::ServerOperationalStatistics {
                         name: server.server.name.clone(),
                         counter_epoch: snapshot.epoch,
-                        diagnostics: Some(tacacsrs_config::ServerDiagnostics::new(
-                            &server.server,
-                            snapshot.diagnostics.clone(),
-                            tacacsrs_networking::routed::OperationKind::ALL
-                                .into_iter()
-                                .map(|operation| {
-                                    let circuit = runtime
-                                        .server_set
-                                        .client
-                                        .circuit_open(&server.server.name, operation);
-                                    tacacsrs_config::RoutingStatus {
-                                        operation: operation.name(),
-                                        eligible: circuit.is_some(),
-                                        on_hold: circuit.unwrap_or(false),
-                                    }
-                                })
-                                .collect(),
-                        )),
+                        diagnostics: Some(
+                            tacacsrs_config::ServerDiagnostics::new(
+                                &server.server,
+                                snapshot.diagnostics.clone(),
+                                tacacsrs_networking::routed::OperationKind::ALL
+                                    .into_iter()
+                                    .map(|operation| {
+                                        let circuit = runtime
+                                            .server_set
+                                            .client
+                                            .circuit_open(&server.server.name, operation);
+                                        tacacsrs_config::RoutingStatus {
+                                            operation: operation.name(),
+                                            eligible: circuit.is_some(),
+                                            on_hold: circuit.unwrap_or(false),
+                                        }
+                                    })
+                                    .collect(),
+                            )
+                            .with_client_certificate_sha256(
+                                server.client_certificate_sha256.clone(),
+                            ),
+                        ),
                         statistics: snapshot.into(),
                     }
                 })
@@ -321,15 +315,37 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
     }
 
     pub(crate) fn shutdown_deadline(&self) -> anyhow::Result<tacacsrs_networking::RequestDeadline> {
-        let runtime = self.current_runtime();
-        let requests = OperationKind::ALL
-            .into_iter()
-            .map(|operation| runtime.runtime_policy.limits(operation).request_timeout())
-            .max()
-            .unwrap_or_default();
-        tacacsrs_networking::RequestDeadline::after(
-            requests.min(runtime.runtime_policy.shutdown_timeout()),
-        )
+        Ok(self.shutdown_deadlines()?.requests)
+    }
+
+    pub(crate) fn shutdown_deadlines(
+        &self,
+    ) -> anyhow::Result<crate::runtime::shutdown::ShutdownDeadlines> {
+        self.shutdown_deadlines
+            .get_or_init(|| {
+                let runtime = self.current_runtime();
+                let timeout = runtime.runtime_policy.shutdown_timeout();
+                let requests = OperationKind::ALL
+                    .into_iter()
+                    .map(|operation| runtime.runtime_policy.limits(operation).request_timeout())
+                    .max()
+                    .unwrap_or_default()
+                    .min(timeout);
+                let now = tokio::time::Instant::now();
+                Ok(crate::runtime::shutdown::ShutdownDeadlines {
+                    overall: tacacsrs_networking::RequestDeadline::at(
+                        now.checked_add(timeout)
+                            .ok_or("Shutdown budget exceeds the clock range")?,
+                    ),
+                    requests: tacacsrs_networking::RequestDeadline::at(
+                        now.checked_add(requests)
+                            .ok_or("Shutdown budget exceeds the clock range")?,
+                    ),
+                })
+            })
+            .as_ref()
+            .copied()
+            .map_err(|message| anyhow::anyhow!("{message}"))
     }
 
     pub(crate) fn close(&self) {
@@ -348,15 +364,30 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         self.current_server_set().client.cancel();
     }
 
+    /// Closes admission and joins the upstream client tasks.
+    ///
+    /// An upstream connection can fail before shutdown, for example when a server
+    /// sends a truncated reply. The connection driver gives that error to the
+    /// affected sessions and keeps it until shutdown joins the driver. Shutdown
+    /// logs this [`ConnectionFailure`](tacacsrs_networking::ConnectionFailure)
+    /// and continues. Every other join error, including a task panic, is returned.
     pub(crate) async fn close_and_join(
         &self,
         deadline: tacacsrs_networking::RequestDeadline,
     ) -> anyhow::Result<()> {
         self.close();
-        self.current_server_set()
+        let result = self
+            .current_server_set()
             .client
             .close_and_join(deadline)
-            .await
+            .await;
+        match result {
+            Err(error) if tacacsrs_networking::ConnectionFailure::is_delivered(&error) => {
+                log::warn!("An upstream connection ended with an error before shutdown: {error:#}");
+                Ok(())
+            }
+            result => result,
+        }
     }
 
     fn current_server_set(&self) -> Arc<ServerSet<Connector>> {
@@ -426,7 +457,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             return;
         }
         log::info!(
-            "Configured {} TACACS+ server(s); operation connections will open on first use",
+            "Configured {} TACACS+ server(s); server connections will open on first use",
             server_set.server_count()
         );
     }

@@ -13,7 +13,12 @@ use super::grpc::GrpcService;
 use super::health::{HealthStatus, StandardHealth};
 use super::limited_incoming::LimitedIncoming;
 use super::request_tracker::RequestTracker;
+use crate::diagnostics::DiagnosticsService;
+use crate::health_details::{self, AgentHealthService};
+use crate::proto::agent_health_server::AgentHealthServer;
+use crate::proto::diagnostics_server::DiagnosticsServer;
 use crate::proto::tacacs_agent_server::TacacsAgentServer;
+use crate::{DiagnosticsProvider, HealthDetailsProvider};
 
 /// Allows protobuf framing overhead while rejecting multi-megabyte envelopes.
 const MAX_IPC_MESSAGE_BYTES: usize =
@@ -57,20 +62,57 @@ where
     H: Handler,
     B: FnOnce() + Send,
 {
-    serve_unix_with_diagnostics(path, options, handler, readiness, shutdown, on_bound, None).await
+    serve_unix_with_services(
+        path,
+        options,
+        handler,
+        readiness,
+        shutdown,
+        on_bound,
+        ListenerServices::default(),
+    )
+    .await
 }
 
-/// Runs the standard listener with an optional read-only diagnostics provider.
+/// Optional read-only services that share the listener socket.
+///
+/// Each provider adds one gRPC route. Without a diagnostics provider, the
+/// `Diagnostics` service returns `Unimplemented`. Without a health details
+/// provider, the listener does not add the `AgentHealth` route, and gRPC
+/// returns `Unimplemented`.
+#[derive(Clone, Default)]
+pub struct ListenerServices {
+    diagnostics: Option<Arc<dyn DiagnosticsProvider>>,
+    health_details: Option<Arc<dyn HealthDetailsProvider>>,
+}
+
+impl ListenerServices {
+    /// Serves operational statistics from `provider`.
+    #[must_use]
+    pub fn with_diagnostics(mut self, provider: Arc<dyn DiagnosticsProvider>) -> Self {
+        self.diagnostics = Some(provider);
+        self
+    }
+
+    /// Serves detailed runtime health from `provider`.
+    #[must_use]
+    pub fn with_health_details(mut self, provider: Arc<dyn HealthDetailsProvider>) -> Self {
+        self.health_details = Some(provider);
+        self
+    }
+}
+
+/// Runs the standard listener and the optional read-only `services`.
 /// # Errors
 /// Returns binding, serving, or cleanup errors, as with [`serve_unix`].
-pub async fn serve_unix_with_diagnostics<H, B>(
+pub async fn serve_unix_with_services<H, B>(
     path: &Path,
     options: ListenerOptions,
     handler: Arc<H>,
     readiness: watch::Receiver<HealthStatus>,
     shutdown: watch::Receiver<bool>,
     on_bound: B,
-    diagnostics: Option<Arc<dyn crate::DiagnosticsProvider>>,
+    services: ListenerServices,
 ) -> anyhow::Result<()>
 where
     H: Handler,
@@ -101,12 +143,15 @@ where
         )
         .add_service(health_service)
         .add_service(
-            crate::proto::diagnostics_server::DiagnosticsServer::new(
-                crate::diagnostics::DiagnosticsService(diagnostics),
-            )
-            .max_decoding_message_size(2048)
-            .max_encoding_message_size(MAX_IPC_MESSAGE_BYTES),
+            DiagnosticsServer::new(DiagnosticsService(services.diagnostics))
+                .max_decoding_message_size(2048)
+                .max_encoding_message_size(MAX_IPC_MESSAGE_BYTES),
         )
+        .add_optional_service(services.health_details.map(|provider| {
+            AgentHealthServer::new(AgentHealthService(provider))
+                .max_decoding_message_size(health_details::MAX_REQUEST_BYTES)
+                .max_encoding_message_size(MAX_IPC_MESSAGE_BYTES)
+        }))
         .serve_with_incoming_shutdown(incoming, wait_for_flag(shutdown.clone()));
     tokio::pin!(serving);
     tokio::select! {
@@ -158,6 +203,138 @@ mod tests {
         let _ = tokio::fs::remove_file(PathBuf::from(lock_name)).await;
     }
 
+
+    struct UnusedHandler;
+
+    #[async_trait::async_trait]
+    impl crate::server::Handler for UnusedHandler {
+        async fn authenticate_pap(
+            &self,
+            _request: tacacsrs_protocol::operations::PapAuthenticationOperation,
+        ) -> Result<
+            tacacsrs_protocol::operations::PapAuthenticationOperationResponse,
+            tacacsrs_protocol::failure::ServiceError,
+        > {
+            unreachable!("the test sends no operations")
+        }
+
+        async fn accounting(
+            &self,
+            _request: tacacsrs_protocol::operations::AccountingOperation,
+        ) -> Result<
+            tacacsrs_protocol::operations::AccountingOperationResponse,
+            tacacsrs_protocol::failure::ServiceError,
+        > {
+            unreachable!("the test sends no operations")
+        }
+
+        async fn authorization(
+            &self,
+            _request: tacacsrs_protocol::operations::AuthorizationOperation,
+        ) -> Result<
+            tacacsrs_protocol::operations::AuthorizationOperationResponse,
+            tacacsrs_protocol::failure::ServiceError,
+        > {
+            unreachable!("the test sends no operations")
+        }
+    }
+
+    struct Draining;
+
+    #[tonic::async_trait]
+    impl crate::HealthDetailsProvider for Draining {
+        async fn health_details(&self) -> crate::proto::HealthDetailsReply {
+            let mut reply = crate::proto::HealthDetailsReply {
+                liveness: true,
+                ..Default::default()
+            };
+            reply.set_lifecycle(crate::proto::RuntimeLifecycle::Draining);
+            reply.push_degradation_reasons(crate::proto::DegradationReason::DatastoreStale);
+            reply
+        }
+    }
+
+    /// Serves `services` on a new socket, then returns a health client.
+    async fn serve_health(
+        name: &str,
+        services: super::ListenerServices,
+    ) -> (
+        PathBuf,
+        tokio::sync::watch::Sender<bool>,
+        tokio::task::JoinHandle<anyhow::Result<()>>,
+        crate::HealthClient,
+    ) {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use super::{HealthStatus, ListenerOptions};
+
+        let path = test_socket_path(name);
+        let options = ListenerOptions {
+            socket_mode: 0o600,
+            max_connections: 4,
+            max_client_api_streams: 4,
+            connection_lifetime: Duration::from_secs(30),
+        };
+        let (_, readiness) = tokio::sync::watch::channel(HealthStatus {
+            startup_serving: true,
+            liveness_serving: true,
+            readiness_serving: false,
+        });
+        let (stop, shutdown) = tokio::sync::watch::channel(false);
+        let (bound, is_bound) = tokio::sync::oneshot::channel();
+        let socket = path.clone();
+        let server = tokio::spawn(async move {
+            super::serve_unix_with_services(
+                &socket,
+                options,
+                Arc::new(UnusedHandler),
+                readiness,
+                shutdown,
+                move || {
+                    let _ = bound.send(());
+                },
+                services,
+            )
+            .await
+        });
+        is_bound.await.unwrap();
+        let client = crate::HealthClient::connect(&crate::IpcEndpoint::Unix(path.clone()))
+            .await
+            .unwrap();
+        (path, stop, server, client)
+    }
+
+    #[tokio::test]
+    async fn health_details_are_a_route_on_the_listener_socket() {
+        let services =
+            super::ListenerServices::default().with_health_details(std::sync::Arc::new(Draining));
+        let (path, stop, server, mut client) = serve_health("health-details", services).await;
+        let reply = client.details().await.unwrap();
+        assert_eq!(reply.lifecycle(), crate::proto::RuntimeLifecycle::Draining);
+        assert!(reply.liveness);
+        assert_eq!(
+            reply.degradation_reasons().collect::<Vec<_>>(),
+            [crate::proto::DegradationReason::DatastoreStale]
+        );
+        assert_eq!(
+            client
+                .check(crate::health::LIVENESS_HEALTH_SERVICE)
+                .await
+                .unwrap(),
+            tonic_health::pb::health_check_response::ServingStatus::Serving
+        );
+        stop.send(true).unwrap();
+        server.await.unwrap().unwrap();
+        cleanup_paths(&path).await;
+
+        let (path, stop, server, mut client) =
+            serve_health("no-health-details", super::ListenerServices::default()).await;
+        assert_eq!(client.details().await.unwrap_err().code(), tonic::Code::Unimplemented);
+        stop.send(true).unwrap();
+        server.await.unwrap().unwrap();
+        cleanup_paths(&path).await;
+    }
 
     #[tokio::test(start_paused = true)]
     async fn listener_guard_closes_retained_ipc_transports_on_cancellation() {

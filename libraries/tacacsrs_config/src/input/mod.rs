@@ -20,7 +20,10 @@ mod builder;
 mod files;
 mod model;
 
-pub use builder::{tacacs_plus_from_cli_input, tacacs_plus_from_file, tacacs_plus_from_str};
+pub use builder::{
+    immutable_cli_tacacs_plus, tacacs_plus_from_cli_input, tacacs_plus_from_file,
+    tacacs_plus_from_str,
+};
 pub use files::{
     load_client_certificate, load_client_private_key, normalize_cli_certificate_data,
     ClientCertificateChain, normalize_cli_private_key_data,

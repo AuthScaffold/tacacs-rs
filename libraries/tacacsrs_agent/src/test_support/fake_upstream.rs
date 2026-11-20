@@ -70,8 +70,14 @@ impl UpstreamConnection for FakeConnection {
             )));
         }
 
+        // An address with this prefix acts as a strict server that rejects the record.
+        let status = if self.address.starts_with("accounting-error") {
+            TacacsAccountingStatus::TacPlusAcctStatusError
+        } else {
+            TacacsAccountingStatus::TacPlusAcctStatusSuccess
+        };
         Ok(AccountingReply {
-            status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
+            status,
             server_msg: format!("handled by {}", self.address),
             data: String::new(),
         })

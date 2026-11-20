@@ -43,7 +43,7 @@ WSL. Do not copy Windows-built binaries or libraries into SONiC.
 
 ARMhf is 32-bit ARM hard-float (`linux/arm/v7`), not ARM64. Its Rust target is
 `armv7-unknown-linux-gnueabihf`. The required ARMhf CI job cross-compiles release
-executables on AMD64 Debian Bookworm with Rust 1.90, the ARMhf linker and OpenSSL
+executables on AMD64 Debian Bookworm with Rust 1.91, the ARMhf linker and OpenSSL
 libraries, and a host-native Protobuf compiler. It then executes Cargo tests
 and all three release executables with QEMU, checking ELF32 and hard-float ABI.
 Existing AMD64 build/test coverage remains separate.

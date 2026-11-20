@@ -34,6 +34,7 @@ use tokio::sync::RwLock;
 
 use crate::RequestDeadline;
 use crate::connection::MultiplexedConnection;
+use crate::connection::failure::record_failure;
 
 /// Owns the cached shared connection and retires it when the last owner drops.
 ///
@@ -149,9 +150,7 @@ impl SharedConnectionCache {
         let mut failure = None;
         for connection in retiring {
             if let Err(error) = connection.close_and_join(deadline).await {
-                if failure.is_none() {
-                    failure = Some(error);
-                }
+                record_failure(&mut failure, error);
             }
         }
         self.retiring

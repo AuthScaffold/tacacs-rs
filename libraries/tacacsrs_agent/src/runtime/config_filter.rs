@@ -17,6 +17,10 @@ pub struct FilteredTacacsPlus {
 }
 
 /// Applies host-specific filtering before a candidate enters preparation.
+///
+/// The runtime passes the active local services of each candidate. A filter
+/// keeps no listener state, so a local services change takes effect with the
+/// next candidate.
 pub trait TacacsPlusFilter: Send + Sync {
     /// Returns an upper bound for known payload copies beyond the supplied working copy.
     ///
@@ -24,7 +28,11 @@ pub trait TacacsPlusFilter: Send + Sync {
     /// output is checked at handoff, which cannot prevent its earlier allocation.
     /// # Errors
     /// Returns an error if the known byte count exceeds `u64`.
-    fn known_payload_copies(&self, _source: &TacacsPlus) -> anyhow::Result<u64> {
+    fn known_payload_copies(
+        &self,
+        _source: &TacacsPlus,
+        _local_services: &LocalServices,
+    ) -> anyhow::Result<u64> {
         Ok(0)
     }
 
@@ -32,36 +40,38 @@ pub trait TacacsPlusFilter: Send + Sync {
     ///
     /// # Errors
     /// Returns an error when the candidate violates host policy.
-    fn filter(&self, tacacs_plus: TacacsPlus) -> BoxFuture<'_, anyhow::Result<FilteredTacacsPlus>>;
+    fn filter<'a>(
+        &'a self,
+        tacacs_plus: TacacsPlus,
+        local_services: &'a LocalServices,
+    ) -> BoxFuture<'a, anyhow::Result<FilteredTacacsPlus>>;
 }
 
-/// Preserves every server and derives proxy policy from local service configuration.
-#[derive(Debug, Default)]
-pub struct NoopTacacsPlusFilter {
-    source: LocalServices,
-}
-
-impl NoopTacacsPlusFilter {
-    /// Captures the canonical local service configuration.
-    #[must_use]
-    pub fn new(source: LocalServices) -> Self {
-        Self { source }
-    }
-}
+/// Preserves every server and derives proxy policy from the local services.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoopTacacsPlusFilter;
 
 impl TacacsPlusFilter for NoopTacacsPlusFilter {
-    fn known_payload_copies(&self, _source: &TacacsPlus) -> anyhow::Result<u64> {
+    fn known_payload_copies(
+        &self,
+        _source: &TacacsPlus,
+        local_services: &LocalServices,
+    ) -> anyhow::Result<u64> {
         Ok(u64::try_from(
-            self.source
+            local_services
                 .proxy_shared_secret
                 .as_ref()
                 .map_or(0, |secret| secret.expose_secret().len()),
         )?)
     }
 
-    fn filter(&self, tacacs_plus: TacacsPlus) -> BoxFuture<'_, anyhow::Result<FilteredTacacsPlus>> {
+    fn filter<'a>(
+        &'a self,
+        tacacs_plus: TacacsPlus,
+        local_services: &'a LocalServices,
+    ) -> BoxFuture<'a, anyhow::Result<FilteredTacacsPlus>> {
         async move {
-            let proxy_downstream_obfuscation = prepare_proxy_policy(&self.source, None)?;
+            let proxy_downstream_obfuscation = prepare_proxy_policy(local_services, None)?;
             Ok(FilteredTacacsPlus {
                 tacacs_plus,
                 proxy_downstream_obfuscation,

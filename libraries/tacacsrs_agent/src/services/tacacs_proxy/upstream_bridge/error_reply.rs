@@ -8,11 +8,12 @@ use tacacsrs_protocol::enumerations::{
     TacacsAuthorizationStatus, TacacsFlags, TacacsType,
 };
 use tacacsrs_protocol::header::Header;
-use tacacsrs_protocol::packet::{Packet, PacketTrait};
+use tacacsrs_protocol::packet::Packet;
 use tacacsrs_protocol::body::TacacsBodyTrait;
 
-pub(super) fn local_error_reply(request: &Packet, message: &str) -> anyhow::Result<Packet> {
-    let body = match request.header().tacacs_type {
+/// Builds a local `ERROR` reply to the request that `request` describes.
+pub(super) fn local_error_reply(request: &Header, message: &str) -> anyhow::Result<Packet> {
+    let body = match request.tacacs_type {
         TacacsType::TacPlusAuthentication => AuthenticationReply {
             status: TacacsAuthenticationStatus::TacPlusAuthenStatusError,
             flags: TacacsAuthenticationReplyFlags::empty(),
@@ -35,19 +36,18 @@ pub(super) fn local_error_reply(request: &Packet, message: &str) -> anyhow::Resu
         .to_bytes()?,
     };
     let sequence = request
-        .header()
         .seq_no
         .checked_add(1)
         .ok_or_else(|| anyhow::anyhow!("TACACS+ error reply sequence exceeds 255"))?;
     let length = u32::try_from(body.len())?;
     Packet::new(
         Header {
-            major_version: request.header().major_version,
-            minor_version: request.header().minor_version,
-            tacacs_type: request.header().tacacs_type,
+            major_version: request.major_version,
+            minor_version: request.minor_version,
+            tacacs_type: request.tacacs_type,
             seq_no: sequence,
             flags: TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
-            session_id: request.header().session_id,
+            session_id: request.session_id,
             length,
         },
         body,

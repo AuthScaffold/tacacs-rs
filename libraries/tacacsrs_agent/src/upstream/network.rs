@@ -14,7 +14,7 @@ use tacacsrs_networking::{PreparedEndpoint, TacacsClient};
 use super::connection::UpstreamConnection;
 #[cfg(test)]
 use super::connection::UpstreamConnector;
-use super::{OperationKind, UpstreamRequestError};
+use super::{OperationKind, UpstreamRequestError, UpstreamRevocation};
 use crate::runtime::ProxyLoopGuard;
 
 /// Production connector backed by [`tacacsrs_networking`].
@@ -23,11 +23,18 @@ use crate::runtime::ProxyLoopGuard;
 #[derive(Debug, Clone)]
 pub(crate) struct NetworkUpstreamConnector {
     proxy_loop_guard: ProxyLoopGuard,
+    revocation: UpstreamRevocation,
 }
 
 impl NetworkUpstreamConnector {
-    pub(crate) const fn new(proxy_loop_guard: ProxyLoopGuard) -> Self {
-        Self { proxy_loop_guard }
+    pub(crate) const fn new(
+        proxy_loop_guard: ProxyLoopGuard,
+        revocation: UpstreamRevocation,
+    ) -> Self {
+        Self {
+            proxy_loop_guard,
+            revocation,
+        }
     }
 
     #[cfg(test)]
@@ -57,17 +64,17 @@ impl tacacsrs_networking::routed::EndpointConnector for NetworkUpstreamConnector
     async fn connect(
         &self,
         endpoint: PreparedEndpoint,
-        operation: OperationKind,
+        _operation: OperationKind,
     ) -> anyhow::Result<Arc<Self::Connection>> {
         let address = endpoint.address().to_string();
-        let connection = TacacsClient::connect_prepared(
-            endpoint.with_connection_guard(self.proxy_loop_guard.clone()),
-        )
-        .await?;
+        let endpoint = self
+            .revocation
+            .attach(endpoint.with_connection_guard(self.proxy_loop_guard.clone()))
+            .with_context(|| format!("Refused a new connection to {address}"))?;
+        let connection = TacacsClient::connect_prepared(endpoint).await?;
 
         Ok(Arc::new(TacacsUpstreamConnection {
             server_address: address,
-            operation,
             connection,
         }))
     }
@@ -75,14 +82,12 @@ impl tacacsrs_networking::routed::EndpointConnector for NetworkUpstreamConnector
 
 /// Wraps a configured network client for the service state machine.
 ///
-/// The networking layer selects a dedicated connection or a shared
-/// single-connection transport for each operation. The agent only runs
+/// The routed client shares one connection per server across
+/// authentication, authorization, and accounting. The agent only runs
 /// request/reply flows and controls failover.
 pub(crate) struct TacacsUpstreamConnection {
     /// The `host:port` address of the TACACS+ server.
     server_address: String,
-    /// Operation isolated on this adaptive client.
-    operation: OperationKind,
     /// The adaptive client connection.
     connection: TacacsClient,
 }
@@ -153,7 +158,6 @@ impl UpstreamConnection for TacacsUpstreamConnection {
         exchange: &AccountingExchange,
         deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AccountingReply, UpstreamRequestError> {
-        debug_assert_eq!(self.operation, OperationKind::Accounting);
         log_session_start(
             "accounting",
             &self.server_address,
@@ -192,7 +196,6 @@ impl UpstreamConnection for TacacsUpstreamConnection {
         exchange: &PapAuthenticationExchange,
         deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthenticationReply, UpstreamRequestError> {
-        debug_assert_eq!(self.operation, OperationKind::Authentication);
         self.connection
             .execute_classified_until(exchange, deadline)
             .await
@@ -209,7 +212,6 @@ impl UpstreamConnection for TacacsUpstreamConnection {
         exchange: &AuthorizationExchange,
         deadline: tacacsrs_networking::RequestDeadline,
     ) -> Result<AuthorizationReply, UpstreamRequestError> {
-        debug_assert_eq!(self.operation, OperationKind::Authorization);
         log_session_start(
             "authorization",
             &self.server_address,

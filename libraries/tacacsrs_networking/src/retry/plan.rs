@@ -15,6 +15,7 @@ pub enum AttemptDisposition {
 #[derive(Debug, Clone, Copy)]
 pub struct FailoverPlan {
     max_attempts: usize,
+    replay_unknown: bool,
 }
 
 impl FailoverPlan {
@@ -24,7 +25,23 @@ impl FailoverPlan {
     /// non-delivery or a valid server error can use the remaining budget.
     #[must_use]
     pub const fn new(max_attempts: usize) -> Self {
-        Self { max_attempts }
+        Self {
+            max_attempts,
+            replay_unknown: false,
+        }
+    }
+
+    /// Creates a plan for a request that has no side effects on the server.
+    ///
+    /// This plan also uses the remaining budget after an unknown outcome. Use
+    /// it only when a duplicate delivery cannot change server state, for
+    /// example a health probe.
+    #[must_use]
+    pub const fn side_effect_free(max_attempts: usize) -> Self {
+        Self {
+            max_attempts,
+            replay_unknown: true,
+        }
     }
 
     /// Returns the total attempt budget, including the initial attempt.
@@ -45,7 +62,7 @@ impl FailoverPlan {
         }
         match disposition {
             AttemptDisposition::ServerError | AttemptDisposition::NotSent => true,
-            AttemptDisposition::OutcomeUnknown => false,
+            AttemptDisposition::OutcomeUnknown => self.replay_unknown,
         }
     }
 }
@@ -68,6 +85,14 @@ mod tests {
 
         assert!(plan.retry_after(1, AttemptDisposition::ServerError));
         assert!(!plan.retry_after(1, AttemptDisposition::OutcomeUnknown));
+    }
+
+    #[test]
+    fn side_effect_free_plan_replays_unknown_outcomes_within_budget() {
+        let plan = FailoverPlan::side_effect_free(2);
+
+        assert!(plan.retry_after(1, AttemptDisposition::OutcomeUnknown));
+        assert!(!plan.retry_after(2, AttemptDisposition::OutcomeUnknown));
     }
 
     #[test]

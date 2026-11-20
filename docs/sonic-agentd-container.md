@@ -33,8 +33,11 @@ redis-cli -n 4 HSET 'TACPLUS_FORWARDER|global' \
     local_listen_address 127.0.0.1 local_listen_port 49
 ```
 
-The daemon waits for this valid row before it binds the Client API or proxy
-listener.
+The Client API and the health service bind at once. The proxy listener
+reports `pending` until the daemon reads a valid row, and then binds to its
+endpoint. If you change the row, the proxy binds the new endpoint and then
+stops the old endpoint. If you remove the row, the proxy stops and reports
+`pending` again.
 
 ## Run the container
 
@@ -60,7 +63,7 @@ The flags mean:
 | `--sonic` | Load TACACS+ server configuration from SONiC CONFIG_DB, database `4`. |
 | `--service-mode both` | Run both the local client API and the raw TACACS+ proxy service. |
 | `--host-integration none` | Disable systemd notification inside the container. |
-| `TACPLUS_FORWARDER|global` | Supplies the loopback proxy endpoint before startup. |
+| `TACPLUS_FORWARDER|global` | Supplies the loopback proxy endpoint. The proxy binds after the daemon reads this row. |
 | `-v /run/tacacs:/run/tacacs` | Expose the Client API UDS and standard gRPC health service to host consumers and exec probes. |
 | `-vv` | Enable info-level logging. |
 
@@ -135,14 +138,16 @@ deployment has a SONiC-supported bridge NAT and firewall design.
 
 The `--sonic` mode reads `TACPLUS|global`, `TACPLUS_SERVER|*`,
 `TACPLUS_SERVER_TLS|*`, and `TACPLUS_FORWARDER|global` from CONFIG_DB. The
-forwarder row must be valid before the process binds its listeners. At least
+forwarder row gives the TACACS+ proxy endpoint. At least
 one server row must be present for upstream TACACS+ traffic. For the schema
 mapping and Redis notification details, see
 [SONiC ConfigDB Integration](sonic-configdb-integration.md).
 
-If Redis or the forwarder row is unavailable, the process retries with capped
-backoff before it binds either listener. After listener startup, the
-initial server load and subscription recovery retry unavailable snapshots. A
+The process does not wait for Redis at startup. The client API and health
+serve at once. The proxy listener reports `Pending` until a candidate with a
+valid forwarder row arrives. A candidate without a forwarder row applies its
+server set, and the proxy waits. The initial server load and
+subscription recovery retry unavailable snapshots with capped backoff. A
 later reload gets three attempts. If the candidate is still invalid, the daemon
 retains the active configuration and waits for another ConfigDB notification.
 A valid snapshot and at least one eligible server make the same process ready

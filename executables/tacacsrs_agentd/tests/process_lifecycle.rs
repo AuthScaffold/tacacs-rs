@@ -175,7 +175,7 @@ async fn statistics_export_is_read_only_private_and_generation_bound() {
 }
 
 #[tokio::test]
-async fn diagnostics_rpc_is_read_only_and_generation_bound() {
+async fn diagnostics_and_health_details_share_the_client_api_socket() {
     use tacacsrs_ipc::diagnostics::DiagnosticsClient;
     use tacacsrs_ipc::IpcEndpoint;
 
@@ -226,6 +226,18 @@ async fn diagnostics_rpc_is_read_only_and_generation_bound() {
         assert_eq!(snapshot["server"][0]["statistics"]["messages-sent"], "0");
     }
     drop(client);
+    let mut health = tacacsrs_ipc::HealthClient::connect(&IpcEndpoint::Unix(endpoint.clone()))
+        .await
+        .unwrap();
+    let details = health.details().await.unwrap();
+    assert_eq!(details.lifecycle(), tacacsrs_ipc::proto::RuntimeLifecycle::Serving);
+    assert!(details.applied_configuration);
+    assert_eq!(details.eligible_server_count, 1);
+    assert!(details.listeners.iter().any(|listener| {
+        listener.service() == tacacsrs_ipc::proto::RuntimeService::ClientApi
+            && listener.state() == tacacsrs_ipc::proto::ListenerState::Bound
+    }));
+    drop(health);
     stop(child, "-TERM").await;
     assert!(!endpoint.exists());
 }
@@ -346,41 +358,6 @@ async fn host_signals_cancel_blocked_bootstrap_without_binding() {
         stop(child, signal).await;
         assert!(!endpoint.exists());
     }
-}
-
-#[tokio::test]
-async fn invalid_http_registration_fails_before_sonic_bootstrap() {
-    let directory = ProcessDirectory::new();
-    let endpoint = directory.0.join("agent.sock");
-    let url = "https://example.test/crl?token=private-value";
-    let child = agent()
-        .args([
-            "--sonic",
-            "--sonic-redis-url",
-            "redis://127.0.0.1:9",
-            "--host-integration",
-            "none",
-            "--http-crl-source",
-            "private-reference",
-            url,
-            "--listen-endpoint",
-        ])
-        .arg(&endpoint)
-        .spawn()
-        .unwrap();
-    let output = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(!output.status.success());
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(error.contains("CRL locations cannot contain"));
-    assert!(
-        !error.contains(url)
-            && !error.contains("private-reference")
-            && !error.contains("private-value")
-    );
-    assert!(!endpoint.exists());
 }
 
 #[tokio::test]

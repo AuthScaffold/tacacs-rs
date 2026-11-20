@@ -1,8 +1,12 @@
 {
-  "description": "Architecture rules for the tacacs-rs workspace. The allowlist names the production (normal) workspace-to-workspace edges that Cargo may resolve. The guards preserve the external and transitive dependency boundaries that previously lived inline in .github/steps/run-tests/action.yml. Rules track the 17 real workspace packages, not any proposed renames.",
+  "description": "Architecture rules for the tacacs-rs workspace. The allowlist names the production workspace edges that Cargo can resolve. The guards preserve external and transitive dependency boundaries. Rules track the real workspace packages.",
   "allowed_workspace_edges": {
     "tacacsrs-secrets": [],
     "tacacsrs-unix-socket": [],
+    "tacacsrs-lifecycle": [],
+    "tacacsrs-composition": [
+      "tacacsrs-lifecycle"
+    ],
     "tacacsrs-protocol": [
       "tacacsrs-secrets"
     ],
@@ -18,8 +22,8 @@
     "tacacsrs-credential-resolution": [
       "tacacsrs-secrets"
     ],
-    "tacacsrs-credential-http": [
-      "tacacsrs-credential-resolution"
+    "tacacsrs-revocation": [
+      "tacacsrs-networking"
     ],
     "tacacsrs-config": [
       "tacacsrs-credential-resolution",
@@ -27,15 +31,33 @@
       "tacacsrs-protocol",
       "tacacsrs-secrets"
     ],
-    "tacacsrs-sonic": [
+    "tacacsrs-provider": [
       "tacacsrs-config",
       "tacacsrs-credential-resolution"
     ],
-    "tacacsrs-agent": [
+    "tacacsrs-sonic": [
+      "tacacsrs-composition",
       "tacacsrs-config",
       "tacacsrs-credential-resolution",
+      "tacacsrs-provider"
+    ],
+    "tacacsrs-kubesonic": [
+      "tacacsrs-composition",
+      "tacacsrs-config",
+      "tacacsrs-credential-resolution",
+      "tacacsrs-lifecycle",
+      "tacacsrs-provider",
+      "tacacsrs-secrets"
+    ],
+    "tacacsrs-agent": [
+      "tacacsrs-composition",
+      "tacacsrs-config",
+      "tacacsrs-credential-resolution",
+      "tacacsrs-ipc",
+      "tacacsrs-lifecycle",
       "tacacsrs-networking",
       "tacacsrs-protocol",
+      "tacacsrs-provider",
       "tacacsrs-secrets",
       "tacacsrs-unix-socket"
     ],
@@ -60,14 +82,14 @@
     ],
     "tacacsrs-agentd": [
       "tacacsrs-agent",
+      "tacacsrs-composition",
       "tacacsrs-config",
-      "tacacsrs-credential-http",
-      "tacacsrs-credential-resolution",
-      "tacacsrs-ipc",
+      "tacacsrs-lifecycle",
       "tacacsrs-networking",
-      "tacacsrs-protocol",
       "tacacsrs-secrets",
-      "tacacsrs-sonic"
+      "tacacsrs-sonic",
+      "tacacsrs-kubesonic",
+      "tacacsrs-revocation"
     ],
     "tacacsrs-agent-health": [
       "tacacsrs-ipc"
@@ -78,6 +100,137 @@
     ]
   },
   "forbidden_dependency_guards": [
+    {
+      "name": "provider-interface",
+      "description": "Keep shared provider contracts independent of providers, process setup, lifecycle hosting, and IPC hosting.",
+      "roots": [
+        "tacacsrs-provider"
+      ],
+      "forbidden": [
+        "clap",
+        "tonic",
+        "prost",
+        "redis",
+        "tacacsrs-agent",
+        "tacacsrs-ipc",
+        "tacacsrs-sonic",
+        "tacacsrs-kubesonic",
+        "tacacsrs-lifecycle",
+        "tacacsrs-composition"
+      ]
+    },
+    {
+      "name": "kubesonic-adapter",
+      "description": "Keep the KubeSONiC adapter independent of daemon lifecycle and IPC hosting.",
+      "roots": [
+        "tacacsrs-kubesonic"
+      ],
+      "forbidden": [
+        "clap",
+        "tonic",
+        "prost",
+        "tacacsrs-agent",
+        "tacacsrs-ipc",
+        "tacacsrs-sonic"
+      ]
+    },
+    {
+      "name": "lifecycle-leaf",
+      "description": "Keep the lifecycle and health contracts free of workspace code, dependency injection, and process setup.",
+      "roots": [
+        "tacacsrs-lifecycle"
+      ],
+      "forbidden": [
+        "dill",
+        "tacacsrs-composition",
+        "clap",
+        "tonic",
+        "redis",
+        "tacacsrs-secrets",
+        "tacacsrs-protocol",
+        "tacacsrs-config",
+        "tacacsrs-provider",
+        "tacacsrs-agent",
+        "tacacsrs-ipc"
+      ]
+    },
+    {
+      "name": "daemon-composition-root",
+      "description": "Keep dependency injection in the composition crate, the agent host and components, the source components, and the daemon. Contract, transport, and client packages do not depend on the container.",
+      "roots": [
+        "tacacsrs-lifecycle",
+        "tacacsrs-provider",
+        "tacacsrs-config",
+        "tacacsrs-networking",
+        "tacacsrs-ipc",
+        "tacacsrs-revocation",
+        "tacacsrs-agent-health",
+        "tacacsrs-bash-plugin",
+        "tacon"
+      ],
+      "forbidden": [
+        "dill"
+      ]
+    },
+    {
+      "name": "composition-contracts",
+      "description": "Keep the component composition crate out of the contract, transport, and client packages.",
+      "roots": [
+        "tacacsrs-lifecycle",
+        "tacacsrs-provider",
+        "tacacsrs-config",
+        "tacacsrs-networking",
+        "tacacsrs-ipc",
+        "tacacsrs-revocation",
+        "tacacsrs-agent-health",
+        "tacacsrs-bash-plugin",
+        "tacon"
+      ],
+      "forbidden": [
+        "tacacsrs-composition"
+      ]
+    },
+    {
+      "name": "provider-neutral-agent",
+      "description": "Keep the agent runtime, host, and components independent of source providers and process setup. Source components and the daemon bring these parts.",
+      "roots": [
+        "tacacsrs-agent"
+      ],
+      "forbidden": [
+        "clap",
+        "redis",
+        "tacacsrs-sonic",
+        "tacacsrs-kubesonic"
+      ]
+    },
+    {
+      "name": "source-components-without-host",
+      "description": "Keep the source components independent of the agent runtime and the agent host.",
+      "roots": [
+        "tacacsrs-sonic",
+        "tacacsrs-kubesonic"
+      ],
+      "forbidden": [
+        "tacacsrs-agent",
+        "tacacsrs-ipc"
+      ]
+    },
+    {
+      "name": "health-free-core",
+      "description": "Keep component health checks out of the client, configuration, transport, IPC, and provider contract packages.",
+      "roots": [
+        "tacon",
+        "tacacsrs-config",
+        "tacacsrs-networking",
+        "tacacsrs-ipc",
+        "tacacsrs-provider"
+      ],
+      "forbidden": [
+        "health-checks",
+        "tacacsrs-lifecycle",
+        "tacacsrs-composition"
+      ]
+    },
     {
       "name": "pure-protocol",
       "description": "Check pure protocol dependencies. The protocol package stays free of async runtime, TLS, IPC, store, and higher-layer workspace code.",
@@ -145,18 +298,6 @@
       ]
     },
     {
-      "name": "ipc-independent-agent",
-      "description": "Check IPC-independent agent dependencies. The agent runtime does not own the IPC transport in production.",
-      "roots": [
-        "tacacsrs-agent"
-      ],
-      "forbidden": [
-        "tonic",
-        "prost",
-        "tacacsrs-ipc"
-      ]
-    },
-    {
       "name": "runtime-independent-ipc",
       "description": "Check runtime-independent IPC dependencies. The IPC crate does not depend on the agent, network client, configuration, store, or credential code.",
       "roots": [
@@ -199,6 +340,19 @@
         "tacacsrs-agent-ipc-emulatord",
         "regorus",
         "libseccomp"
+      ]
+    },
+    {
+      "name": "host-injected-revocation",
+      "description": "Keep the CRL verifier out of the agent runtime and the configuration model. The daemon builds the verifier and injects it through the networking contract.",
+      "roots": [
+        "tacacsrs-agent",
+        "tacacsrs-config",
+        "tacacsrs-networking",
+        "tacon"
+      ],
+      "forbidden": [
+        "tacacsrs-revocation"
       ]
     }
   ]

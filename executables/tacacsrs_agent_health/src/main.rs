@@ -13,12 +13,24 @@ const EXIT_NOT_SERVING: u8 = 1;
 const EXIT_INVOCATION_ERROR: u8 = 2;
 const EXIT_CHECK_ERROR: u8 = 3;
 
+mod details;
 mod statistics;
 
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Report read-only agent, connection, and server statistics.
     Statistics(statistics::StatisticsArgs),
+    /// Report the detailed runtime health behind the health probes.
+    Details(details::DetailsArgs),
+}
+
+impl Command {
+    const fn name(&self) -> &'static str {
+        match self {
+            Self::Statistics(_) => "statistics",
+            Self::Details(_) => "details",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -83,27 +95,31 @@ async fn main() -> ExitCode {
         return ExitCode::from(EXIT_INVOCATION_ERROR);
     };
 
-    if let Some(Command::Statistics(arguments)) = cli.command {
+    if let Some(command) = cli.command {
         if cli.check.is_some() {
-            eprintln!("--check cannot be combined with statistics");
+            eprintln!("--check cannot be combined with {}", command.name());
             return ExitCode::from(EXIT_INVOCATION_ERROR);
         }
-        return match tokio::time::timeout(
-            Duration::from_secs(cli.timeout_seconds),
-            statistics::query(endpoint, &arguments),
-        )
-        .await
-        {
+        let timeout = Duration::from_secs(cli.timeout_seconds);
+        let result = match &command {
+            Command::Statistics(arguments) => {
+                tokio::time::timeout(timeout, statistics::query(endpoint, arguments)).await
+            }
+            Command::Details(arguments) => {
+                tokio::time::timeout(timeout, details::query(&endpoint, arguments)).await
+            }
+        };
+        return match result {
             Ok(Ok(output)) => {
                 println!("{output}");
                 ExitCode::SUCCESS
             }
             Ok(Err(error)) => {
-                eprintln!("Statistics query failed: {error}");
+                eprintln!("The {} query failed: {error}", command.name());
                 ExitCode::from(EXIT_CHECK_ERROR)
             }
             Err(_) => {
-                eprintln!("Statistics query timed out");
+                eprintln!("The {} query timed out", command.name());
                 ExitCode::from(EXIT_CHECK_ERROR)
             }
         };

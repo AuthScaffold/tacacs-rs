@@ -49,17 +49,23 @@ impl FailoverAttempt for AccountingAttempt {
             Ok(binding) => binding,
             Err(error) => return Attempt::Aborted(error),
         };
-        match binding
+        let mut observation = binding.observe_failure(self.deadline);
+        let result = binding
             .connection()
             .execute_classified_until(&self.exchange, self.deadline)
-            .await
-        {
+            .await;
+        if result.is_ok() {
+            observation.disarm();
+        } else {
+            observation.fail();
+        }
+        match result {
             Ok(reply) if reply.status == TacacsAccountingStatus::TacPlusAcctStatusError => {
-                let _reported = self.deadline.run(binding.note_failure()).await;
+                binding.note_server_failure().await;
                 Attempt::Rejected((binding.endpoint().name().to_owned(), reply))
             }
             Ok(reply) => {
-                let _reported = self.deadline.run(binding.note_success()).await;
+                binding.note_success().await;
                 Attempt::Accepted((binding.endpoint().name().to_owned(), reply))
             }
             Err(error) => {
@@ -67,7 +73,6 @@ impl FailoverAttempt for AccountingAttempt {
                     TransmissionState::NotSent => AttemptDisposition::NotSent,
                     TransmissionState::OutcomeUnknown => AttemptDisposition::OutcomeUnknown,
                 };
-                let _reported = self.deadline.run(binding.note_failure()).await;
                 Attempt::Failed {
                     error: error.into_error(),
                     disposition,

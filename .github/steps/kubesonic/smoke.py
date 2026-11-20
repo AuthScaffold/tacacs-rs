@@ -1,0 +1,258 @@
+"""Exercise the native profile with isolated Redis, files, and subprocesses."""
+
+import argparse
+import contextlib
+import hashlib
+import json
+import os
+from pathlib import Path
+import signal
+import socket
+import subprocess
+import tempfile
+import time
+
+
+def wait(predicate, label, timeout=15):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.1)
+    raise AssertionError(f"Deadline expired: {label}")
+
+
+def find(value, name):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key.split(":")[-1] == name:
+                return child
+            result = find(child, name)
+            if result is not None:
+                return result
+    if isinstance(value, list):
+        for child in value:
+            result = find(child, name)
+            if result is not None:
+                return result
+    return None
+
+
+def generation(path):
+    if not path.exists():
+        return None
+    result = find(json.loads(path.read_text()), "runtime-generation")
+    if result is None:
+        raise AssertionError("Statistics omitted runtime-generation")
+    return int(result)
+
+
+def servers(path):
+    """Returns the published server names in routing order."""
+    if not path.exists():
+        return None
+    return [server["name"] for server in find(json.loads(path.read_text()), "server") or []]
+
+
+def diagnostics(path, name):
+    """Returns the diagnostics of one published server, or None before publication."""
+    if not path.exists():
+        return None
+    for server in find(json.loads(path.read_text()), "server") or []:
+        if server["name"] == name:
+            return find(server, "diagnostics")
+    return None
+
+
+class Fixture:
+    def __init__(self, directory, binaries, stack):
+        self.root = directory
+        self.binaries = binaries
+        self.stack = stack
+        self.socket = directory / "redis.sock"
+        self.api = directory / "api.sock"
+        self.statistics = directory / "statistics.json"
+        self.agent = None
+        self.redis = None
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            self.port = listener.getsockname()[1]
+        self.environment = {
+            key: value for key, value in os.environ.items()
+            if not key.startswith("TACACSD_")
+        }
+        self.environment.update({
+            "TACACSD_CONFIGDB_SOCKET": str(self.socket),
+            "TACACSD_CONFIGDB_WATCH_RECONCILE_INTERVAL_SECONDS": "1",
+            "TACACSD_TLS_CLIENT_CERTIFICATE": str(directory / "client.pem"),
+            "TACACSD_TLS_CA_FILE": str(directory / "ca.pem"),
+            "TACACSD_TLS_CA_DIRECTORY": str(directory / "trust"),
+            "TACACSD_SERVICES_CLIENT_API_ENDPOINT": str(self.api),
+            "TACACSD_SERVICES_TACACS_PROXY_ENDPOINT": f"127.0.0.1:{self.port}",
+            "TACACSD_PROCESS_STATISTICS_FILE": str(self.statistics),
+            "TACACSD_POLICY_SHUTDOWN_TIMEOUT_SECONDS": "5",
+            "TACACSD_LOOPBACK_RETRY_INTERVAL_SECONDS": "1",
+            "TACACSD_LOG_STYLE": "never",
+        })
+        (directory / "trust").mkdir()
+        self.openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+                     "-subj", "/CN=smoke-ca", "-keyout", str(directory / "ca.key"),
+                     "-out", str(directory / "ca.pem"))
+        self.fingerprint = self.issue_client_certificate(serial=2)
+
+    @staticmethod
+    def openssl(*arguments):
+        return subprocess.run(["openssl", *arguments], check=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
+
+    def issue_client_certificate(self, serial):
+        """Atomically replaces client.pem and returns the certificate SHA-256 fingerprint."""
+        directory = self.root
+        self.openssl("req", "-new", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=smoke-client",
+                     "-keyout", str(directory / "client.key"), "-out", str(directory / "client.csr"))
+        self.openssl("x509", "-req", "-in", str(directory / "client.csr"),
+                     "-CA", str(directory / "ca.pem"), "-CAkey", str(directory / "ca.key"),
+                     "-set_serial", str(serial), "-days", "1",
+                     "-out", str(directory / "client.crt"))
+        staged = directory / "client.pem.tmp"
+        staged.write_bytes(
+            (directory / "client.crt").read_bytes() + (directory / "client.key").read_bytes())
+        os.replace(staged, directory / "client.pem")
+        der = self.openssl("x509", "-in", str(directory / "client.crt"), "-outform", "DER")
+        return hashlib.sha256(der).hexdigest()
+
+    def server_diagnostic(self, name, leaf):
+        return (diagnostics(self.statistics, name) or {}).get(leaf)
+
+    def spawn(self, name, arguments, **options):
+        log = self.stack.enter_context((self.root / f"{name}.log").open("ab"))
+        process = subprocess.Popen(arguments, stdout=log, stderr=log, **options)
+        self.stack.callback(self.stop, process)
+        return process
+
+    @staticmethod
+    def stop(process):
+        if process.poll() is None:
+            process.send_signal(signal.SIGTERM)
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+                raise AssertionError("Owned process exceeded shutdown deadline")
+
+    def redis_command(self, *arguments):
+        result = subprocess.run(
+            ["redis-cli", "--raw", "-s", str(self.socket), "-n", "4", *map(str, arguments)],
+            text=True, capture_output=True, check=True,
+        )
+        return result.stdout.strip()
+
+    def start_redis(self):
+        self.redis = self.spawn("redis", [
+            "redis-server", "--port", "0", "--save", "", "--appendonly", "no",
+            "--unixsocket", str(self.socket), "--notify-keyspace-events", "AKE",
+        ])
+        wait(lambda: self.socket.exists() and self.redis.poll() is None, "Redis socket")
+        wait(lambda: self.redis_command("PING") == "PONG", "Redis readiness")
+
+    def start_agent(self, **overrides):
+        environment = {**self.environment, **overrides}
+        self.agent = self.spawn("agent", [str(self.binaries / "tacacsrs-agentd"), "--kubesonic"],
+                                env=environment)
+        wait(lambda: self.api.exists() or self.agent.poll() is not None, "Agent listener")
+        assert self.agent.poll() is None, "Agent exited during startup"
+
+    def health(self, check):
+        assert self.agent.poll() is None, "Agent exited unexpectedly"
+        return subprocess.run([
+            str(self.binaries / "tacacsrs-agent-health"), "--endpoint", str(self.api),
+            "--check", check, "--timeout-seconds", "1",
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+    def changed(self, previous):
+        return generation(self.statistics) not in (None, previous)
+
+    def run(self):
+        self.start_agent()
+        wait(lambda: self.health("liveness"), "Liveness during unavailable Redis")
+        assert not self.health("readiness")
+        self.start_redis()
+        key = "TACPLUS_SERVER|192.0.2.10"
+        self.redis_command("HSET", key, "tcp_port", 449, "priority", 1)
+        wait(lambda: self.health("readiness"), "Initial native publication")
+        wait(lambda: servers(self.statistics) == ["192.0.2.10"], "Initial statistics")
+        inode = self.api.stat().st_ino
+        second = "TACPLUS_SERVER|192.0.2.11"
+        self.redis_command("HSET", second, "tcp_port", 449, "priority", 2)
+        wait(lambda: servers(self.statistics) == ["192.0.2.11", "192.0.2.10"],
+             "Live server addition in priority order")
+        assert self.server_diagnostic("192.0.2.10", "port") == 449
+        assert self.server_diagnostic("192.0.2.10", "client-certificate-sha256") == self.fingerprint
+        self.redis_command("HSET", key, "tcp_port", 450)
+        wait(lambda: self.server_diagnostic("192.0.2.10", "port") == 450, "Live server update")
+        assert self.server_diagnostic("192.0.2.11", "port") == 449
+        rotated = self.issue_client_certificate(serial=3)
+        assert rotated != self.fingerprint
+        wait(lambda: all(self.server_diagnostic(name, "client-certificate-sha256") == rotated
+                         for name in ("192.0.2.10", "192.0.2.11")),
+             "Client certificate rotation")
+        self.fingerprint = rotated
+        assert self.api.stat().st_ino == inode
+        initial = generation(self.statistics)
+        self.redis_command("DEL", key, second)
+        wait(lambda: self.changed(initial), "Retain-on-clear publication")
+        assert servers(self.statistics) == ["192.0.2.11", "192.0.2.10"]
+        assert self.health("readiness")
+        self.stop(self.redis)
+        self.start_redis()
+        initial = generation(self.statistics)
+        wait(lambda: self.changed(initial), "Retention after Redis reconnect")
+        assert self.health("readiness")
+        self.stop(self.agent)
+        assert self.agent.returncode == 0
+        assert not self.api.exists()
+
+        self.redis_command("HSET", key, "tcp_port", 449)
+        self.start_agent(TACACSD_CONFIGDB_EMPTY_SERVER_POLICY="clear")
+        wait(lambda: self.health("readiness"), "Clear-mode initial publication")
+        self.redis_command("DEL", key)
+        wait(lambda: not self.health("readiness"), "Clear-mode readiness withdrawal")
+        assert self.health("liveness")
+        self.redis_command("HSET", key, "tcp_port", 449)
+        wait(lambda: self.health("readiness"), "Clear-mode recovery")
+        self.stop(self.agent)
+        assert self.agent.returncode == 0
+
+        loopback = "TACPLUS_SERVER|127.0.0.1"
+        self.start_agent(TACACSD_LOOPBACK_REGISTRATION_ENABLED="true")
+        wait(lambda: self.redis_command("HGET", loopback, "tcp_port") == str(self.port),
+             "Ready registration at configured port")
+        self.redis_command("DEL", loopback)
+        wait(lambda: self.redis_command("HGET", loopback, "tcp_port") == str(self.port),
+             "Missing-row repair")
+        self.redis_command("HSET", loopback, "owner", "external")
+        self.stop(self.agent)
+        assert self.agent.returncode == 0
+        assert self.redis_command("HGET", loopback, "owner") == "external"
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--bin-dir", type=Path, required=True)
+    arguments = parser.parse_args()
+    with tempfile.TemporaryDirectory(prefix="kubesonic-") as directory, contextlib.ExitStack() as stack:
+        fixture = Fixture(Path(directory), arguments.bin_dir.resolve(), stack)
+        try:
+            fixture.run()
+        except BaseException:
+            for log in Path(directory).glob("*.log"):
+                print(f"--- {log.name} ---\n{log.read_text()}")
+            if fixture.statistics.exists():
+                print(f"--- {fixture.statistics.name} ---\n{fixture.statistics.read_text()}")
+            raise
+    print("PASS: native KubeSONiC startup, live updates, certificate rotation, both clear policies, reconnect, registration, and shutdown")
+
+
+if __name__ == "__main__":
+    main()

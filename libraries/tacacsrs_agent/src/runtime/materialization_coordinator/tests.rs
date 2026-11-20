@@ -183,22 +183,22 @@ fn service() -> TacacsClientService {
 }
 
 fn service_with_health(health: RuntimeHealthPublisher) -> TacacsClientService {
-    TacacsClientService::new(
-        ServiceConfig {
-            local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
-            validation_options: ValidationOptions::default(),
-            runtime_policy: crate::RuntimePolicy::new(
-                crate::FailoverStrategy::default(),
-                crate::FailoverStrategy::default(),
-                crate::OperationPolicies::default(),
-                Duration::from_secs(1),
-            )
-            .expect("test runtime policy"),
-            certificate_verification: tacacsrs_networking::CertificateVerification::Required,
-        },
-        health,
-    )
-    .expect("test service")
+    TacacsClientService::new(service_config(), health).expect("test service")
+}
+
+fn service_config() -> ServiceConfig {
+    ServiceConfig {
+        local_services: tacacsrs_config::tacacsrs::LocalServices::default(),
+        validation_options: ValidationOptions::default(),
+        runtime_policy: crate::RuntimePolicy::new(
+            crate::FailoverStrategy::default(),
+            crate::FailoverStrategy::default(),
+            crate::OperationPolicies::default(),
+            Duration::from_secs(1),
+        )
+        .expect("test runtime policy"),
+        certificate_verification: tacacsrs_networking::CertificateVerification::Required,
+    }
 }
 
 fn known(reference: &str) -> CredentialChangeScope {
@@ -206,6 +206,91 @@ fn known(reference: &str) -> CredentialChangeScope {
         kind: CredentialKind::SymmetricKey,
         reference: CredentialReference::SymmetricKey(reference.to_owned()),
     }
+}
+
+#[tokio::test]
+async fn empty_retention_uses_published_source_and_fences_late_replacements() {
+    use tacacsrs_config::source::EmptyServerPolicy;
+    let coordinator = MaterializationCoordinator::new(
+        resolver(&[
+            ("object-a", b"valid-material-long-enough"),
+            ("object-b", b"other-valid-material-long-enough"),
+        ]),
+        ValidationOptions::default(),
+    );
+    let service = service();
+    let admission =
+        || CandidateAdmission::new(crate::config::RuntimeCandidateLimits::default()).unwrap();
+    assert!(coordinator
+        .admit_observation_at(Arc::new(TacacsPlus::empty()), admission(), EmptyServerPolicy::Retain)
+        .await
+        .is_none());
+    let first = source("object-a", "192.0.2.20");
+    let (_, revision) = coordinator
+        .admit_observation_at(Arc::new(first.clone()), admission(), EmptyServerPolicy::Retain)
+        .await
+        .unwrap();
+    let attempt = coordinator
+        .accept_filtered_source(revision, first.clone(), PreparedProxyPolicy::unobfuscated(), None)
+        .await
+        .unwrap();
+    coordinator
+        .publish(coordinator.materialize(attempt).await.unwrap(), &service)
+        .await
+        .unwrap();
+
+    let replacement = source("object-b", "192.0.2.21");
+    let (_, revision) = coordinator
+        .admit_observation_at(Arc::new(replacement.clone()), admission(), EmptyServerPolicy::Retain)
+        .await
+        .unwrap();
+    let attempt = coordinator
+        .accept_filtered_source(revision, replacement, PreparedProxyPolicy::unobfuscated(), None)
+        .await
+        .unwrap();
+    let late = coordinator.materialize(attempt).await.unwrap();
+    let (retained, revision) = coordinator
+        .admit_observation_at(Arc::new(TacacsPlus::empty()), admission(), EmptyServerPolicy::Retain)
+        .await
+        .unwrap();
+    assert_eq!(retained.as_ref(), &first);
+    assert!(matches!(
+        coordinator.publish(late, &service).await.unwrap(),
+        PublicationOutcome::Superseded
+    ));
+    let attempt = coordinator
+        .accept_filtered_source(
+            revision,
+            retained.as_ref().clone(),
+            PreparedProxyPolicy::unobfuscated(),
+            None,
+        )
+        .await
+        .unwrap();
+    coordinator
+        .publish(coordinator.materialize(attempt).await.unwrap(), &service)
+        .await
+        .unwrap();
+    assert!(coordinator.refresh_credentials().await.is_some());
+    let (clear, revision) = coordinator
+        .admit_observation_at(Arc::new(TacacsPlus::empty()), admission(), EmptyServerPolicy::Clear)
+        .await
+        .unwrap();
+    assert!(clear.server.is_empty());
+    let attempt = coordinator
+        .accept_filtered_source(
+            revision,
+            clear.as_ref().clone(),
+            PreparedProxyPolicy::unobfuscated(),
+            None,
+        )
+        .await
+        .unwrap();
+    coordinator
+        .publish(coordinator.materialize(attempt).await.unwrap(), &service)
+        .await
+        .unwrap();
+    assert!(coordinator.active_servers().await.is_empty());
 }
 
 #[tokio::test]
@@ -488,6 +573,7 @@ async fn candidate_raw_owner_sharing_does_not_relabel_retained_filtered_copy() {
     let coordinator = MaterializationCoordinator::without_resolver(ValidationOptions::default());
     let service = service();
     let canonical = TacacsPlus {
+        certificate_revocation: None,
         client_credentials: Vec::new(),
         server_credentials: Vec::new(),
         server: vec![tacacsrs_config::TacacsPlusServerBuilder::new(
@@ -514,7 +600,7 @@ async fn candidate_raw_owner_sharing_does_not_relabel_retained_filtered_copy() {
         &raw
     ));
     let attempt = coordinator
-        .accept_filtered_source(revision, (*raw).clone(), PreparedProxyPolicy::unobfuscated())
+        .accept_filtered_source(revision, (*raw).clone(), PreparedProxyPolicy::unobfuscated(), None)
         .await
         .unwrap();
     let prepared = coordinator
@@ -576,7 +662,7 @@ async fn candidate_periodic_ticks_during_filtering_coalesce_without_renewal() {
         1
     );
     let attempt = coordinator
-        .accept_filtered_source(revision, canonical, PreparedProxyPolicy::unobfuscated())
+        .accept_filtered_source(revision, canonical, PreparedProxyPolicy::unobfuscated(), None)
         .await
         .unwrap();
     assert_eq!(attempt.admission.admitted, original.admitted);
@@ -1096,7 +1182,7 @@ async fn native_preparation_final_fence_preserves_concurrent_transitions() {
         "policy",
         "stop",
         "catalog-aba",
-        "revocation",
+        "tls-replacement",
     ] {
         let coordinator = Arc::new(MaterializationCoordinator::new(
             resolver(&[("object-a", &[7; 16])]),
@@ -1156,16 +1242,14 @@ async fn native_preparation_final_fence_preserves_concurrent_transitions() {
                     service.reload_materialized_servers_with_proxy_downstream_obfuscation(Vec::new(), PreparedProxyPolicy::unobfuscated()).await.unwrap();
                     service.reload_materialized_servers_with_proxy_downstream_obfuscation(coordinator.active_servers().await, PreparedProxyPolicy::unobfuscated()).await.unwrap();
                 }
-                "revocation" => {
+                "tls-replacement" => {
                     let active = coordinator.active_servers().await;
-                    let mut replacement = tacacsrs_config::TacacsPlusServerBuilder::new(
+                    let replacement = tacacsrs_config::TacacsPlusServerBuilder::new(
                         &active[0].name,
                         active[0].server_type,
                         &active[0].address,
                         active[0].port,
                     ).with_tls_server_authentication().build();
-                    replacement.server_authentication.as_mut().unwrap().require_stapled_ocsp =
-                        Some(tacacsrs_config::tacacsrs::RequireStapledOcsp { max_response_age_seconds: 300 });
                     service.reload_materialized_servers_with_proxy_downstream_obfuscation(
                         vec![Arc::new(replacement)], PreparedProxyPolicy::unobfuscated(),
                     ).await.unwrap();
@@ -1316,7 +1400,12 @@ async fn pending_filter_blocks_old_source_refresh_and_keeps_credential_revision(
         .await
         .is_none());
     let filtered = coordinator
-        .accept_filtered_source(revision, candidate.clone(), PreparedProxyPolicy::unobfuscated())
+        .accept_filtered_source(
+            revision,
+            candidate.clone(),
+            PreparedProxyPolicy::unobfuscated(),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(filtered.revision.source(), revision);
@@ -1467,6 +1556,175 @@ async fn cancellation_after_runtime_publication_retains_matching_active_material
     assert_eq!(health.snapshot().runtime_generation().unwrap().value(), 2);
 }
 
+fn policy_with_recovery(seconds: u64) -> crate::RuntimePolicy {
+    crate::RuntimePolicy::new(
+        crate::FailoverStrategy::default(),
+        crate::FailoverStrategy::default(),
+        crate::OperationPolicies::default(),
+        Duration::from_secs(seconds),
+    )
+    .expect("test runtime policy")
+}
+
+fn sections_with_policy(
+    service: &TacacsClientService,
+    proxy_enabled: bool,
+    policy: crate::RuntimePolicy,
+) -> Arc<crate::runtime::CandidateSections> {
+    let local = service
+        .prepare_local_services_candidate(&tacacsrs_config::tacacsrs::LocalServices {
+            tacacs_proxy_enabled: proxy_enabled,
+            ..tacacsrs_config::tacacsrs::LocalServices::default()
+        })
+        .unwrap();
+    Arc::new(crate::runtime::CandidateSections {
+        local_services: local,
+        runtime_policy: Some(crate::runtime::SourcePolicy {
+            revision: service.admit_policy().unwrap(),
+            policy: Arc::new(policy),
+        }),
+        revocation: None,
+    })
+}
+
+#[tokio::test]
+async fn cancellation_after_server_commit_publishes_the_sections() {
+    let coordinator = MaterializationCoordinator::new(
+        resolver(&[("object-a", b"valid-baseline-psk-material")]),
+        ValidationOptions::default(),
+    );
+    let service = service_with_health(RuntimeHealthPublisher::new(EnabledServices::CLIENT_API));
+    let candidate = source("object-a", "192.0.2.20");
+    let sections = sections_with_policy(&service, true, policy_with_recovery(7));
+    let revision = coordinator.admit_source(candidate.clone()).await;
+    let attempt = coordinator
+        .accept_filtered_source(
+            revision,
+            candidate,
+            PreparedProxyPolicy::unobfuscated(),
+            Some(sections),
+        )
+        .await
+        .unwrap();
+    let prepared = coordinator.materialize(attempt).await.unwrap();
+    service.pause_next_publication();
+    {
+        let publishing = coordinator.publish(prepared, &service);
+        tokio::pin!(publishing);
+        tokio::select! {
+            result = &mut publishing => panic!("publication must pause: {result:?}"),
+            result = tokio::time::timeout(Duration::from_secs(1), async {
+                while service.server_count() != 1 { tokio::task::yield_now().await; }
+            }) => result.expect("runtime publication must complete"),
+        }
+    }
+    assert!(
+        service
+            .local_services()
+            .current()
+            .settings()
+            .tacacs_proxy_enabled
+    );
+    assert_eq!(
+        service
+            .runtime_policy()
+            .current()
+            .failover_recovery_interval(),
+        Duration::from_secs(7)
+    );
+}
+
+#[tokio::test]
+async fn revocation_policy_change_publishes_settings_without_retiring_servers() {
+    let coordinator = MaterializationCoordinator::new(
+        resolver(&[("object-a", b"valid-baseline-psk-material")]),
+        ValidationOptions::default(),
+    );
+    let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+    let revocation = crate::UpstreamRevocation::without_verifier();
+    let service = TacacsClientService::with_overlays(
+        service_config(),
+        health.clone(),
+        Vec::new(),
+        revocation.clone(),
+    )
+    .unwrap();
+    let canonical = source("object-a", "192.0.2.20");
+    let attempt = coordinator
+        .accept_source(canonical.clone(), canonical, PreparedProxyPolicy::unobfuscated())
+        .await;
+    let prepared = coordinator.materialize(attempt).await.unwrap();
+    coordinator.publish(prepared, &service).await.unwrap();
+    let servers = coordinator.active_servers().await;
+    let revision = health.snapshot().materialization_revision();
+
+    let mut settings = tacacsrs_networking::RevocationSettings::default();
+    settings.enforcement = tacacsrs_networking::RevocationEnforcement::WarnOnly;
+    let local_services = service
+        .prepare_local_services_candidate(&tacacsrs_config::tacacsrs::LocalServices::default())
+        .unwrap();
+    service
+        .publish_sections(&crate::runtime::CandidateSections {
+            local_services,
+            runtime_policy: None,
+            revocation: Some(settings.clone()),
+        })
+        .await;
+
+    assert_eq!(revocation.settings(), settings);
+    assert_eq!(service.server_count(), 1);
+    assert_eq!(health.snapshot().materialization_revision(), revision);
+    let active = coordinator.active_servers().await;
+    assert!(Arc::ptr_eq(&active[0], &servers[0]), "a policy change must not replace servers");
+}
+
+#[tokio::test]
+async fn republished_sections_do_not_replace_a_newer_policy() {
+    let coordinator = MaterializationCoordinator::new(
+        resolver(&[("object-a", b"valid-baseline-psk-material")]),
+        ValidationOptions::default(),
+    );
+    let service = service_with_health(RuntimeHealthPublisher::new(EnabledServices::CLIENT_API));
+    let candidate = source("object-a", "192.0.2.20");
+    let sections = sections_with_policy(&service, false, policy_with_recovery(7));
+    let revision = coordinator.admit_source(candidate.clone()).await;
+    let attempt = coordinator
+        .accept_filtered_source(
+            revision,
+            candidate,
+            PreparedProxyPolicy::unobfuscated(),
+            Some(sections),
+        )
+        .await
+        .unwrap();
+    let prepared = coordinator.materialize(attempt).await.unwrap();
+    coordinator.publish(prepared, &service).await.unwrap();
+    assert_eq!(
+        service
+            .runtime_policy()
+            .current()
+            .failover_recovery_interval(),
+        Duration::from_secs(7)
+    );
+
+    service
+        .publish_sections(&sections_with_policy(&service, false, policy_with_recovery(9)))
+        .await;
+    let refresh = coordinator
+        .credential_change(&known("object-a"))
+        .await
+        .unwrap();
+    let refreshed = coordinator.materialize(refresh).await.unwrap();
+    coordinator.publish(refreshed, &service).await.unwrap();
+    assert_eq!(
+        service
+            .runtime_policy()
+            .current()
+            .failover_recovery_interval(),
+        Duration::from_secs(9)
+    );
+}
+
 #[tokio::test]
 async fn cancellation_before_runtime_publication_leaves_active_material_unchanged() {
     let coordinator = MaterializationCoordinator::new(
@@ -1509,6 +1767,7 @@ async fn invalid_native_credentials_cannot_replace_active_generation() {
     let active = coordinator.active_servers().await;
 
     let invalid = TacacsPlus {
+        certificate_revocation: None,
         client_credentials: Vec::new(),
         server_credentials: Vec::new(),
         server: vec![tacacsrs_config::TacacsPlusServerBuilder::new(

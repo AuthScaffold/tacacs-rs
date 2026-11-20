@@ -95,6 +95,14 @@ stream. The same exchange descriptor and response validation apply. A
 successful capability probe can promote its completed dedicated stream into
 the shared runtime.
 
+## Certificate Revocation
+
+The `revocation` module defines the contract between the TLS handshake and a host-owned revocation verifier. Networking does not fetch, cache, or interpret revocation evidence. A host implements `RevocationVerifier` and attaches it with `PreparedEndpoint::with_revocation_verifier` or `NativeConnector::with_revocation_verifier`. The [`tacacsrs-revocation`](../tacacsrs_revocation/README.md) crate provides `CrlVerifier`, a CRL implementation. `RevocationSettings` carries the policy: `RevocationEnforcement`, the `DistributionPointPattern` allowlist, the prefetch `DistributionPointUrl` list, and the fetch limits. `RevocationNetwork` gives the verifier the local binding and connection guard of the server.
+
+After OpenSSL verifies the server certificate path, peer identity, and trust, the handshake asks the verifier for a `RevocationDecision` about the `VerifiedPath`. When the verifier needs evidence, the handshake pauses with OpenSSL `SSL_set_retry_verify` before the client sends its certificate. The verifier then obtains evidence off the async worker, within the connection timeout. The handshake resumes on the same socket. A second `NeedEvidence` decision rejects the server.
+
+Revocation is checked only when a connection is established. No code in this crate closes an established connection because evidence expires, a refresh fails, or the policy changes. Exact pinned end-entity trust skips the check and increments `revocation-pinned-skips`. Certificate verification disabled for development also skips the check. TCP and PSK endpoints ignore the verifier.
+
 ## Packet Ownership
 
 `PacketReader::new` and `PacketWriter::new` accept `Option<SecretBytes>` instead of raw key vectors.
@@ -116,7 +124,7 @@ the operator-configured transport for interoperability. Prefer TACACS+ over TLS
 Native TLS preparation can accept this owner through `prepare_with_payload`. The ordinary `prepare` methods are unmanaged entry points.
 They use the same implementation without a candidate limit. They are not a global resource guarantee.
 
-The payload measure includes Rust strings, keys, callback DER, fetched evidence, and temporary metadata and comparison buffers.
+The payload measure includes Rust strings, keys, callback DER, and temporary metadata and comparison buffers.
 It excludes native object internals, fixed-layout and collection metadata, allocator slack, connection execution, and process RSS.
 Known byte copies require reservation before allocation. Opaque native encodings pass a handoff check before retention or another copy.
 Client-chain deduplication stores accounted DER owners in a `BTreeSet` to avoid quadratic comparisons.

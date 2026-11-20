@@ -136,7 +136,7 @@ jobs:
         run: cargo audit --file .github/tools/api-classifier/Cargo.lock
 
   msrv:
-    name: Minimum Rust 1.88
+    name: Minimum Rust 1.91
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -150,7 +150,7 @@ jobs:
       - name: Install the minimum Rust toolchain
         uses: ./.github/steps/setup-rust
         with:
-          toolchain: '1.88.0'
+          toolchain: '1.91.0'
           cache-key: msrv
           install-libseccomp-dev: 'true'
           install-openssl: 'true'
@@ -186,6 +186,7 @@ jobs:
               --exclude tacacsrs-bash-plugin
               --exclude tacacsrs-ipc
               --exclude tacacsrs-sonic
+              --exclude tacacsrs-kubesonic
               --exclude tacacsrs-unix-socket
             default_packages: 'tacon'
     steps:

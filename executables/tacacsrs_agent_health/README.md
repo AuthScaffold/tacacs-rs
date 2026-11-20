@@ -13,6 +13,27 @@ tacacsrs-agent-health \
 Exit status is `0` when the selected service is serving, `1` when it is not
 serving, `2` for invalid invocation, and `3` for connection or timeout errors.
 
+## Detailed Health
+
+The `details` command reads the facts behind the health probes through the same
+local socket. Use it to find why the agent is not ready. The command does not
+connect to an upstream server or change health state.
+
+```bash
+tacacsrs-agent-health details
+tacacsrs-agent-health details --format json --endpoint /run/tacacs/tacacs.sock
+```
+
+The output gives the lifecycle, the startup, liveness, and readiness results,
+the datastore and listener states, the upstream availability, the upstream
+watchdog state, the degradation reasons, and the runtime revisions. It also
+lists each component health check, with its group, name, status, and
+description. Enum values
+use short names, for example `upstream-watchdog-failed`. A value that this build
+does not know shows as `unknown-<number>`. Successful queries exit with `0`,
+invalid invocations with `2`, and query failures or timeouts with `3`. Do not
+combine `details` with `--check`.
+
 ## Operational Diagnostics
 
 The `statistics` command reads the agent's current operational snapshot through
@@ -61,6 +82,12 @@ uint64 values use decimal JSON strings to preserve their full range.
 - TLS categories use native numeric error and verification codes, not diagnostic
     string matching. Unclassified TLS failures increment `tls-other-errors`.
     Certificate subcategories overlap the aggregate certificate failure counter.
+- `revocation-evidence-waits` counts TLS handshakes that paused while the CRL
+    verifier obtained evidence. `revocation-unverified-accepts` counts
+    connections accepted without fresh CRL evidence under `soft-fail` or
+    `warn-only`. `revocation-pinned-skips` counts connections to exactly pinned
+    peers that skipped the CRL check. A listed certificate increments
+    `tls-revoked-certificates`.
 - Runtime generation identifies the captured server set. Counter epoch and
     discontinuity time identify counter lifetime. Unchanged endpoints retain their
     counters across reloads; replacements begin new epochs. Each server's sample

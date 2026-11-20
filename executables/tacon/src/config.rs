@@ -151,7 +151,24 @@ pub(crate) fn resolve_server_for_type(
     required_type: TacacsPlusServerType,
 ) -> anyhow::Result<TacacsPlusServer> {
     let root = resolve_tacacs_plus_config(cli)?;
+    refuse_revocation_policy(&root)?;
     select_first_server_for_type(&root, required_type)
+}
+
+/// Refuses a configuration that enables certificate revocation checks.
+///
+/// Direct mode has no revocation verifier. A connection without a revocation
+/// check would silently weaken the configured policy, so `tacon` stops instead.
+fn refuse_revocation_policy(root: &TacacsPlus) -> anyhow::Result<()> {
+    let settings = tacacsrs_config::revocation_settings(root)
+        .context("Invalid certificate-revocation configuration")?;
+    if settings.enforcement.requires_verifier() {
+        anyhow::bail!(
+            "Direct mode cannot check certificate revocation (enforcement {}). Use agent mode with --service-endpoint, or set enforcement to disabled",
+            settings.enforcement.as_str()
+        );
+    }
+    Ok(())
 }
 
 /// Resolves the upstream server required by a direct-mode command.
@@ -215,7 +232,10 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use super::{render_yang_config, select_first_server_for_type, tacacs_plus_from_cli};
+    use super::{
+        refuse_revocation_policy, render_yang_config, select_first_server_for_type,
+        tacacs_plus_from_cli, TacacsPlus,
+    };
     use crate::cli::Cli;
     use tacacsrs_config::PskDheKeSupportedGroup;
     use tacacsrs_config::{TacacsPlusServerType, ValidationOptions, crypto_types::PrivateKeyFormat};
@@ -298,6 +318,19 @@ mod tests {
         let server = select_first_server_for_type(&root, TacacsPlusServerType::ACCOUNTING)
             .expect("failed to select the accounting server");
         assert_eq!(server.name, "acct");
+    }
+
+    #[test]
+    fn direct_mode_refuses_an_enabled_revocation_policy() {
+        let mut root = TacacsPlus::empty();
+        assert!(refuse_revocation_policy(&root).is_ok());
+        root.certificate_revocation = Some(tacacsrs_config::tacacsrs::CertificateRevocation {
+            enforcement: tacacsrs_config::tacacsrs::Enforcement::WarnOnly,
+            allowed_distribution_point: vec!["http://crl.example/*.crl".into()],
+            ..Default::default()
+        });
+        let error = refuse_revocation_policy(&root).unwrap_err();
+        assert!(error.to_string().contains("warn-only"), "{error}");
     }
 
     #[test]

@@ -217,9 +217,7 @@ mod tests {
                         }],
                     })
                 }
-                CredentialKind::SymmetricKey
-                | CredentialKind::CertificateRevocationLists
-                | CredentialKind::OcspResponse => {
+                CredentialKind::SymmetricKey => {
                     unreachable!("the test plan contains only a client identity and two trust bags")
                 }
             };

@@ -1,4 +1,10 @@
 //! Connection-time proxy loop exclusion using actual listener state.
+//!
+//! The guard knows the configured proxy target and each bound TCP proxy
+//! address. During an endpoint move, the old and the new listener are both
+//! bound for a short time. The guard checks each upstream destination against
+//! every bound address. It fails closed while the configured TCP target has
+//! no bound listener.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, RwLock};
@@ -8,28 +14,89 @@ use anyhow::{Context, ensure};
 use tacacsrs_config::local_services::ListenerEndpoint;
 use tacacsrs_networking::ConnectionGuard;
 
-#[derive(Debug, Clone, Copy)]
-enum ProxyListenerState {
+/// The proxy target of the active local services.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum ProxyGuardTarget {
+    /// The proxy is disabled.
     Inactive,
-    Pending(SocketAddr),
-    Bound(SocketAddr),
-    Closed,
+    /// The proxy is enabled, and its TCP endpoint is not known yet.
+    Waiting,
+    /// The proxy listens on a TCP endpoint.
+    Tcp(SocketAddr),
+    /// The proxy listens on a Unix domain socket.
+    Unix,
+}
+
+impl ProxyGuardTarget {
+    pub(crate) fn from_endpoint(endpoint: Option<&ListenerEndpoint>) -> Self {
+        match endpoint {
+            Some(ListenerEndpoint::Tcp(address)) => Self::Tcp(*address),
+            Some(ListenerEndpoint::Unix(_)) => Self::Unix,
+            None => Self::Inactive,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct GuardState {
+    target: ProxyGuardTarget,
+    bound: Vec<(u64, SocketAddr)>,
+    next_id: u64,
+}
+
+impl GuardState {
+    fn bound_addresses(&self) -> anyhow::Result<Vec<SocketAddr>> {
+        match self.target {
+            ProxyGuardTarget::Waiting => {
+                anyhow::bail!("Proxy listener must bind before upstream connections open")
+            }
+            ProxyGuardTarget::Tcp(configured) => ensure!(
+                self.bound
+                    .iter()
+                    .any(|(_, address)| matches_configured(configured, *address)),
+                "Proxy listener must bind before upstream connections open"
+            ),
+            ProxyGuardTarget::Inactive | ProxyGuardTarget::Unix => {}
+        }
+        Ok(self.bound.iter().map(|(_, address)| *address).collect())
+    }
+}
+
+fn matches_configured(configured: SocketAddr, address: SocketAddr) -> bool {
+    address.port() != 0
+        && address.ip().to_canonical() == configured.ip().to_canonical()
+        && (configured.port() == 0 || configured.port() == address.port())
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ProxyLoopGuard {
-    state: Arc<RwLock<ProxyListenerState>>,
+    state: Arc<RwLock<GuardState>>,
 }
 
 impl ProxyLoopGuard {
+    #[cfg(test)]
     pub(crate) fn new(endpoint: Option<&ListenerEndpoint>) -> Self {
-        let state = match endpoint {
-            Some(ListenerEndpoint::Tcp(address)) => ProxyListenerState::Pending(*address),
-            _ => ProxyListenerState::Inactive,
-        };
+        Self::with_target(ProxyGuardTarget::from_endpoint(endpoint))
+    }
+
+    pub(crate) fn with_target(target: ProxyGuardTarget) -> Self {
         Self {
-            state: Arc::new(RwLock::new(state)),
+            state: Arc::new(RwLock::new(GuardState {
+                target,
+                bound: Vec::new(),
+                next_id: 0,
+            })),
         }
+    }
+
+    /// Sets the proxy target of new local services.
+    ///
+    /// Existing bindings stay checked until their listeners stop.
+    pub(crate) fn configure(&self, target: ProxyGuardTarget) {
+        self.state
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .target = target;
     }
 
     pub(crate) fn bind(&self, address: SocketAddr) -> anyhow::Result<ProxyListenerBinding> {
@@ -37,38 +104,31 @@ impl ProxyLoopGuard {
             .state
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let ProxyListenerState::Pending(configured) = *state else {
-            anyhow::bail!("Proxy listener guard is not awaiting a bind");
+        let ProxyGuardTarget::Tcp(configured) = state.target else {
+            anyhow::bail!("Proxy listener guard is not configured for a TCP endpoint");
         };
         ensure!(
-            address.port() != 0
-                && address.ip().to_canonical() == configured.ip().to_canonical()
-                && (configured.port() == 0 || configured.port() == address.port()),
+            matches_configured(configured, address),
             "Bound proxy endpoint does not match listener configuration"
         );
-        *state = ProxyListenerState::Bound(address);
+        let id = state.next_id;
+        state.next_id = state.next_id.wrapping_add(1);
+        state.bound.push((id, address));
         Ok(ProxyListenerBinding {
             guard: self.clone(),
+            id,
         })
     }
 
-    pub(super) fn bound_endpoint(&self) -> anyhow::Result<Option<SocketAddr>> {
-        let state = *self
-            .state
+    pub(super) fn bound_endpoints(&self) -> anyhow::Result<Vec<SocketAddr>> {
+        self.state
             .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match state {
-            ProxyListenerState::Inactive => Ok(None),
-            ProxyListenerState::Bound(address) => Ok(Some(address)),
-            ProxyListenerState::Pending(_) => {
-                anyhow::bail!("Proxy listener must bind before upstream connections open")
-            }
-            ProxyListenerState::Closed => anyhow::bail!("Proxy listener has closed"),
-        }
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .bound_addresses()
     }
 
     fn check_with_addresses(&self, target: SocketAddr, addresses: &[IpAddr]) -> anyhow::Result<()> {
-        if let Some(bound) = self.bound_endpoint()? {
+        for bound in self.bound_endpoints()? {
             ensure!(
                 !ListenerEndpoint::Tcp(bound).covers_tcp_destination(target, addresses),
                 "Upstream connection targets the local TACACS+ proxy"
@@ -80,17 +140,22 @@ impl ProxyLoopGuard {
 
 impl ConnectionGuard for ProxyLoopGuard {
     fn check_destination(&self, destination: SocketAddr) -> anyhow::Result<()> {
-        let Some(bound) = self.bound_endpoint()? else {
-            return Ok(());
-        };
-        if destination.port() != bound.port() {
+        let bound = self.bound_endpoints()?;
+        let same_port: Vec<_> = bound
+            .iter()
+            .filter(|address| address.port() == destination.port())
+            .collect();
+        if same_port.is_empty() {
             return Ok(());
         }
         ensure!(
             !destination.ip().to_canonical().is_unspecified(),
             "Upstream connection destination must be specified"
         );
-        let addresses = if bound.ip().to_canonical().is_unspecified() {
+        let addresses = if same_port
+            .iter()
+            .any(|address| address.ip().to_canonical().is_unspecified())
+        {
             if_addrs::get_if_addrs()
                 .context("read interfaces for connection-time proxy loop validation")?
                 .into_iter()
@@ -108,17 +173,20 @@ impl ConnectionGuard for ProxyLoopGuard {
     }
 }
 
+/// One bound proxy listener address. Drop removes the address from the guard.
 pub(crate) struct ProxyListenerBinding {
     guard: ProxyLoopGuard,
+    id: u64,
 }
 
 impl Drop for ProxyListenerBinding {
     fn drop(&mut self) {
-        *self
-            .guard
+        self.guard
             .state
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = ProxyListenerState::Closed;
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .bound
+            .retain(|(id, _)| *id != self.id);
     }
 }
 
@@ -142,6 +210,21 @@ mod tests {
     }
 
     #[test]
+    fn waiting_listener_fails_closed_until_it_binds() {
+        let guard = ProxyLoopGuard::with_target(ProxyGuardTarget::Waiting);
+        let destination = "192.0.2.20:49".parse().unwrap();
+        assert!(guard.check_destination(destination).is_err());
+        assert!(guard.bind("127.0.0.1:49".parse().unwrap()).is_err());
+        guard.configure(ProxyGuardTarget::Tcp("127.0.0.1:49".parse().unwrap()));
+        assert!(guard.check_destination(destination).is_err());
+        let _binding = guard.bind("127.0.0.1:49".parse().unwrap()).unwrap();
+        assert!(guard.check_destination(destination).is_ok());
+        assert!(guard
+            .check_destination("127.0.0.1:49".parse().unwrap())
+            .is_err());
+    }
+
+    #[test]
     fn interface_changes_and_connected_local_address_are_rechecked() {
         let configured = ListenerEndpoint::Tcp("0.0.0.0:49".parse().unwrap());
         let guard = ProxyLoopGuard::new(Some(&configured));
@@ -156,6 +239,32 @@ mod tests {
             .is_err());
         assert!(guard
             .check_destination("[::ffff:127.0.0.1]:49".parse().unwrap())
+            .is_err());
+    }
+
+    #[test]
+    fn a_moved_proxy_checks_the_old_and_the_new_binding_until_the_old_one_stops() {
+        let guard =
+            ProxyLoopGuard::with_target(ProxyGuardTarget::Tcp("127.0.0.1:49".parse().unwrap()));
+        let old = guard.bind("127.0.0.1:49".parse().unwrap()).unwrap();
+        guard.configure(ProxyGuardTarget::Tcp("127.0.0.1:4949".parse().unwrap()));
+        assert!(
+            guard
+                .check_destination("192.0.2.20:49".parse().unwrap())
+                .is_err(),
+            "the new target must bind before upstream connections open"
+        );
+        let _new = guard.bind("127.0.0.1:4949".parse().unwrap()).unwrap();
+        for bound in ["127.0.0.1:49", "127.0.0.1:4949"] {
+            assert!(guard.check_destination(bound.parse().unwrap()).is_err());
+        }
+        drop(old);
+        assert!(guard
+            .check_destination("127.0.0.1:49".parse().unwrap())
+            .is_ok());
+        guard.configure(ProxyGuardTarget::Inactive);
+        assert!(guard
+            .check_destination("127.0.0.1:4949".parse().unwrap())
             .is_err());
     }
 

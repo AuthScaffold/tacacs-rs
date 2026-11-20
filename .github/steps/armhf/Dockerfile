@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1.7
-FROM --platform=$BUILDPLATFORM rust:1.90-bookworm@sha256:3914072ca0c3b8aad871db9169a651ccfce30cf58303e5d6f2db16d1d8a7e58f AS tools
+FROM --platform=$BUILDPLATFORM rust:1.91-bookworm@sha256:c1e5f19e773b7878c3f7a805dd00a495e747acbdc76fb2337a4ebf0418896b33 AS tools
 
 RUN dpkg --add-architecture armhf \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         gcc-arm-linux-gnueabihf libc6-dev-armhf-cross libssl-dev:armhf \
-        libssl-dev pkg-config protobuf-compiler procps python3 qemu-user \
+        libssl-dev pkg-config protobuf-compiler procps python3 qemu-user redis-server openssl \
     && rm -rf /var/lib/apt/lists/* \
     && rustup target add armv7-unknown-linux-gnueabihf
 
@@ -29,6 +29,7 @@ COPY lde/containers/config/certificates lde/containers/config/certificates
 RUN rm -f libraries/tacacsrs_networking/examples/samples/client.*
 COPY lde/containers/config/certificates/client.* libraries/tacacsrs_networking/examples/samples/
 COPY .github/steps/armhf .github/steps/armhf
+COPY .github/steps/kubesonic .github/steps/kubesonic
 
 FROM tools AS verify
 RUN --mount=type=cache,id=tacacsrs-armhf-registry,target=/usr/local/cargo/registry \

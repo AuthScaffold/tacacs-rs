@@ -37,6 +37,7 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
+use crate::connection::failure::combine_results;
 use crate::endpoint::PreparedEndpoint;
 use crate::single_connect::{NegotiationState, SharedConnectionCache, SingleConnectionState};
 
@@ -137,16 +138,14 @@ impl TacacsClient {
         self.shared_connection.mark_closed();
     }
 
-    /// Closes the client, drains sessions, and joins setup, driver, and evidence-expiry tasks.
+    /// Closes the client, drains sessions, and joins setup and driver tasks.
     ///
     /// At `deadline`, remaining transports close even if callers retain idle
     /// conversations or do not poll their I/O futures. Cancelled joins can be retried;
     /// the client remains closed. Final client drop also requests immediate cleanup.
-    /// Revocation evidence expiry can close a transport before this shutdown deadline.
     ///
     /// # Errors
     /// Returns a setup or driver task failure after completing other cleanup.
-    /// This can include an I/O error from a driver stopped by evidence expiry.
     pub async fn close_and_join(&self, deadline: crate::RequestDeadline) -> anyhow::Result<()> {
         self.close();
         self.stop_accepting_new_sessions().await;
@@ -155,8 +154,7 @@ impl TacacsClient {
         let driver_result = self.retire_shared_until(deadline).await;
         self.lifecycle.force_close_transports();
         self.lifecycle.wait_for_transports().await;
-        let expiry_result = self.lifecycle.join_evidence_expiries(deadline).await;
-        setup_result.and(driver_result).and(expiry_result)
+        combine_results(setup_result, driver_result)
     }
 
     /// Retires and joins the currently cached and previously retired shared drivers.

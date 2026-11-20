@@ -17,6 +17,7 @@
 
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures_core::Stream;
@@ -24,6 +25,7 @@ use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use tokio_stream::StreamExt;
 
+use crate::tacacsrs::{LocalServices, RuntimePolicy};
 use crate::{TacacsPlus, ValidationOptions};
 
 pub(crate) mod directory_watch;
@@ -48,7 +50,8 @@ pub struct ConfigDelta {
     pub removed_servers: Vec<String>,
     /// Server names whose definitions changed between snapshots.
     pub modified_servers: Vec<String>,
-    /// `true` when root data such as a shared credential bundle changed.
+    /// `true` when root data changed, such as a shared credential bundle or the
+    /// `certificate-revocation` policy.
     ///
     /// If this field is `true`, consumers must use the complete configuration.
     pub root_metadata_changed: bool,
@@ -77,7 +80,8 @@ impl ConfigDelta {
                 removed_servers: Vec::new(),
                 modified_servers: Vec::new(),
                 root_metadata_changed: !new.client_credentials.is_empty()
-                    || !new.server_credentials.is_empty(),
+                    || !new.server_credentials.is_empty()
+                    || new.certificate_revocation.is_some(),
             };
         };
 
@@ -101,7 +105,8 @@ impl ConfigDelta {
             .collect::<Vec<_>>();
 
         let root_metadata_changed = previous.client_credentials != new.client_credentials
-            || previous.server_credentials != new.server_credentials;
+            || previous.server_credentials != new.server_credentials
+            || previous.certificate_revocation != new.certificate_revocation;
 
         Self {
             added_servers: added,
@@ -122,6 +127,19 @@ pub struct ConfigChange {
     pub config: Arc<TacacsPlus>,
     /// Changes that the backend detected from the previous snapshot.
     pub delta: ConfigDelta,
+    /// Local listener configuration that this source owns.
+    ///
+    /// `None` means that the source does not own the local services. The
+    /// runtime then keeps its current local services. A source that owns the
+    /// local services sends a value with every change.
+    pub local_services: Option<Arc<LocalServices>>,
+    /// Runtime policy that this source owns.
+    ///
+    /// `None` means that the source does not own the runtime policy. The
+    /// runtime then keeps its current policy. A source that owns the runtime
+    /// policy sends a value with every change. An invalid value rejects the
+    /// whole change.
+    pub runtime_policy: Option<Arc<RuntimePolicy>>,
 }
 
 /// Typed event emitted by a datastore change subscription.
@@ -135,14 +153,6 @@ pub enum ConfigChangeEvent {
     /// configuration value. Thus, health consumers cannot expose addresses,
     /// credential references, or secrets.
     CandidateRejected,
-    /// A validated host-binding setting changed but cannot be applied live.
-    ///
-    /// Bound resources stay active until the process restarts. This event does
-    /// not contain configuration values.
-    RestartRequired {
-        /// Whether the current validated settings differ from bound resources.
-        required: bool,
-    },
 }
 
 /// Stream of canonical configuration change events for stream-based adapters.
@@ -154,20 +164,11 @@ pub type ConfigChangeStream = Pin<Box<dyn Stream<Item = ConfigChangeEvent> + Sen
 /// work when `next()` is cancelled. Consumers must not mutate source snapshots.
 #[async_trait]
 pub trait ConfigObservation: Send {
-    /// Returns a candidate, rejection, restart requirement, or end of observation.
+    /// Returns a candidate, a rejection, or the end of observation.
     ///
     /// # Errors
     /// Returns an error when observation fails and must be established again.
     async fn next(&mut self) -> anyhow::Result<Option<ConfigChangeEvent>>;
-}
-
-/// Behavior the runtime applies when the initial datastore load fails.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum InitialLoadPolicy {
-    /// Return the load error to the operator and stop startup.
-    FailFast,
-    /// Retry until a valid snapshot is available or shutdown is requested.
-    RetryUntilAvailable,
 }
 
 /// Change-notification guarantees provided by a datastore instance.
@@ -180,26 +181,82 @@ pub enum ChangeNotificationMode {
     Continuous,
 }
 
-/// Runtime behavior declared by a [`ConfigDatastore`] instance.
+/// Behavior after a valid empty source.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct DatastoreRuntimePolicy {
-    /// Initial-load failure behavior.
-    pub initial_load: InitialLoadPolicy,
-    /// Change-notification behavior.
-    pub change_notifications: ChangeNotificationMode,
+pub enum EmptyServerPolicy {
+    /// Apply the empty canonical source.
+    Clear,
+    /// Keep the last successfully published canonical source.
+    Retain,
 }
 
-impl DatastoreRuntimePolicy {
-    /// Creates a datastore runtime policy.
+/// Supervision behavior that a [`ConfigDatastore`] instance declares.
+///
+/// This type is not the YANG `tacacsrs:runtime-policy` container. A source
+/// sends that container in [`ConfigChange::runtime_policy`].
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct SourceBehavior {
+    /// Change-notification behavior.
+    pub change_notifications: ChangeNotificationMode,
+    /// Behavior after a valid empty source.
+    pub empty_servers: EmptyServerPolicy,
+    /// Initial delay for source observation recovery.
+    retry_initial: Duration,
+    /// Maximum delay for source observation recovery.
+    retry_max: Duration,
+}
+
+impl SourceBehavior {
+    /// Creates the source behavior with the default empty-source and retry behavior.
     #[must_use]
-    pub const fn new(
-        initial_load: InitialLoadPolicy,
-        change_notifications: ChangeNotificationMode,
-    ) -> Self {
+    pub const fn new(change_notifications: ChangeNotificationMode) -> Self {
         Self {
-            initial_load,
             change_notifications,
+            empty_servers: EmptyServerPolicy::Clear,
+            retry_initial: Duration::from_millis(250),
+            retry_max: Duration::from_secs(30),
         }
+    }
+
+    /// Selects empty-source behavior.
+    #[must_use]
+    pub const fn with_empty_servers(mut self, policy: EmptyServerPolicy) -> Self {
+        self.empty_servers = policy;
+        self
+    }
+
+    /// Returns the initial source-recovery delay.
+    #[must_use]
+    pub const fn retry_initial(self) -> Duration {
+        self.retry_initial
+    }
+
+    /// Returns the maximum source-recovery delay.
+    #[must_use]
+    pub const fn retry_max(self) -> Duration {
+        self.retry_max
+    }
+
+    /// Sets bounded source-recovery backoff.
+    ///
+    /// # Errors
+    /// Returns an error for zero, reversed, or unsupported delays.
+    pub fn with_retry_backoff(
+        mut self,
+        initial: Duration,
+        maximum: Duration,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            !initial.is_zero() && initial <= maximum,
+            "Source retry delays must be positive and ordered"
+        );
+        anyhow::ensure!(
+            std::time::Instant::now().checked_add(maximum).is_some(),
+            "Source retry delay exceeds the clock range"
+        );
+        self.retry_initial = initial;
+        self.retry_max = maximum;
+        Ok(self)
     }
 }
 
@@ -224,7 +281,7 @@ pub trait ConfigDatastore: Send + Sync + 'static {
     /// A file-backed datastore can be immutable when it has no referenced
     /// paths. It requires continuous monitoring when configuration depends on
     /// files.
-    fn runtime_policy(&self) -> DatastoreRuntimePolicy;
+    fn behavior(&self) -> SourceBehavior;
 
     /// Returns the validation policy already used to accept source snapshots.
     ///
@@ -268,6 +325,8 @@ pub fn watch_to_change_stream(
         let change = ConfigChange {
             config: Arc::clone(&snapshot),
             delta,
+            runtime_policy: None,
+            local_services: None,
         };
         previous = Some(snapshot);
         Some(ConfigChangeEvent::Changed(change))
@@ -328,6 +387,23 @@ mod tests {
         assert!(delta.removed_servers.is_empty());
         assert!(delta.modified_servers.is_empty());
         assert!(!delta.root_metadata_changed);
+    }
+
+    #[test]
+    fn delta_reports_revocation_policy_change_without_server_changes() {
+        let previous = sample_config("192.0.2.1");
+        let mut new = previous.clone();
+        new.certificate_revocation = Some(crate::tacacsrs::CertificateRevocation {
+            enforcement: crate::tacacsrs::Enforcement::WarnOnly,
+            allowed_distribution_point: vec!["http://crl.example.com/**".to_owned()],
+            ..Default::default()
+        });
+
+        let delta = ConfigDelta::diff(Some(&previous), &new);
+
+        assert!(delta.root_metadata_changed);
+        assert!(delta.modified_servers.is_empty());
+        assert!(!delta.is_empty());
     }
 
     #[test]

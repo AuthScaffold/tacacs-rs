@@ -8,7 +8,7 @@ mod diagnostics;
 pub use diagnostics::{
     ConnectionDetails, DiagnosticsSnapshot, DisconnectReason, OperationStatistics, TlsDetails,
 };
-pub(crate) use diagnostics::{CertificateVerificationCode, ReplyWait};
+pub(crate) use diagnostics::{CertificateVerificationCode, ReplyWait, RevocationEvent};
 use diagnostics::authentication_outcome;
 
 /// A coherent snapshot of counters for one prepared endpoint.

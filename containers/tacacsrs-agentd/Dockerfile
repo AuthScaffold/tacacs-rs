@@ -15,11 +15,11 @@
 # different toolchain or a hardened runtime image without a file change:
 #
 #   docker buildx build \
-#       --build-arg BUILDER_IMAGE=<registry>/rust:1.90 \
+#       --build-arg BUILDER_IMAGE=<registry>/rust:1.91 \
 #       --build-arg RUNTIME_IMAGE=<registry>/debian:bookworm-slim \
 #       --file Dockerfile ../..
 
-ARG BUILDER_IMAGE=docker.io/library/rust:1.90-bookworm
+ARG BUILDER_IMAGE=docker.io/library/rust:1.91-bookworm
 ARG RUNTIME_IMAGE=docker.io/library/debian:bookworm-slim
 
 # -----------------------------------------------------------------------------

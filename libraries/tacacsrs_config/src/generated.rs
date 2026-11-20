@@ -349,38 +349,6 @@ pub mod tacacs_plus {
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
         pub tls13_epsks: Option<crate::YangEmpty>,
-        /// Require complete CRL evidence for the verified server certificate path.
-        /// An unpartitioned base can advertise one explicitly supplied delta.
-        /// Both lists must be fresh and match issuer, scope, and authority key
-        /// identifier. CRL numbers must identify a compatible increasing update.
-        /// Direct CRLs can restrict certificate type and distribution-point scope.
-        /// Multiple scopes for one issuer must cover disjoint certificate types.
-        /// Within each scope, reason partitions must be disjoint.
-        /// At most 128 lists and 4 MiB are accepted.
-        /// Native verification requires complete reason and path coverage.
-        /// Exact peer pins and PSK authentication are not supported in this mode.
-        /// Unavailable, invalid, stale, or incomplete evidence fails closed.
-        #[serde(rename = "tacacsrs:require-crls")]
-        #[serde(default)]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub require_crls: Option<tacacsrs::RequireCrls>,
-        /// Requires a fetched or inline response independently of any mandatory staple.
-        /// The actual peer, signer, status, and signed freshness are verified before client authentication.
-        #[serde(rename = "tacacsrs:require-ocsp")]
-        #[serde(default)]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub require_ocsp: Option<tacacsrs::RequireOcsp>,
-        /// Request a stapled OCSP response and fail closed if evidence is
-        /// unavailable, invalid, stale, unknown, or revoked. Responses must
-        /// be signed by the issuer or a responder issued directly by it.
-        /// Delegated responders require OCSP signing usage and either a valid
-        /// noncritical No Check extension or verified configured CRL evidence.
-        /// This requirement can be combined with require-crls. Both checks
-        /// must pass. OCSP covers the peer leaf; CRLs cover the CA path.
-        #[serde(rename = "tacacsrs:require-stapled-ocsp")]
-        #[serde(default)]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub require_stapled_ocsp: Option<tacacsrs::RequireStapledOcsp>,
     }
 
     /// Identity credentials that a TLS client may present when
@@ -461,38 +429,6 @@ pub mod tacacs_plus {
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
         pub tls13_epsks: Option<crate::YangEmpty>,
-        /// Require complete CRL evidence for the verified server certificate path.
-        /// An unpartitioned base can advertise one explicitly supplied delta.
-        /// Both lists must be fresh and match issuer, scope, and authority key
-        /// identifier. CRL numbers must identify a compatible increasing update.
-        /// Direct CRLs can restrict certificate type and distribution-point scope.
-        /// Multiple scopes for one issuer must cover disjoint certificate types.
-        /// Within each scope, reason partitions must be disjoint.
-        /// At most 128 lists and 4 MiB are accepted.
-        /// Native verification requires complete reason and path coverage.
-        /// Exact peer pins and PSK authentication are not supported in this mode.
-        /// Unavailable, invalid, stale, or incomplete evidence fails closed.
-        #[serde(rename = "tacacsrs:require-crls")]
-        #[serde(default)]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub require_crls: Option<tacacsrs::RequireCrls>,
-        /// Requires a fetched or inline response independently of any mandatory staple.
-        /// The actual peer, signer, status, and signed freshness are verified before client authentication.
-        #[serde(rename = "tacacsrs:require-ocsp")]
-        #[serde(default)]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub require_ocsp: Option<tacacsrs::RequireOcsp>,
-        /// Request a stapled OCSP response and fail closed if evidence is
-        /// unavailable, invalid, stale, unknown, or revoked. Responses must
-        /// be signed by the issuer or a responder issued directly by it.
-        /// Delegated responders require OCSP signing usage and either a valid
-        /// noncritical No Check extension or verified configured CRL evidence.
-        /// This requirement can be combined with require-crls. Both checks
-        /// must pass. OCSP covers the peer leaf; CRLs cover the CA path.
-        #[serde(rename = "tacacsrs:require-stapled-ocsp")]
-        #[serde(default)]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub require_stapled_ocsp: Option<tacacsrs::RequireStapledOcsp>,
     }
 
     /// Choice constraints for [`TlsClientServerAuthentication`].
@@ -502,7 +438,7 @@ pub mod tacacs_plus {
         /// Each inner slice is one case; at most one case may have fields set.
         pub const CHOICE_REF_OR_EXPLICIT: &[(&str, &[&str])] = &[
             ("ref", &["credentials-reference"]),
-            ("explicit", &["ca-certs", "ee-certs", "tls13-epsks", "require-crls", "require-ocsp", "require-stapled-ocsp"]),
+            ("explicit", &["ca-certs", "ee-certs", "tls13-epsks"]),
         ];
         pub const CHOICE_REF_OR_EXPLICIT_MANDATORY: bool = false;
         pub const CHOICE_REF_OR_EXPLICIT_PATH: &str = "ref-or-explicit";
@@ -667,6 +603,18 @@ pub mod tacacs_plus {
         #[serde(default)]
         #[serde(skip_serializing_if = "Vec::is_empty")]
         pub server: Vec<TacacsPlusServer>,
+        /// Global CRL revocation policy for certificate TLS servers.
+        /// The agent reads CRL distribution points from each server
+        /// certificate path, fetches allowed CRLs, and caches them.
+        /// Revocation is checked only when a connection is established.
+        /// An established connection is not closed when a CRL expires,
+        /// when a refresh fails, or when a refreshed CRL lists the server.
+        /// The host must supply a revocation verifier when enforcement
+        /// is not disabled.
+        #[serde(rename = "tacacsrs:certificate-revocation")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub certificate_revocation: Option<tacacsrs::CertificateRevocation>,
     }
 
 }
@@ -1051,6 +999,8 @@ pub mod crypto_types {
 pub mod tacacsrs {
     use serde::{Deserialize, Serialize};
 
+    pub type DistributionPointPattern = String;
+
     /// TLS 1.3 supported groups that tacacs-rs may use for
     /// psk_dhe_ke ClientHello key share generation.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1224,6 +1174,90 @@ pub mod tacacsrs {
     }
 
     impl serde::Serialize for BindingPolicy {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            serializer.serialize_str(self.as_rfc7951_str())
+        }
+    }
+
+    /// Revocation enforcement policy.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Enforcement {
+        /// Do not check revocation.
+        Disabled,
+        /// Reject the server unless fresh CRL evidence shows that
+        /// no certificate in the path is revoked.
+        HardFail,
+        /// As hard-fail, but accept a previously validated CRL for
+        /// soft-fail-grace-seconds after its nextUpdate when a fresh
+        /// CRL cannot be obtained.
+        SoftFail,
+        /// Reject a certificate that a CRL lists. Accept the server
+        /// and log a warning when CRL evidence is unavailable.
+        WarnOnly,
+    }
+
+    impl Enforcement {
+        /// All valid values for this YANG enumeration.
+        pub const ALL: &[Self] = &[
+            Self::Disabled,
+            Self::HardFail,
+            Self::SoftFail,
+            Self::WarnOnly,
+        ];
+
+        /// RFC 7951 JSON string values accepted for this YANG enumeration.
+        pub const ALLOWED_VALUES: &[&str] = &[
+            "disabled",
+            "hard-fail",
+            "soft-fail",
+            "warn-only",
+        ];
+
+        /// Returns the RFC 7951 JSON string.
+        #[must_use]
+        pub fn as_rfc7951_str(&self) -> &'static str {
+            match self {
+                Self::Disabled => "disabled",
+                Self::HardFail => "hard-fail",
+                Self::SoftFail => "soft-fail",
+                Self::WarnOnly => "warn-only",
+            }
+        }
+
+        /// Parses an RFC 7951 string into this YANG enumeration.
+        #[must_use]
+        pub fn from_rfc7951_str(s: &str) -> Option<Self> {
+            match s {
+                "disabled" => Some(Self::Disabled),
+                "hard-fail" => Some(Self::HardFail),
+                "soft-fail" => Some(Self::SoftFail),
+                "warn-only" => Some(Self::WarnOnly),
+                _ => None,
+            }
+        }
+
+        /// Checks whether the given string is a valid RFC 7951 value.
+        #[must_use]
+        pub fn is_valid(s: &str) -> bool {
+            Self::from_rfc7951_str(s).is_some()
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for Enforcement {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+            Self::from_rfc7951_str(&s)
+                .ok_or_else(|| serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES))
+        }
+    }
+
+    impl serde::Serialize for Enforcement {
         fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
         where
             S: serde::Serializer,
@@ -1445,131 +1479,83 @@ pub mod tacacsrs {
         }
     }
 
-    fn default_require_crls_max_age_seconds() -> u32 { 300 }
+    fn default_certificate_revocation_enforcement() -> Enforcement { Enforcement::Disabled }
+    fn default_certificate_revocation_soft_fail_grace_seconds() -> u32 { 86400 }
+    fn default_certificate_revocation_allow_private_addresses() -> bool { true }
+    fn default_certificate_revocation_fetch_timeout_seconds() -> u16 { 5 }
+    fn default_certificate_revocation_max_crl_bytes() -> u32 { 16777216 }
 
-    /// Require complete CRL evidence for the verified server certificate path.
-    /// An unpartitioned base can advertise one explicitly supplied delta.
-    /// Both lists must be fresh and match issuer, scope, and authority key
-    /// identifier. CRL numbers must identify a compatible increasing update.
-    /// Direct CRLs can restrict certificate type and distribution-point scope.
-    /// Multiple scopes for one issuer must cover disjoint certificate types.
-    /// Within each scope, reason partitions must be disjoint.
-    /// At most 128 lists and 4 MiB are accepted.
-    /// Native verification requires complete reason and path coverage.
-    /// Exact peer pins and PSK authentication are not supported in this mode.
-    /// Unavailable, invalid, stale, or incomplete evidence fails closed.
+    /// Global CRL revocation policy for certificate TLS servers.
+    /// The agent reads CRL distribution points from each server
+    /// certificate path, fetches allowed CRLs, and caches them.
+    /// Revocation is checked only when a connection is established.
+    /// An established connection is not closed when a CRL expires,
+    /// when a refresh fails, or when a refreshed CRL lists the server.
+    /// The host must supply a revocation verifier when enforcement
+    /// is not disabled.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
-    pub struct RequireCrls {
-        /// Maximum seconds since each CRL thisUpdate. The earlier of this
-        /// limit and nextUpdate bounds evidence use without stale grace.
-        #[serde(rename = "max-age-seconds")]
-        #[serde(default = "default_require_crls_max_age_seconds")]
-        pub max_age_seconds: u32,
-        /// One full or delta DER CRL per entry.
-        #[serde(with = "crate::serde_helpers::base64_binary::option_vec_bytes")]
+    pub struct CertificateRevocation {
+        /// Revocation enforcement policy.
+        #[serde(default = "default_certificate_revocation_enforcement")]
+        pub enforcement: Enforcement,
+        /// Time after a CRL's original nextUpdate during which soft-fail
+        /// still accepts that CRL. The grace never excuses a listed
+        /// certificate or an invalid CRL.
+        #[serde(rename = "soft-fail-grace-seconds")]
+        #[serde(default = "default_certificate_revocation_soft_fail_grace_seconds")]
+        pub soft_fail_grace_seconds: u32,
+        /// URL patterns that the agent may fetch CRLs from. A distribution
+        /// point that matches no pattern is not fetched. LDAP distribution
+        /// points are always ignored.
+        #[serde(rename = "allowed-distribution-point")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        pub allowed_distribution_point: Vec<String>,
+        /// Exact CRL URLs that the agent fetches at startup and keeps
+        /// fresh. Each URL must match an allowed distribution point.
+        /// A prefetched CRL is used only for a certificate whose
+        /// distribution points reference it.
+        #[serde(rename = "prefetch-distribution-point")]
+        #[serde(default)]
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        pub prefetch_distribution_point: Vec<String>,
+        /// Allow CRL fetches to private (RFC 1918 and unique local)
+        /// addresses. Loopback, link-local, unspecified, and multicast
+        /// addresses are always rejected.
+        #[serde(rename = "allow-private-addresses")]
+        #[serde(default = "default_certificate_revocation_allow_private_addresses")]
+        pub allow_private_addresses: bool,
+        /// Maximum time for one CRL fetch, including DNS, connect, and
+        /// the complete body. A request deadline can shorten it.
+        #[serde(rename = "fetch-timeout-seconds")]
+        #[serde(default = "default_certificate_revocation_fetch_timeout_seconds")]
+        pub fetch_timeout_seconds: u16,
+        /// Maximum size of one fetched CRL.
+        #[serde(rename = "max-crl-bytes")]
+        #[serde(default = "default_certificate_revocation_max_crl_bytes")]
+        pub max_crl_bytes: u32,
+        /// Absolute directory for a persistent CRL cache. When present,
+        /// the agent stores validated CRLs and loads them at startup, so
+        /// soft-fail works after a restart while the CRL server is
+        /// unreachable. Loaded CRLs are validated again before use.
+        #[serde(rename = "cache-directory")]
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
-        pub crl: Option<Vec<Vec<u8>>>,
-        /// Opaque provider reference to a complete CRL set.
-        #[serde(rename = "evidence-reference")]
-        #[serde(default)]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub evidence_reference: Option<String>,
+        pub cache_directory: Option<String>,
     }
 
-    impl Default for RequireCrls {
+    impl Default for CertificateRevocation {
         fn default() -> Self {
             Self {
-                max_age_seconds: default_require_crls_max_age_seconds(),
-                crl: None,
-                evidence_reference: None,
-            }
-        }
-    }
-
-    /// Choice constraints for [`RequireCrls`].
-    impl RequireCrls {
-        /// YANG choice `evidence` (mandatory).
-        ///
-        /// Each inner slice is one case; at most one case may have fields set.
-        pub const CHOICE_EVIDENCE: &[(&str, &[&str])] = &[
-            ("inline", &["crl"]),
-            ("provider", &["evidence-reference"]),
-        ];
-        pub const CHOICE_EVIDENCE_MANDATORY: bool = true;
-        pub const CHOICE_EVIDENCE_PATH: &str = "evidence";
-        pub const CHOICE_EVIDENCE_ACTIVATION: &[(&str, &str)] = &[];
-    }
-
-    fn default_require_ocsp_max_response_age_seconds() -> u32 { 300 }
-
-    /// Requires a fetched or inline response independently of any mandatory staple.
-    /// The actual peer, signer, status, and signed freshness are verified before client authentication.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-    #[serde(rename_all = "kebab-case")]
-    pub struct RequireOcsp {
-        #[serde(rename = "max-response-age-seconds")]
-        #[serde(default = "default_require_ocsp_max_response_age_seconds")]
-        pub max_response_age_seconds: u32,
-        #[serde(with = "crate::serde_helpers::base64_binary::option_bytes")]
-        #[serde(default)]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub response: Option<Vec<u8>>,
-        #[serde(rename = "evidence-reference")]
-        #[serde(default)]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub evidence_reference: Option<String>,
-    }
-
-    impl Default for RequireOcsp {
-        fn default() -> Self {
-            Self {
-                max_response_age_seconds: default_require_ocsp_max_response_age_seconds(),
-                response: None,
-                evidence_reference: None,
-            }
-        }
-    }
-
-    /// Choice constraints for [`RequireOcsp`].
-    impl RequireOcsp {
-        /// YANG choice `evidence` (mandatory).
-        ///
-        /// Each inner slice is one case; at most one case may have fields set.
-        pub const CHOICE_EVIDENCE: &[(&str, &[&str])] = &[
-            ("inline", &["response"]),
-            ("provider", &["evidence-reference"]),
-        ];
-        pub const CHOICE_EVIDENCE_MANDATORY: bool = true;
-        pub const CHOICE_EVIDENCE_PATH: &str = "evidence";
-        pub const CHOICE_EVIDENCE_ACTIVATION: &[(&str, &str)] = &[];
-    }
-
-    fn default_require_stapled_ocsp_max_response_age_seconds() -> u32 { 300 }
-
-    /// Request a stapled OCSP response and fail closed if evidence is
-    /// unavailable, invalid, stale, unknown, or revoked. Responses must
-    /// be signed by the issuer or a responder issued directly by it.
-    /// Delegated responders require OCSP signing usage and either a valid
-    /// noncritical No Check extension or verified configured CRL evidence.
-    /// This requirement can be combined with require-crls. Both checks
-    /// must pass. OCSP covers the peer leaf; CRLs cover the CA path.
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-    #[serde(rename_all = "kebab-case")]
-    pub struct RequireStapledOcsp {
-        /// Maximum time since thisUpdate. Evidence expires at the earlier
-        /// of this limit and nextUpdate, when nextUpdate is present.
-        /// No clock-skew allowance or stale grace extends this interval.
-        #[serde(rename = "max-response-age-seconds")]
-        #[serde(default = "default_require_stapled_ocsp_max_response_age_seconds")]
-        pub max_response_age_seconds: u32,
-    }
-
-    impl Default for RequireStapledOcsp {
-        fn default() -> Self {
-            Self {
-                max_response_age_seconds: default_require_stapled_ocsp_max_response_age_seconds(),
+                enforcement: default_certificate_revocation_enforcement(),
+                soft_fail_grace_seconds: default_certificate_revocation_soft_fail_grace_seconds(),
+                allowed_distribution_point: Vec::new(),
+                prefetch_distribution_point: Vec::new(),
+                allow_private_addresses: default_certificate_revocation_allow_private_addresses(),
+                fetch_timeout_seconds: default_certificate_revocation_fetch_timeout_seconds(),
+                max_crl_bytes: default_certificate_revocation_max_crl_bytes(),
+                cache_directory: None,
             }
         }
     }
@@ -1582,7 +1568,7 @@ pub mod tacacsrs {
     fn default_local_services_unix_socket_mode() -> u16 { 432 }
     fn default_local_services_proxy_credential_source() -> ProxyCredentialSource { ProxyCredentialSource::Unobfuscated }
 
-    /// Startup listener configuration. Changes require a service restart.
+    /// Local listener configuration. The agent applies changes at runtime.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub struct LocalServices {
@@ -1607,7 +1593,7 @@ pub mod tacacsrs {
         #[serde(rename = "client-api-endpoint")]
         #[serde(default = "default_local_services_client_api_endpoint")]
         pub client_api_endpoint: String,
-        /// Enables the raw TACACS+ proxy.
+        /// Enables the raw TACACS+ proxy. Without an endpoint, the proxy waits for one.
         #[serde(rename = "tacacs-proxy-enabled")]
         #[serde(default)]
         pub tacacs_proxy_enabled: bool,
@@ -1798,6 +1784,9 @@ pub mod tacacsrs {
         #[serde(default = "default_runtime_policy_source_stale_timeout_seconds")]
         pub source_stale_timeout_seconds: u32,
         /// Interval before a failed route receives one recovery trial.
+        /// When no other eligible server is available for the
+        /// operation, the agent uses the failed server without
+        /// waiting.
         #[serde(rename = "failover-recovery-interval-seconds")]
         #[serde(default = "default_runtime_policy_failover_recovery_interval_seconds")]
         pub failover_recovery_interval_seconds: u32,

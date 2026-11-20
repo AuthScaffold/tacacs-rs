@@ -79,9 +79,6 @@ async fn main() -> anyhow::Result<()> {
             tacacsrs_config::source::ConfigChangeEvent::CandidateRejected => {
                 println!("  result: candidate_rejected");
             }
-            tacacsrs_config::source::ConfigChangeEvent::RestartRequired { required } => {
-                println!("  restart_required: {required}");
-            }
         }
 
         if cli

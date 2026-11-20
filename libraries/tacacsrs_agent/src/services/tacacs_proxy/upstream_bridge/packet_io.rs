@@ -12,7 +12,7 @@ use tacacsrs_protocol::header::Header;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
 use tacacsrs_networking::{PacketWriteResult, PacketWriter};
 use tacacsrs_secrets::SecretBytes;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, BufReader};
 use tokio::time::Instant;
 
 use super::error::ProxyConnectionError;
@@ -71,14 +71,40 @@ where
 
     /// Reads the next complete downstream packet.
     ///
+    /// Returns `None` when the client closes the connection between packets.
+    /// A close inside a packet is an error.
+    ///
     /// The read deadline covers one whole packet, so a client cannot hold the
     /// connection open by sending a frame one byte at a time.
-    pub(super) async fn next_packet(&mut self) -> Result<DownstreamPacket, ProxyConnectionError> {
+    ///
+    /// Set `sessions_in_flight` when the connection has sessions that still
+    /// wait for a reply. A client that waits for a reply is not idle, so the
+    /// deadline starts only when the next frame starts to arrive. When no
+    /// session is in flight, the deadline also limits idle time between
+    /// packets.
+    pub(super) async fn next_packet(
+        &mut self,
+        sessions_in_flight: bool,
+    ) -> Result<Option<DownstreamPacket>, ProxyConnectionError> {
         // Buffered bytes often already hold a whole packet. Completing here
         // avoids arming and disarming a timer for every request.
         if let Some(result) = self.poll_read_frame_once() {
             self.deadline = None;
             return result.map_err(ProxyConnectionError::Downstream);
+        }
+
+        if sessions_in_flight && self.header_filled == 0 {
+            self.deadline = None;
+            // `fill_buf` is cancellation safe and keeps the received bytes in
+            // the buffer. It returns when a frame starts or the client closes.
+            self.stream
+                .fill_buf()
+                .await
+                .context("Failed to read TACACS+ proxy header")
+                .map_err(ProxyConnectionError::Downstream)?;
+            if let Some(result) = self.poll_read_frame_once() {
+                return result.map_err(ProxyConnectionError::Downstream);
+            }
         }
 
         let deadline = *self
@@ -101,7 +127,7 @@ where
     /// Polls one read attempt without registering a real waker.
     ///
     /// Partial progress stays in `self`, so discarding the future is safe.
-    fn poll_read_frame_once(&mut self) -> Option<anyhow::Result<DownstreamPacket>> {
+    fn poll_read_frame_once(&mut self) -> Option<anyhow::Result<Option<DownstreamPacket>>> {
         let mut context = TaskContext::from_waker(Waker::noop());
         match pin!(self.read_frame()).poll(&mut context) {
             Poll::Ready(result) => Some(result),
@@ -109,7 +135,7 @@ where
         }
     }
 
-    async fn read_frame(&mut self) -> anyhow::Result<DownstreamPacket> {
+    async fn read_frame(&mut self) -> anyhow::Result<Option<DownstreamPacket>> {
         while self.header_filled < TACACS_HEADER_LENGTH {
             let Self {
                 stream,
@@ -122,6 +148,9 @@ where
                 .await
                 .context("Failed to read TACACS+ proxy header")?;
             if read == 0 {
+                if *header_filled == 0 {
+                    return Ok(None);
+                }
                 bail!("Failed to read TACACS+ proxy header: early eof");
             }
             *header_filled += read;
@@ -199,10 +228,10 @@ where
             }
         }
 
-        Ok(DownstreamPacket {
+        Ok(Some(DownstreamPacket {
             packet,
             reply_obfuscation,
-        })
+        }))
     }
 }
 

@@ -148,6 +148,7 @@ pub fn validate_config_with_options(
     }
 
     crate::enumeration::validate_credential_references(config)?;
+    crate::revocation_settings(config)?;
 
     for cred in &config.client_credentials {
         let context = format!("client-credentials '{}'", cred.id);
@@ -340,9 +341,6 @@ fn validate_server_authentication(
             server_authentication.credentials_reference.is_some(),
             server_authentication.ca_certs.is_some()
                 || server_authentication.ee_certs.is_some()
-                || server_authentication.require_stapled_ocsp.is_some()
-                || server_authentication.require_crls.is_some()
-                || server_authentication.require_ocsp.is_some()
                 || server_authentication.tls13_epsks.is_some(),
         ],
     )?;
@@ -354,20 +352,6 @@ fn validate_server_authentication(
     if let Some(ref ee_certs) = server_authentication.ee_certs {
         validate_trust_choice(&server.name, "server-authentication/ee-certs", ee_certs)?;
     }
-    validate_crl_policy(
-        server_authentication.require_crls.as_ref(),
-        server_authentication.ee_certs.is_some(),
-        server_authentication.tls13_epsks.is_some(),
-    )?;
-    validate_fetched_ocsp(
-        server_authentication.require_ocsp.as_ref(),
-        server_authentication.tls13_epsks.is_some(),
-    )?;
-    validate_ocsp_policy(
-        server_authentication.require_stapled_ocsp.as_ref(),
-        server_authentication.tls13_epsks.is_some(),
-    )?;
-
     Ok(())
 }
 
@@ -412,99 +396,11 @@ fn validate_client_credentials(credentials: &ClientCredentials) -> anyhow::Resul
 }
 
 fn validate_server_credentials(credentials: &ServerCredentials) -> anyhow::Result<()> {
-    validate_fetched_ocsp(credentials.require_ocsp.as_ref(), credentials.tls13_epsks.is_some())?;
-    validate_crl_policy(
-        credentials.require_crls.as_ref(),
-        credentials.ee_certs.is_some(),
-        credentials.tls13_epsks.is_some(),
-    )?;
-    validate_ocsp_policy(
-        credentials.require_stapled_ocsp.as_ref(),
-        credentials.tls13_epsks.is_some(),
-    )?;
     if let Some(ref ca_certs) = credentials.ca_certs {
         validate_trust_choice(&credentials.id, "server-credentials/ca-certs", ca_certs)?;
     }
     if let Some(ref ee_certs) = credentials.ee_certs {
         validate_trust_choice(&credentials.id, "server-credentials/ee-certs", ee_certs)?;
-    }
-    Ok(())
-}
-
-fn validate_fetched_ocsp(
-    policy: Option<&crate::tacacsrs::RequireOcsp>,
-    epsk: bool,
-) -> anyhow::Result<()> {
-    if let Some(policy) = policy {
-        anyhow::ensure!(
-            !epsk && policy.max_response_age_seconds > 0,
-            "Fetched OCSP requires certificate TLS and a positive maximum age"
-        );
-        anyhow::ensure!(
-            policy.response.is_some() != policy.evidence_reference.is_some(),
-            "OCSP requires exactly one evidence source"
-        );
-        anyhow::ensure!(
-            policy
-                .response
-                .as_ref()
-                .is_none_or(|value| !value.is_empty() && value.len() <= 65536),
-            "Invalid OCSP response size"
-        );
-        anyhow::ensure!(
-            policy
-                .evidence_reference
-                .as_ref()
-                .is_none_or(|value| !value.is_empty()),
-            "OCSP evidence reference must not be empty"
-        );
-    }
-    Ok(())
-}
-
-fn validate_crl_policy(
-    policy: Option<&crate::tacacsrs::RequireCrls>,
-    pins: bool,
-    epsk: bool,
-) -> anyhow::Result<()> {
-    let Some(policy) = policy else {
-        return Ok(());
-    };
-    anyhow::ensure!(policy.max_age_seconds > 0, "CRL maximum age must be positive");
-    anyhow::ensure!(!pins && !epsk, "CRL mode cannot be combined with exact pins or PSK");
-    anyhow::ensure!(
-        policy.crl.is_some() != policy.evidence_reference.is_some(),
-        "CRL policy requires exactly one inline or provider evidence source"
-    );
-    if let Some(reference) = &policy.evidence_reference {
-        anyhow::ensure!(!reference.is_empty(), "CRL evidence reference must not be empty");
-    }
-    if let Some(lists) = &policy.crl {
-        anyhow::ensure!(!lists.is_empty(), "Required CRL set is empty");
-        let mut seen = std::collections::BTreeSet::new();
-        for crl in lists {
-            anyhow::ensure!(
-                !crl.is_empty() && seen.insert(crl.as_slice()),
-                "CRL entries must be nonempty and unique"
-            );
-        }
-    }
-    Ok(())
-}
-
-fn validate_ocsp_policy(
-    policy: Option<&crate::tacacsrs::RequireStapledOcsp>,
-    epsk: bool,
-) -> anyhow::Result<()> {
-    if let Some(policy) = policy {
-        anyhow::ensure!(
-            policy.max_response_age_seconds > 0,
-            "OCSP maximum response age must be positive"
-        );
-        anyhow::ensure!(
-            !epsk,
-            "Required OCSP evidence cannot be combined with PSK server authentication"
-        );
     }
     Ok(())
 }

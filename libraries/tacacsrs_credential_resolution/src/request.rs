@@ -33,10 +33,6 @@ pub enum CredentialKind {
     CaCertificateBag,
     /// End-entity certificate bag.
     EeCertificateBag,
-    /// Certificate revocation lists used for server-chain authentication.
-    CertificateRevocationLists,
-    /// A fetched OCSP response for server certificate authentication.
-    OcspResponse,
 }
 
 /// Stable request context that contains no endpoint or raw reference value.
@@ -83,22 +79,9 @@ pub enum CredentialReference {
     SymmetricKey(String),
     /// Opaque central truststore certificate-bag reference.
     CertificateBag(String),
-    /// Opaque reference to a complete certificate revocation list set.
-    CertificateRevocationLists(String),
-    /// Opaque reference to a fetched OCSP response.
-    OcspResponse(String),
 }
 
 impl CredentialReference {
-    /// Returns the opaque reference for online OCSP evidence.
-    #[must_use]
-    pub fn ocsp_response(&self) -> Option<&str> {
-        match self {
-            Self::OcspResponse(reference) => Some(reference),
-            _ => None,
-        }
-    }
-
     /// Returns the structured central certificate-with-key components.
     #[must_use]
     pub fn certificate_with_key(&self) -> Option<(Option<&str>, Option<&str>)> {
@@ -107,10 +90,7 @@ impl CredentialReference {
                 asymmetric_key,
                 certificate,
             } => Some((asymmetric_key.as_deref(), certificate.as_deref())),
-            Self::SymmetricKey(_)
-            | Self::CertificateBag(_)
-            | Self::CertificateRevocationLists(_)
-            | Self::OcspResponse(_) => None,
+            Self::SymmetricKey(_) | Self::CertificateBag(_) => None,
         }
     }
 
@@ -119,10 +99,7 @@ impl CredentialReference {
     pub fn symmetric_key(&self) -> Option<&str> {
         match self {
             Self::SymmetricKey(reference) => Some(reference),
-            Self::CertificateWithKey { .. }
-            | Self::CertificateBag(_)
-            | Self::CertificateRevocationLists(_)
-            | Self::OcspResponse(_) => None,
+            Self::CertificateWithKey { .. } | Self::CertificateBag(_) => None,
         }
     }
 
@@ -131,19 +108,7 @@ impl CredentialReference {
     pub fn certificate_bag(&self) -> Option<&str> {
         match self {
             Self::CertificateBag(reference) => Some(reference),
-            Self::CertificateWithKey { .. }
-            | Self::SymmetricKey(_)
-            | Self::CertificateRevocationLists(_)
-            | Self::OcspResponse(_) => None,
-        }
-    }
-
-    /// Returns the opaque reference for revocation-evidence lookup.
-    #[must_use]
-    pub fn certificate_revocation_lists(&self) -> Option<&str> {
-        match self {
-            Self::CertificateRevocationLists(reference) => Some(reference),
-            _ => None,
+            Self::CertificateWithKey { .. } | Self::SymmetricKey(_) => None,
         }
     }
 }
@@ -151,14 +116,6 @@ impl CredentialReference {
 impl fmt::Debug for CredentialReference {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::OcspResponse(_) => formatter
-                .debug_tuple("OcspResponse")
-                .field(&"<redacted>")
-                .finish(),
-            Self::CertificateRevocationLists(_) => formatter
-                .debug_tuple("CertificateRevocationLists")
-                .field(&"<redacted>")
-                .finish(),
             Self::CertificateWithKey { .. } => formatter
                 .debug_struct("CertificateWithKey")
                 .field("reference", &"<redacted>")
@@ -248,12 +205,7 @@ impl ResolutionPlan {
                         },
                         CredentialKind::CertificateWithKey,
                     ) => asymmetric_key.is_some() || certificate.is_some(),
-                    (
-                        CredentialReference::CertificateRevocationLists(_),
-                        CredentialKind::CertificateRevocationLists,
-                    )
-                    | (CredentialReference::SymmetricKey(_), CredentialKind::SymmetricKey)
-                    | (CredentialReference::OcspResponse(_), CredentialKind::OcspResponse)
+                    (CredentialReference::SymmetricKey(_), CredentialKind::SymmetricKey)
                     | (
                         CredentialReference::CertificateBag(_),
                         CredentialKind::CaCertificateBag | CredentialKind::EeCertificateBag,

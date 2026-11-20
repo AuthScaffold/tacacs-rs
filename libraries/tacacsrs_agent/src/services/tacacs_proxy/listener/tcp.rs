@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use anyhow::Context;
 
 use super::{ProxyListener, accept_loop};
-use crate::runtime::{ListenerRegistration, ShutdownReceiver};
+use crate::runtime::{BindSignal, ShutdownReceiver};
 use crate::services::tacacs_proxy::TacacsProxyService;
 
 pub(super) async fn serve<Connector: tacacsrs_networking::routed::EndpointConnector>(
@@ -13,7 +13,7 @@ pub(super) async fn serve<Connector: tacacsrs_networking::routed::EndpointConnec
     service: TacacsProxyService<Connector>,
     options: crate::services::ListenerOptions,
     shutdown: ShutdownReceiver,
-    registration: ListenerRegistration,
+    bound: BindSignal,
 ) -> anyhow::Result<()>
 where
     Connector::Connection: crate::upstream::UpstreamConnection,
@@ -25,7 +25,7 @@ where
         .local_addr()
         .with_context(|| format!("Failed to inspect TCP TACACS+ proxy endpoint {address}"))?;
     let _binding = service.bind_proxy_listener(local_address)?;
-    registration.mark_bound();
+    bound.mark_bound();
 
     log::info!("The TACACS+ proxy listener accepts clients on TCP {local_address}");
     accept_loop(listener, service, format!("TCP {local_address}"), options, shutdown).await

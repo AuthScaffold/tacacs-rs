@@ -598,12 +598,9 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         }
         candidate.prepared_servers = std::mem::take(&mut worker.prepared_servers);
         drop(worker);
-        let validity = candidate.prepared_servers.iter().try_fold(
-            candidate
-                .validity
-                .unwrap_or(crate::runtime::CredentialLifetime::unbounded()),
-            |lifetime, server| lifetime.intersect(server.evidence_lifetime),
-        )?;
+        let validity = candidate
+            .validity
+            .unwrap_or(crate::runtime::CredentialLifetime::unbounded());
 
         let preparing_client = previous.client.with_endpoints(
             candidate
@@ -642,6 +639,24 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         >,
         retirement: Option<tacacsrs_networking::RequestDeadline>,
     ) -> anyhow::Result<()> {
+        self.reload_shared_servers_then(candidate, retirement, || {})
+            .await
+    }
+
+    /// Publishes a server set, then runs `after_commit` before retirement yields.
+    ///
+    /// `after_commit` runs only after a successful commit and without the
+    /// snapshot write lock. It must not await. A caller that drops the future
+    /// after the commit still sees the effects of `after_commit`.
+    pub(crate) async fn reload_shared_servers_then(
+        &self,
+        candidate: PublicationCandidate<
+            impl FnOnce() -> Option<crate::runtime::MaterializationCommit> + Send,
+            Connector,
+        >,
+        retirement: Option<tacacsrs_networking::RequestDeadline>,
+        after_commit: impl FnOnce() + Send,
+    ) -> anyhow::Result<()> {
         let mut candidate = self.prepare_candidate(candidate).await?;
         let _reload = if let Some(preparation) = candidate.preparation.as_ref() {
             preparation
@@ -671,23 +686,6 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         let validity = candidate
             .validity
             .unwrap_or(crate::runtime::CredentialLifetime::unbounded());
-        let mut urgent = previous.changed_revocation_servers(&new_set);
-        {
-            let mut history = self
-                .prepared_history
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            history.retain(|(endpoint, _)| previous.client.retains_endpoint(endpoint));
-            for new in &new_set.servers {
-                if history.iter().any(|(_, old)| {
-                    old.name == new.server.name
-                        && super::server_set::revocation_changed(old, &new.server)
-                }) {
-                    urgent.insert(new.server.name.as_str());
-                }
-            }
-        }
-
         {
             let mut current = self
                 .active_snapshot
@@ -702,27 +700,13 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                 preparation.final_check(current.runtime_policy.candidate_limits())?;
             }
             let generation = current.generation.wrapping_add(1);
-            previous.retire_replaced_until(&new_set, retirement_deadline, &urgent);
+            previous.retire_replaced_until(&new_set, retirement_deadline);
             self.publication.publish_runtime(
                 generation,
                 new_set.server_count(),
                 Some(true),
                 materially_changed,
                 |availability_generation| {
-                    {
-                        let mut history = self
-                            .prepared_history
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        for server in &new_set.servers {
-                            if !history
-                                .iter()
-                                .any(|(endpoint, _)| endpoint.same_identity(&server.endpoint))
-                            {
-                                history.push((server.endpoint.clone(), server.server.clone()));
-                            }
-                        }
-                    }
                     *current = Arc::new(RuntimeRoutingSnapshot {
                         generation,
                         availability_generation,
@@ -742,6 +726,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                 },
             );
         }
+        after_commit();
 
         drop(candidate.preparation);
         if new_set.server_count() == 0 {

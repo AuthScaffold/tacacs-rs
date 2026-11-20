@@ -104,7 +104,9 @@ impl SingleConnectPromotion {
     ///
     /// The upgrade is deferred to the cache fence so a close or newer epoch that
     /// occurred during the probe cannot be overwritten. Unsupported and
-    /// never-answered probes shut the dedicated connection down instead.
+    /// never-answered probes shut the dedicated connection down instead. The
+    /// dedicated session does not call this method while a request awaits its
+    /// reply.
     pub(crate) async fn promote_if_confirmed(&self, mut connection: BoxedDedicatedConnection) {
         match self.response.load(Ordering::Acquire) {
             SINGLE_CONNECT_RESPONSE_SUPPORTED => {

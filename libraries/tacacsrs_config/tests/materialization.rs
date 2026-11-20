@@ -18,13 +18,11 @@ struct CompleteResolver {
 
 struct DuplicateBagNameResolver;
 
-const USAGES: [CentralCredentialUsage; 6] = [
+const USAGES: [CentralCredentialUsage; 4] = [
     CentralCredentialUsage::ClientCertificateWithKey,
     CentralCredentialUsage::ClientTls13Epsk,
     CentralCredentialUsage::ServerCaCertificateBag,
     CentralCredentialUsage::ServerEeCertificateBag,
-    CentralCredentialUsage::ServerCertificateRevocationLists,
-    CentralCredentialUsage::ServerOcspResponse,
 ];
 
 fn destination_source(usage: CentralCredentialUsage, bundled: bool) -> TacacsPlus {
@@ -55,18 +53,6 @@ fn destination_source(usage: CentralCredentialUsage, bundled: bool) -> TacacsPlu
             "server-credentials",
             "ee-certs",
             json!({"central-truststore-reference":opaque}),
-        ),
-        CentralCredentialUsage::ServerCertificateRevocationLists => (
-            "server-authentication",
-            "server-credentials",
-            "tacacsrs:require-crls",
-            json!({"evidence-reference":opaque}),
-        ),
-        CentralCredentialUsage::ServerOcspResponse => (
-            "server-authentication",
-            "server-credentials",
-            "tacacsrs:require-ocsp",
-            json!({"evidence-reference":opaque}),
         ),
     };
     let mut source = json!({"server":[
@@ -178,48 +164,6 @@ fn check_destination(
                 target.inline_definition.as_ref().unwrap().certificate[0].cert_data == expected
             );
         }
-        CentralCredentialUsage::ServerCertificateRevocationLists => {
-            let target = server
-                .server_authentication
-                .as_ref()
-                .unwrap()
-                .require_crls
-                .as_ref()
-                .unwrap();
-            assert!(target.evidence_reference.is_none());
-            assert!(target.crl.as_ref().unwrap() == &[b"resolved-crl".to_vec()]);
-            restored
-                .server_authentication
-                .as_mut()
-                .unwrap()
-                .require_crls = original
-                .server_authentication
-                .as_ref()
-                .unwrap()
-                .require_crls
-                .clone();
-        }
-        CentralCredentialUsage::ServerOcspResponse => {
-            let target = server
-                .server_authentication
-                .as_ref()
-                .unwrap()
-                .require_ocsp
-                .as_ref()
-                .unwrap();
-            assert!(target.evidence_reference.is_none());
-            assert!(target.response.as_deref() == Some(b"resolved-ocsp"));
-            restored
-                .server_authentication
-                .as_mut()
-                .unwrap()
-                .require_ocsp = original
-                .server_authentication
-                .as_ref()
-                .unwrap()
-                .require_ocsp
-                .clone();
-        }
     }
     assert!(restored == *original);
 }
@@ -310,10 +254,6 @@ impl CredentialResolver for ValidityResolver {
         .resolve(request, _scope)
         .await?;
         match &mut credential {
-            ResolvedCredential::OcspResponse(material) => material.validity = self.trust,
-            ResolvedCredential::CertificateRevocationLists(material) => {
-                material.validity = self.trust;
-            }
             ResolvedCredential::CertificateWithKey(material) => material.validity = self.identity,
             ResolvedCredential::SymmetricKey(material) => material.validity = self.identity,
             ResolvedCredential::CaCertificateBag(material)
@@ -321,35 +261,6 @@ impl CredentialResolver for ValidityResolver {
         }
         Ok(credential)
     }
-}
-
-#[tokio::test]
-async fn online_ocsp_materialization_preserves_canonical_reference_and_validity() {
-    let source = parse_yang_json(r#"{"ietf-system-tacacs-plus:tacacs-plus":{
-        "server-credentials":[{"id":"trust","tacacsrs:require-ocsp":{"evidence-reference":"opaque-ocsp"}}],
-        "server":[{"name":"online","server-type":"accounting","address":"127.0.0.1","port":300,
-        "server-authentication":{"credentials-reference":"trust"}}]}}"#).unwrap();
-    let original = source.clone();
-    let materialized = enumerate_materialized_servers(
-        &source,
-        &CompleteResolver {
-            failing_server: None,
-        },
-        &ValidationOptions::default(),
-    )
-    .await
-    .unwrap();
-    let policy = materialized[0]
-        .server()
-        .server_authentication
-        .as_ref()
-        .unwrap()
-        .require_ocsp
-        .as_ref()
-        .unwrap();
-    assert_eq!(policy.response.as_deref(), Some(b"resolved-ocsp".as_slice()));
-    assert!(policy.evidence_reference.is_none());
-    assert_eq!(source, original);
 }
 
 #[tokio::test]
@@ -419,20 +330,6 @@ impl CredentialResolver for CompleteResolver {
         }
 
         Ok(match request.kind() {
-            CredentialKind::OcspResponse => ResolvedCredential::OcspResponse(
-                tacacsrs_credential_resolution::OcspResponseMaterial {
-                    validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
-                    response: PublicBytes::new(b"resolved-ocsp".to_vec()),
-                },
-            ),
-            CredentialKind::CertificateRevocationLists => {
-                ResolvedCredential::CertificateRevocationLists(
-                    tacacsrs_credential_resolution::CertificateRevocationListsMaterial {
-                        validity: tacacsrs_credential_resolution::CredentialValidity::unbounded(),
-                        lists: vec![PublicBytes::new(b"resolved-crl".to_vec())],
-                    },
-                )
-            }
             CredentialKind::CertificateWithKey => {
                 ResolvedCredential::CertificateWithKey(CertificateWithKeyMaterial {
                     intermediates: vec![

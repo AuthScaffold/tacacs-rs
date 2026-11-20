@@ -1,8 +1,8 @@
 #[cfg(not(any(
-    all(target_os = "linux", target_env = "gnu"),
+    all(target_os = "linux", any(target_env = "gnu", target_env = "musl")),
     all(target_os = "windows", target_env = "msvc")
 )))]
-compile_error!("tacon supports Linux GNU and Windows MSVC only");
+compile_error!("tacon supports Linux GNU/musl and Windows MSVC only");
 
 mod backend;
 mod batch;

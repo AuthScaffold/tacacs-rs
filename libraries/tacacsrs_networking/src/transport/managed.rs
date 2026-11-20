@@ -2,7 +2,7 @@
 
 use std::io;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::task::{Context, Poll, Waker};
 
@@ -85,8 +85,6 @@ pub(crate) struct TransportControl {
     writer: ControlledHalf<Box<dyn AsyncWrite + Unpin + Send>>,
     activity: Arc<TransportActivity>,
     closed: AtomicBool,
-    evidence_lifetime: Option<super::tls::RevocationEvidenceLifetime>,
-    evidence_expiry: OnceLock<Arc<crate::connection::task::DriverTask>>,
     counters: Option<crate::ServerCounters>,
     graceful: AtomicBool,
     record: Option<Arc<crate::statistics::ConnectionRecord>>,
@@ -97,7 +95,6 @@ impl TransportControl {
         transport: BoxedTransport,
         activity: Arc<TransportActivity>,
     ) -> (BoxedTransport, Arc<Self>) {
-        let evidence_lifetime = transport.revocation_evidence_lifetime();
         let counters = transport.counters();
         let record = transport.connection_record();
         let (reader, writer) = transport.split();
@@ -107,56 +104,11 @@ impl TransportControl {
             writer: ControlledHalf::new(writer),
             activity,
             closed: AtomicBool::new(false),
-            evidence_lifetime,
-            evidence_expiry: OnceLock::new(),
             counters,
             graceful: AtomicBool::new(false),
             record,
         });
-        if let Some(lifetime) = evidence_lifetime {
-            let weak = Arc::downgrade(&control);
-            let task = crate::connection::task::DriverTask::spawn(async move {
-                loop {
-                    let clock_check =
-                        tokio::time::Instant::now() + std::time::Duration::from_secs(1);
-                    tokio::time::sleep_until(lifetime.deadline.expires_at().min(clock_check)).await;
-                    let Some(control) = weak.upgrade() else {
-                        break;
-                    };
-                    if control.closed.load(Ordering::Acquire) || lifetime.check().is_err() {
-                        if let Some(counters) = &control.counters {
-                            counters.disconnect_reason(crate::DisconnectReason::CredentialExpired);
-                        }
-                        control.close();
-                        break;
-                    }
-                }
-                Ok(())
-            });
-            let _ = control.evidence_expiry.set(Arc::new(task));
-        }
         (BoxedTransport::new(ManagedTransport(control.clone())), control)
-    }
-
-    pub(crate) fn evidence_expiry_task(&self) -> Option<Arc<crate::connection::task::DriverTask>> {
-        self.evidence_expiry.get().cloned()
-    }
-
-    fn check_evidence_expiry(&self) -> io::Result<()> {
-        if self
-            .evidence_lifetime
-            .is_some_and(|lifetime| lifetime.check().is_err())
-        {
-            if let Some(counters) = &self.counters {
-                counters.disconnect_reason(crate::DisconnectReason::CredentialExpired);
-            }
-            self.close();
-            return Err(io::Error::new(
-                io::ErrorKind::ConnectionAborted,
-                "TLS revocation evidence expired",
-            ));
-        }
-        Ok(())
     }
 
     pub(crate) fn close(&self) {
@@ -164,9 +116,6 @@ impl TransportControl {
     }
 
     fn finish(&self, graceful: bool) {
-        if let Some(task) = self.evidence_expiry.get() {
-            task.abort();
-        }
         self.reader.close();
         self.writer.close();
         if !self.closed.swap(true, Ordering::AcqRel) {
@@ -208,9 +157,6 @@ impl AsyncRead for ManagedReader {
         context: &mut Context<'_>,
         buffer: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        if let Err(error) = self.0.check_evidence_expiry() {
-            return Poll::Ready(Err(error));
-        }
         let before = buffer.filled().len();
         let has_capacity = buffer.remaining() != 0;
         let result = self
@@ -242,9 +188,6 @@ impl AsyncWrite for ManagedWriter {
         context: &mut Context<'_>,
         buffer: &[u8],
     ) -> Poll<io::Result<usize>> {
-        if let Err(error) = self.0.check_evidence_expiry() {
-            return Poll::Ready(Err(error));
-        }
         let result = self
             .0
             .writer
@@ -259,9 +202,6 @@ impl AsyncWrite for ManagedWriter {
     }
 
     fn poll_flush(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if let Err(error) = self.0.check_evidence_expiry() {
-            return Poll::Ready(Err(error));
-        }
         let result = self
             .0
             .writer
@@ -276,9 +216,6 @@ impl AsyncWrite for ManagedWriter {
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if let Err(error) = self.0.check_evidence_expiry() {
-            return Poll::Ready(Err(error));
-        }
         let result = self
             .0
             .writer
@@ -326,70 +263,6 @@ mod tests {
         let (transport, control) =
             TransportControl::wrap(transport, Arc::new(TransportActivity::default()));
         (transport, control, peer.unwrap().0, owner)
-    }
-
-    async fn expiring_transport() -> (BoxedTransport, tokio::net::TcpStream) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let (client, peer) = tokio::join!(
-            tokio::net::TcpStream::connect(listener.local_addr().unwrap()),
-            listener.accept()
-        );
-        let now = std::time::SystemTime::now();
-        let lifetime = crate::transport::tls::RevocationEvidenceLifetime {
-            validity: crate::transport::tls::RevocationEvidenceValidity::from_bounds(
-                now - std::time::Duration::from_secs(1),
-                now + std::time::Duration::from_secs(60),
-            )
-            .unwrap(),
-            deadline: crate::RequestDeadline::after(std::time::Duration::from_secs(1)).unwrap(),
-        };
-        (
-            BoxedTransport::new(client.unwrap()).with_revocation_evidence_lifetime(lifetime),
-            peer.unwrap().0,
-        )
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn expired_evidence_closes_both_halves_even_when_the_timer_is_cancelled() {
-        let (transport, mut peer) = expiring_transport().await;
-        let activity = Arc::new(TransportActivity::default());
-        let (transport, control) = TransportControl::wrap(transport, activity.clone());
-        let task = control.evidence_expiry_task().unwrap();
-        task.abort();
-        task.join_until(crate::RequestDeadline::after(std::time::Duration::ZERO).unwrap())
-            .await
-            .unwrap();
-        let (mut reader, mut writer) = transport.split();
-        tokio::time::advance(std::time::Duration::from_secs(1)).await;
-        assert_eq!(
-            writer.write_all(b"late").await.unwrap_err().kind(),
-            io::ErrorKind::ConnectionAborted
-        );
-        assert_eq!(
-            reader.read(&mut [0]).await.unwrap_err().kind(),
-            io::ErrorKind::ConnectionAborted
-        );
-        assert_eq!(peer.read(&mut [0]).await.unwrap(), 0);
-        control.close();
-        assert_eq!(activity.active.load(Ordering::Acquire), 0);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn evidence_expiry_task_does_not_retain_transport_owners() {
-        let (transport, mut peer) = expiring_transport().await;
-        let activity = Arc::new(TransportActivity::default());
-        let (transport, control) = TransportControl::wrap(transport, activity.clone());
-        let task = control.evidence_expiry_task().unwrap();
-        let weak = Arc::downgrade(&control);
-        drop(control);
-        drop(transport);
-        task.join_until(crate::RequestDeadline::after(std::time::Duration::ZERO).unwrap())
-            .await
-            .unwrap();
-        assert!(weak.upgrade().is_none());
-        assert!(task.is_finished());
-        assert_eq!(activity.active.load(Ordering::Acquire), 0);
-        assert_eq!(peer.read(&mut [0]).await.unwrap(), 0);
     }
 
     #[tokio::test]

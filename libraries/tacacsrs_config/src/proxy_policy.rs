@@ -56,6 +56,18 @@ impl PreparedProxyPolicy {
             CredentialState::SharedSecret(secret) => Ok(Some(secret)),
         }
     }
+
+    /// Returns the length of the protected secret in bytes.
+    ///
+    /// The length is zero for unobfuscated traffic and while the credentials
+    /// are unavailable.
+    #[must_use]
+    pub fn secret_len(&self) -> usize {
+        match &self.state {
+            CredentialState::SharedSecret(secret) => secret.expose_secret().len(),
+            CredentialState::Unavailable | CredentialState::Unobfuscated => 0,
+        }
+    }
 }
 
 pub(crate) fn validate_proxy_source(source: &LocalServices) -> anyhow::Result<()> {
@@ -77,7 +89,7 @@ pub(crate) fn validate_proxy_source(source: &LocalServices) -> anyhow::Result<()
             source
                 .tacacs_proxy_endpoint
                 .as_deref()
-                .is_some_and(|endpoint| endpoint.parse::<std::net::SocketAddr>().is_ok()),
+                .is_none_or(|endpoint| endpoint.parse::<std::net::SocketAddr>().is_ok()),
             "local-proxy-row credentials require a numeric TCP proxy endpoint"
         );
     }
@@ -89,6 +101,9 @@ pub(crate) fn validate_proxy_source(source: &LocalServices) -> anyhow::Result<()
 /// Only `local-proxy-row` mode reads `selected_row`. The adapter selects the first
 /// matching row in canonical server order before removing self-looping upstreams.
 /// A missing row or secret cannot downgrade the policy to unobfuscated traffic.
+/// In `local-proxy-row` mode, a proxy without an endpoint gets the unavailable
+/// policy, because no row can match. The proxy accepts no traffic until it
+/// has an endpoint.
 ///
 /// # Errors
 ///
@@ -98,6 +113,11 @@ pub fn prepare_proxy_policy(
     selected_row: Option<&TacacsPlusServer>,
 ) -> anyhow::Result<PreparedProxyPolicy> {
     validate_proxy_source(source)?;
+    if source.proxy_credential_source == ProxyCredentialSource::LocalProxyRow
+        && source.tacacs_proxy_endpoint.is_none()
+    {
+        return Ok(PreparedProxyPolicy::unavailable());
+    }
     let secret = match source.proxy_credential_source {
         ProxyCredentialSource::Unobfuscated => return Ok(PreparedProxyPolicy::unobfuscated()),
         ProxyCredentialSource::Inline => source.proxy_shared_secret.as_ref(),

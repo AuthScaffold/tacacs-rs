@@ -187,6 +187,17 @@ impl SessionManager {
         }
     }
 
+    /// Retires an idle connection without racing new session creation.
+    pub(crate) fn retire_if_idle(&self) -> bool {
+        let routes = self.routes();
+        if !routes.is_empty() {
+            return false;
+        }
+        self.can_accept_new_sessions.store(false, Ordering::Release);
+        self.close_notify.notify_waiters();
+        true
+    }
+
     fn create_channel(
         &self,
         routes: &mut HashMap<u32, ActiveSessionEntry>,

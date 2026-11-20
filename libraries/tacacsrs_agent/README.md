@@ -1,16 +1,179 @@
 # tacacsrs-agent
 
-Reusable building blocks for the central TACACS+ client service introduced for
-local IPC consumers such as TACON.
+Reusable building blocks for the central TACACS+ client service for local IPC consumers such as TACON.
 
-The crate owns configuration supervision, published routing generations, health,
-admission, shutdown, and the raw TACACS+ proxy. Networking owns upstream execution
-and conservative failover. The protocol crate owns transport-independent operations.
-The daemon composes the agent with the client and server transport from
-[`tacacsrs-ipc`](../tacacsrs_ipc/), which owns the protobuf contract.
-The agent has no production dependency on IPC bindings or tonic.
+The crate owns configuration supervision, published routing generations, health, admission, shutdown, and the raw TACACS+ proxy. It also owns the component host and the standard host components. Networking owns upstream execution and conservative failover. The protocol crate owns transport-independent operations. The client API component serves the client API with the server transport from [`tacacsrs-ipc`](../tacacsrs_ipc/), which owns the protobuf contract. The runtime modules do not use the IPC bindings. Only the client API component uses them.
+
+## Component host
+
+The `host` module builds and runs an agent runtime from selectable components. A host process selects its components and calls `host::run_until`. The host code does not name a concrete source, credential provider, listener, or hosted service. To add a part, add a component. The executable gives settings to the components and selects them. It does not need to supply its own components.
+
+### Bootstrap flow
+
+`host::bootstrap` uses these steps:
+
+1. Each component prepares in order with `prepare_all`. Preparation can do I/O. If shutdown is requested, `run_until` drops the bootstrap future.
+2. `declare` adds the host inputs, roles, and deferred values to a `Composition`. Then each component registers.
+3. `Composition::validate` checks the complete graph before any component is constructed.
+4. `PreparedHost::prepare` reads the inputs, applies the credential layers and the local services overlays in registration order, and calls `AgentRuntime::prepare`.
+5. The host supplies the deferred values and runs each `StartupCheck` in registration order.
+6. The host constructs the enabled listeners and the hosted services. Then it drops the graph.
+
+No listener binds and no hosted service starts before bootstrap is complete. `PreparedHost::run_until` then gives the listeners and services to `AgentRuntime::run_until`. The runtime starts them together with the configuration supervisor. It does not wait for the first configuration. The run stops when the stop future completes or a component stops the `ApplicationLifetime`. If the runtime stops without an error, the host returns the first `stop_with_error` error.
+
+### Inputs
+
+The components must supply exactly one value of each input type:
+
+| Input | Usual supplier |
+| --- | --- |
+| `SourceDatastore` | The source component |
+| `CredentialProvider` | The source component |
+| `LocalServices` | The source component |
+| `PolicyInput` | The host process |
+| `CertificateVerification` | The host process |
+
+A component shares an input with `Composition::shared`. `tacacsrs_composition::Value` shares one value that needs no preparation.
+
+`UpstreamRevocation` is an optional input. It holds a certificate revocation verifier and the sender of its `RevocationSettings` watch channel. A host registers it with `composition.shared(Arc::new(UpstreamRevocation::new(verifier, sender)))`. Without this input, the host uses `UpstreamRevocation::without_verifier()`. The agent sends the revocation settings of each accepted configuration change through the channel. A settings change affects only new connections and retires no connection or server. While the active enforcement is not `disabled` and no verifier is present, the agent refuses new certificate TLS connections. `tacacsrs-agentd` supplies the CRL verifier of [`tacacsrs-revocation`](../tacacsrs_revocation/README.md).
+
+### Roles
+
+A component adds role members with `Composition::member`. Each member type has a unique `Named::NAME`.
+
+- `dyn CredentialLayer` wraps the resolver of the source, for example to put another credential provider in front of it.
+- `dyn LocalServicesOverlay` changes the local services of the source before the runtime prepares them.
+- `dyn StartupCheck` checks the prepared host before any listener binds. A failed check stops startup.
+- `dyn ListenerFactory` creates one runtime listener. A factory can return `None` when it has no listener to supply. The standard listeners always exist and follow the active local services.
+- `dyn HostedService` runs until shutdown. Use `Composition::hosted_service`.
+
+The following component adds a hosted service:
+
+```rust,ignore
+struct AuditComponent;
+
+impl Component for AuditComponent {
+    fn name(&self) -> &'static str {
+        AuditService::NAME
+    }
+
+    fn register(self: Box<Self>, composition: &mut Composition) -> anyhow::Result<()> {
+        composition.hosted_service(<AuditService as dill::Component>::builder())
+    }
+}
+```
+
+`AuditService` can inject the deferred values of the host, for example `Arc<DiagnosticsHandle>`.
+
+### Deferred values
+
+A component can inject these values. The host supplies them after it prepares the runtime:
+
+- `DiagnosticsHandle` reads operational statistics.
+- `RuntimeHealth` reads the runtime health snapshots.
+- `ClientApiAccess` gives the active local services and the request handle.
+- `TacacsProxyAccess` gives the TACACS+ proxy listener.
+- `UpstreamProbe` sends one accounting `WATCHDOG` record and publishes the result to runtime health.
+- `LocalServicesView` gives the active local services. Each change of the local services is visible to each clone.
+- `RuntimePolicyView` gives the accepted runtime policy as validated values. Each applied policy change is visible to each clone.
+- `ApplicationReadiness` is a health check that is healthy when the agent is ready.
+- `ApplicationLifetime` stops the application. `stop` gives a successful exit. `stop_with_error` gives a failed exit with the first recorded error.
+
+A value that injects a deferred value is constructed only after the host supplies it. If an input injects a deferred value, startup fails with an error that names the value. Only `ApplicationLifetime` gives a component the authority to stop the application. A stop request starts the same graceful shutdown as the stop signal of the host. Hosted services observe shutdown only through `ShutdownSignal`.
+
+## Standard components
+
+The `components` module contains the components that do not depend on a source provider. Each constructor takes plain settings values. No component reads the command line or the environment. Provider crates such as [`tacacsrs-sonic`](../tacacsrs_sonic/README.md) and [`tacacsrs-kubesonic`](../tacacsrs_kubesonic/README.md) supply their own source components.
+
+| Component | Function |
+| --- | --- |
+| `DatastoreSourceComponent` | Shares a configuration datastore, an empty credential provider, and the local services. `LocalServicesInput` gives the local services as a fixed value, a YANG file, or a `LocalServicesPatch` on the defaults. Preparation does not read the datastore. The runtime applies the proxy loop and credential policy to each configuration candidate. |
+| `ClientApiComponent` | Serves the local client API over IPC while the active local services enable it. The socket moves when the local services change its path. |
+| `TacacsProxyComponent` | Serves the TACACS+ proxy listener while the active local services enable it. If the source gives the proxy endpoint later, the listener reports `Pending` until the endpoint is known. |
+| `StatisticsComponent` | Writes operational statistics to a JSON file once each second. |
+| `SystemdComponent` | Sends readiness, status, and watchdog notifications to systemd. `SystemdMode::Auto` registers nothing without `NOTIFY_SOCKET`. `SystemdMode::Required` stops startup without it. |
+| `UpstreamWatchdogComponent` | Sends periodic upstream accounting probes. |
+| `InvalidSourceShutdownComponent` | Stops the application when the source configuration cannot become valid. |
+
+### Upstream watchdog
+
+`UpstreamWatchdogComponent` is an optional component. Its `ArmUpstreamWatchdog` startup check arms the probe before the listeners bind, so readiness waits for the first probe. The hosted service calls `UpstreamProbe` after each new server set and then once in each interval. The probes run in sequence and cannot overlap.
+
+The watchdog acts as an in-process client. Each tick submits one accounting `WATCHDOG` record through `ClientApiHandle`. Normal accounting admission, deadlines, failover policy, and networking recovery apply. The watchdog does not select servers or manage circuits. A final reply with any accounting status counts as connectivity success. A failed probe withdraws readiness until a later probe succeeds. No eligible accounting upstream produces a failed probe. A probe failure never stops the service.
+
+### Invalid source shutdown
+
+`InvalidSourceShutdownComponent` is an optional component. Its hosted service waits for `DegradationReason::SourceConfigurationInvalid`. Then it calls `ApplicationLifetime::stop_with_error`. The host drains the runtime and returns the error. Without this component, the process stays alive and reports that it is not ready.
+
+### Host example
+
+The following host runs a source component and two standard components until the process receives a stop signal:
+
+```rust,ignore
+use tacacsrs_agent::components::{SystemdComponent, SystemdMode, UpstreamWatchdogComponent};
+use tacacsrs_agent::PolicyInput;
+use tacacsrs_composition::{Component, Value};
+use tacacsrs_networking::CertificateVerification;
+
+let components: Vec<Box<dyn Component>> = vec![
+    Box::new(Value::new("Runtime policy", PolicyInput::Canonical(policy))),
+    Box::new(Value::new("Certificate verification", CertificateVerification::Required)),
+    Box::new(tacacsrs_sonic::SonicSource::new(connection)),
+    Box::new(SystemdComponent::new(SystemdMode::Auto)),
+    Box::new(UpstreamWatchdogComponent::new(watchdog_interval)?),
+];
+tacacsrs_agent::host::run_until(components, stop_signal()).await?;
+```
 
 ## Embedding
+
+For component-based hosting, use the `host` module. The rest of this section describes the direct runtime API under the host.
+
+`AgentRuntime` owns source-driven construction, configuration and policy supervision, and shutdown. Providers supply a [`SourceBundle`](../tacacsrs_provider/README.md). The host supplies background services through the [`HostedService`](../tacacsrs_lifecycle/README.md) contract and transport adapters through `RuntimeListenerService`.
+
+`AgentRuntime::prepare` validates canonical local services, loads the initial policy, and validates the provider settings. It starts no hosted services and binds no listeners. Its cancellable future owns local resources. `run_until` starts the configuration supervisor, the hosted services, and the listeners together. An unavailable source is never fatal. Runtime health reports it, and the supervisor retries with backoff. A request before the first configuration receives a retryable unavailable error. A source without change notifications cannot correct a rejected configuration. For this source, the supervisor adds the final `DegradationReason::SourceConfigurationInvalid` and stops its retries. A credential resolver failure still retries. The agent does not stop itself. A host component can stop the application when this reason appears.
+
+`TacacsClientService::upstream_probe` returns an `UpstreamProbe`. `UpstreamProbe::arm` adds `DegradationReason::UpstreamWatchdogPending`, so readiness waits for the first probe result. Each new server set adds the pending reason again. The probe uses the normal client API accounting path. Capacity pressure or cancellation produces an inconclusive result and leaves health unchanged. A result for an old server set has no effect.
+
+A final accounting reply counts as probe success. Normal retry can discard an intermediate `ERROR`, so that reply does not override a later failed attempt. No eligible accounting server produces probe failure. A failed probe adds `DegradationReason::UpstreamWatchdogFailed` and withdraws readiness until a later probe succeeds. `RuntimeHealthSnapshot::is_listening` reports a live process with bound listeners, without a configuration requirement.
+
+```rust,no_run
+use std::sync::Arc;
+use tacacsrs_agent::{AgentRuntime, PolicyInput, RuntimeInputs};
+use tacacsrs_config::source::StaticDatastore;
+use tacacsrs_config::tacacsrs::LocalServices;
+use tacacsrs_config::TacacsPlus;
+use tacacsrs_networking::CertificateVerification;
+use tacacsrs_provider::{CredentialProvider, SourceBundle};
+
+async fn run(source: TacacsPlus, stop: tokio_util::sync::CancellationToken) -> anyhow::Result<()> {
+    let runtime = AgentRuntime::prepare(RuntimeInputs {
+        source: SourceBundle {
+            datastore: Arc::new(StaticDatastore::new(source)),
+            credentials: CredentialProvider::none(),
+            local_services: LocalServices {
+                client_api_enabled: false,
+                tacacs_proxy_enabled: true,
+                tacacs_proxy_endpoint: Some("127.0.0.1:9049".to_owned()),
+                ..Default::default()
+            },
+            local_services_overlays: Vec::new(),
+        },
+        policy: PolicyInput::Canonical(Default::default()),
+        certificate_verification: CertificateVerification::Required,
+        revocation: tacacsrs_agent::UpstreamRevocation::default(),
+    }).await?;
+    runtime.run_until(stop.cancelled(), Vec::new(), Vec::new()).await
+}
+```
+
+The agent runs each hosted service as a named background task. Each service gets a `ShutdownSignal`, which observes shutdown but cannot request it. A service that returns `Ok` before shutdown completed its work, and the application continues. An error or a panic stops the application. A long-lived service that cannot recover must return an error or call `ApplicationLifetime::stop_with_error`. Listeners follow the same rule: an early `Ok` is complete work, and an error or a panic stops the runtime. A service that needs agent health gets the read-only `RuntimeHealth` view or the `AgentReadinessCheck` health check from its host.
+
+The first shutdown caller captures overall and request deadlines from one instant and the active policy. Request drain can finish earlier but cannot extend the overall deadline. The host never drops domain cleanup at the service deadline. It aborts remaining services, joins them, and awaits the domain's forced listener and upstream cleanup. Cleanup errors retain useful context.
+
+Observation implementations keep their documented cancellation contracts. Dropping an observation cancels its workers but does not necessarily join them. Blocking native work cannot be forcibly interrupted.
+
+### Low-level service API
 
 `TacacsClientService::new` validates startup controls and creates an empty runtime.
 `ServiceConfig` contains no upstream source. The canonical `ConfigDatastore` owns that source.
@@ -21,11 +184,12 @@ The agent exposes no unmanaged construction or server-update mode.
 Give the supervisor the health publisher of the service.
 Take `ServiceConfig::validation_options` from the datastore.
 Give `NoopTacacsPlusFilter::new` the `LocalServices` value of the service.
-`NoopTacacsPlusFilter::default()` derives an unobfuscated downstream proxy policy, which replaces a configured proxy secret at publication.
+`NoopTacacsPlusFilter` derives an unobfuscated downstream proxy policy, which replaces a configured proxy secret at publication.
 
 Server updates use the retained datastore observation and supervisor.
 `apply_policy_candidate` is the only public policy-update method. It accepts canonical YANG policy, not prepared values.
 `PolicySupervisor` uses that same method for an independent policy observation.
+A datastore change can also carry a runtime policy. Both paths use the same policy revision fence and publish through `RuntimePolicyView`. The most recent applied policy wins. Configure one owner for the runtime policy.
 Server updates preserve applied policy. Policy updates preserve the server catalog, counter epochs, and materialization metadata.
 
 The public construction and update surface changed as follows:
@@ -42,89 +206,7 @@ The public construction and update surface changed as follows:
 | `apply_policy_candidate` | Retained; admission fences validation and publication |
 
 No compatibility aliases remain. Diagnostic handles, domain operations, listener settings, `serve_until`, and `close_and_join` remain public.
-The host owns signals, listener adapters, and task supervision. A stopped runtime cannot restart.
-This example uses the built-in raw proxy. A client API host injects its `RuntimeListenerService` adapters instead.
-
-```rust,no_run
-use std::sync::Arc;
-
-use anyhow::Context;
-use tokio_util::sync::CancellationToken;
-
-use tacacsrs_agent::{RuntimeHealthPublisher, RuntimePolicy, ServiceConfig, TacacsClientService};
-use tacacsrs_agent::runtime::{ConfigSupervisor, NoopTacacsPlusFilter};
-use tacacsrs_config::TacacsPlus;
-use tacacsrs_config::source::{ConfigDatastore, StaticDatastore};
-use tacacsrs_config::tacacsrs::LocalServices;
-use tacacsrs_networking::{CertificateVerification, RequestDeadline};
-
-async fn run(source: TacacsPlus, stop: CancellationToken) -> anyhow::Result<()> {
-  let datastore = Arc::new(StaticDatastore::new(source));
-  let local_services = LocalServices {
-    client_api_enabled: false,
-    tacacs_proxy_enabled: true,
-    tacacs_proxy_endpoint: Some("127.0.0.1:0".to_owned()),
-    ..Default::default()
-  };
-  let config = ServiceConfig {
-    local_services: local_services.clone(),
-    validation_options: datastore.validation_options(),
-    runtime_policy: RuntimePolicy::default(),
-    certificate_verification: CertificateVerification::Required,
-  };
-  let health = RuntimeHealthPublisher::new(config.enabled_services());
-  let service = Arc::new(TacacsClientService::new(config, health.clone())?);
-  let mut supervisor = ConfigSupervisor::new(
-    datastore,
-    service.clone(),
-    health,
-    Arc::new(NoopTacacsPlusFilter::new(local_services)),
-  );
-  let initialized = supervisor.initialize_until(stop.cancelled()).await;
-  if initialized.is_err() || stop.is_cancelled() {
-    let deadline = RequestDeadline::after(service.shutdown_timeout())?;
-    return initialized.and(service.close_and_join(deadline).await);
-  }
-  let peers = async {
-    tokio::join!(
-      async {
-        let result = supervisor.run_until(stop.cancelled()).await;
-        let requested = stop.is_cancelled();
-        stop.cancel();
-        if requested { result } else {
-          result.and(Err(anyhow::anyhow!("Configuration supervisor stopped unexpectedly")))
-        }
-      },
-      async {
-        let result = service.serve_until(stop.cancelled(), Vec::new()).await;
-        stop.cancel();
-        result
-      },
-    )
-  };
-  tokio::pin!(peers);
-  let completed = tokio::select! {
-    biased;
-    () = stop.cancelled() => None,
-    result = &mut peers => Some(result),
-  };
-  stop.cancel();
-  let deadline = RequestDeadline::after(service.shutdown_timeout())?;
-  let (source_result, service_result) = match completed {
-    Some(result) => result,
-    None => tokio::time::timeout_at(deadline.expires_at(), peers)
-      .await.context("Shutdown deadline elapsed")?,
-  };
-  let cleanup = service.close_and_join(deadline).await;
-  source_result.and(service_result).and(cleanup)
-}
-```
-
-The host cancels `stop` when it receives its terminal shutdown request.
-Initialization completes before listeners bind. An already-cancelled host or failed initialization never binds listeners.
-Peer failure also cancels the shared stop token. Cleanup uses one captured shutdown budget.
-Deadline expiry cancels owned futures and returns an error. Native work cannot be forcibly interrupted.
-Use a continuously observed datastore for live server updates. `StaticDatastore` supplies one immutable baseline.
+The low-level host owns signals, listener adapters, and task supervision. A stopped runtime cannot restart. Prefer `AgentRuntime` when the host needs the complete source lifecycle. Use a continuously observed datastore for live server updates. `StaticDatastore` supplies one immutable baseline.
 
 ## Design goals
 
@@ -138,8 +220,10 @@ Use a continuously observed datastore for live server updates. `StaticDatastore`
 
 ```text
 tacacsrs_agent
+├── components       - standard host components
 ├── config           - public runtime configuration
 │   └── policy       - failover strategies and operation limits
+├── host             - component bootstrap, roles, and deferred values
 ├── runtime          - TacacsClientService lifecycle, hot reload, and drains
 ├── services         - internal service boundaries
 │   ├── client_api   - transport-independent operation ingress
@@ -152,6 +236,8 @@ tacacsrs_agent
 │       │   ├── tcp   - loopback TCP binding
 │       │   └── unix  - Unix socket binding and cleanup
 │       └── upstream_bridge
+│           ├── conversation
+│           │          - managed conversations, upstream deadlines, and I/O observation
 │           ├── packet_io
 │           │          - downstream/upstream TACACS+ packet read/write helpers
 │           ├── reply_action
@@ -181,13 +267,19 @@ tacacsrs_agent
 
 ## Failover ownership
 
+The [daemon failover guide](../../docs/tacacsrs-agentd.md#failover-behavior) explains which sessions move to a backup and which reply the proxy sends to the client.
+
 `config::RuntimePolicy` projects canonical service policy into a `FailoverPlan` attempt budget.
 `tacacsrs_networking::retry` applies the conservative replay rules and owns the retry loop.
-The networking `routed` module owns endpoint catalogs, operation identities, circuits, reconnect serialization, and lifecycle state.
+The networking `routed` module owns endpoint catalogs, operation identities, circuits, reconnect serialization, and lifecycle state. It keeps one shared connection per server for all operations and per-operation circuits and routes.
 The agent does not keep duplicate routing or retry state.
 
 Each ingress path implements `FailoverAttempt` and returns one `Attempt` value for each try.
 The networking executor decides whether another attempt is permitted. Unknown outcomes are never replayed automatically.
+
+One networking bind can try several connections before it selects a server. Each bind tries an eligible endpoint at most once. Later operation attempts can select that endpoint again, including a due recovery trial. The attempt budget does not guarantee distinct endpoint coverage. A new request to the only upstream can use the last-resort pass while its circuit remains open.
+
+Bindings report upstream `ERROR` and server timeout through `note_server_failure`. Deadline-aware I/O observations report transport failures. Networking applies the circuit, reconnect, and retirement effects. The proxy conversation adapter owns those observations and the effective upstream I/O deadline. Downstream forwarding owns reply handling and conversation pinning.
 
 Services reach routing and admission through `upstream::OperationRouter`. The
 router binds one `PolicyService` identity at construction. A service therefore
@@ -278,7 +370,7 @@ Inline-only catalogs do not expire because an unused credential watcher is unava
 At expiry, the runtime withdraws the entire catalog and reports `CredentialsExpired`, while source observation and liveness remain active.
 An attempt started before expiry cannot revive the old material. Complete revalidation can restore service without changing canonical source references.
 Repeated failures and policy changes do not renew grace. Source and credential expiry remain independently enforced after either withdraws the catalog.
-Provider validity and revocation-evidence freshness remain separate limits.
+Provider validity remains a separate limit. CRL checks apply only to new connections and never close an established connection.
 Authentication certificate dates apply to each new TLS connection.
 Established connections and catalogs continue after those certificate dates expire.
 
@@ -332,7 +424,7 @@ The decoded payload charge is `L + E`.
 `L` includes every logical destination, repeated bundle installations, retained servers during partial refresh, and the downstream proxy secret.
 `E` includes additional owned configuration payload, retained filtered projections, and newly prepared Rust payload.
 Prepared payload includes DNS address text, routed names, peer identity, SNI, packet keys, PSK callback identity and keys, and group text.
-It also includes trust callback DER, fetched OCSP bytes, certificate comparison buffers, and CRL scope and delta metadata buffers.
+It also includes trust callback DER and certificate comparison buffers.
 Reused prepared endpoints contribute their retained payload to `L`. Reuse does not remove a destination from the candidate charge.
 Known copies are reserved before cloning. Moves transfer charges, and shared allocation owners add no duplicate allocation charge.
 All selected plans pass request admission before the first provider call, in canonical server and plan order.
@@ -342,7 +434,6 @@ Resolver slots are not HTTP URL requests. Provider response and fan-out limits r
 The raw datastore snapshot, opaque producer internals, existing active and retiring catalogs, allocator overhead, and RSS are outside this measure.
 An opaque result can already own a large allocation at handoff. Rejection prevents retention and further candidate copies, not that earlier allocation.
 Native allocator internals are excluded, but Rust payload owned by a native callback is included.
-CRL metadata encodings reserve the enclosing DER size before allocation. Their live charge then contracts to the returned size.
 The high-water check includes these conservative reservations. It measures admitted payload, not process memory.
 
 ### Rust Payload Owners
@@ -352,7 +443,7 @@ The following costs describe supervised preparation, not unmanaged direct helper
 
 | Owner | Candidate charge and allocation boundary |
 | --- | --- |
-| Materialized configuration | `L` counts each destination's secret, key, certificate, intermediate, trust, CRL, and OCSP bytes. Partial refresh includes unchanged destinations. |
+| Materialized configuration | `L` counts each destination's secret, key, certificate, intermediate, and trust bytes. Partial refresh includes unchanged destinations. |
 | Proxy policy | `L` includes its downstream secret. Policy clones share the secret allocation. |
 | Filtered projection and provider staging | `E` includes retained decoded copies. Known copies reserve before cloning; unknown producer results pass admission at handoff. |
 | Prepared address and names | `E` reserves DNS address bytes, one routed name, and one lifecycle name before construction. IP addresses use fixed-layout storage. |
@@ -360,9 +451,7 @@ The following costs describe supervised preparation, not unmanaged direct helper
 | PSK context | `E` reserves callback identity bytes, callback key bytes, optional SNI bytes, and the colon-separated native group string before allocation. |
 | Certificate TLS context | `E` reserves peer identity and optional SNI. Private keys and decoded certificates live in native objects; their canonical DER remains in `L`. |
 | Trust callbacks | Accounted DER owners reserve each authority and exact-peer certificate length before copying. Callback captures retain those owners. |
-| Fetched OCSP | `E` reserves the encoded response before constructing its shared byte owner. Config and connection clones share that allocation. |
 | Certificate comparisons | Temporary reservations cover DER round trips, explicit public-key comparisons, and all simultaneously retained chain deduplication buffers. Verified input lengths supply the forecasts. |
-| CRL comparisons and metadata | Temporary reservations cover DER round trips, scope identities, delta metadata, authority extensions, and integer bytes. Enclosing DER lengths bound native extension encodings. |
 | Reused prepared endpoints | Their retained byte cost contributes to the new candidate's `L`. Endpoint identities, contexts, callback DER, and keys share existing allocations rather than creating another `E` copy. |
 | Native input, partial output, and queued result | One worker moves or shares these owners. It retains the shared ledger and registered work lease until input, result, and callback payload disposal. |
 | Committed historical endpoints | History shares endpoint and source owners until networking reports completed retirement. The next publication prunes completed entries. This ownership belongs to the committed catalog, not unpublished candidate work. |
@@ -385,7 +474,7 @@ These short commit waits are not lock-free.
 The final fence checks source and credential revisions, source expiry, closure, both validity clocks, current limits, and catalog identity.
 A changed committed catalog rejects a prepared reuse hint. It cannot revive an earlier identity or counter epoch.
 An unchanged catalog can reuse an established connection after its authentication certificate expires.
-Provider and evidence validity still restrict publication. Their earlier monotonic cutoffs cannot renew through wall-clock changes.
+Provider validity still restricts publication. Its earlier monotonic cutoff cannot renew through wall-clock changes.
 All fallible checks precede retirement cutoffs, snapshot replacement, health, and coordinator bookkeeping.
 The commit does not await. Later retirement cannot undo it.
 
@@ -540,6 +629,10 @@ return protobuf response envelope
 Each operation has an independent ordered server catalog. IPC and proxy requests
 share one cursor for each operation. A retryable failure opens the applicable
 server-operation circuit and advances only that operation cursor.
+When no other server is eligible, the operation uses the failed server without waiting for the recovery interval.
+A failure guard that is dropped before its request deadline, for example after a downstream disconnect, does not open a circuit.
+A lost connection that already completed a valid exchange keeps the circuit closed, and the next request reconnects to the same server.
+All operations on one server share its cached connection. An `ERROR` or a timeout keeps that connection open for the other operations. When no operation route has a server active and no session holds its connection, that connection is retired.
 
 ```text
 active operation route
@@ -550,6 +643,9 @@ open server-operation circuit
         |
         v
 select next eligible server
+        |
+        +-- no other eligible server --> last-resort use of the failed server
+        |                                  (success closes the circuit)
         |
         | recovery interval expires
         v
@@ -584,6 +680,29 @@ At expiry, remaining listener tasks are cancelled and joined, and upstream socke
 Owned Unix socket paths are removed before successful shutdown publishes `Stopped`.
 A listener failure cancels its siblings and uses the same cleanup path.
 
+### Live local services
+
+A source can give new `tacacsrs:local-services` values in `ConfigChange::local_services`. The configuration supervisor applies the local services overlays and prepares the value with each candidate. An invalid value rejects the candidate, and the active listeners stay. A change without local services keeps the active value. The runtime publishes the new local services after the server set, through `LocalServicesView`.
+
+### Configuration views
+
+Each live configuration section has a `ConfigView<T>`. A view gives the value that the runtime accepted, and never a rejected value. `current()` returns the accepted value. `subscribe()` returns a `tokio::sync::watch` receiver that waits for the next accepted value. The host registers each view in the dependency container, so a component takes the view as a dependency.
+
+| View | Section | Value |
+| --- | --- | --- |
+| `LocalServicesView` | `tacacsrs:local-services` | `ActiveLocalServices`: the canonical value after the overlays, and the prepared bind targets. |
+| `RuntimePolicyView` | `tacacsrs:runtime-policy` | `RuntimePolicy`: the validated policy with durations and failover strategies. |
+
+A source can give a new `tacacsrs:runtime-policy` value in `ConfigChange::runtime_policy`. The configuration supervisor validates the value with the candidate. An invalid value rejects the whole candidate, and the active policy stays. A change without a runtime policy keeps the active policy. The runtime applies the new policy after the server set and before the local services.
+
+A component that needs a section takes its view and builds its own prepared values from the accepted value. Request deadlines, failover, the shutdown budget, and the credential and source timers already read the active policy at the time of use.
+
+Each standard listener runs a reconciler for its service. The reconciler selects one of three states: disabled, pending an endpoint, or ready with a bind target. For a new target, the reconciler binds the new instance first. Then it stops the old instance, which drains its own connections. If the two targets use the same socket, the reconciler stops the old instance first. A bind failure keeps the old instance. The reconciler tries again after 1 s, with a delay that doubles up to 30 s. An error from a bound instance stops the runtime.
+
+The proxy loop guard receives the new proxy target before the listeners do. During a move, the guard blocks upstream connections to each bound proxy endpoint.
+
+The host makes sure at bootstrap that each enabled service has one listener component. If a later value enables a service and no component supplies its listener, the service does not bind.
+
 Reload schedules removed endpoints for terminal retirement under one cutoff derived from the maximum operation budget at preparation start.
 Captured requests can still use their old endpoints before that cutoff; the retirement owner then cancels setup, closes sockets, and joins drivers.
 Unchanged endpoint identities retain their caches. A later reload cannot extend an earlier retirement cutoff.
@@ -594,10 +713,12 @@ Use `close_and_join(deadline)` to confirm upstream cleanup after cancellation or
 For an active listener run, request shutdown through the future passed to `serve_until` and await that run's result.
 
 The daemon captures one absolute deadline across service drain, configuration supervision, and host-task cleanup.
-At expiry it drops the service future, aborts and joins pending peer tasks, and reports failed shutdown without hiding the original failure.
+At expiry it drops the service future, aborts and joins pending hosted-service tasks, and reports failed shutdown without hiding the original failure.
 This bounds graceful asynchronous waits. Arbitrary non-yielding Rust code or an already-started blocking filesystem operation is not preemptible by a future timeout.
 
 The same typed watch-backed snapshot drives startup, liveness, readiness, datastore freshness, upstream availability, standard gRPC health, host integration, and operator status. It contains only typed flags and counts. Configuration values, server identities, credential references, and raw errors stay outside the shared state.
+
+The client API component also serves this snapshot as detailed health. It adds the `AgentHealth.Details` route from [`proto/tacacsrs_agent_health.proto`](../tacacsrs_ipc/proto/tacacsrs_agent_health.proto) to the client API socket. The reply gives the lifecycle, the probe results, the datastore and listener states, the upstream availability, the watchdog state, the degradation reasons, and the revisions. Each mapping uses an exhaustive match. A new runtime state does not compile until the proto has a value for it. The reply also has a `components` list. The handler fills it from the `HealthRegistry` of the composition. That registry runs every member of every health group, including the `component` group. A component adds a check with `health_member` at registration, and the check then shows in the reply without a change to the handler.
 
 ## Configuration details
 

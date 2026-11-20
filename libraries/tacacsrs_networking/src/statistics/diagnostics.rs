@@ -52,7 +52,6 @@ pub enum DisconnectReason {
     NoResponse = 4,
     WriteError = 5,
     ReadError = 6,
-    CredentialExpired = 7,
     Other = 8,
 }
 
@@ -66,7 +65,6 @@ impl DisconnectReason {
             Self::NoResponse => "no-response",
             Self::WriteError => "write-error",
             Self::ReadError => "read-error",
-            Self::CredentialExpired => "credential-expired",
             Self::Other => "other",
         }
     }
@@ -79,7 +77,6 @@ impl DisconnectReason {
             4 => Self::NoResponse,
             5 => Self::WriteError,
             6 => Self::ReadError,
-            7 => Self::CredentialExpired,
             _ => Self::Other,
         }
     }
@@ -131,6 +128,9 @@ pub struct DiagnosticsSnapshot {
     pub tls_write_errors: u64,
     pub tls_certificate_errors: u64,
     pub tls_revoked_certificates: u64,
+    pub revocation_evidence_waits: u64,
+    pub revocation_unverified_accepts: u64,
+    pub revocation_pinned_skips: u64,
     pub tls_untrusted_ca: u64,
     pub tls_expired_certificates: u64,
     pub tls_protocol_mismatches: u64,
@@ -144,7 +144,6 @@ pub struct DiagnosticsSnapshot {
     pub peer_disconnects: u64,
     pub malformed_disconnects: u64,
     pub no_response_disconnects: u64,
-    pub credential_expiry_disconnects: u64,
     pub other_disconnects: u64,
     pub packets_since_reset_sent: u64,
     pub packets_since_reset_received: u64,
@@ -253,9 +252,6 @@ impl ServerCounters {
                 DisconnectReason::Peer => &mut diagnostics.peer_disconnects,
                 DisconnectReason::MalformedPacket => &mut diagnostics.malformed_disconnects,
                 DisconnectReason::NoResponse => &mut diagnostics.no_response_disconnects,
-                DisconnectReason::CredentialExpired => {
-                    &mut diagnostics.credential_expiry_disconnects
-                }
                 _ => &mut diagnostics.other_disconnects,
             };
             *counter = counter.wrapping_add(1);
@@ -468,6 +464,29 @@ impl ServerCounters {
         };
         *counter = counter.wrapping_add(1);
     }
+}
+
+impl ServerCounters {
+    pub(crate) fn revocation_event(&self, event: RevocationEvent) {
+        let mut snapshot = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let diagnostics = &mut snapshot.diagnostics;
+        let counter = match event {
+            RevocationEvent::EvidenceWait => &mut diagnostics.revocation_evidence_waits,
+            RevocationEvent::UnverifiedAccept => &mut diagnostics.revocation_unverified_accepts,
+            RevocationEvent::PinnedSkip => &mut diagnostics.revocation_pinned_skips,
+        };
+        *counter = counter.wrapping_add(1);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RevocationEvent {
+    EvidenceWait,
+    UnverifiedAccept,
+    PinnedSkip,
 }
 
 /// OpenSSL's stable library and reason identifiers from err.h and sslerr.h.

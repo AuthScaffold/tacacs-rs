@@ -73,6 +73,7 @@ pub(crate) fn render(json: &str, format: OutputFormat) -> anyhow::Result<String>
             "Connection timeout (seconds)",
             &diagnostics["connection-timeout-seconds"],
         )?;
+        row(&mut output, "Client certificate SHA-256", &diagnostics["client-certificate-sha256"])?;
         row(&mut output, "Source address", &diagnostics["source-address"])?;
         row(&mut output, "Routing instance", &diagnostics["routing-instance"])?;
         row(&mut output, "Counter epoch", &server["tacacsrs:counter-epoch"])?;
@@ -111,7 +112,6 @@ pub(crate) fn render(json: &str, format: OutputFormat) -> anyhow::Result<String>
             "peer-disconnects",
             "malformed-disconnects",
             "no-response-disconnects",
-            "credential-expiry-disconnects",
             "other-disconnects",
             "packets-since-reset-sent",
             "packets-since-reset-received",
@@ -141,6 +141,9 @@ pub(crate) fn render(json: &str, format: OutputFormat) -> anyhow::Result<String>
             "tls-write-errors",
             "tls-certificate-errors",
             "tls-revoked-certificates",
+            "revocation-evidence-waits",
+            "revocation-unverified-accepts",
+            "revocation-pinned-skips",
             "tls-untrusted-ca",
             "tls-expired-certificates",
             "tls-protocol-mismatches",
