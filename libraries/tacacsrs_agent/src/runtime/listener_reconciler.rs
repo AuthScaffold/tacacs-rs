@@ -7,8 +7,10 @@
 //! the two targets use the same socket, the reconciler stops the old instance
 //! first.
 //!
-//! A bind failure keeps the old instance. The reconciler tries the bind again
-//! after a delay that starts at 1 s and doubles up to 30 s. A different target
+//! A bind failure keeps the old instance, but the listener is not ready
+//! until the desired target binds or the desired target is the old target
+//! again. The reconciler tries the bind again after a delay that starts at
+//! 1 s and doubles up to 30 s. A different target
 //! starts at once with the first delay. An error from a bound instance stops
 //! the reconciler with that error.
 
@@ -200,6 +202,57 @@ enum Event {
     Retry,
 }
 
+/// Reports the state of a service that has no listener component.
+///
+/// A process cannot start a listener that bootstrap did not compose. If the
+/// local services enable such a service, the listener state is `Pending`, so
+/// the process is not ready. If the local services disable the service again,
+/// the state is `Disabled`.
+pub(crate) async fn report_missing_listener(
+    service: RuntimeService,
+    mut local: watch::Receiver<Arc<ActiveLocalServices>>,
+    shutdown: ShutdownReceiver,
+    health: RuntimeHealthPublisher,
+) -> anyhow::Result<()> {
+    let stop = shutdown.wait();
+    tokio::pin!(stop);
+    let mut reported = false;
+    loop {
+        let enabled = {
+            let local = local.borrow_and_update();
+            let prepared = local.prepared();
+            match service {
+                RuntimeService::ClientApi => prepared.client_api().is_some(),
+                RuntimeService::TacacsProxy => prepared.tacacs_proxy_enabled(),
+            }
+        };
+        if enabled && !reported {
+            log::warn!(
+                "The local services enable the {}, but no component supplies its listener. \
+                 Restart the process with a listener component for this service",
+                label(service)
+            );
+        }
+        reported = enabled;
+        health.set_listener(
+            service,
+            if enabled {
+                ListenerState::Pending
+            } else {
+                ListenerState::Disabled
+            },
+        );
+        tokio::select! {
+            biased;
+            () = &mut stop => return Ok(()),
+            changed = local.changed() => if changed.is_err() {
+                stop.await;
+                return Ok(());
+            },
+        }
+    }
+}
+
 impl<Instances: ListenerInstances> Reconciler<Instances> {
     fn service(&self) -> RuntimeService {
         self.instances.service()
@@ -253,6 +306,7 @@ impl<Instances: ListenerInstances> Reconciler<Instances> {
             .is_some_and(|active| active.target == target)
         {
             self.clear_retry();
+            self.set_state(ListenerState::Bound);
             return false;
         }
         if self.failed_target.as_ref() == Some(&target) {
@@ -276,9 +330,7 @@ impl<Instances: ListenerInstances> Reconciler<Instances> {
                 );
             }
         }
-        if self.active.is_none() {
-            self.set_state(ListenerState::Binding);
-        }
+        self.set_state(ListenerState::Binding);
         match self.start(target.clone(), shutdown, stop).await {
             StartOutcome::Bound(instance) => {
                 if let Some(previous) = self.active.replace(instance) {

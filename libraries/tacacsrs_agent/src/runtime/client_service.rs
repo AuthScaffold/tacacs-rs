@@ -286,27 +286,23 @@ impl TacacsClientService {
         self.runtime.local_services.current()
     }
 
-    /// Publishes the configuration sections of an accepted datastore change.
+    /// Admits a new runtime policy revision.
+    ///
+    /// A policy with this revision supersedes every policy admitted earlier.
+    ///
+    /// # Errors
+    /// Returns an error if the runtime has closed.
+    pub(crate) fn admit_policy(&self) -> anyhow::Result<super::PolicyRevision> {
+        self.runtime.manager.admit_policy()
+    }
+
+    /// Publishes the configuration sections of an accepted datastore change
+    /// that has no servers to publish.
     ///
     /// The runtime policy applies first. Then the listeners see the new local
     /// services. A newer policy from another source supersedes this policy.
     pub(crate) async fn publish_sections(&self, sections: &super::CandidateSections) {
-        if let Some(policy) = &sections.runtime_policy {
-            let update = match self.runtime.manager.admit_policy() {
-                Ok(revision) => {
-                    self.runtime
-                        .publish_policy(revision, RuntimePolicy::clone(policy))
-                        .await
-                }
-                Err(error) => Err(error),
-            };
-            if let Err(error) = update {
-                log::debug!("The runtime policy was not applied: {error:#}");
-            }
-        }
-        self.runtime
-            .local_services
-            .publish(Arc::clone(&sections.local_services));
+        self.runtime.publish_sections(sections).await;
     }
 
     /// Applies an observed canonical policy or records a source rejection.
@@ -342,13 +338,20 @@ impl TacacsClientService {
     }
 
     /// Applies materialized servers and coordinator bookkeeping in one commit.
+    ///
+    /// The sections publish immediately after the server commit, before
+    /// upstream retirement can yield. If the caller drops the future after the
+    /// commit, the servers and the sections are both active.
     pub(crate) async fn publish_materialized_servers(
         &self,
         candidate: crate::upstream::manager::PublicationCandidate<
             impl FnOnce() -> Option<super::MaterializationCommit> + Send,
         >,
+        sections: Option<&super::CandidateSections>,
     ) -> anyhow::Result<()> {
-        self.runtime.publish_materialized_servers(candidate).await
+        self.runtime
+            .publish_materialized_servers(candidate, sections)
+            .await
     }
 
     /// Withdraws expired upstreams without closing the recoverable runtime.

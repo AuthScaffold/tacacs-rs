@@ -18,8 +18,15 @@ pub trait HostedService: Send + Sync + 'static {
 
     /// Runs the service until shutdown and then completes owned cleanup.
     ///
-    /// The host treats a return before shutdown as fatal. At its shutdown
-    /// deadline, the host can abort the service.
+    /// The semantics match a .NET `BackgroundService`. A return of `Ok(())`
+    /// before shutdown ends this service only, and the host continues. An
+    /// error or a panic stops the host. A service that cannot recover must
+    /// return an error or call [`ApplicationLifetime::stop_with_error`]. A
+    /// service that continues in a degraded state reports that state through
+    /// a health check. At its shutdown deadline, the host can abort the
+    /// service.
+    ///
+    /// [`ApplicationLifetime::stop_with_error`]: crate::ApplicationLifetime::stop_with_error
     ///
     /// # Errors
     /// Returns an operational or cleanup error.

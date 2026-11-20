@@ -163,7 +163,10 @@ impl ConfigSupervisor {
         let runtime_policy = match change.runtime_policy.as_deref() {
             None => None,
             Some(source) => match crate::RuntimePolicy::try_from(source) {
-                Ok(policy) => Some(Arc::new(policy)),
+                Ok(policy) => Some(crate::runtime::SourcePolicy {
+                    revision: self.service.admit_policy().ok()?,
+                    policy: Arc::new(policy),
+                }),
                 Err(error) => {
                     log::warn!(
                         "Datastore '{}' runtime policy was rejected: {error:#}",

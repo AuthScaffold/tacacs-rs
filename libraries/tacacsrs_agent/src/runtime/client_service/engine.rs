@@ -208,7 +208,7 @@ where
             .manager
             .capture_upstream_reload(servers.into_iter().map(Arc::new).collect());
         self.wait_for_implicit_reload_pause().await;
-        self.publish_materialized_servers(candidate).await
+        self.publish_materialized_servers(candidate, None).await
     }
 
     #[cfg(test)]
@@ -240,14 +240,46 @@ where
         runtime_policy: RuntimePolicy,
     ) -> anyhow::Result<crate::runtime::PolicyUpdate> {
         let _reload_guard = self.reload_publication_lock.lock().await;
-        let accepted = Arc::new(runtime_policy.clone());
-        let update = self.manager.publish_policy(revision, runtime_policy)?;
+        self.publish_policy_locked(revision, Arc::new(runtime_policy))
+    }
+
+    /// Publishes a policy. The caller must hold `reload_publication_lock`.
+    fn publish_policy_locked(
+        &self,
+        revision: crate::runtime::PolicyRevision,
+        accepted: Arc<RuntimePolicy>,
+    ) -> anyhow::Result<crate::runtime::PolicyUpdate> {
+        let update = self
+            .manager
+            .publish_policy(revision, RuntimePolicy::clone(&accepted))?;
         if matches!(update, crate::runtime::PolicyUpdate::Applied(_)) {
             self.runtime_policy.publish_with(accepted, |_| {
                 log::info!("The runtime applies a new runtime policy");
             });
         }
         Ok(update)
+    }
+
+    /// Publishes the sections of an accepted datastore change that has no
+    /// server publication.
+    pub(super) async fn publish_sections(&self, sections: &crate::runtime::CandidateSections) {
+        let _reload_guard = self.reload_publication_lock.lock().await;
+        self.publish_sections_locked(sections);
+    }
+
+    /// Publishes the runtime policy and then the local services of a change.
+    /// The caller must hold `reload_publication_lock`. This method does not
+    /// await, so a cancelled caller cannot publish only part of the sections.
+    fn publish_sections_locked(&self, sections: &crate::runtime::CandidateSections) {
+        if let Some(source) = &sections.runtime_policy {
+            match self.publish_policy_locked(source.revision, Arc::clone(&source.policy)) {
+                Ok(crate::runtime::PolicyUpdate::Applied(_)) => {}
+                Ok(update) => log::debug!("The source runtime policy was not applied: {update:?}"),
+                Err(error) => log::debug!("The source runtime policy was not applied: {error:#}"),
+            }
+        }
+        self.local_services
+            .publish(Arc::clone(&sections.local_services));
     }
 
     #[cfg(test)]
@@ -282,13 +314,16 @@ where
         servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
         proxy_downstream_obfuscation: PreparedProxyPolicy,
     ) -> anyhow::Result<()> {
-        self.publish_materialized_servers(crate::upstream::manager::PublicationCandidate::new(
-            servers,
-            proxy_downstream_obfuscation,
+        self.publish_materialized_servers(
+            crate::upstream::manager::PublicationCandidate::new(
+                servers,
+                proxy_downstream_obfuscation,
+                None,
+                None,
+                || None,
+            ),
             None,
-            None,
-            || None,
-        ))
+        )
         .await
     }
 
@@ -298,6 +333,7 @@ where
             impl FnOnce() -> Option<crate::runtime::MaterializationCommit> + Send,
             Connector,
         >,
+        sections: Option<&crate::runtime::CandidateSections>,
     ) -> anyhow::Result<()> {
         let candidate = self.prepare_materialized_servers(candidate).await?;
         let _reload_guard = if let Some(preparation) = candidate.preparation.as_ref() {
@@ -309,7 +345,11 @@ where
             self.reload_publication_lock.lock().await
         };
         self.manager
-            .reload_shared_servers_with_retirement(candidate, None)
+            .reload_shared_servers_then(candidate, None, || {
+                if let Some(sections) = sections {
+                    self.publish_sections_locked(sections);
+                }
+            })
             .await
     }
 
@@ -423,6 +463,24 @@ where
         let mut tasks = JoinSet::new();
         if listeners.is_empty() {
             anyhow::bail!("Enable at least one runtime service");
+        }
+        for service in [
+            crate::RuntimeService::ClientApi,
+            crate::RuntimeService::TacacsProxy,
+        ] {
+            if listeners
+                .iter()
+                .any(|listener| listener.service() == Some(service))
+            {
+                continue;
+            }
+            let report = crate::runtime::listener_reconciler::report_missing_listener(
+                service,
+                self.local_services.view().subscribe(),
+                shutdown.subscribe(),
+                self.health.clone(),
+            );
+            tasks.spawn(async move { ("missing listener report", report.await) });
         }
         for listener in listeners {
             let shutdown = shutdown.subscribe();

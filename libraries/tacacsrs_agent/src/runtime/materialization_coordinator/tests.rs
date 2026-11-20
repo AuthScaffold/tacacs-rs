@@ -1557,6 +1557,130 @@ async fn cancellation_after_runtime_publication_retains_matching_active_material
     assert_eq!(health.snapshot().runtime_generation().unwrap().value(), 2);
 }
 
+fn policy_with_recovery(seconds: u64) -> crate::RuntimePolicy {
+    crate::RuntimePolicy::new(
+        crate::FailoverStrategy::default(),
+        crate::FailoverStrategy::default(),
+        crate::OperationPolicies::default(),
+        Duration::from_secs(seconds),
+    )
+    .expect("test runtime policy")
+}
+
+fn sections_with_policy(
+    service: &TacacsClientService,
+    proxy_enabled: bool,
+    policy: crate::RuntimePolicy,
+) -> Arc<crate::runtime::CandidateSections> {
+    let local = service
+        .prepare_local_services_candidate(&tacacsrs_config::tacacsrs::LocalServices {
+            tacacs_proxy_enabled: proxy_enabled,
+            ..tacacsrs_config::tacacsrs::LocalServices::default()
+        })
+        .unwrap();
+    Arc::new(crate::runtime::CandidateSections {
+        local_services: local,
+        runtime_policy: Some(crate::runtime::SourcePolicy {
+            revision: service.admit_policy().unwrap(),
+            policy: Arc::new(policy),
+        }),
+    })
+}
+
+#[tokio::test]
+async fn cancellation_after_server_commit_publishes_the_sections() {
+    let coordinator = MaterializationCoordinator::new(
+        resolver(&[("object-a", b"valid-baseline-psk-material")]),
+        ValidationOptions::default(),
+    );
+    let service = service_with_health(RuntimeHealthPublisher::new(EnabledServices::CLIENT_API));
+    let candidate = source("object-a", "192.0.2.20");
+    let sections = sections_with_policy(&service, true, policy_with_recovery(7));
+    let revision = coordinator.admit_source(candidate.clone()).await;
+    let attempt = coordinator
+        .accept_filtered_source(
+            revision,
+            candidate,
+            PreparedProxyPolicy::unobfuscated(),
+            Some(sections),
+        )
+        .await
+        .unwrap();
+    let prepared = coordinator.materialize(attempt).await.unwrap();
+    service.pause_next_publication();
+    {
+        let publishing = coordinator.publish(prepared, &service);
+        tokio::pin!(publishing);
+        tokio::select! {
+            result = &mut publishing => panic!("publication must pause: {result:?}"),
+            result = tokio::time::timeout(Duration::from_secs(1), async {
+                while service.server_count() != 1 { tokio::task::yield_now().await; }
+            }) => result.expect("runtime publication must complete"),
+        }
+    }
+    assert!(
+        service
+            .local_services()
+            .current()
+            .settings()
+            .tacacs_proxy_enabled
+    );
+    assert_eq!(
+        service
+            .runtime_policy()
+            .current()
+            .failover_recovery_interval(),
+        Duration::from_secs(7)
+    );
+}
+
+#[tokio::test]
+async fn republished_sections_do_not_replace_a_newer_policy() {
+    let coordinator = MaterializationCoordinator::new(
+        resolver(&[("object-a", b"valid-baseline-psk-material")]),
+        ValidationOptions::default(),
+    );
+    let service = service_with_health(RuntimeHealthPublisher::new(EnabledServices::CLIENT_API));
+    let candidate = source("object-a", "192.0.2.20");
+    let sections = sections_with_policy(&service, false, policy_with_recovery(7));
+    let revision = coordinator.admit_source(candidate.clone()).await;
+    let attempt = coordinator
+        .accept_filtered_source(
+            revision,
+            candidate,
+            PreparedProxyPolicy::unobfuscated(),
+            Some(sections),
+        )
+        .await
+        .unwrap();
+    let prepared = coordinator.materialize(attempt).await.unwrap();
+    coordinator.publish(prepared, &service).await.unwrap();
+    assert_eq!(
+        service
+            .runtime_policy()
+            .current()
+            .failover_recovery_interval(),
+        Duration::from_secs(7)
+    );
+
+    service
+        .publish_sections(&sections_with_policy(&service, false, policy_with_recovery(9)))
+        .await;
+    let refresh = coordinator
+        .credential_change(&known("object-a"))
+        .await
+        .unwrap();
+    let refreshed = coordinator.materialize(refresh).await.unwrap();
+    coordinator.publish(refreshed, &service).await.unwrap();
+    assert_eq!(
+        service
+            .runtime_policy()
+            .current()
+            .failover_recovery_interval(),
+        Duration::from_secs(9)
+    );
+}
+
 #[tokio::test]
 async fn cancellation_before_runtime_publication_leaves_active_material_unchanged() {
     let coordinator = MaterializationCoordinator::new(

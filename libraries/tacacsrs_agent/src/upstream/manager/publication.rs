@@ -642,6 +642,24 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         >,
         retirement: Option<tacacsrs_networking::RequestDeadline>,
     ) -> anyhow::Result<()> {
+        self.reload_shared_servers_then(candidate, retirement, || {})
+            .await
+    }
+
+    /// Publishes a server set, then runs `after_commit` before retirement yields.
+    ///
+    /// `after_commit` runs only after a successful commit and without the
+    /// snapshot write lock. It must not await. A caller that drops the future
+    /// after the commit still sees the effects of `after_commit`.
+    pub(crate) async fn reload_shared_servers_then(
+        &self,
+        candidate: PublicationCandidate<
+            impl FnOnce() -> Option<crate::runtime::MaterializationCommit> + Send,
+            Connector,
+        >,
+        retirement: Option<tacacsrs_networking::RequestDeadline>,
+        after_commit: impl FnOnce() + Send,
+    ) -> anyhow::Result<()> {
         let mut candidate = self.prepare_candidate(candidate).await?;
         let _reload = if let Some(preparation) = candidate.preparation.as_ref() {
             preparation
@@ -742,6 +760,7 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
                 },
             );
         }
+        after_commit();
 
         drop(candidate.preparation);
         if new_set.server_count() == 0 {

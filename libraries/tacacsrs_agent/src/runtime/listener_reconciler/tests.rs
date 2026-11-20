@@ -221,6 +221,33 @@ async fn a_bind_failure_keeps_the_old_listener_and_tries_again() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_failed_move_is_not_ready_until_the_desired_target_is_served() {
+    let fake = FakeInstances::default();
+    fake.failures
+        .lock()
+        .unwrap()
+        .insert(SECOND.to_owned(), usize::MAX);
+    let harness = Harness::start(fake, local(true, Some(FIRST)));
+    harness.fake.wait_for(&format!("bound {FIRST}")).await;
+    harness.wait_for_state(ListenerState::Bound).await;
+
+    harness.local.send_replace(local(true, Some(SECOND)));
+    harness.fake.wait_for(&format!("fail {SECOND}")).await;
+    harness.wait_for_state(ListenerState::Binding).await;
+
+    harness.local.send_replace(local(true, Some(FIRST)));
+    harness.wait_for_state(ListenerState::Bound).await;
+    let fake = harness.fake.clone();
+    let starts = fake
+        .events()
+        .iter()
+        .filter(|entry| **entry == format!("start {FIRST}"))
+        .count();
+    assert_eq!(starts, 1, "the old listener must keep serving");
+    harness.stop().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_new_target_does_not_wait_for_the_retry_of_a_failed_target() {
     let fake = FakeInstances::default();
     fake.failures
@@ -296,4 +323,41 @@ fn tcp_endpoints_conflict_on_a_shared_port() {
     assert!(endpoints_conflict(&unix("/run/a.sock"), &unix("/run/a.sock")));
     assert!(!endpoints_conflict(&unix("/run/a.sock"), &unix("/run/b.sock")));
     assert!(!endpoints_conflict(&unix("/run/a.sock"), &tcp("127.0.0.1:49")));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_service_without_a_listener_is_not_ready_while_enabled() {
+    let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
+    let (local_sender, receiver) = watch::channel(local(false, None));
+    let shutdown = ShutdownCoordinator::new(health.clone());
+    let task = tokio::spawn(report_missing_listener(
+        RuntimeService::TacacsProxy,
+        receiver,
+        shutdown.subscribe(),
+        health.clone(),
+    ));
+    let changes = health.subscribe();
+    let wait_for = |state: ListenerState| {
+        let mut changes = changes.clone();
+        async move {
+            tokio::time::timeout(
+                Duration::from_secs(60),
+                changes
+                    .wait_for(|snapshot| snapshot.listener(RuntimeService::TacacsProxy) == state),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        }
+    };
+    wait_for(ListenerState::Disabled).await;
+
+    local_sender.send_replace(local(true, Some(FIRST)));
+    wait_for(ListenerState::Pending).await;
+    assert!(health.snapshot().enabled_services().tacacs_proxy());
+
+    local_sender.send_replace(local(false, None));
+    wait_for(ListenerState::Disabled).await;
+    shutdown.initiate_shutdown();
+    task.await.unwrap().unwrap();
 }

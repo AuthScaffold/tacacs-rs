@@ -56,7 +56,7 @@ pub(crate) use listener_reconciler::{
 pub use config_view::{ConfigView, LocalServicesView, RuntimePolicyView};
 pub(crate) use config_view::ConfigPublisher;
 pub use local_services::ActiveLocalServices;
-pub(crate) use candidate_sections::CandidateSections;
+pub(crate) use candidate_sections::{CandidateSections, SourcePolicy};
 pub(crate) use local_services::LocalServicesState;
 pub(crate) use proxy_loop_guard::{ProxyLoopGuard, ProxyListenerBinding};
 pub use shutdown::{ListenerRegistration, ShutdownReceiver};

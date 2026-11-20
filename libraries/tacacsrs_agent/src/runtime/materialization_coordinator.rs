@@ -936,34 +936,34 @@ impl MaterializationCoordinator {
         let next_active = candidate.servers.clone();
 
         service
-            .publish_materialized_servers(candidate.with_commit(move || {
-                let credential_references = state
-                    .desired_runtime
-                    .dependencies()
-                    .as_ref()
-                    .is_none_or(|dependencies| !dependencies.is_empty());
-                state.published = PublishedMaterial::Applied(Arc::new(AppliedCatalog {
-                    servers: next_active,
-                    lifetimes: next_lifetimes,
-                    revision: state.revision,
-                    credential_references,
-                }));
-                state.accepted_source = state
-                    .retain_source
-                    .then(|| state.desired_source.clone())
-                    .flatten();
-                Some(MaterializationCommit {
-                    revision: state.revision,
-                    source_current: state.source_current,
-                    expired: ExpiredMaterial::None,
-                    credential_references,
-                    validity,
-                })
-            }))
+            .publish_materialized_servers(
+                candidate.with_commit(move || {
+                    let credential_references = state
+                        .desired_runtime
+                        .dependencies()
+                        .as_ref()
+                        .is_none_or(|dependencies| !dependencies.is_empty());
+                    state.published = PublishedMaterial::Applied(Arc::new(AppliedCatalog {
+                        servers: next_active,
+                        lifetimes: next_lifetimes,
+                        revision: state.revision,
+                        credential_references,
+                    }));
+                    state.accepted_source = state
+                        .retain_source
+                        .then(|| state.desired_source.clone())
+                        .flatten();
+                    Some(MaterializationCommit {
+                        revision: state.revision,
+                        source_current: state.source_current,
+                        expired: ExpiredMaterial::None,
+                        credential_references,
+                        validity,
+                    })
+                }),
+                sections.as_deref(),
+            )
             .await?;
-        if let Some(sections) = sections {
-            service.publish_sections(&sections).await;
-        }
         Ok(PublicationOutcome::Published)
     }
 

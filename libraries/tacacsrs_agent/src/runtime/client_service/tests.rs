@@ -126,13 +126,13 @@ async fn cancelled_service_publication_keeps_capacity_through_payload_drop() {
     let guard = service.hold_publication().await;
     for boundary in CancellationBoundary::ALL {
         let (candidate, observation) = publication_candidate().await;
-        cancel_publication(service.publish_materialized_servers(candidate), boundary).await;
+        cancel_publication(service.publish_materialized_servers(candidate, None), boundary).await;
         observation.assert_disposed(1);
     }
     let (mut candidate, observation) = publication_candidate().await;
     candidate.proxy_downstream_obfuscation = PreparedProxyPolicy::unavailable();
     assert!(service
-        .publish_materialized_servers(candidate)
+        .publish_materialized_servers(candidate, None)
         .await
         .is_err());
     observation.assert_disposed(1);
