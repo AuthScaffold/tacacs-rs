@@ -382,7 +382,7 @@ The example shows only the revocation container. Add it next to the `server` lis
 
 The check applies to CA-authenticated certificate TLS servers. Exact pinned end-entity trust skips the check, and the agent counts each skip. Disabled `certificate-verification` also skips the check. TCP and TLS-PSK servers are not affected.
 
-The host must supply a revocation verifier. `tacacsrs-agentd` always supplies the CRL verifier of [`tacacsrs-revocation`](../libraries/tacacsrs_revocation/README.md). When `enforcement` is not `disabled` and the host supplies no verifier, the agent refuses new certificate TLS connections. `tacon` direct mode has no verifier. It refuses a configuration whose `enforcement` is not `disabled`. Use agent mode with `--service-endpoint`, or set `enforcement` to `disabled`.
+The host must supply a revocation verifier. `tacacsrs-agentd` always supplies the CRL verifier of [`tacacsrs-revocation`](../libraries/tacacsrs_revocation/README.md). When `enforcement` is not `disabled` and the host supplies no verifier, the agent refuses new certificate TLS connections. `tacon` direct mode also supplies the CRL verifier. It shares one verifier across the connections of a run, fetches missing CRLs during the handshake, and does not prefetch. Set `cache-directory` to keep CRLs between `tacon` runs.
 
 ## Provider Refresh
 

@@ -2425,6 +2425,7 @@ dependencies = [
  "log",
  "openssl",
  "tacacsrs-networking",
+ "tempfile",
  "tokio",
  "tokio-openssl",
 ]
@@ -2483,6 +2484,7 @@ dependencies = [
  "env_logger",
  "futures",
  "log",
+ "openssl",
  "rpassword",
  "rustls-pki-types",
  "serde",
@@ -2491,8 +2493,11 @@ dependencies = [
  "tacacsrs-ipc",
  "tacacsrs-networking",
  "tacacsrs-protocol",
+ "tacacsrs-revocation",
  "tacacsrs-secrets",
+ "tempfile",
  "tokio",
+ "tokio-openssl",
 ]
 
 [[package]]

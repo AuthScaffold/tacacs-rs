@@ -120,6 +120,12 @@ struct KnownPath {
     seen: Instant,
 }
 
+#[derive(Default)]
+struct DiskCacheLoad {
+    directory: Option<PathBuf>,
+    in_flight: Option<(PathBuf, watch::Receiver<Option<bool>>)>,
+}
+
 /// A [`RevocationVerifier`] that checks server certificate paths with CRLs.
 ///
 /// `decide` answers from an in-memory decision cache and from CRLs whose
@@ -145,7 +151,7 @@ pub(crate) struct Inner {
     decisions: Mutex<HashMap<PathKey, CachedDecision>>,
     known: Mutex<HashMap<PathKey, KnownPath>>,
     flights: Mutex<HashMap<FlightKey, watch::Receiver<Option<bool>>>>,
-    loaded_directory: Mutex<Option<PathBuf>>,
+    disk_cache_load: Mutex<DiskCacheLoad>,
     counters: Counters,
     allow_loopback: bool,
 }
@@ -190,7 +196,7 @@ impl CrlVerifier {
                 decisions: Mutex::default(),
                 known: Mutex::default(),
                 flights: Mutex::default(),
-                loaded_directory: Mutex::default(),
+                disk_cache_load: Mutex::default(),
                 counters: Counters::default(),
                 allow_loopback,
             }),
@@ -439,6 +445,16 @@ impl Inner {
         let (settings, _) = self.settings();
         if !settings.enforcement.requires_verifier() {
             return;
+        }
+        // A host without the refresh task, such as a CLI, still uses the disk cache.
+        let load = self.load_disk(&settings);
+        if let Some(deadline) = deadline {
+            if tokio::time::timeout_at(deadline, load).await.is_err() {
+                log::debug!("CRL cache loading exceeded the connection deadline");
+                return;
+            }
+        } else {
+            load.await;
         }
         let key = path_key(path);
         self.remember(key, path);
@@ -791,23 +807,52 @@ impl Inner {
 
     async fn load_disk(self: &Arc<Self>, settings: &Arc<RevocationSettings>) {
         let directory = settings.cache_directory.clone();
-        {
-            let mut loaded = lock(&self.loaded_directory);
-            if *loaded == directory {
+        loop {
+            let (loading_directory, mut flight) = {
+                let mut state = lock(&self.disk_cache_load);
+                if state.directory == directory {
+                    return;
+                }
+                if let Some((path, flight)) = &state.in_flight {
+                    (path.clone(), flight.clone())
+                } else if let Some(path) = directory.clone() {
+                    let (sender, receiver) = watch::channel(None);
+                    state.in_flight = Some((path.clone(), receiver.clone()));
+                    let inner = Arc::clone(self);
+                    let settings = Arc::clone(settings);
+                    let loading_directory = path.clone();
+                    tokio::spawn(async move {
+                        let loader = Arc::clone(&inner);
+                        let load_path = path.clone();
+                        let result = tokio::task::spawn_blocking(move || {
+                            loader.load_disk_blocking(&load_path, &settings);
+                        })
+                        .await;
+                        if let Err(error) = &result {
+                            log::warn!("CRL cache load task failed: {error}");
+                        }
+                        {
+                            let mut state = lock(&inner.disk_cache_load);
+                            if result.is_ok() {
+                                state.directory = Some(path);
+                            }
+                            state.in_flight = None;
+                        }
+                        let _ = sender.send(Some(result.is_ok()));
+                    });
+                    (loading_directory, receiver)
+                } else {
+                    state.directory = None;
+                    return;
+                }
+            };
+            if let Err(error) = flight.wait_for(Option::is_some).await {
+                log::warn!("CRL cache load task ended without a result: {error}");
                 return;
             }
-            loaded.clone_from(&directory);
-        }
-        let Some(directory) = directory else {
-            return;
-        };
-        let inner = Arc::clone(self);
-        let settings = Arc::clone(settings);
-        if let Err(error) =
-            tokio::task::spawn_blocking(move || inner.load_disk_blocking(&directory, &settings))
-                .await
-        {
-            log::warn!("CRL cache load task failed: {error}");
+            if directory.as_ref() == Some(&loading_directory) {
+                return;
+            }
         }
     }
 
@@ -899,5 +944,97 @@ fn log_decision(path: &VerifiedPath, decision: &FinalDecision) {
             log::warn!("Revocation check rejected {server}: {}", rejection.reason());
         }
         RevocationDecision::NeedEvidence => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::{Future, poll_fn};
+    use std::sync::mpsc;
+    use std::task::Poll;
+    use tacacsrs_networking::{DistributionPointPattern, RevocationEnforcement, RevocationSettings};
+
+    use super::*;
+    use crate::tests::pki::{CertificateOptions, CrlOptions, crl, issue, key};
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_cache_loads_wait_for_the_first_load() {
+        let url = "http://crl.example.test/root.crl";
+        let issuer = issue(
+            "Cache Root",
+            key(),
+            None,
+            &CertificateOptions {
+                ca: true,
+                serial: 1,
+                ..CertificateOptions::default()
+            },
+        );
+        let leaf = issue(
+            "server.example.test",
+            key(),
+            Some(&issuer),
+            &CertificateOptions {
+                serial: 2,
+                distribution_points: &[url],
+                ..CertificateOptions::default()
+            },
+        );
+        let path = VerifiedPath::new(
+            vec![leaf.certificate, issuer.certificate.clone()],
+            "server.example.test",
+        )
+        .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let mut settings = RevocationSettings::default();
+        settings.enforcement = RevocationEnforcement::HardFail;
+        settings.allowed_distribution_points =
+            vec![DistributionPointPattern::parse("http://crl.example.test/**").unwrap()];
+        settings.cache_directory = Some(directory.path().to_path_buf());
+        let crl = Crl::parse(&crl(&issuer, &CrlOptions::default())).unwrap();
+        disk::write(
+            directory.path(),
+            url,
+            &crl,
+            Some(&issuer.key.public_key_to_der().unwrap()),
+            settings.max_crl_bytes,
+        )
+        .unwrap();
+        let (_sender, receiver) = watch::channel(settings.clone());
+        let verifier = CrlVerifier::new(receiver);
+        let settings = Arc::new(settings);
+
+        let (locked_tx, locked_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let inner = Arc::clone(&verifier.inner);
+        let holder = std::thread::spawn(move || {
+            let _guard = lock(&inner.store);
+            locked_tx.send(()).unwrap();
+            let _ = release_rx.recv();
+        });
+        locked_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        let mut first = Box::pin(verifier.inner.load_disk(&settings));
+        let first_pending = poll_fn(|cx| Poll::Ready(first.as_mut().poll(cx).is_pending())).await;
+        let mut second = Box::pin(verifier.inner.load_disk(&settings));
+        let second_pending = poll_fn(|cx| Poll::Ready(second.as_mut().poll(cx).is_pending())).await;
+
+        drop(first);
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(50);
+        let timely = tokio::time::timeout(
+            Duration::from_secs(2),
+            verifier.obtain(&path, &RevocationNetwork::default(), Some(deadline)),
+        )
+        .await
+        .is_ok();
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        if second_pending {
+            second.await;
+        }
+        assert!(first_pending, "the first load must wait for the cache");
+        assert!(second_pending, "later loads must wait for the first load");
+        assert!(timely, "cache loading must respect the connection deadline");
+        assert_eq!(verifier.decide(&path), RevocationDecision::Verified);
     }
 }

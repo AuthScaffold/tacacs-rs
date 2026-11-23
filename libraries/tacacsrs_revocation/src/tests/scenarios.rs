@@ -10,7 +10,7 @@ use tacacsrs_networking::{
 };
 use tokio::sync::watch;
 
-use super::pki::{CertificateOptions, CrlOptions, Issued, crl, issue, key};
+use super::pki::{CertificateOptions, CrlOptions, Issued, crl, issue, key, tlv};
 use super::server::{Response, Server, closed_url};
 use crate::CrlVerifier;
 
@@ -164,6 +164,62 @@ fn cache_directory(name: &str) -> PathBuf {
         .join(name);
     let _ = std::fs::remove_dir_all(&directory);
     directory
+}
+
+#[tokio::test]
+async fn unsupported_critical_entry_extension_does_not_verify_a_certificate() {
+    let fixture = Fixture::new().await;
+    let other = fixture.leaf(11);
+    fixture.serve_intermediate(&CrlOptions {
+        revoked: &[&other],
+        first_entry_extension: Some(("1.2.3.4", true, &[0x05, 0x00])),
+        ..CrlOptions::default()
+    });
+    let (verifier, _sender) = start(fixture.settings(RevocationEnforcement::HardFail));
+    assert_unverified(&check(&verifier, &fixture.pki.path(&fixture.leaf(10))).await);
+}
+
+#[tokio::test]
+async fn entry_certificate_issuer_does_not_hide_a_revoked_certificate() {
+    for critical in [true, false] {
+        let fixture = Fixture::new().await;
+        let other = fixture.leaf(11);
+        let revoked = fixture.leaf(10);
+        let name = fixture
+            .pki
+            .root
+            .certificate
+            .subject_name()
+            .to_der()
+            .unwrap();
+        let issuer = tlv(0x30, &tlv(0xa4, &name));
+        fixture.serve_intermediate(&CrlOptions {
+            revoked: &[&other, &revoked],
+            first_entry_extension: Some(("2.5.29.29", critical, &issuer)),
+            ..CrlOptions::default()
+        });
+        let (verifier, _sender) = start(fixture.settings(RevocationEnforcement::HardFail));
+        assert_unverified(&check(&verifier, &fixture.pki.path(&revoked)).await);
+    }
+}
+
+#[tokio::test]
+async fn non_uri_crl_scope_does_not_cover_every_certificate() {
+    let fixture = Fixture::new().await;
+    let name = fixture
+        .pki
+        .intermediate
+        .certificate
+        .subject_name()
+        .to_der()
+        .unwrap();
+    let scope = tlv(0x30, &tlv(0xa0, &tlv(0xa0, &tlv(0xa4, &name))));
+    fixture.serve_intermediate(&CrlOptions {
+        issuing_distribution_point: Some(&scope),
+        ..CrlOptions::default()
+    });
+    let (verifier, _sender) = start(fixture.settings(RevocationEnforcement::HardFail));
+    assert_unverified(&check(&verifier, &fixture.pki.path(&fixture.leaf(10))).await);
 }
 
 #[tokio::test]
@@ -556,6 +612,26 @@ async fn disk_cache_survives_a_restart_and_rejects_tampered_files() {
     assert_eq!(third.decide(&path), RevocationDecision::NeedEvidence);
     assert_unverified(&check(&third, &path).await);
     let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[tokio::test]
+async fn handshake_loads_the_disk_cache_without_a_refresh_task() {
+    let fixture = Fixture::new().await;
+    fixture.serve_intermediate(&CrlOptions::default());
+    let directory = tempfile::tempdir().unwrap();
+    let mut settings = fixture.settings(RevocationEnforcement::HardFail);
+    settings.cache_directory = Some(directory.path().to_path_buf());
+    let path = fixture.pki.path(&fixture.leaf(10));
+
+    let (first, _sender) = start(settings.clone());
+    assert_eq!(check(&first, &path).await, RevocationDecision::Verified);
+    drop(first);
+
+    fixture.server.route(ROOT, Response::Status(404));
+    fixture.server.route(INTERMEDIATE, Response::Status(404));
+    let (second, _sender) = start(settings);
+    assert_eq!(check(&second, &path).await, RevocationDecision::Verified);
+    assert_eq!(second.counters().fetches, 0);
 }
 
 #[tokio::test]

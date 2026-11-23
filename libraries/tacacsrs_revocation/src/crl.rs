@@ -65,6 +65,7 @@ impl CrlScope {
                 "CRL scopes relative to the CRL issuer are not supported"
             );
             scope.names = der::general_name_uris(choice.value)?;
+            ensure!(!scope.names.is_empty(), "CRL scopes without URI names are not supported");
         }
         if let Some(value) = fields.optional(der::primitive(1))? {
             scope.only_user = der::boolean(value)?;
@@ -118,7 +119,32 @@ impl Crl {
             }
             _ => None,
         };
-        tbs.optional(der::SEQUENCE)?;
+        if let Some(revoked) = tbs.optional(der::SEQUENCE)? {
+            let mut entries = Reader::new(revoked.value);
+            while !entries.is_empty() {
+                let entry = entries.expect(der::SEQUENCE)?;
+                let mut fields = Reader::new(entry.value);
+                fields.expect(der::INTEGER)?;
+                let date = fields.read()?;
+                ensure!(
+                    matches!(date.tag, der::UTC_TIME | der::GENERALIZED_TIME),
+                    "Invalid CRL entry revocation date"
+                );
+                if let Some(extensions) = fields.optional(der::SEQUENCE)? {
+                    for extension in der::extensions(extensions.value)? {
+                        ensure!(
+                            extension.oid != der::OID_CERTIFICATE_ISSUER,
+                            "Indirect CRL entries are not supported"
+                        );
+                        ensure!(
+                            !extension.critical,
+                            "CRL entry has an unsupported critical extension"
+                        );
+                    }
+                }
+                ensure!(fields.is_empty(), "CRL entry has unknown fields");
+            }
+        }
         let mut parsed = Self {
             digest: digest(&der)?,
             crl,

@@ -1,6 +1,6 @@
 # tacacsrs-revocation
 
-`tacacsrs-revocation` checks TACACS+ over TLS server certificates against certificate revocation lists (CRLs). It provides `CrlVerifier`, which implements the `RevocationVerifier` contract of `tacacsrs-networking`. The host, for example `tacacsrs-agentd`, creates one verifier and gives it to the TLS transport.
+`tacacsrs-revocation` checks TACACS+ over TLS server certificates against certificate revocation lists (CRLs). It provides `CrlVerifier`, which implements the `RevocationVerifier` contract of `tacacsrs-networking`. The host, for example `tacacsrs-agentd` or `tacon` direct mode, creates one verifier and gives it to the TLS transport.
 
 ## Checks happen only when a connection is established
 
@@ -34,6 +34,8 @@ A host such as `crl.microsoft.com.example.net` does not match `http://crl.micros
 
 The verifier ignores `ldap://` and other non-HTTP CDPs. A certificate whose first CDP is an LDAP URL can still use a later HTTP URL.
 
+The verifier rejects indirect CRLs, unsupported critical entry extensions, and distribution-point scopes that contain no URI names.
+
 ## Fetch limits
 
 Each fetch uses the local binding and connection guard of the TACACS+ server. The verifier does not fall back to an unbound connection. It rejects these addresses:
@@ -53,7 +55,7 @@ The verifier supports delta CRLs, for example from AD CS. The Freshest CRL exten
 
 ## Disk cache
 
-When `cache_directory` is set, the verifier writes each fetched CRL to that directory. It writes a temporary file and renames it. The file name is a hash of the URL. At startup, the refresh task loads the files. It deletes files with a damaged header, a wrong digest, an invalid CRL, or a size above `max_crl_bytes`. A loaded CRL never replaces a newer CRL in memory. A path uses a loaded CRL only after its signature matches the issuer key in that path.
+When `cache_directory` is set, the verifier writes each fetched CRL to that directory. It writes a temporary file and renames it. The file name is a hash of the URL. The first refresh round or the first `obtain` call loads the files, whichever comes first. A host without the refresh task, such as `tacon` direct mode, therefore still uses the cache. It deletes files with a damaged header, a wrong digest, an invalid CRL, or a size above `max_crl_bytes`. A loaded CRL never replaces a newer CRL in memory. A path uses a loaded CRL only after its signature matches the issuer key in that path.
 
 ## Counters
 

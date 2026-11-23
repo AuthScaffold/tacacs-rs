@@ -126,7 +126,8 @@ tacacsrs-agent -> tacacsrs-config, tacacsrs-protocol, tacacsrs-networking,
 tacacsrs-agent-ipc-emulator -> tacacsrs-ipc
 tacacsrs-bash-plugin -> tacacsrs-ipc
 
-tacon -> tacacsrs-ipc (Linux only), tacacsrs-config, tacacsrs-protocol, tacacsrs-networking
+tacon -> tacacsrs-ipc (Linux only), tacacsrs-config, tacacsrs-protocol, tacacsrs-networking,
+         tacacsrs-revocation
 tacacsrs-agentd -> tacacsrs-agent, tacacsrs-composition, tacacsrs-config,
                    tacacsrs-lifecycle, tacacsrs-networking, tacacsrs-secrets,
                    tacacsrs-sonic, tacacsrs-kubesonic, tacacsrs-revocation
@@ -168,7 +169,8 @@ session-wrapper -> tacacsrs-ipc
 - `tacacsrs-credential-resolution` owns provider-neutral material and resolver contracts.
 - `tacacsrs-revocation` provides `CrlVerifier`, the CRL implementation of
   `tacacsrs_networking::RevocationVerifier`. It fetches and caches CRLs only
-  from allowed HTTP distribution points.
+  from allowed HTTP distribution points. `tacacsrs-agentd` and `tacon` direct
+  mode inject it into the networking stack.
 - `tacacsrs-sonic` maps SONiC ConfigDB `TACPLUS` / `TACPLUS_SERVER` data into
   the YANG model and implements SONiC-backed configuration loading and watching.
   `SonicSource` is its source component.

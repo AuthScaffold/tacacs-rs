@@ -5,7 +5,8 @@
 //! formatting to the shared engine in [`super::common`].
 
 use tacacsrs_config::TacacsPlusServer;
-use tacacsrs_config::prepare::PrepareOptions;
+
+use crate::connection::DirectOptions;
 
 use super::common::{announce_batch, finish_load_test, run_batch_load_test, run_requests};
 use super::dedicated::{connection_failure_results, establish_dedicated_backend};
@@ -56,7 +57,7 @@ pub(crate) async fn execute_batch(
     server: &TacacsPlusServer,
     dedicated: bool,
     batch: &BatchFile,
-    options: PrepareOptions,
+    options: &DirectOptions,
 ) -> anyhow::Result<Vec<RequestResult>> {
     announce_batch(batch);
 
@@ -101,7 +102,7 @@ async fn run_direct_load_test(
     batch: &BatchFile,
     load_config: &LoadTestConfig,
     mode: ExecutionMode,
-    options: PrepareOptions,
+    options: &DirectOptions,
 ) -> anyhow::Result<Vec<RequestResult>> {
     let mode_label = mode.label();
     log::info!(

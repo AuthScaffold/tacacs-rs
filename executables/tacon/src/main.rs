@@ -17,11 +17,10 @@ use anyhow::bail;
 use clap::Parser;
 
 use tacacsrs_config::TacacsPlusServerType;
-use tacacsrs_config::prepare::PrepareOptions;
 
 use backend::Backend;
 use cli::{Cli, Command};
-use connection::{establish_connection, establish_dedicated_connection};
+use connection::{DirectOptions, establish_connection, establish_dedicated_connection};
 
 /// Initializes the logger based on verbosity level
 fn init_logger(verbose: u8) {
@@ -102,6 +101,17 @@ async fn execute_command(backend: &Backend, command: &Command) -> anyhow::Result
     Ok(())
 }
 
+/// Builds the direct-mode connection options from the CLI flags and the
+/// configured revocation policy.
+fn direct_options(cli: &Cli, revocation: tacacsrs_networking::RevocationSettings) -> DirectOptions {
+    let verification = if cli.insecure_disable_certificate_verification {
+        tacacsrs_networking::CertificateVerification::DisabledForDevelopment
+    } else {
+        tacacsrs_networking::CertificateVerification::Required
+    };
+    DirectOptions::new(verification, revocation)
+}
+
 /// Builds the execution backend for a single AAA command.
 ///
 /// On Linux, `--service-endpoint` selects the agent IPC channel. Otherwise the
@@ -113,22 +123,17 @@ async fn build_backend(cli: &Cli, command: &Command) -> anyhow::Result<Backend> 
         return Ok(Backend::Service(backend::connect_service(endpoint).await?));
     }
 
-    let server = config::resolve_server_for_command(cli, command)?;
-    let options = PrepareOptions::default().with_certificate_verification(
-        if cli.insecure_disable_certificate_verification {
-            tacacsrs_networking::CertificateVerification::DisabledForDevelopment
-        } else {
-            tacacsrs_networking::CertificateVerification::Required
-        },
-    );
+    let target = config::resolve_server_for_command(cli, command)?;
+    let options = direct_options(cli, target.revocation);
+    let server = target.server;
 
     let connection = if cli.dedicated {
         // Dedicated mode uses a minimal TCP or TLS connection with no background
         // tasks or session multiplexing.
         log::info!("Running in dedicated connection mode");
-        establish_dedicated_connection(&server, options).await?
+        establish_dedicated_connection(&server, &options).await?
     } else {
-        establish_connection(&server, options).await?
+        establish_connection(&server, &options).await?
     };
 
     Ok(Backend::Direct(connection))
@@ -157,15 +162,10 @@ async fn run_batch_mode(cli: &Cli, batch_path: &Path) -> anyhow::Result<()> {
     let required_type = batch_file
         .required_server_type()
         .unwrap_or(TacacsPlusServerType::ACCOUNTING);
-    let server_config = config::resolve_server_for_type(cli, required_type)?;
-    let options = PrepareOptions::default().with_certificate_verification(
-        if cli.insecure_disable_certificate_verification {
-            tacacsrs_networking::CertificateVerification::DisabledForDevelopment
-        } else {
-            tacacsrs_networking::CertificateVerification::Required
-        },
-    );
-    let results = batch::execute_batch(&server_config, cli.dedicated, &batch_file, options).await?;
+    let target = config::resolve_server_for_type(cli, required_type)?;
+    let options = direct_options(cli, target.revocation);
+    let results =
+        batch::execute_batch(&target.server, cli.dedicated, &batch_file, &options).await?;
 
     finish_batch(&results)
 }

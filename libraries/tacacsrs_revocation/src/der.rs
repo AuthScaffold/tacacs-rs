@@ -35,6 +35,8 @@ pub(crate) const OID_FRESHEST_CRL: &[u8] = &[0x55, 0x1d, 0x2e];
 pub(crate) const OID_BASIC_CONSTRAINTS: &[u8] = &[0x55, 0x1d, 0x13];
 /// Content bytes of the issuing distribution point OID 2.5.29.28.
 pub(crate) const OID_ISSUING_DISTRIBUTION_POINT: &[u8] = &[0x55, 0x1d, 0x1c];
+/// Content bytes of the certificate issuer OID 2.5.29.29.
+pub(crate) const OID_CERTIFICATE_ISSUER: &[u8] = &[0x55, 0x1d, 0x1d];
 /// Content bytes of the delta CRL indicator OID 2.5.29.27.
 pub(crate) const OID_DELTA_CRL_INDICATOR: &[u8] = &[0x55, 0x1d, 0x1b];
 /// Content bytes of the CRL number OID 2.5.29.20.

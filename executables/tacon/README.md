@@ -162,7 +162,7 @@ tacon \
     "show version"
 ```
 
-Direct mode does not check certificate revocation. `tacon` refuses a configuration whose `tacacsrs:certificate-revocation` enforcement is not `disabled`. To use such a configuration, use agent mode with `--service-endpoint`, or set the enforcement to `disabled`. See [certificate revocation](../../docs/yang-config-guide.md#certificate-revocation).
+Direct mode checks certificate revocation when a `--config` file enables the `tacacsrs:certificate-revocation` container. `tacon` builds one CRL verifier from [`tacacsrs-revocation`](../../libraries/tacacsrs_revocation/README.md) for each run. Certificate TLS connections, including mTLS, can reuse its cached CRLs. The handshake can fetch a missing CRL and waits no longer than the connection timeout. `tacon` does not prefetch the `prefetch-distribution-point` URLs. To keep CRLs between runs, set `cache-directory`. TCP and TLS-PSK servers are not checked. Exact pinned end-entity trust and `--insecure-disable-certificate-verification` also skip the revocation check. See [certificate revocation](../../docs/yang-config-guide.md#certificate-revocation).
 
 #### Using TACACS+ over TLS 1.3
 

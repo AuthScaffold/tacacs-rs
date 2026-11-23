@@ -226,9 +226,11 @@ pub(crate) struct CrlOptions<'a> {
     pub(crate) this_update: SystemTime,
     pub(crate) next_update: SystemTime,
     pub(crate) revoked: &'a [&'a X509],
+    pub(crate) first_entry_extension: Option<(&'a str, bool, &'a [u8])>,
     pub(crate) number: u64,
     pub(crate) delta_base: Option<u64>,
     pub(crate) freshest: &'a [&'a str],
+    pub(crate) issuing_distribution_point: Option<&'a [u8]>,
 }
 
 impl Default for CrlOptions<'_> {
@@ -238,9 +240,11 @@ impl Default for CrlOptions<'_> {
             this_update: now - Duration::from_secs(3600),
             next_update: now + Duration::from_secs(86_400),
             revoked: &[],
+            first_entry_extension: None,
             number: 1,
             delta_base: None,
             freshest: &[],
+            issuing_distribution_point: None,
         }
     }
 }
@@ -258,9 +262,16 @@ pub(crate) fn crl(issuer: &Issued, options: &CrlOptions<'_>) -> Vec<u8> {
         let entries: Vec<Vec<u8>> = options
             .revoked
             .iter()
-            .map(|certificate| {
+            .enumerate()
+            .map(|(index, certificate)| {
                 let serial = certificate.serial_number().to_bn().unwrap().to_vec();
-                sequence(&[integer(&serial), utc_time(options.this_update)])
+                let mut fields = vec![integer(&serial), utc_time(options.this_update)];
+                if index == 0 {
+                    if let Some((oid, critical, value)) = options.first_entry_extension {
+                        fields.push(sequence(&[extension(oid, critical, value)]));
+                    }
+                }
+                sequence(&fields)
             })
             .collect();
         tbs.push(sequence(&entries));
@@ -275,6 +286,9 @@ pub(crate) fn crl(issuer: &Issued, options: &CrlOptions<'_>) -> Vec<u8> {
     }
     if !options.freshest.is_empty() {
         extensions.push(extension(OID_FRESHEST_CRL, false, &distribution_points(options.freshest)));
+    }
+    if let Some(value) = options.issuing_distribution_point {
+        extensions.push(extension("2.5.29.28", true, value));
     }
     tbs.push(tlv(0xa0, &sequence(&extensions)));
     let tbs = sequence(&tbs);

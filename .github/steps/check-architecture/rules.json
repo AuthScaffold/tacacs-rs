@@ -74,6 +74,7 @@
       "tacacsrs-ipc",
       "tacacsrs-networking",
       "tacacsrs-protocol",
+      "tacacsrs-revocation",
       "tacacsrs-secrets"
     ],
     "session-wrapper": [
@@ -344,12 +345,11 @@
     },
     {
       "name": "host-injected-revocation",
-      "description": "Keep the CRL verifier out of the agent runtime and the configuration model. The daemon builds the verifier and injects it through the networking contract.",
+      "description": "Keep the CRL verifier out of the agent runtime and the configuration model. Hosts such as the daemon and tacon build the verifier and inject it through the networking contract.",
       "roots": [
         "tacacsrs-agent",
         "tacacsrs-config",
-        "tacacsrs-networking",
-        "tacon"
+        "tacacsrs-networking"
       ],
       "forbidden": [
         "tacacsrs-revocation"

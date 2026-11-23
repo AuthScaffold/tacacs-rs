@@ -20,6 +20,7 @@ openssl = "0.10.80"
 tokio = { version = "1.52.3", features = ["macros", "net", "rt", "sync", "time"] }
 
 [dev-dependencies]
+tempfile = "3.27"
 tokio-openssl = "0.6.5"
 tokio = { version = "1.52.3", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
 
