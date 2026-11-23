@@ -220,10 +220,16 @@ fn is_local_error(outcome: &Outcome) -> bool {
 
 /// Runs heavy traffic over TLS and checks connection reuse and cleanup.
 async fn tls_traffic_case(upstream: &Upstream, mut server: TacacsPlusServer, mode: SingleConnect) {
-    // Sample mTLS fixtures use 4096-bit RSA keys; give healthy handshakes and
-    // round trips headroom under unoptimized QEMU ARMhf emulation.
     server.timeout = 20;
     let daemon = Daemon::start(upstream.address(), config_options(&[server])).await;
+    let mut expected_requests = 0;
+    if mode == SingleConnect::Accept {
+        let warm =
+            single_request(daemon.port, Kind::Accounting, &format!("{USER_PREFIX}warm")).await;
+        assert!(succeeded(&warm), "TLS single-connect warmup failed: {warm:?}");
+        assert_eq!(upstream.connections_accepted(), 1);
+        expected_requests += 1;
+    }
     let traffic = match mode {
         SingleConnect::Accept => heavy(true),
         SingleConnect::Decline => Traffic {
@@ -235,16 +241,17 @@ async fn tls_traffic_case(upstream: &Upstream, mut server: TacacsPlusServer, mod
             ascii_authentication: false,
         },
     };
+    expected_requests += traffic.total();
     let tally = run_traffic(daemon.port, traffic, "tls").await;
     tally.assert_all_succeeded(traffic.total());
-    assert_eq!(upstream.received_total(), traffic.total());
+    assert_eq!(upstream.received_total(), expected_requests);
     assert_eq!(upstream.handshake_failures(), 0);
     match mode {
-        SingleConnect::Accept => assert!(
-            upstream.connections_accepted() < traffic.total() / 4,
-            "TLS single-connect was not reused: {} connections for {} requests",
+        SingleConnect::Accept => assert_eq!(
             upstream.connections_accepted(),
-            traffic.total()
+            1,
+            "TLS single-connect was not reused across {} requests",
+            expected_requests
         ),
         SingleConnect::Decline => {
             assert!(upstream.connections_accepted() >= traffic.total());
@@ -636,6 +643,9 @@ async fn ipc_and_proxy_traffic_share_upstream_connections() {
     let upstream = Upstream::start(SingleConnect::Accept).await;
     let daemon =
         Daemon::start(upstream.address(), ipc_options("deferred-failover", 5, Vec::new())).await;
+    let warm = single_request(daemon.port, Kind::Accounting, &format!("{USER_PREFIX}warm")).await;
+    assert!(succeeded(&warm), "single-connect warmup failed: {warm:?}");
+    assert_eq!(upstream.connections_accepted(), 1);
     let socket = daemon.socket();
     const IPC_CLIENTS: usize = 8;
     const IPC_OPERATIONS: usize = 30;
@@ -668,12 +678,12 @@ async fn ipc_and_proxy_traffic_share_upstream_connections() {
     }
     tally.assert_all_succeeded(traffic.total());
     assert!(failures.is_empty(), "IPC requests failed: {failures:#?}");
-    let total = traffic.total() + (IPC_CLIENTS * IPC_OPERATIONS) as u64;
+    let total = 1 + traffic.total() + (IPC_CLIENTS * IPC_OPERATIONS) as u64;
     assert_eq!(upstream.received_total(), total);
-    assert!(
-        upstream.connections_accepted() < total / 4,
-        "IPC and proxy traffic did not share connections: {} connections for {total} requests",
-        upstream.connections_accepted()
+    assert_eq!(
+        upstream.connections_accepted(),
+        1,
+        "IPC and proxy traffic did not share one connection across {total} requests",
     );
     daemon.stop().await;
 }

@@ -677,16 +677,25 @@ async fn healthy_case(mode: SingleConnect, dedicated_upstream: bool, single_conn
         },
     )
     .await;
+    let reuse_upstream = mode == SingleConnect::Accept && !dedicated_upstream;
+    let mut expected_requests = 0;
+    if reuse_upstream {
+        let warm =
+            single_request(daemon.port, Kind::Accounting, &format!("{USER_PREFIX}warm")).await;
+        assert!(succeeded(&warm), "single-connect warmup failed: {warm:?}");
+        assert_eq!(upstream.connections_accepted(), 1);
+        expected_requests += 1;
+    }
     let traffic = heavy(single_connect);
+    expected_requests += traffic.total();
     let tally = run_traffic(daemon.port, traffic, "healthy").await;
     tally.assert_all_succeeded(traffic.total());
-    assert_eq!(upstream.received_total(), traffic.total());
-    if mode == SingleConnect::Accept && !dedicated_upstream {
-        assert!(
-            upstream.connections_accepted() < traffic.total() / 4,
-            "upstream single-connect was not reused: {} connections for {} requests",
+    assert_eq!(upstream.received_total(), expected_requests);
+    if reuse_upstream {
+        assert_eq!(
             upstream.connections_accepted(),
-            traffic.total()
+            1,
+            "upstream single-connect was not reused across {expected_requests} requests",
         );
     } else {
         assert!(
@@ -695,7 +704,7 @@ async fn healthy_case(mode: SingleConnect, dedicated_upstream: bool, single_conn
         );
     }
     wait_until("upstream connections to drain", || {
-        mode == SingleConnect::Accept && !dedicated_upstream || upstream.open_connections() == 0
+        reuse_upstream || upstream.open_connections() == 0
     })
     .await;
     daemon.stop().await;
