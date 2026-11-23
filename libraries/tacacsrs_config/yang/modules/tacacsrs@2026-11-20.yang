@@ -104,6 +104,26 @@ module tacacsrs {
       "Failover behavior for a local TACACS+ service.";
   }
 
+  typedef connect-preflight {
+    type enumeration {
+      enum disabled {
+        description
+          "Open upstream transports on first use and negotiate single-connection
+           capability on the first real reply.";
+      }
+      enum accounting-watchdog {
+        description
+          "Send an RFC 8907 accounting WATCHDOG probe when creating an
+           accounting-capable upstream client. Any valid accounting reply packet
+           proves transport reachability and latches single-connection capability
+           before user traffic runs.";
+      }
+    }
+    description
+      "Optional readiness and capability-discovery probe run when opening an
+       upstream client.";
+  }
+
   typedef proxy-credential-source {
     type enumeration {
       enum unobfuscated {
@@ -544,6 +564,13 @@ module tacacsrs {
         default deferred-failover;
         description
           "Failover policy for initial requests received through the TACACS+ proxy.";
+      }
+      leaf connect-preflight {
+        type connect-preflight;
+        default disabled;
+        description
+          "Optional probe sent when creating an accounting-capable upstream client.
+           Servers that do not support accounting skip this probe.";
       }
       container authentication {
         description

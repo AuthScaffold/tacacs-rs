@@ -40,6 +40,7 @@ pub trait ConnectionGuard: Send + Sync {
 pub struct PreparedEndpoint {
     pub(crate) address: crate::ServerAddress,
     pub(crate) single_connection: bool,
+    pub(crate) supports_accounting: bool,
     pub(crate) obfuscation_key: Option<SecretBytes>,
     pub(crate) transport: PreparedTransport,
     pub(crate) options: ConnectOptions,
@@ -87,6 +88,7 @@ impl PreparedEndpoint {
         Self {
             address,
             single_connection,
+            supports_accounting: true,
             obfuscation_key,
             transport,
             options,
@@ -95,6 +97,36 @@ impl PreparedEndpoint {
             counters: crate::ServerCounters::default(),
             preparation_payload: crate::PreparationPayload::default(),
         }
+    }
+
+    /// Records whether the configured server accepts accounting requests.
+    ///
+    /// When `false`, [`crate::ConnectPreflight::AccountingWatchdog`] is skipped
+    /// so authentication-only or authorization-only servers do not receive
+    /// unsupported accounting packets.
+    #[must_use]
+    pub const fn with_supports_accounting(mut self, supports_accounting: bool) -> Self {
+        self.supports_accounting = supports_accounting;
+        self
+    }
+
+    /// Returns whether the configured server accepts accounting requests.
+    #[must_use]
+    pub const fn supports_accounting(&self) -> bool {
+        self.supports_accounting
+    }
+
+    /// Overrides the connection preflight policy for clients opened from this endpoint.
+    #[must_use]
+    pub fn with_preflight(mut self, preflight: crate::ConnectPreflight) -> Self {
+        self.options = self.options.with_preflight(preflight);
+        self
+    }
+
+    /// Returns the configured connection preflight policy.
+    #[must_use]
+    pub const fn preflight(&self) -> crate::ConnectPreflight {
+        self.options.preflight()
     }
 
     /// Retains accounting for endpoint strings, keys, and native callback payload.

@@ -15,6 +15,7 @@ pub(super) async fn run_write_loop(
     mut receiver: mpsc::Receiver<Packet>,
     writer: &mut (dyn AsyncWrite + Unpin + Send),
     connection: Arc<SessionManager>,
+    mut send_single_connect_on_first_packet: bool,
 ) -> anyhow::Result<()> {
     loop {
         let packet = tokio::select! {
@@ -37,6 +38,16 @@ pub(super) async fn run_write_loop(
                     return Ok(());
                 }
             }
+        };
+
+        let packet = if std::mem::take(&mut send_single_connect_on_first_packet) {
+            let mut header = packet.header().clone();
+            header.flags |=
+                tacacsrs_protocol::enumerations::TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG;
+            Packet::new(header, packet.body().to_vec())
+                .context("failed to set single-connect flag on initial packet")?
+        } else {
+            packet
         };
 
         let correlation = tacacsrs_protocol::header::wire_correlation(packet.header().session_id);

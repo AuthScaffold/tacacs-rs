@@ -193,6 +193,7 @@ const POLICY_NUMBERS: &[&str] = &[
 const POLICY_ENUMS: &[&str] = &[
     "client-api-failover-strategy",
     "tacacs-proxy-failover-strategy",
+    "connect-preflight",
 ];
 const OPERATION_LIMITS: &[&str] = &[
     "request-timeout-seconds",
@@ -528,13 +529,14 @@ mod tests {
             ("POLICY_SHUTDOWN_TIMEOUT_SECONDS", "20"),
             ("POLICY_AUTHENTICATION_MAX_CONCURRENT_REQUESTS", "7"),
             ("POLICY_TACACS_PROXY_FAILOVER_STRATEGY", "ordered-safe-retry"),
+            ("POLICY_CONNECT_PREFLIGHT", "accounting-watchdog"),
             ("SERVICES_UNIX_SOCKET_MODE", "0600"),
             ("CONFIG_RETRY_INITIAL_MILLISECONDS", "125"),
             ("PROCESS_UPSTREAM_WATCHDOG_INTERVAL_SECONDS", "30"),
         ])
         .unwrap();
         assert_eq!(input.process.upstream_watchdog_interval, Some(Duration::from_secs(30)));
-        let expected = parse_runtime_policy(br#"{"tacacsrs:runtime-policy":{"shutdown-timeout-seconds":20,"authentication":{"max-concurrent-requests":7},"tacacs-proxy-failover-strategy":"ordered-safe-retry"}}"#).unwrap();
+        let expected = parse_runtime_policy(br#"{"tacacsrs:runtime-policy":{"shutdown-timeout-seconds":20,"authentication":{"max-concurrent-requests":7},"tacacs-proxy-failover-strategy":"ordered-safe-retry","connect-preflight":"accounting-watchdog"}}"#).unwrap();
         assert_eq!(input.runtime_policy, expected);
         assert_eq!(input.local_services.unix_socket_mode, 0o600);
         assert_eq!(input.source.retry_initial, Duration::from_millis(125));

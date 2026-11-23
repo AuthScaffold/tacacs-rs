@@ -45,6 +45,7 @@ impl PacketWriter {
 
     /// Returns the configured packet obfuscation key, if one is present.
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn obfuscation_key(&self) -> Option<&SecretBytes> {
         self.obfuscation_key.as_ref()
     }

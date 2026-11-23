@@ -135,6 +135,7 @@ Each canonical policy path maps to `TACACSD_POLICY_<PATH>`. Replace hyphens and 
 | `TACACSD_POLICY_FAILOVER_RECOVERY_INTERVAL_SECONDS` | `30` |
 | `TACACSD_POLICY_CLIENT_API_FAILOVER_STRATEGY` | `deferred-failover` |
 | `TACACSD_POLICY_TACACS_PROXY_FAILOVER_STRATEGY` | `deferred-failover` |
+| `TACACSD_POLICY_CONNECT_PREFLIGHT` | `disabled` |
 | `TACACSD_POLICY_CANDIDATE_PREPARATION_TIMEOUT_SECONDS` | `30` |
 | `TACACSD_POLICY_CANDIDATE_PREPARATION_MAX_RESOLUTION_REQUESTS` | `256` |
 | `TACACSD_POLICY_CANDIDATE_PREPARATION_MAX_RETAINED_MATERIAL_BYTES` | `67108864` |
@@ -147,7 +148,7 @@ The `TACACSD_POLICY_AUTHENTICATION_`, `TACACSD_POLICY_AUTHORIZATION_`, and `TACA
 | `MAX_BODY_LENGTH` | `4096` | `16384` |
 | `MAX_CONCURRENT_REQUESTS` | `64` | `64` |
 
-Limits must be positive. Body length cannot exceed the protocol maximum. Failover strategy accepts `deferred-failover` or `ordered-safe-retry`. Canonical validators and generated types own defaults and ranges.
+Limits must be positive. Body length cannot exceed the protocol maximum. Failover strategy accepts `deferred-failover` or `ordered-safe-retry`. Connect preflight accepts `disabled` or `accounting-watchdog`. Canonical validators and generated types own defaults and ranges.
 
 ## Empty lists and recovery
 

@@ -222,14 +222,6 @@ fn is_local_error(outcome: &Outcome) -> bool {
 async fn tls_traffic_case(upstream: &Upstream, mut server: TacacsPlusServer, mode: SingleConnect) {
     server.timeout = 20;
     let daemon = Daemon::start(upstream.address(), config_options(&[server])).await;
-    let mut expected_requests = 0;
-    if mode == SingleConnect::Accept {
-        let warm =
-            single_request(daemon.port, Kind::Accounting, &format!("{USER_PREFIX}warm")).await;
-        assert!(succeeded(&warm), "TLS single-connect warmup failed: {warm:?}");
-        assert_eq!(upstream.connections_accepted(), 1);
-        expected_requests += 1;
-    }
     let traffic = match mode {
         SingleConnect::Accept => heavy(true),
         SingleConnect::Decline => Traffic {
@@ -241,17 +233,16 @@ async fn tls_traffic_case(upstream: &Upstream, mut server: TacacsPlusServer, mod
             ascii_authentication: false,
         },
     };
-    expected_requests += traffic.total();
     let tally = run_traffic(daemon.port, traffic, "tls").await;
     tally.assert_all_succeeded(traffic.total());
-    assert_eq!(upstream.received_total(), expected_requests);
+    assert_eq!(upstream.received_total(), traffic.total());
     assert_eq!(upstream.handshake_failures(), 0);
     match mode {
         SingleConnect::Accept => assert_eq!(
             upstream.connections_accepted(),
             1,
             "TLS single-connect was not reused across {} requests",
-            expected_requests
+            traffic.total()
         ),
         SingleConnect::Decline => {
             assert!(upstream.connections_accepted() >= traffic.total());
@@ -643,9 +634,6 @@ async fn ipc_and_proxy_traffic_share_upstream_connections() {
     let upstream = Upstream::start(SingleConnect::Accept).await;
     let daemon =
         Daemon::start(upstream.address(), ipc_options("deferred-failover", 5, Vec::new())).await;
-    let warm = single_request(daemon.port, Kind::Accounting, &format!("{USER_PREFIX}warm")).await;
-    assert!(succeeded(&warm), "single-connect warmup failed: {warm:?}");
-    assert_eq!(upstream.connections_accepted(), 1);
     let socket = daemon.socket();
     const IPC_CLIENTS: usize = 8;
     const IPC_OPERATIONS: usize = 30;
@@ -678,12 +666,40 @@ async fn ipc_and_proxy_traffic_share_upstream_connections() {
     }
     tally.assert_all_succeeded(traffic.total());
     assert!(failures.is_empty(), "IPC requests failed: {failures:#?}");
-    let total = 1 + traffic.total() + (IPC_CLIENTS * IPC_OPERATIONS) as u64;
+    let total = traffic.total() + (IPC_CLIENTS * IPC_OPERATIONS) as u64;
     assert_eq!(upstream.received_total(), total);
     assert_eq!(
         upstream.connections_accepted(),
         1,
         "IPC and proxy traffic did not share one connection across {total} requests",
+    );
+    daemon.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn runtime_policy_accounting_watchdog_preflight_promotes_even_on_error_reply() {
+    let upstream = Upstream::start(SingleConnect::Accept).await;
+    upstream.set_plan(Arc::new(|request| {
+        if request.user == "tacacsrs-preflight" {
+            Fault::Error
+        } else {
+            Fault::None
+        }
+    }));
+
+    let mut options = ipc_options("deferred-failover", 5, Vec::new());
+    options.policy["connect-preflight"] = serde_json::json!("accounting-watchdog");
+    let daemon = Daemon::start(upstream.address(), options).await;
+
+    let traffic = heavy(true);
+    let tally = run_traffic(daemon.port, traffic, "preflight").await;
+    tally.assert_all_succeeded(traffic.total());
+    assert_eq!(upstream.injected(Fault::Error), 1);
+    assert_eq!(upstream.received_total(), 1 + traffic.total());
+    assert_eq!(
+        upstream.connections_accepted(),
+        1,
+        "preflight and user traffic must share the single promoted connection",
     );
     daemon.stop().await;
 }

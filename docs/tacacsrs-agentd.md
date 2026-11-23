@@ -415,7 +415,9 @@ In both cases, new sessions stay on C between recovery trials. If A’s recovery
 
 ## Startup Warm-up
 
-The daemon creates server connections on first use. The optional upstream watchdog acts as an in-process client and submits accounting `WATCHDOG` records. It uses normal client API admission, request deadlines, retry policy, and networking recovery. The watchdog does not select endpoints or change circuits itself. It does not test authentication or authorization routes.
+The daemon creates server connections on first use by default. When a server enables `single-connection`, concurrent sessions wait for the first reply on the new connection before multiplexing onto that connection or falling back to dedicated connections. Set `connect-preflight` to `accounting-watchdog` in the [runtime policy](#runtime-policy) to send an accounting `WATCHDOG` probe when opening an accounting-capable upstream client; any valid accounting reply proves transport reachability and discovers single-connection support ahead of user traffic.
+
+The optional periodic upstream watchdog acts as an in-process client and submits accounting `WATCHDOG` records. It uses normal client API admission, request deadlines, retry policy, and networking recovery. The watchdog does not select endpoints or change circuits itself. It does not test authentication or authorization routes.
 
 ## Runtime Policy
 
@@ -435,6 +437,7 @@ failover for both local services:
         "failover-recovery-interval-seconds": 30,
         "client-api-failover-strategy": "ordered-safe-retry",
         "tacacs-proxy-failover-strategy": "ordered-safe-retry",
+        "connect-preflight": "disabled",
         "authentication": {
             "max-body-length": 4096,
             "max-concurrent-requests": 64,

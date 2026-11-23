@@ -49,11 +49,29 @@ impl SharedSession {
     }
 
     pub(crate) async fn send_packet(&self, packet: Packet) -> anyhow::Result<()> {
+        if let Some(manager) = &self.manager {
+            manager.expect_conversation_reply(
+                self.id,
+                super::ExpectedResponseHeader::for_request(&packet),
+            );
+        }
         self.duplex_channel.send_packet(packet).await
     }
 
     pub(crate) async fn receive_packet(&self) -> anyhow::Result<Packet> {
-        self.duplex_channel.receive_packet().await
+        let result = self.duplex_channel.receive_packet().await;
+        if result.is_err() {
+            if let Some(connection) = &self.connection_owner {
+                connection.wait_driver_finished().await;
+            }
+        }
+        result
+    }
+
+    pub(crate) async fn reject_malformed_response(&self) {
+        if let Some(connection) = &self.connection_owner {
+            connection.abort_malformed().await;
+        }
     }
 
     #[cfg(test)]

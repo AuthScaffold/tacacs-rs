@@ -126,8 +126,12 @@ impl ServiceRuntime<ServiceConnector> {
             servers.into_iter().map(Arc::new).collect(),
             configuration_applied,
             crate::UpstreamRevocation::default(),
-            |guard, revocation| {
-                ServiceConnector(NetworkUpstreamConnector::new(guard, revocation).erased())
+            |guard, revocation, policy| {
+                ServiceConnector(
+                    NetworkUpstreamConnector::new(guard, revocation)
+                        .with_runtime_policy(policy)
+                        .erased(),
+                )
             },
         )
     }
@@ -145,7 +149,7 @@ impl ServiceRuntime<ServiceConnector> {
             servers.into_iter().map(Arc::new).collect(),
             true,
             crate::UpstreamRevocation::default(),
-            |_, _| ServiceConnector(connector),
+            |_, _, _| ServiceConnector(connector),
         )
     }
 }
@@ -160,15 +164,24 @@ where
         servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
         configuration_applied: bool,
         revocation: crate::UpstreamRevocation,
-        factory: impl FnOnce(ProxyLoopGuard, crate::UpstreamRevocation) -> Connector,
+        factory: impl FnOnce(
+            ProxyLoopGuard,
+            crate::UpstreamRevocation,
+            crate::runtime::RuntimePolicyView,
+        ) -> Connector,
     ) -> anyhow::Result<Self> {
         let local_services =
             LocalServicesState::new(ActiveLocalServices::new(config.local_services.clone())?);
+        let runtime_policy = ConfigPublisher::new(Arc::new(config.runtime_policy.clone()));
         revocation.set_default_network(tacacsrs_networking::RevocationNetwork::new(
             tacacsrs_networking::LocalBinding::default(),
             Some(Arc::new(local_services.proxy_loop_guard().clone())),
         ));
-        let connector = factory(local_services.proxy_loop_guard().clone(), revocation.clone());
+        let connector = factory(
+            local_services.proxy_loop_guard().clone(),
+            revocation.clone(),
+            runtime_policy.view(),
+        );
         let proxy_policy = if !configuration_applied
             && config.local_services.proxy_credential_source
                 == tacacsrs_config::tacacsrs::ProxyCredentialSource::LocalProxyRow
@@ -189,7 +202,7 @@ where
         manager.publish_initial_health(configuration_applied);
 
         Ok(Self {
-            runtime_policy: ConfigPublisher::new(Arc::new(config.runtime_policy.clone())),
+            runtime_policy,
             config,
             local_services,
             manager,

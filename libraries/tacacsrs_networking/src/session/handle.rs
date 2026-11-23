@@ -76,8 +76,18 @@ impl ClientSession {
         if let Some(counters) = &self.counters {
             counters.request_timeout();
         }
-        if let ClientSessionInner::Dedicated(session) = &self.inner {
-            session.record_timeout();
+        match &self.inner {
+            ClientSessionInner::Shared(session) => {
+                if let Some(connection) = &session.connection_owner {
+                    connection.record_negotiation_timeout();
+                }
+            }
+            ClientSessionInner::SharedFixed(session) => {
+                if let Some(connection) = &session.connection_owner {
+                    connection.record_negotiation_timeout();
+                }
+            }
+            ClientSessionInner::Dedicated(session) => session.record_timeout(),
         }
     }
 
@@ -102,8 +112,10 @@ impl ClientSession {
     }
 
     pub(crate) async fn reject_malformed_response(&self) {
-        if let ClientSessionInner::Dedicated(session) = &self.inner {
-            session.reject_malformed_response().await;
+        match &self.inner {
+            ClientSessionInner::Shared(session) => session.reject_malformed_response().await,
+            ClientSessionInner::SharedFixed(_) => {}
+            ClientSessionInner::Dedicated(session) => session.reject_malformed_response().await,
         }
     }
 

@@ -30,19 +30,65 @@ struct ActiveSessionEntry {
 
 #[derive(Debug)]
 enum ActiveSessionRoute {
-    Conversation(mpsc::Sender<Packet>),
+    Conversation {
+        sender: mpsc::Sender<Packet>,
+        expected_reply: Option<ExpectedResponseHeader>,
+        completed_round_trip: bool,
+    },
     Fixed {
         sender: Option<oneshot::Sender<anyhow::Result<Packet>>>,
         expected: ExpectedResponseHeader,
     },
 }
 
-enum DispatchTarget {
-    Conversation(mpsc::Sender<Packet>),
+pub(crate) enum PreparedDispatch {
+    Conversation {
+        session_id: u32,
+        sender: mpsc::Sender<Packet>,
+        packet: Packet,
+    },
     Fixed {
         sender: oneshot::Sender<anyhow::Result<Packet>>,
-        expected: ExpectedResponseHeader,
+        packet: Packet,
     },
+}
+
+impl PreparedDispatch {
+    pub(crate) async fn deliver(self, manager: &SessionManager) -> Result<(), PacketDispatchError> {
+        match self {
+            Self::Conversation {
+                session_id,
+                sender,
+                packet,
+            } => {
+                let correlation = tacacsrs_protocol::header::wire_correlation(session_id);
+                log::trace!(
+                    target: "tacacsrs_networking::session::manager::send_message_to_session",
+                    "Found channel for correlation {correlation}. Sending packet to the session"
+                );
+
+                match sender.send(packet).await {
+                    Ok(()) => Ok(()),
+                    Err(e) => {
+                        manager.remove_session(session_id);
+
+                        log::warn!(
+                            target: "tacacsrs_networking::session::manager::send_message_to_session",
+                            "Failed to send packet to channel for correlation {correlation}: {e}"
+                        );
+
+                        Err(PacketDispatchError::SessionClosed(session_id))
+                    }
+                }
+            }
+            Self::Fixed { sender, packet } => {
+                let session_id = packet.header().session_id;
+                sender
+                    .send(Ok(packet))
+                    .map_err(|_| PacketDispatchError::SessionClosed(session_id))
+            }
+        }
+    }
 }
 
 /// Header metadata a fixed exchange requires from its single reply.
@@ -64,7 +110,6 @@ impl ExpectedResponseHeader {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn for_request(packet: &Packet) -> Self {
         let header = packet.header();
         Self {
@@ -142,6 +187,9 @@ pub(crate) struct SessionManager {
     /// This state is `Initial` until the first session starts.
     single_connection_state: Mutex<SingleConnectionState>,
 
+    /// One-shot capability publication settled on the first validated reply.
+    publication: Mutex<Option<crate::single_connect::FirstReplyPublication>>,
+
     /// Notifies waiters when they must close the connection.
     /// Closure follows retirement or unsupported single-connect mode once all sessions finish.
     close_notify: Notify,
@@ -153,7 +201,21 @@ impl SessionManager {
         Self::with_state(SingleConnectionState::Initial)
     }
 
+    #[cfg(test)]
     pub(crate) fn with_state(initial_state: SingleConnectionState) -> Self {
+        Self::build(initial_state, None)
+    }
+
+    pub(crate) fn with_publication(
+        publication: crate::single_connect::FirstReplyPublication,
+    ) -> Self {
+        Self::build(SingleConnectionState::Initial, Some(publication))
+    }
+
+    fn build(
+        initial_state: SingleConnectionState,
+        publication: Option<crate::single_connect::FirstReplyPublication>,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel::<Packet>(CONNECTION_QUEUE_CAPACITY);
 
         Self {
@@ -163,8 +225,16 @@ impl SessionManager {
             session_id_allocator: SessionIdAllocator::new(),
             can_accept_new_sessions: AtomicBool::new(true),
             single_connection_state: initial_state.into(),
+            publication: Mutex::new(publication),
             close_notify: Notify::new(),
         }
+    }
+
+    pub(crate) fn take_publication(&self) -> Option<crate::single_connect::FirstReplyPublication> {
+        self.publication
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
     }
 
     fn routes(&self) -> std::sync::MutexGuard<'_, HashMap<u32, ActiveSessionEntry>> {
@@ -189,10 +259,19 @@ impl SessionManager {
 
     /// Retires an idle connection without racing new session creation.
     pub(crate) fn retire_if_idle(&self) -> bool {
-        let routes = self.routes();
-        if !routes.is_empty() {
+        let mut routes = self.routes();
+        let all_idle = routes.values().all(|entry| match &entry.route {
+            ActiveSessionRoute::Conversation {
+                expected_reply,
+                completed_round_trip,
+                ..
+            } => expected_reply.is_none() && *completed_round_trip,
+            ActiveSessionRoute::Fixed { sender, .. } => sender.is_none(),
+        });
+        if !all_idle {
             return false;
         }
+        routes.clear();
         self.can_accept_new_sessions.store(false, Ordering::Release);
         self.close_notify.notify_waiters();
         true
@@ -213,12 +292,31 @@ impl SessionManager {
         routes.insert(
             session_id,
             ActiveSessionEntry {
-                route: ActiveSessionRoute::Conversation(session_sender),
+                route: ActiveSessionRoute::Conversation {
+                    sender: session_sender,
+                    expected_reply: None,
+                    completed_round_trip: false,
+                },
                 _reservation: reserved_session_id,
             },
         );
 
         (duplex_channel, session_id)
+    }
+
+    pub(crate) fn expect_conversation_reply(
+        &self,
+        session_id: u32,
+        expected: ExpectedResponseHeader,
+    ) {
+        let mut routes = self.routes();
+        if let Some(ActiveSessionEntry {
+            route: ActiveSessionRoute::Conversation { expected_reply, .. },
+            ..
+        }) = routes.get_mut(&session_id)
+        {
+            *expected_reply = Some(expected);
+        }
     }
 
     /// Replaces a conversation inbox with a one-shot fixed response route.
@@ -235,7 +333,7 @@ impl SessionManager {
             .ok_or_else(|| anyhow::anyhow!("no route for TACACS+ session {session_id:#x}"))?;
 
         match entry.route {
-            ActiveSessionRoute::Conversation(_) => {
+            ActiveSessionRoute::Conversation { .. } => {
                 entry.route = ActiveSessionRoute::Fixed {
                     sender: Some(sender),
                     expected,
@@ -419,8 +517,16 @@ impl SessionManager {
             // during this check. This prevents creation of a session between the
             // empty-registry check and the close signal.
             if duplex_channels.is_empty() {
+                let state = *self.connection_state();
+                if state == SingleConnectionState::Negotiating {
+                    self.can_accept_new_sessions.store(false, Ordering::Release);
+                    drop(duplex_channels);
+                    drop(self.take_publication());
+                    self.close_notify.notify_waiters();
+                    return;
+                }
                 let should_close = !self.can_accept_new_sessions.load(Ordering::Acquire)
-                    || *self.connection_state() == SingleConnectionState::NotSupported;
+                    || state == SingleConnectionState::NotSupported;
                 drop(duplex_channels);
 
                 if should_close {
@@ -506,9 +612,10 @@ impl SessionManager {
                     ..
                 }) => sender.take(),
                 Some(ActiveSessionEntry {
-                    route: ActiveSessionRoute::Conversation(_),
+                    route: ActiveSessionRoute::Conversation { .. },
                     ..
                 }) => {
+                    routes.remove(&session_id);
                     return PacketDispatchError::ProtocolViolation {
                         session_id,
                         message,
@@ -530,56 +637,59 @@ impl SessionManager {
         }
     }
 
-    /// # Errors
-    /// Returns an error if the session is not found in the registry.
-    pub(crate) async fn send_message_to_session(
+    pub(crate) fn prepare_dispatch(
         &self,
         packet: Packet,
-    ) -> Result<(), PacketDispatchError> {
+    ) -> Result<PreparedDispatch, PacketDispatchError> {
+        self.prepare_dispatch_inner(packet, true)
+    }
+
+    fn prepare_dispatch_inner(
+        &self,
+        packet: Packet,
+        validate_conversation_header: bool,
+    ) -> Result<PreparedDispatch, PacketDispatchError> {
         let session_id = packet.header().session_id;
-        let target = {
-            let mut routes = self.routes();
-            match routes.get_mut(&session_id) {
-                Some(ActiveSessionEntry {
-                    route: ActiveSessionRoute::Conversation(sender),
-                    ..
-                }) => DispatchTarget::Conversation(sender.clone()),
-                Some(ActiveSessionEntry {
-                    route: ActiveSessionRoute::Fixed { sender, expected },
-                    ..
-                }) => DispatchTarget::Fixed {
-                    sender: sender
-                        .take()
-                        .ok_or(PacketDispatchError::SessionClosed(session_id))?,
-                    expected: *expected,
-                },
-                None => return Err(PacketDispatchError::UnknownSession(session_id)),
-            }
-        };
-
-        match target {
-            DispatchTarget::Conversation(sender) => {
-                let correlation = tacacsrs_protocol::header::wire_correlation(session_id);
-                log::trace!(
-                    target: "tacacsrs_networking::session::manager::send_message_to_session",
-                    "Found channel for correlation {correlation}. Sending packet to the session"
-                );
-
-                match sender.send(packet).await {
-                    Ok(()) => Ok(()),
-                    Err(e) => {
-                        self.remove_session(session_id);
-
-                        log::warn!(
-                            target: "tacacsrs_networking::session::manager::send_message_to_session",
-                            "Failed to send packet to channel for correlation {correlation}: {e}"
-                        );
-
-                        Err(PacketDispatchError::SessionClosed(session_id))
+        let mut routes = self.routes();
+        match routes.get_mut(&session_id) {
+            Some(ActiveSessionEntry {
+                route:
+                    ActiveSessionRoute::Conversation {
+                        sender,
+                        expected_reply,
+                        completed_round_trip,
+                    },
+                ..
+            }) => {
+                if let Some(expected) = expected_reply.take() {
+                    if validate_conversation_header {
+                        if let Err(error) = expected.validate(&packet) {
+                            let message = format!("{error:#}");
+                            routes.remove(&session_id);
+                            return Err(PacketDispatchError::ProtocolViolation {
+                                session_id,
+                                message,
+                            });
+                        }
                     }
                 }
+                *completed_round_trip = true;
+                Ok(PreparedDispatch::Conversation {
+                    session_id,
+                    sender: sender.clone(),
+                    packet,
+                })
             }
-            DispatchTarget::Fixed { sender, expected } => {
+            Some(ActiveSessionEntry {
+                route: ActiveSessionRoute::Fixed { sender, expected },
+                ..
+            }) => {
+                let sender = sender
+                    .take()
+                    .ok_or(PacketDispatchError::SessionClosed(session_id))?;
+                let expected = *expected;
+                drop(routes);
+
                 if let Err(error) = expected.validate(&packet) {
                     let message = format!("{error:#}");
                     let _ = sender.send(Err(error));
@@ -589,11 +699,22 @@ impl SessionManager {
                     });
                 }
 
-                sender
-                    .send(Ok(packet))
-                    .map_err(|_| PacketDispatchError::SessionClosed(session_id))
+                Ok(PreparedDispatch::Fixed { sender, packet })
             }
+            None => Err(PacketDispatchError::UnknownSession(session_id)),
         }
+    }
+
+    /// # Errors
+    /// Returns an error if the session is not found in the registry.
+    #[cfg(test)]
+    pub(crate) async fn send_message_to_session(
+        &self,
+        packet: Packet,
+    ) -> Result<(), PacketDispatchError> {
+        self.prepare_dispatch_inner(packet, false)?
+            .deliver(self)
+            .await
     }
 }
 

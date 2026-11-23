@@ -1334,6 +1334,79 @@ pub mod tacacsrs {
         }
     }
 
+    /// Optional readiness and capability-discovery probe run when opening an
+    /// upstream client.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ConnectPreflight {
+        /// Open upstream transports on first use and negotiate single-connection
+        /// capability on the first real reply.
+        Disabled,
+        /// Send an RFC 8907 accounting WATCHDOG probe when creating an
+        /// accounting-capable upstream client. Any valid accounting reply packet
+        /// proves transport reachability and latches single-connection capability
+        /// before user traffic runs.
+        AccountingWatchdog,
+    }
+
+    impl ConnectPreflight {
+        /// All valid values for this YANG enumeration.
+        pub const ALL: &[Self] = &[
+            Self::Disabled,
+            Self::AccountingWatchdog,
+        ];
+
+        /// RFC 7951 JSON string values accepted for this YANG enumeration.
+        pub const ALLOWED_VALUES: &[&str] = &[
+            "disabled",
+            "accounting-watchdog",
+        ];
+
+        /// Returns the RFC 7951 JSON string.
+        #[must_use]
+        pub fn as_rfc7951_str(&self) -> &'static str {
+            match self {
+                Self::Disabled => "disabled",
+                Self::AccountingWatchdog => "accounting-watchdog",
+            }
+        }
+
+        /// Parses an RFC 7951 string into this YANG enumeration.
+        #[must_use]
+        pub fn from_rfc7951_str(s: &str) -> Option<Self> {
+            match s {
+                "disabled" => Some(Self::Disabled),
+                "accounting-watchdog" => Some(Self::AccountingWatchdog),
+                _ => None,
+            }
+        }
+
+        /// Checks whether the given string is a valid RFC 7951 value.
+        #[must_use]
+        pub fn is_valid(s: &str) -> bool {
+            Self::from_rfc7951_str(s).is_some()
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for ConnectPreflight {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+            Self::from_rfc7951_str(&s)
+                .ok_or_else(|| serde::de::Error::unknown_variant(&s, Self::ALLOWED_VALUES))
+        }
+    }
+
+    impl serde::Serialize for ConnectPreflight {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            serializer.serialize_str(self.as_rfc7951_str())
+        }
+    }
+
     /// Authoritative source of downstream proxy obfuscation credentials.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum ProxyCredentialSource {
@@ -1745,6 +1818,7 @@ pub mod tacacsrs {
     fn default_runtime_policy_failover_recovery_interval_seconds() -> u32 { 30 }
     fn default_runtime_policy_client_api_failover_strategy() -> FailoverStrategy { FailoverStrategy::DeferredFailover }
     fn default_runtime_policy_tacacs_proxy_failover_strategy() -> FailoverStrategy { FailoverStrategy::DeferredFailover }
+    fn default_runtime_policy_connect_preflight() -> ConnectPreflight { ConnectPreflight::Disabled }
 
     /// Failover and admission controls for local client API and proxy services.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1798,6 +1872,11 @@ pub mod tacacsrs {
         #[serde(rename = "tacacs-proxy-failover-strategy")]
         #[serde(default = "default_runtime_policy_tacacs_proxy_failover_strategy")]
         pub tacacs_proxy_failover_strategy: FailoverStrategy,
+        /// Optional probe sent when creating an accounting-capable upstream client.
+        /// Servers that do not support accounting skip this probe.
+        #[serde(rename = "connect-preflight")]
+        #[serde(default = "default_runtime_policy_connect_preflight")]
+        pub connect_preflight: ConnectPreflight,
         /// Shared authentication admission limits.
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1823,6 +1902,7 @@ pub mod tacacsrs {
                 failover_recovery_interval_seconds: default_runtime_policy_failover_recovery_interval_seconds(),
                 client_api_failover_strategy: default_runtime_policy_client_api_failover_strategy(),
                 tacacs_proxy_failover_strategy: default_runtime_policy_tacacs_proxy_failover_strategy(),
+                connect_preflight: default_runtime_policy_connect_preflight(),
                 authentication: None,
                 authorization: None,
                 accounting: None,

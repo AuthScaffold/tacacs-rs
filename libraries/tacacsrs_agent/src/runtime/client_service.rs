@@ -240,7 +240,9 @@ impl TacacsClientService {
                 Vec::new(),
                 false,
                 revocation,
-                NetworkUpstreamConnector::new,
+                |guard, revocation, policy| {
+                    NetworkUpstreamConnector::new(guard, revocation).with_runtime_policy(policy)
+                },
             )?,
         })
     }

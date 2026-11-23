@@ -52,12 +52,17 @@ pub(crate) struct MultiplexedConnection {
     session_manager: Arc<SessionManager>,
     runtime: Arc<ConnectionRuntime>,
     driver: OnceLock<DriverTask>,
+    cache_eviction: Option<(
+        Arc<crate::single_connect::SharedConnectionCache>,
+        Arc<crate::single_connect::NegotiationState>,
+    )>,
 }
 
 struct ConnectionRuntime {
     session_manager: Arc<SessionManager>,
     packet_reader: PacketReader,
     packet_writer: PacketWriter,
+    negotiate_single_connect: bool,
 }
 
 struct SessionCleanup(Arc<SessionManager>);
@@ -65,6 +70,7 @@ struct SessionCleanup(Arc<SessionManager>);
 impl Drop for SessionCleanup {
     fn drop(&mut self) {
         self.0.disable_new_sessions();
+        drop(self.0.take_publication());
         self.0.close_all_sessions();
     }
 }
@@ -77,13 +83,31 @@ impl MultiplexedConnection {
             Arc::new(SessionManager::new()),
             obfuscation_key.map(|key| SecretBytes::new(key.to_vec())),
             None,
+            false,
+            None,
+        )
+    }
+
+    /// Creates a connection that negotiates single-connection support on its first reply.
+    #[must_use]
+    pub(crate) fn new_negotiating(
+        obfuscation_key: Option<SecretBytes>,
+        counters: Option<crate::ServerCounters>,
+        publication: crate::single_connect::FirstReplyPublication,
+        shared_connection: Arc<crate::single_connect::SharedConnectionCache>,
+        negotiation_state: Arc<crate::single_connect::NegotiationState>,
+    ) -> Self {
+        Self::with_manager(
+            Arc::new(SessionManager::with_publication(publication)),
+            obfuscation_key,
+            counters,
+            true,
+            Some((shared_connection, negotiation_state)),
         )
     }
 
     /// Creates a connection whose single-connect support has already been confirmed.
-    ///
-    /// Use this when taking over a connection from a dedicated probe exchange that
-    /// received `TAC_PLUS_SINGLE_CONNECT_FLAG` from the server.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn new_single_connect_confirmed(
         obfuscation_key: Option<SecretBytes>,
@@ -93,6 +117,8 @@ impl MultiplexedConnection {
             Arc::new(SessionManager::with_state(SingleConnectionState::Supported)),
             obfuscation_key,
             counters,
+            false,
+            None,
         )
     }
 
@@ -100,6 +126,11 @@ impl MultiplexedConnection {
         session_manager: Arc<SessionManager>,
         obfuscation_key: Option<SecretBytes>,
         counters: Option<crate::ServerCounters>,
+        negotiate_single_connect: bool,
+        cache_eviction: Option<(
+            Arc<crate::single_connect::SharedConnectionCache>,
+            Arc<crate::single_connect::NegotiationState>,
+        )>,
     ) -> Self {
         Self {
             runtime: Arc::new(ConnectionRuntime {
@@ -107,9 +138,11 @@ impl MultiplexedConnection {
                 packet_reader: PacketReader::new(obfuscation_key.clone())
                     .with_counters(counters.clone()),
                 packet_writer: PacketWriter::new(obfuscation_key).with_counters(counters),
+                negotiate_single_connect,
             }),
             session_manager,
             driver: OnceLock::new(),
+            cache_eviction,
         }
     }
 
@@ -119,16 +152,57 @@ impl MultiplexedConnection {
         W: AsyncWrite + Unpin + Send + 'static,
     {
         let runtime = Arc::clone(&self.runtime);
+        let owner = Arc::downgrade(self);
         self.driver.get_or_init(|| {
             let cleanup = SessionCleanup(Arc::clone(&self.session_manager));
             DriverTask::spawn(async move {
                 let _cleanup = cleanup;
                 runtime
-                    .handle_connection_with_halves(reader, writer)
+                    .handle_connection_with_halves(reader, writer, Some(owner))
                     .await
                     .map_err(|error| error.context(ConnectionFailure))
             })
         });
+    }
+
+    async fn evict_from_cache(self: &Arc<Self>) {
+        if let Some((cache, state)) = &self.cache_eviction {
+            cache
+                .evict_if_same(self, || state.update(SingleConnectionState::Initial))
+                .await;
+        }
+    }
+
+    pub(crate) async fn abort_malformed(self: &Arc<Self>) {
+        self.session_manager.disable_new_sessions();
+        drop(self.session_manager.take_publication());
+        if let Some(counters) = self.runtime.packet_writer.counters() {
+            counters.disconnect_reason(crate::DisconnectReason::MalformedPacket);
+        }
+        self.evict_from_cache().await;
+        if let Some(driver) = self.driver.get() {
+            let _ = driver
+                .join_until(
+                    crate::RequestDeadline::after(std::time::Duration::ZERO)
+                        .expect("zero duration fits instant"),
+                )
+                .await;
+        }
+    }
+
+    pub(crate) async fn wait_driver_finished(&self) {
+        if let Some(driver) = self.driver.get() {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(1), driver.wait_finished())
+                .await;
+        }
+    }
+
+    pub(crate) fn record_negotiation_timeout(&self) {
+        if self.session_manager.single_connection_state() == SingleConnectionState::Negotiating {
+            if let Some(counters) = self.runtime.packet_writer.counters() {
+                counters.disconnect_reason(crate::DisconnectReason::NoResponse);
+            }
+        }
     }
 
     pub(crate) async fn close_and_join(
@@ -153,7 +227,7 @@ impl MultiplexedConnection {
         W: AsyncWrite + Unpin + Send,
     {
         self.runtime
-            .handle_connection_with_halves(reader, writer)
+            .handle_connection_with_halves(reader, writer, None)
             .await
     }
 }
@@ -163,13 +237,14 @@ impl ConnectionRuntime {
         &self,
         reader: R,
         mut writer: W,
+        owner: Option<std::sync::Weak<MultiplexedConnection>>,
     ) -> anyhow::Result<()>
     where
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send,
     {
         let mut reader = BufReader::new(reader);
-        self.handle_connection_halves(&mut reader, &mut writer)
+        self.handle_connection_halves(&mut reader, &mut writer, owner)
             .await
     }
 
@@ -177,6 +252,7 @@ impl ConnectionRuntime {
         &self,
         reader: &mut R,
         writer: &mut W,
+        owner: Option<std::sync::Weak<MultiplexedConnection>>,
     ) -> anyhow::Result<()>
     where
         R: AsyncBufRead + Unpin + Send,
@@ -193,6 +269,7 @@ impl ConnectionRuntime {
                 receiver,
                 writer,
                 Arc::clone(&self.session_manager),
+                self.negotiate_single_connect,
             )
             .await
             {
@@ -208,7 +285,7 @@ impl ConnectionRuntime {
         };
 
         let read_future = async {
-            match self.read_handler(reader).await {
+            match self.read_handler(reader, owner).await {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     log::error!(
@@ -258,6 +335,7 @@ impl ConnectionRuntime {
     async fn read_handler<R: AsyncBufRead + Unpin + Send>(
         &self,
         reader: &mut R,
+        owner: Option<std::sync::Weak<MultiplexedConnection>>,
     ) -> anyhow::Result<()> {
         let mut local_state = LocalSingleConnectState::default();
 
@@ -301,6 +379,9 @@ impl ConnectionRuntime {
                         target: "tacacsrs_networking::connection::multiplexed::read_handler",
                         "Failed to parse TACACS+ packet header: {error}"
                     );
+                    if let Some(conn) = owner.as_ref().and_then(std::sync::Weak::upgrade) {
+                        conn.evict_from_cache().await;
+                    }
                     return Err(protocol_failure(
                         error.context("failed to parse TACACS+ packet header"),
                     ));
@@ -315,6 +396,9 @@ impl ConnectionRuntime {
                         target: "tacacsrs_networking::connection::multiplexed::read_handler",
                         "Rejected packet for correlation {correlation}: body length {body_length} exceeds maximum {max_length}. Closing the connection to prevent packet framing errors."
                     );
+                    if let Some(conn) = owner.as_ref().and_then(std::sync::Weak::upgrade) {
+                        conn.evict_from_cache().await;
+                    }
                     let error = protocol_failure(anyhow::Error::msg(format!(
                         "Packet body length {body_length} exceeds maximum {max_length}"
                     )));
@@ -342,10 +426,28 @@ impl ConnectionRuntime {
             };
 
             let flag = SingleConnectFlag::from_packet(&packet);
-            local_state = local_state.process_packet(flag, &self.session_manager);
 
-            match self.session_manager.send_message_to_session(packet).await {
-                Ok(()) => {}
+            match self.session_manager.prepare_dispatch(packet) {
+                Ok(dispatch) => {
+                    local_state = local_state.process_packet(flag, &self.session_manager);
+                    if let Some(publication) = self.session_manager.take_publication() {
+                        if let Some(conn) = owner.as_ref().and_then(std::sync::Weak::upgrade) {
+                            publication
+                                .settle(&conn, flag, self.packet_writer.counters().as_ref())
+                                .await;
+                        }
+                    }
+                    if let Err(
+                        PacketDispatchError::UnknownSession(_)
+                        | PacketDispatchError::SessionClosed(_),
+                    ) = dispatch.deliver(&self.session_manager).await
+                    {
+                        log::debug!(
+                            target: "tacacsrs_networking::connection::multiplexed::read_handler",
+                            "Ignoring response for a session that is no longer active"
+                        );
+                    }
+                }
                 Err(
                     PacketDispatchError::UnknownSession(_) | PacketDispatchError::SessionClosed(_),
                 ) => {
@@ -357,6 +459,9 @@ impl ConnectionRuntime {
                 Err(error @ PacketDispatchError::ProtocolViolation { .. }) => {
                     if let Some(counters) = self.packet_writer.counters() {
                         counters.disconnect_reason(crate::DisconnectReason::MalformedPacket);
+                    }
+                    if let Some(conn) = owner.as_ref().and_then(std::sync::Weak::upgrade) {
+                        conn.evict_from_cache().await;
                     }
                     return Err(error.into());
                 }

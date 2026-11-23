@@ -187,6 +187,7 @@ impl Default for RuntimeCandidateLimits {
 pub struct RuntimePolicy {
     client_api_failover_strategy: FailoverStrategy,
     tacacs_proxy_failover_strategy: FailoverStrategy,
+    connect_preflight: tacacsrs_networking::ConnectPreflight,
     operations: OperationPolicies,
     failover_recovery_interval: Duration,
     shutdown_timeout: Duration,
@@ -209,6 +210,7 @@ impl RuntimePolicy {
             tacacs_proxy_failover_strategy: strategy_from_yang(
                 policy.tacacs_proxy_failover_strategy,
             ),
+            connect_preflight: preflight_from_yang(policy.connect_preflight),
             operations: OperationPolicies::new(
                 RequestLimits {
                     max_body_length: authentication.max_body_length as usize,
@@ -266,6 +268,9 @@ impl RuntimePolicy {
             client_api_failover_strategy,
             candidate_limits: RuntimeCandidateLimits::default(),
             tacacs_proxy_failover_strategy,
+            connect_preflight: preflight_from_yang(
+                tacacsrs_config::tacacsrs::RuntimePolicy::default().connect_preflight,
+            ),
             operations,
             failover_recovery_interval,
             shutdown_timeout: Duration::from_secs(u64::from(
@@ -343,6 +348,22 @@ impl RuntimePolicy {
         self.credential_refresh_interval
     }
 
+    /// Overrides the connection preflight policy for accounting-capable upstreams.
+    #[must_use]
+    pub const fn with_connect_preflight(
+        mut self,
+        connect_preflight: tacacsrs_networking::ConnectPreflight,
+    ) -> Self {
+        self.connect_preflight = connect_preflight;
+        self
+    }
+
+    /// Returns the connection preflight policy for accounting-capable upstreams.
+    #[must_use]
+    pub const fn connect_preflight(&self) -> tacacsrs_networking::ConnectPreflight {
+        self.connect_preflight
+    }
+
     /// Returns admission limits derived from the canonical candidate policy.
     #[must_use]
     pub const fn candidate_limits(&self) -> RuntimeCandidateLimits {
@@ -374,6 +395,19 @@ const fn strategy_from_yang(
         }
         tacacsrs_config::tacacsrs::FailoverStrategy::OrderedSafeRetry => {
             FailoverStrategy::OrderedSafeRetry
+        }
+    }
+}
+
+const fn preflight_from_yang(
+    preflight: tacacsrs_config::tacacsrs::ConnectPreflight,
+) -> tacacsrs_networking::ConnectPreflight {
+    match preflight {
+        tacacsrs_config::tacacsrs::ConnectPreflight::Disabled => {
+            tacacsrs_networking::ConnectPreflight::Disabled
+        }
+        tacacsrs_config::tacacsrs::ConnectPreflight::AccountingWatchdog => {
+            tacacsrs_networking::ConnectPreflight::AccountingWatchdog
         }
     }
 }
@@ -438,6 +472,7 @@ mod tests {
             br#"{
             "tacacsrs:runtime-policy": {
                 "client-api-failover-strategy": "ordered-safe-retry",
+                "connect-preflight": "accounting-watchdog",
                 "authentication": {},
                 "authorization": {"max-body-length":8192,"max-concurrent-requests":16,"request-timeout-seconds":12}
             }
@@ -447,6 +482,14 @@ mod tests {
         let original = source.clone();
         let prepared = RuntimePolicy::try_from(&source).unwrap();
         assert_eq!(source, original);
+        assert_eq!(
+            prepared.connect_preflight(),
+            tacacsrs_networking::ConnectPreflight::AccountingWatchdog
+        );
+        assert_eq!(
+            RuntimePolicy::default().connect_preflight(),
+            tacacsrs_networking::ConnectPreflight::Disabled
+        );
         assert_eq!(
             prepared
                 .limits(OperationKind::Authorization)

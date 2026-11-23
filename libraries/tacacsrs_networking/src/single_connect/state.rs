@@ -27,12 +27,14 @@ pub(crate) enum SingleConnectionState {
 
 pub(crate) struct NegotiationState {
     inner: std::sync::Mutex<(SingleConnectionState, u64)>,
+    settled: tokio::sync::Notify,
 }
 
 impl NegotiationState {
     pub(crate) fn new(state: SingleConnectionState) -> Self {
         Self {
             inner: std::sync::Mutex::new((state, 0)),
+            settled: tokio::sync::Notify::new(),
         }
     }
 
@@ -60,36 +62,82 @@ impl NegotiationState {
     }
 
     pub(crate) fn update(&self, value: SingleConnectionState) {
-        let mut state = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.1 = state.1.wrapping_add(1);
-        state.0 = value;
+        let notify = {
+            let mut state = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.1 = state.1.wrapping_add(1);
+            state.0 = value;
+            value != SingleConnectionState::Negotiating
+        };
+        if notify {
+            self.settled.notify_waiters();
+        }
     }
 
     pub(crate) fn abandon(&self, epoch: u64) {
-        let mut state = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.1 == epoch && state.0 == SingleConnectionState::Negotiating {
-            state.0 = SingleConnectionState::Initial;
+        let abandoned = {
+            let mut state = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.1 == epoch && state.0 == SingleConnectionState::Negotiating {
+                state.0 = SingleConnectionState::Initial;
+                true
+            } else {
+                false
+            }
+        };
+        if abandoned {
+            self.settled.notify_waiters();
         }
     }
 
     pub(crate) fn settle(&self, epoch: u64, supported: bool, publish: impl FnOnce()) {
-        let mut state = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.1 == epoch && state.0 == SingleConnectionState::Negotiating {
-            publish();
-            state.0 = if supported {
-                SingleConnectionState::Supported
+        let settled = {
+            let mut state = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.1 == epoch && state.0 == SingleConnectionState::Negotiating {
+                publish();
+                state.0 = if supported {
+                    SingleConnectionState::Supported
+                } else {
+                    SingleConnectionState::NotSupported
+                };
+                true
             } else {
-                SingleConnectionState::NotSupported
-            };
+                false
+            }
+        };
+        if settled {
+            self.settled.notify_waiters();
+        }
+    }
+
+    pub(crate) fn wake_waiters(&self) {
+        self.settled.notify_waiters();
+    }
+
+    pub(crate) async fn wait_while_negotiating(
+        &self,
+        is_open: impl Fn() -> anyhow::Result<()>,
+        deadline: Option<crate::RequestDeadline>,
+    ) -> anyhow::Result<()> {
+        loop {
+            let notified = self.settled.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            is_open()?;
+            if self.snapshot() != SingleConnectionState::Negotiating {
+                return Ok(());
+            }
+            match deadline {
+                Some(deadline) => deadline.run(notified).await?,
+                None => notified.await,
+            }
         }
     }
 }

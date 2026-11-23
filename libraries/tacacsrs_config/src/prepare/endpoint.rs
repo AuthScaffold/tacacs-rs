@@ -140,6 +140,9 @@ pub fn prepare_endpoint(
                 .with_timeout(server.timeout_duration())
                 .with_preflight(options.preflight),
         )
+        .with_supports_accounting(
+            server.supports_server_type(crate::TacacsPlusServerType::ACCOUNTING),
+        )
         .with_preparation_payload(payload.clone())
     };
     if let Some(epsk) = server

@@ -678,24 +678,16 @@ async fn healthy_case(mode: SingleConnect, dedicated_upstream: bool, single_conn
     )
     .await;
     let reuse_upstream = mode == SingleConnect::Accept && !dedicated_upstream;
-    let mut expected_requests = 0;
-    if reuse_upstream {
-        let warm =
-            single_request(daemon.port, Kind::Accounting, &format!("{USER_PREFIX}warm")).await;
-        assert!(succeeded(&warm), "single-connect warmup failed: {warm:?}");
-        assert_eq!(upstream.connections_accepted(), 1);
-        expected_requests += 1;
-    }
     let traffic = heavy(single_connect);
-    expected_requests += traffic.total();
     let tally = run_traffic(daemon.port, traffic, "healthy").await;
     tally.assert_all_succeeded(traffic.total());
-    assert_eq!(upstream.received_total(), expected_requests);
+    assert_eq!(upstream.received_total(), traffic.total());
     if reuse_upstream {
         assert_eq!(
             upstream.connections_accepted(),
             1,
-            "upstream single-connect was not reused across {expected_requests} requests",
+            "upstream single-connect was not reused across {} requests",
+            traffic.total()
         );
     } else {
         assert!(
@@ -1123,12 +1115,36 @@ async fn admission_limit_bounds_upstream_concurrency_and_sheds_excess_load() {
 
 /// Starts 48 slow requests on 16 clients, then drops every client.
 async fn abandon_slow_requests(daemon: &Daemon, upstream: &Upstream) {
-    upstream.set_plan(Arc::new(|_| Fault::Delay(Duration::from_secs(3))));
+    upstream.set_plan(Arc::new(|request| {
+        if request.user.contains("abandoned/") {
+            Fault::Delay(Duration::from_secs(3))
+        } else {
+            Fault::None
+        }
+    }));
+    let warm =
+        single_request(daemon.port, Kind::Accounting, &format!("{USER_PREFIX}negotiate/upstream"))
+            .await;
+    assert!(succeeded(&warm), "upstream single-connect negotiation failed: {warm:?}");
     let mut abandoned = JoinSet::new();
     for client_index in 0..16 {
         let port = daemon.port;
         abandoned.spawn(async move {
-            let client = Arc::new(proxy_client(port, client_index % 2 == 0).await.unwrap());
+            let single_connect = client_index % 2 == 0;
+            let client = Arc::new(proxy_client(port, single_connect).await.unwrap());
+            if single_connect {
+                let negotiated = run_operation(
+                    &client,
+                    Kind::Accounting,
+                    &format!("{USER_PREFIX}negotiate/c{client_index}"),
+                )
+                .await
+                .unwrap();
+                assert!(
+                    succeeded(&negotiated),
+                    "single-connect negotiation failed: {negotiated:?}"
+                );
+            }
             let mut requests = JoinSet::new();
             for index in 0..3 {
                 let client = Arc::clone(&client);

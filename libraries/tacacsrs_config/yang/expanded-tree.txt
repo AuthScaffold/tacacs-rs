@@ -286,6 +286,7 @@ module: tacacsrs
        +--rw failover-recovery-interval-seconds?    uint32
        +--rw client-api-failover-strategy?          failover-strategy
        +--rw tacacs-proxy-failover-strategy?        failover-strategy
+       +--rw connect-preflight?                     connect-preflight
        +--rw authentication
        |  +--rw request-timeout-seconds?   uint32
        |  +--rw max-body-length?           uint32

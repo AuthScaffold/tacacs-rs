@@ -15,7 +15,7 @@ use super::connection::UpstreamConnection;
 #[cfg(test)]
 use super::connection::UpstreamConnector;
 use super::{OperationKind, UpstreamRequestError, UpstreamRevocation};
-use crate::runtime::ProxyLoopGuard;
+use crate::runtime::{ProxyLoopGuard, RuntimePolicyView};
 
 /// Production connector backed by [`tacacsrs_networking`].
 ///
@@ -24,6 +24,7 @@ use crate::runtime::ProxyLoopGuard;
 pub(crate) struct NetworkUpstreamConnector {
     proxy_loop_guard: ProxyLoopGuard,
     revocation: UpstreamRevocation,
+    runtime_policy: Option<RuntimePolicyView>,
 }
 
 impl NetworkUpstreamConnector {
@@ -34,7 +35,13 @@ impl NetworkUpstreamConnector {
         Self {
             proxy_loop_guard,
             revocation,
+            runtime_policy: None,
         }
+    }
+
+    pub(crate) fn with_runtime_policy(mut self, runtime_policy: RuntimePolicyView) -> Self {
+        self.runtime_policy = Some(runtime_policy);
+        self
     }
 
     #[cfg(test)]
@@ -67,6 +74,10 @@ impl tacacsrs_networking::routed::EndpointConnector for NetworkUpstreamConnector
         _operation: OperationKind,
     ) -> anyhow::Result<Arc<Self::Connection>> {
         let address = endpoint.address().to_string();
+        let endpoint = match &self.runtime_policy {
+            Some(policy) => endpoint.with_preflight(policy.current().connect_preflight()),
+            None => endpoint,
+        };
         let endpoint = self
             .revocation
             .attach(endpoint.with_connection_guard(self.proxy_loop_guard.clone()))
