@@ -27,7 +27,7 @@ renamed dependency still maps to its real crate.
 
 `rules.json` has two sections.
 
-`allowed_workspace_edges` maps each of the 21 workspace packages to the set of
+`allowed_workspace_edges` maps each workspace package to the set of
 other workspace packages it may depend on through production edges. The set is a
 superset across supported platforms. A platform-specific edge, such as
 `tacon -> tacacsrs-ipc` on Linux, is listed once. Platform filtering removes it
@@ -79,25 +79,16 @@ The validator exits non-zero and prints each error when it finds a violation.
 
 ## Action usage
 
-Run the check for each supported target. Linux and Windows resolve different
-platform graphs.
+`.github/steps/run-tests/action.yml` runs this check for each supported target.
+Linux and Windows resolve different platform graphs.
 
 ```yaml
-- name: Check architecture (Linux)
+- name: Enforce the production dependency architecture
   uses: ./.github/steps/check-architecture
   with:
-    target: x86_64-unknown-linux-gnu
-    all-features: 'true'
-
-- name: Check architecture (Windows)
-  uses: ./.github/steps/check-architecture
-  with:
-    target: x86_64-pc-windows-msvc
+    target: ${{ inputs.target }}
     all-features: 'true'
 ```
-
-Wiring this step into the CI workflow and removing the inline guards from
-`run-tests` is a separate integration task.
 
 ## Tests
 
@@ -105,15 +96,15 @@ Wiring this step into the CI workflow and removing the inline guards from
 python3 -m pytest .github/steps/check-architecture
 ```
 
-The tests are hermetic. They build synthetic metadata from the shipped
-`rules.json`, then inject each failure category: every forbidden guard, an
-unknown member, an unlisted production edge, allowed development and build
-edges, a platform-filtered edge, renamed dependencies, and product matrix
-mismatches.
+The tests are hermetic. They read the real workspace member and default-member
+names from `Cargo.toml`, build synthetic metadata from `rules.json`, and inject
+each failure category: every forbidden guard, an unknown member, an unlisted
+production edge, allowed development and build edges, a platform-filtered edge,
+and renamed dependencies.
 
 ## Maintenance
 
 When you add a workspace crate or a production edge, update
-`allowed_workspace_edges`. When you add an external boundary, update
-`forbidden_dependency_guards`. The `test_rules_cover_seventeen_packages` test
-and the golden metadata test keep the rules in step with the workspace.
+`allowed_workspace_edges` in `rules.json`. When you add an external boundary,
+update `forbidden_dependency_guards`. `test_rules_cover_workspace_members` and
+the golden metadata test verify that `rules.json` matches `Cargo.toml`.

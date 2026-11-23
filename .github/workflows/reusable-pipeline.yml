@@ -14,7 +14,7 @@ on:
         default: true
         type: boolean
       include-miri:
-        description: 'Run advisory Miri validation'
+        description: 'Run Miri validation'
         required: false
         default: true
         type: boolean
@@ -33,21 +33,11 @@ on:
         required: false
         default: false
         type: boolean
-      include-clippy-nursery:
-        description: 'Run advisory Clippy style lints'
-        required: false
-        default: true
-        type: boolean
       proto-compat-ref:
         description: 'Git ref for protobuf backward-compatibility validation'
         required: false
         default: 'main'
         type: string
-      include-outdated:
-        description: 'Run outdated-dependency validation'
-        required: false
-        default: true
-        type: boolean
       skip-audit-if-no-dep-changes:
         description: 'If dependency files do not change, skip the security audit'
         required: false
@@ -201,6 +191,7 @@ jobs:
           require-hydrated: ${{ inputs.require-hydrated }}
 
       - name: Install nightly Rust
+        if: runner.os == 'Linux' && inputs.include-fmt
         uses: ./.github/steps/setup-rust
         with:
           toolchain: nightly
@@ -210,15 +201,8 @@ jobs:
           save-if: 'true'
 
       - name: Make sure that formatting is correct
-        if: inputs.include-fmt
+        if: runner.os == 'Linux' && inputs.include-fmt
         uses: ./.github/steps/check-format
-
-      - name: Make sure that dependencies are used
-        uses: ./.github/steps/check-unused-deps
-        with:
-          package-args: ${{ matrix.config.package_args }}
-          target: ${{ matrix.config.target }}
-          feature-args: --all-features
 
       - name: Install stable Rust
         uses: ./.github/steps/setup-rust
@@ -228,6 +212,10 @@ jobs:
           targets: ${{ matrix.config.target }}
           cache-key: stable
           save-if: 'true'
+
+      - name: Make sure that dependencies are used
+        if: runner.os == 'Linux'
+        uses: ./.github/steps/check-unused-deps
 
       - name: Resolve cargo metadata
         uses: ./.github/steps/resolve-cargo-metadata
@@ -254,16 +242,6 @@ jobs:
           target: ${{ matrix.config.target }}
           feature-args: --all-features
 
-      - name: Run advisory Clippy style lints
-        if: inputs.include-clippy-nursery
-        uses: ./.github/steps/run-clippy
-        with:
-          package-args: ${{ matrix.config.package_args }}
-          target: ${{ matrix.config.target }}
-          feature-args: --all-features
-          lint-args: -W clippy::pedantic -W clippy::nursery
-          advisory: 'true'
-
       - name: Build documentation
         uses: ./.github/steps/build-docs
         with:
@@ -276,10 +254,6 @@ jobs:
         uses: ./.github/steps/security-audit
         with:
           skip-if-no-dep-changes: ${{ inputs.skip-audit-if-no-dep-changes }}
-
-      - name: Make sure that dependencies are current
-        if: runner.os == 'Linux' && inputs.include-outdated
-        uses: ./.github/steps/check-outdated
 
       - name: Make sure that protobuf changes are backward-compatible
         if: runner.os == 'Linux' && inputs.include-proto-compat
@@ -304,8 +278,57 @@ jobs:
         if: runner.os == 'Linux'
         uses: ./.github/steps/run-coverage
 
-      - name: Install nightly Rust for extended validation
+      - name: Filter extended validation paths on pull requests
+        id: extended-changes
+        if: runner.os == 'Linux' && github.event_name == 'pull_request' && (inputs.include-miri || inputs.include-fuzz)
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        with:
+          filters: |
+            miri:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'libraries/tacacsrs_secrets/**'
+              - 'libraries/tacacsrs_protocol/**'
+              - 'libraries/tacacsrs_credential_resolution/**'
+              - 'libraries/tacacsrs_lifecycle/**'
+              - 'libraries/tacacsrs_composition/**'
+              - 'libraries/tacacsrs_unix_socket/**'
+              - 'libraries/tacacsrs_ipc/**'
+              - 'libraries/tacacsrs_bash_plugin/**'
+              - '.github/steps/run-miri/**'
+              - '.github/workflows/**'
+            fuzz:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'fuzz/**'
+              - 'libraries/tacacsrs_secrets/**'
+              - 'libraries/tacacsrs_protocol/**'
+              - '.github/steps/run-fuzz-smoke/**'
+              - '.github/workflows/**'
+
+      - name: Determine extended validation scope
+        id: extended-scope
         if: runner.os == 'Linux' && (inputs.include-miri || inputs.include-fuzz)
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_miri="false"
+          run_fuzz="false"
+          if [ "${{ inputs.include-miri }}" = "true" ]; then
+            if [ "${{ github.event_name }}" != "pull_request" ] || [ "${{ steps.extended-changes.outputs.miri }}" = "true" ]; then
+              run_miri="true"
+            fi
+          fi
+          if [ "${{ inputs.include-fuzz }}" = "true" ]; then
+            if [ "${{ github.event_name }}" != "pull_request" ] || [ "${{ steps.extended-changes.outputs.fuzz }}" = "true" ]; then
+              run_fuzz="true"
+            fi
+          fi
+          echo "run_miri=${run_miri}" >> "$GITHUB_OUTPUT"
+          echo "run_fuzz=${run_fuzz}" >> "$GITHUB_OUTPUT"
+
+      - name: Install nightly Rust for extended validation
+        if: runner.os == 'Linux' && (steps.extended-scope.outputs.run_miri == 'true' || steps.extended-scope.outputs.run_fuzz == 'true')
         uses: ./.github/steps/setup-rust
         with:
           toolchain: nightly
@@ -313,7 +336,7 @@ jobs:
           cache-key: nightly
 
       - name: Run Miri
-        if: runner.os == 'Linux' && inputs.include-miri
+        if: runner.os == 'Linux' && steps.extended-scope.outputs.run_miri == 'true'
         uses: ./.github/steps/run-miri
 
       - name: Test fuzz smoke action
@@ -322,7 +345,7 @@ jobs:
         run: python3 .github/steps/run-fuzz-smoke/test_action.py
 
       - name: Run fuzz smoke tests
-        if: runner.os == 'Linux' && inputs.include-fuzz
+        if: runner.os == 'Linux' && steps.extended-scope.outputs.run_fuzz == 'true'
         uses: ./.github/steps/run-fuzz-smoke
 
   ci-success:

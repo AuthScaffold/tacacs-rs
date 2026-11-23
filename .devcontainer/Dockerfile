@@ -39,7 +39,7 @@ RUN python3 -m venv /opt/tacacs-python \
         pyang==2.7.1 pytest==8.4.2 PyYAML==6.0.3 tomlkit==0.15.2
 
 RUN cargo +stable install --locked --root /opt/tacacs-tools \
-        cargo-audit cargo-fuzz cargo-llvm-cov cargo-outdated cargo-udeps mdbook
+        cargo-audit cargo-fuzz cargo-llvm-cov cargo-machete mdbook
 
 COPY --from=bufbuild/buf:1.47.2 /usr/local/bin/buf /usr/local/bin/buf
 

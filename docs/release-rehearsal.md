@@ -81,10 +81,9 @@ The reusable pipeline retains:
 - Windows direct-mode and portable-library tests.
 - The minimum Rust version and default-feature compilation checks.
 - Formatting, Clippy, documentation, coverage, and architecture guards.
-- Dependency audit, unused/outdated dependency checks, and automation tests.
+- Dependency audit, unused dependency checks, and automation tests.
 - Protobuf compatibility, pinned YANG validation, Miri, and fuzz smoke tests.
 
-Existing event-specific settings and advisory lints remain unchanged.
 Required jobs cannot fail, cancel, or unexpectedly skip.
 CI diagnostic artifacts remain separate from release downloads.
 Local product-container recipes and development containers remain available.

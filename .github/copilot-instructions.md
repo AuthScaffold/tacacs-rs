@@ -54,14 +54,15 @@ cargo clippy -p tacacsrs-networking --all-targets --all-features -- -D warnings
 CI also exercises these jobs. When a job is relevant to your changes, run it
 locally. If you cannot run a job, explain why:
 
-- `cargo +nightly udeps --workspace --all-targets` for dependency changes.
-- When dependency freshness matters, run `cargo outdated --workspace --exit-code 1`.
-- `cargo audit` after dependency or lockfile changes.
+- `cargo machete --with-metadata --skip-target-dir . .github/tools/api-classifier`
+  for dependency changes.
+- `cargo audit --file Cargo.lock` after dependency or lockfile changes.
 - `cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info`
   for coverage-sensitive work.
 - `buf breaking --against '.git#branch=main'` after protobuf schema changes.
-- `cargo +nightly miri test --workspace --all-features` for unsafe, FFI, or
-  aliasing-sensitive changes.
+- `MIRIFLAGS=-Zmiri-disable-isolation cargo +nightly miri test --locked --all-features -p tacacsrs-secrets -p tacacsrs-protocol -p tacacsrs-credential-resolution -p tacacsrs-lifecycle -p tacacsrs-composition`
+  and `MIRIFLAGS=-Zmiri-disable-isolation cargo +nightly miri test --locked --all-features -p tacacsrs-bash-plugin --lib`
+  for unsafe, FFI, or aliasing-sensitive changes.
 - `cargo +nightly fuzz run <target> -- -max_total_time=30` for protocol parser
   changes under `fuzz/`.
 
@@ -75,11 +76,9 @@ The full reusable pipeline also runs these additional checks:
 - Tests
 - Coverage
 - Dependency audit
-- Unused dependency check
-- Outdated dependency check
-- Clippy nursery
-- Miri
-- Fuzz smoke tests
+- Unused dependency check (`cargo-machete`)
+- Miri (path-filtered on pull requests; unconditional on `main`, schedules, and manual runs)
+- Fuzz smoke tests (path-filtered on pull requests; unconditional on `main`, schedules, and manual runs)
 - Independent default-feature compilation checks
 - AMD64 and executed ARMhf platform validation
 

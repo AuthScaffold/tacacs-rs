@@ -43,9 +43,7 @@ tacacsrs-ipc = { path = "../../libraries/tacacsrs_ipc" }
 tacacsrs-protocol = { path = "../../libraries/tacacsrs_protocol" }
 tokio-openssl = "0.6.5"
 tokio-util = "0.7.18"
-tonic-health = "0.14.6"
 tokio = { version = "1.52.3", features = ["test-util"] }
-tonic = "0.14.6"
 
 [build-dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
@@ -53,8 +51,9 @@ clap_mangen = "0.3.0"
 tacacsrs-config = { path = "../../libraries/tacacsrs_config" }
 tacacsrs-secrets = { path = "../../libraries/tacacsrs_secrets" }
 
-[package.metadata.cargo-udeps.ignore]
-normal = ["env_logger"]
+# Used in `build.rs`, which `cargo-machete` does not scan.
+[package.metadata.cargo-machete]
+ignored = ["clap_mangen"]
 
 [lints]
 workspace = true

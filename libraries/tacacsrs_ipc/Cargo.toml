@@ -33,5 +33,9 @@ tonic-prost-build = "0.14.6"
 [dev-dependencies]
 tokio = { version = "1.52.3", features = ["test-util"] }
 
+# Used in `build.rs` and `OUT_DIR` generated protobuf bindings.
+[package.metadata.cargo-machete]
+ignored = ["prost", "protoc-bin-vendored", "tonic-prost", "tonic-prost-build"]
+
 [lints]
 workspace = true

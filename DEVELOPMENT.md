@@ -26,10 +26,7 @@ This document describes the development, CI, and release processes for tacacs-rs
 cargo install cargo-llvm-cov
 
 # Unused dependencies check
-cargo install cargo-udeps
-
-# Outdated dependencies check
-cargo install cargo-outdated
+cargo install cargo-machete
 
 # Security audit
 cargo install cargo-audit
@@ -224,7 +221,7 @@ cargo +nightly fmt --all
 ### Linting
 
 Blocking checks include default Clippy, checked numeric conversions, error and panic documentation, unsafe-block explanations, and internal API visibility.
-Broad pedantic and nursery checks are advisory. Function length is not a design requirement.
+Function length is not a design requirement.
 Keep a cohesive state transition together when extraction would hide its sequencing or ownership.
 
 The workspace allows `assert_is_empty` and `chunks_exact_to_as_chunks`.
@@ -232,15 +229,11 @@ Simple emptiness assertions avoid extra type annotations and do not print collec
 Checked chunk iterators keep argument grouping and remainder validation together.
 Keep correctness checks enabled. Add a specific global allowance when a style rule makes the code less clear.
 
-Dependency freshness is a report, not a requirement to adopt unrelated major upgrades.
-Security audits, unused-dependency checks, and tool execution failures remain blocking.
+Security audits, unused-dependency checks, protobuf backward-compatibility checks, Miri, and tool execution failures are blocking.
 
 ```bash
 # Run clippy
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-# Inspect advisory style findings
-cargo clippy --workspace --all-targets --all-features -- -W clippy::pedantic -W clippy::nursery
 
 # Match CI documentation coverage, including private implementation modules
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --document-private-items
@@ -274,14 +267,11 @@ Publication keeps runtime state, health, and coordinator bookkeeping in one non-
 ### Other Checks
 
 ```bash
-# Check for unused dependencies (requires nightly + cargo-udeps)
-cargo +nightly udeps --workspace --all-targets
+# Check for unused dependencies
+cargo machete --with-metadata --skip-target-dir . .github/tools/api-classifier
 
-# Check for outdated dependencies
-cargo outdated --workspace
-
-# Security audit
-cargo audit
+# Security audit against committed Cargo.lock
+cargo audit --file Cargo.lock
 ```
 
 ## YANG Code Generation
@@ -392,9 +382,12 @@ ARMhf, minimum-Rust, and delivery-automation checks remain separate jobs.
 | **ARMhf** | Build and execute tests with QEMU, then validate ABI and startup behavior |
 | **Documentation** | Builds documentation without warnings |
 | **Coverage** | Generate and upload code coverage |
-| **Security Audit** | Finds known vulnerabilities after dependency changes |
+| **Unused Dependencies** | Checks workspace manifests with `cargo-machete` |
+| **Security Audit** | Audits the committed `Cargo.lock` after dependency changes |
+| **Protobuf Compatibility** | Verifies backward compatibility against `main` with `buf breaking` |
 | **YANG Verification** | Offline hash and version check plus generator unit tests for the pinned model (Linux) |
-| **Fuzz Smoke** | Blocking libFuzzer smoke tests for the protocol parsers (Linux, nightly) |
+| **Miri** | Blocking Miri checks for Miri-compatible crates when relevant paths change on PRs, and unconditionally on `main`/scheduled runs |
+| **Fuzz Smoke** | Blocking libFuzzer smoke tests for the protocol parsers when relevant paths change on PRs, and unconditionally on `main`/scheduled runs |
 
 All jobs must pass before you merge the pull request.
 

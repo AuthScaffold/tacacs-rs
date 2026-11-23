@@ -134,7 +134,6 @@ jobs:
     with:
       include-fmt: false
       include-proto-compat: false
-      include-outdated: false
       validation-ref: ${{ needs.prepare-release.outputs.candidate || github.sha }}
       require-hydrated: ${{ needs.prepare-release.result == 'success' }}
       versions: ${{ needs.compute-versions.outputs.versions || '{}' }}

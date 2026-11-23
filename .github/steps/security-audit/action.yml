@@ -31,19 +31,14 @@ runs:
 
     - name: Install cargo-audit
       if: steps.should-run-audit.outputs.run == 'true'
-      uses: taiki-e/install-action@7be9fd86bd1707236395105d6e9329dd1511a7e1 # v2.79.0
+      uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
       with:
         tool: cargo-audit
-
-    - name: Generate Cargo.lock
-      if: steps.should-run-audit.outputs.run == 'true'
-      shell: bash
-      run: cargo generate-lockfile
 
     - name: Run security audit
       if: steps.should-run-audit.outputs.run == 'true'
       shell: bash
-      run: cargo audit
+      run: cargo audit --file Cargo.lock
 
     - name: Skip audit notice
       if: steps.should-run-audit.outputs.run != 'true'

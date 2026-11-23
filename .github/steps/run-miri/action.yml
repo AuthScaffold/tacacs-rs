@@ -1,5 +1,5 @@
 name: Run Miri
-description: Run Miri tests as advisory extended validation
+description: Run Miri validation across Miri-compatible workspace crates
 
 runs:
   using: composite
@@ -9,5 +9,12 @@ runs:
       env:
         MIRIFLAGS: -Zmiri-disable-isolation
       run: |
-        cargo +nightly miri test --workspace --all-features || \
-          echo "::warning::Miri found errors. This validation is advisory, so the workflow continues."
+        set -euo pipefail
+        cargo +nightly miri test --locked --all-features \
+          -p tacacsrs-secrets \
+          -p tacacsrs-protocol \
+          -p tacacsrs-credential-resolution \
+          -p tacacsrs-lifecycle \
+          -p tacacsrs-composition
+        cargo +nightly miri test --locked --all-features \
+          -p tacacsrs-bash-plugin --lib
