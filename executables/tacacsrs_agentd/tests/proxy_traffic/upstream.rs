@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use openssl::ssl::{Ssl, SslContext};
@@ -46,11 +46,26 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-/// Shared secret between the daemon and this upstream fixture.
-pub(crate) const UPSTREAM_KEY: &str = "upstream-fixture-key";
+static UPSTREAM_KEY: OnceLock<String> = OnceLock::new();
+static GOOD_PASSWORD: OnceLock<Vec<u8>> = OnceLock::new();
 
-/// Password that the fixture accepts for PAP and ASCII authentication.
-pub(crate) const GOOD_PASSWORD: &[u8] = b"fixture-password";
+/// Returns a random shared secret for the daemon and this upstream fixture.
+pub(crate) fn upstream_key() -> &'static str {
+    UPSTREAM_KEY.get_or_init(random_fixture_secret)
+}
+
+/// Returns the password that the fixture accepts for PAP and ASCII authentication.
+pub(crate) fn good_password() -> &'static [u8] {
+    GOOD_PASSWORD
+        .get_or_init(|| random_fixture_secret().into_bytes())
+        .as_slice()
+}
+
+fn random_fixture_secret() -> String {
+    let mut bytes = [0; 32];
+    openssl::rand::rand_bytes(&mut bytes).expect("OpenSSL must generate test fixture secrets");
+    openssl::base64::encode_block(&bytes)
+}
 
 /// Response of the fixture to a single-connection request from the daemon.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -587,7 +602,7 @@ async fn respond(
 }
 
 fn key() -> SecretBytes {
-    SecretBytes::new(UPSTREAM_KEY.as_bytes().to_vec())
+    SecretBytes::new(upstream_key().as_bytes().to_vec())
 }
 
 /// Encodes `packet` as the connection would send it.
@@ -692,7 +707,7 @@ fn authentication_reply(request: &Packet, logins: &Logins, error: bool) -> Authe
     };
     let status = if error {
         TacacsAuthenticationStatus::TacPlusAuthenStatusError
-    } else if password == GOOD_PASSWORD {
+    } else if password == good_password() {
         TacacsAuthenticationStatus::TacPlusAuthenStatusPass
     } else {
         TacacsAuthenticationStatus::TacPlusAuthenStatusFail

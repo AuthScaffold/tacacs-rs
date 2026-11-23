@@ -31,7 +31,7 @@ use tacacsrs_protocol::enumerations::{
 use tacacsrs_protocol::header::Header;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
 
-use super::upstream::{self, Fault, GOOD_PASSWORD, Kind, Plan, SingleConnect, UPSTREAM_KEY, Upstream};
+use super::upstream::{self, Fault, Kind, Plan, SingleConnect, Upstream};
 use super::{
     Daemon, OPERATION_LIMIT, Options, Outcome, Status, Traffic, USER_PREFIX, assert_recovers,
     await_recovery, broken_upstream_case, fast_recovery, mixed, once, proxy_client, run_traffic,
@@ -129,7 +129,8 @@ async fn raw_authentication(port: u16, user: &str) -> anyhow::Result<Packet> {
         .session_id()
         .context("the conversation has no session")?;
     let body =
-        start(user, TacacsAuthenticationType::TacPlusAuthenTypePap, GOOD_PASSWORD).to_bytes()?;
+        start(user, TacacsAuthenticationType::TacPlusAuthenTypePap, upstream::good_password())
+            .to_bytes()?;
     let reply = tokio::time::timeout(
         OPERATION_LIMIT,
         conversation.round_trip(request_packet(session_id, 1, body)?),
@@ -180,7 +181,11 @@ async fn ascii_case(mode: SingleConnect, single_connect: bool) {
 
     let client = proxy_client(daemon.port, single_connect).await.unwrap();
     let user = format!("{USER_PREFIX}wrong-password");
-    let rejected = ascii_login(&client, &user, b"not-the-password").await;
+    let wrong_password = upstream::good_password()
+        .iter()
+        .map(|byte| !byte)
+        .collect::<Vec<_>>();
+    let rejected = ascii_login(&client, &user, &wrong_password).await;
     assert!(
         matches!(&rejected, Outcome::Reply { status: Status::Fail, server_msg } if *server_msg == user),
         "a wrong ASCII password must reach its own session as FAIL: {rejected:?}"
@@ -313,7 +318,7 @@ async fn login_abandoned_after_getpass_releases_the_upstream_session() {
 
         let client = proxy_client(daemon.port, true).await.unwrap();
         let user = format!("{USER_PREFIX}after-abandon");
-        let after = ascii_login(&client, &user, GOOD_PASSWORD).await;
+        let after = ascii_login(&client, &user, upstream::good_password()).await;
         assert!(succeeded(&after), "a login after abandoned logins failed in {mode:?}: {after:?}");
         client.stop_accepting_new_sessions().await;
         daemon.stop().await;
@@ -496,7 +501,7 @@ fn server_config(servers: &[SocketAddr]) -> serde_json::Value {
                 "server-type": "authentication authorization accounting",
                 "address": address.ip().to_string(),
                 "port": address.port(),
-                "shared-secret": UPSTREAM_KEY,
+                "shared-secret": upstream::upstream_key(),
                 "single-connection": true,
                 "timeout": 5,
             })

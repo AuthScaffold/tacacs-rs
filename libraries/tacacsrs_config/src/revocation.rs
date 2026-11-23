@@ -87,8 +87,13 @@ mod tests {
 
     #[test]
     fn container_maps_units_and_patterns() {
-        let config = parse(
-            r#","tacacsrs:certificate-revocation":{
+        let cache_directory = if cfg!(windows) {
+            "C:/var/cache/tacacsrs"
+        } else {
+            "/var/cache/tacacsrs"
+        };
+        let config = parse(&format!(
+            r#","tacacsrs:certificate-revocation":{{
                 "enforcement":"soft-fail",
                 "soft-fail-grace-seconds":60,
                 "allowed-distribution-point":["http://**.pki.core.windows.net/**/*.crl"],
@@ -96,8 +101,8 @@ mod tests {
                 "allow-private-addresses":false,
                 "fetch-timeout-seconds":2,
                 "max-crl-bytes":1024,
-                "cache-directory":"/var/cache/tacacsrs"}"#,
-        )
+                "cache-directory":"{cache_directory}"}}"#
+        ))
         .unwrap();
         let settings = revocation_settings(&config).unwrap();
         assert_eq!(settings.enforcement, RevocationEnforcement::SoftFail);
@@ -108,7 +113,7 @@ mod tests {
         assert_eq!(settings.prefetch_distribution_points.len(), 1);
         assert_eq!(
             settings.cache_directory.as_deref(),
-            Some(std::path::Path::new("/var/cache/tacacsrs"))
+            Some(std::path::Path::new(cache_directory))
         );
     }
 

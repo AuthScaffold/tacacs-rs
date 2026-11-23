@@ -233,12 +233,14 @@ def test_platform_selections_cover_expected_workspace_members():
     assert selected["ubuntu-latest"] == members
     assert selected["windows-latest"] == {
         "tacon",
+        "tacacsrs-composition",
         "tacacsrs-config",
-        "tacacsrs-credential-http",
         "tacacsrs-credential-resolution",
+        "tacacsrs-lifecycle",
         "tacacsrs-networking",
         "tacacsrs-protocol",
         "tacacsrs-provider",
+        "tacacsrs-revocation",
         "tacacsrs-secrets",
     }
     assert selected["ubuntu-latest"] - selected["windows-latest"] == set(WINDOWS_EXCLUDED_PACKAGES)

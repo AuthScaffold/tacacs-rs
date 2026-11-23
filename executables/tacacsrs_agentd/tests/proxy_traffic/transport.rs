@@ -41,7 +41,7 @@ use tacacsrs_protocol::operations::{
 use tacacsrs_protocol::privilege::PrivilegeLevel;
 use tacacsrs_secrets::SecretBytes;
 
-use super::upstream::{self, Fault, GOOD_PASSWORD, Kind, SingleConnect, UPSTREAM_KEY, Upstream};
+use super::upstream::{self, Fault, Kind, SingleConnect, Upstream};
 use super::{
     Daemon, OPERATION_LIMIT, Options, Outcome, Status, Traffic, USER_PREFIX, assert_recovers,
     broken_upstream_run, fast_recovery, heavy, mixed, once, recovery, run_traffic, single_request,
@@ -189,7 +189,7 @@ fn server_builder(address: SocketAddr) -> TacacsPlusServerBuilder {
 }
 
 fn plain_server(address: SocketAddr) -> TacacsPlusServerBuilder {
-    server_builder(address).with_shared_secret(UPSTREAM_KEY)
+    server_builder(address).with_shared_secret(upstream::upstream_key())
 }
 
 fn mtls_server(address: SocketAddr) -> TacacsPlusServer {
@@ -627,7 +627,7 @@ async fn ipc_operation(client: &ServiceClient, kind: Kind, user: &str) -> IpcRep
             let result = client
                 .authenticate_pap(PapAuthenticationOperation {
                     user: user.to_owned(),
-                    password: SecretBytes::new(GOOD_PASSWORD.to_vec()),
+                    password: SecretBytes::new(upstream::good_password().to_vec()),
                     port,
                     remote_address,
                     privilege_level: PrivilegeLevel::MAX,

@@ -45,7 +45,7 @@ use tacacsrs_protocol::operations::{
 use tacacsrs_protocol::privilege::PrivilegeLevel;
 use tacacsrs_secrets::SecretBytes;
 
-use upstream::{Fault, GOOD_PASSWORD, Kind, Plan, SingleConnect, UPSTREAM_KEY, Upstream};
+use upstream::{Fault, Kind, Plan, SingleConnect, Upstream};
 
 const DOWNSTREAM_KEY: &str = "downstream-proxy-key";
 
@@ -201,7 +201,7 @@ impl Daemon {
         } else {
             command
                 .args(["--server-addr", &upstream.to_string()])
-                .args(["--shared-secret", UPSTREAM_KEY]);
+                .args(["--shared-secret", upstream::upstream_key()]);
             for backup in &options.backup_servers {
                 command.args(["--server-addr", &backup.to_string()]);
             }
@@ -384,7 +384,7 @@ async fn run_operation(client: &TacacsClient, kind: Kind, user: &str) -> anyhow:
         Kind::Authentication => {
             let operation = PapAuthenticationOperation {
                 user: user.to_owned(),
-                password: SecretBytes::new(GOOD_PASSWORD.to_vec()),
+                password: SecretBytes::new(upstream::good_password().to_vec()),
                 port,
                 remote_address,
                 privilege_level: PrivilegeLevel::MAX,
@@ -609,7 +609,8 @@ async fn run_traffic(port: u16, traffic: Traffic, label: &str) -> Tally {
                         let started = Instant::now();
                         let operation = async {
                             if traffic.ascii_authentication && kind == Kind::Authentication {
-                                coverage::ascii_login(&client, &user, GOOD_PASSWORD).await
+                                coverage::ascii_login(&client, &user, upstream::good_password())
+                                    .await
                             } else {
                                 run_operation(&client, kind, &user).await.unwrap()
                             }
