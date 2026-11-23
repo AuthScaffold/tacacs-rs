@@ -8,11 +8,16 @@ use std::sync::OnceLock;
 use anyhow::{Context, Result};
 use foreign_types::ForeignTypeRef;
 use openssl::ex_data::Index;
-use openssl::ssl::{SslContext, SslContextBuilder, SslRef};
+use openssl::ssl::{SslContext, SslContextBuilder, SslMethod, SslOptions, SslRef, SslVersion};
 use openssl_sys::{SSL, SSL_CIPHER, SSL_CTX, SSL_SESSION, SSL_SESSION_free, TLS1_3_VERSION};
-
 use tacacsrs_config::EpskSupportedHash;
 use tacacsrs_secrets::SecretBytes;
+
+/// OpenSSL `SSL_OP_ALLOW_NO_DHE_KEX` permits TLS 1.3 `psk_ke` without DHE.
+pub const ALLOW_NO_DHE_KEX: SslOptions = SslOptions::from_bits_retain(1 << 10);
+
+/// Peer group absent from the client's default list, forcing the `psk_ke` path.
+pub const NO_SHARED_GROUP: &str = "P-224";
 
 struct ServerPsk {
     identity: Box<[u8]>,
@@ -41,14 +46,51 @@ extern "C" {
     ) -> c_int;
 }
 
-pub(super) fn cipher_suite(hash: EpskSupportedHash) -> &'static str {
+/// Returns the TLS 1.3 cipher suite name bound to `hash`.
+#[must_use]
+pub const fn cipher_suite(hash: EpskSupportedHash) -> &'static str {
     match hash {
         EpskSupportedHash::Sha256 => "TLS_AES_128_GCM_SHA256",
         EpskSupportedHash::Sha384 => "TLS_AES_256_GCM_SHA384",
     }
 }
 
-pub(super) fn install(
+/// Builds a TLS 1.3 server context for basic `psk_ke` or `psk_dhe_ke` tests.
+///
+/// # Errors
+///
+/// Returns an error if OpenSSL rejects the protocol, cipher, or group settings.
+pub fn psk_server_context(
+    identity: &'static str,
+    key: &'static [u8],
+    dhe: bool,
+) -> Result<SslContext> {
+    let mut builder = SslContext::builder(SslMethod::tls_server())?;
+    builder.set_min_proto_version(Some(SslVersion::TLS1_3))?;
+    builder.set_max_proto_version(Some(SslVersion::TLS1_3))?;
+    builder.set_ciphersuites("TLS_AES_128_GCM_SHA256")?;
+    if dhe {
+        builder.set_groups_list("P-384")?;
+    } else {
+        builder.set_options(ALLOW_NO_DHE_KEX);
+        builder.set_groups_list(NO_SHARED_GROUP)?;
+    }
+    builder.set_psk_server_callback(move |_, offered, output| {
+        if offered != Some(identity.as_bytes()) || output.len() < key.len() {
+            return Ok(0);
+        }
+        output[..key.len()].copy_from_slice(key);
+        Ok(key.len())
+    });
+    Ok(builder.build())
+}
+
+/// Installs a hash-bound TLS 1.3 external PSK callback on `builder`.
+///
+/// # Errors
+///
+/// Returns an error if OpenSSL cannot allocate the ex-data slot.
+pub fn install(
     builder: &mut SslContextBuilder,
     identity: &str,
     key: &[u8],

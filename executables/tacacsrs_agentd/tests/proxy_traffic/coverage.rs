@@ -543,6 +543,11 @@ async fn configuration_reload_under_traffic_moves_servers_without_loss() {
     let daemon = Daemon::start(
         first.address(),
         Options {
+            policy: serde_json::json!({
+                "authentication": { "request-timeout-seconds": 5 },
+                "authorization": { "request-timeout-seconds": 5 },
+                "accounting": { "request-timeout-seconds": 5 },
+            }),
             config: Some(server_config(&[first.address()])),
             ..Options::default()
         },

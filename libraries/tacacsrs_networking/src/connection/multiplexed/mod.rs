@@ -310,9 +310,10 @@ impl ConnectionRuntime {
                     body_length,
                     max_length,
                 } => {
+                    let correlation = tacacsrs_protocol::header::wire_correlation(session_id);
                     log::error!(
                         target: "tacacsrs_networking::connection::multiplexed::read_handler",
-                        "Rejected packet for session ID {session_id}: body length {body_length} exceeds maximum {max_length}. Closing the connection to prevent packet framing errors."
+                        "Rejected packet for correlation {correlation}: body length {body_length} exceeds maximum {max_length}. Closing the connection to prevent packet framing errors."
                     );
                     let error = protocol_failure(anyhow::Error::msg(format!(
                         "Packet body length {body_length} exceeds maximum {max_length}"
@@ -323,16 +324,18 @@ impl ConnectionRuntime {
                         .into());
                 }
                 PacketReadResult::BodyReadError { session_id, error } => {
+                    let correlation = tacacsrs_protocol::header::wire_correlation(session_id);
                     log::error!(
                         target: "tacacsrs_networking::connection::multiplexed::read_handler",
-                        "Failed to read packet body for session ID {session_id}: {error}"
+                        "Failed to read packet body for correlation {correlation}: {error}"
                     );
                     return Err(error).context("failed to read TACACS+ packet body");
                 }
                 PacketReadResult::PacketCreateError { session_id, error } => {
+                    let correlation = tacacsrs_protocol::header::wire_correlation(session_id);
                     log::error!(
                         target: "tacacsrs_networking::connection::multiplexed::read_handler",
-                        "Failed to create packet for session ID {session_id}: {error}"
+                        "Failed to create packet for correlation {correlation}: {error}"
                     );
                     continue;
                 }

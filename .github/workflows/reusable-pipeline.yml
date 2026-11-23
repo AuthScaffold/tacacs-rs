@@ -274,6 +274,13 @@ jobs:
           feature-args: --all-features
           build-release: ${{ inputs.build-release }}
 
+      - name: Run Linux end-to-end tests
+        if: runner.os == 'Linux'
+        uses: ./.github/steps/run-e2e-tests
+        with:
+          target: ${{ matrix.config.target }}
+          build-release: ${{ inputs.build-release }}
+
       - name: Generate coverage
         if: runner.os == 'Linux'
         uses: ./.github/steps/run-coverage

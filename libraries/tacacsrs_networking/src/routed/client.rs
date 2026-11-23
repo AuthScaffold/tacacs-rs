@@ -283,14 +283,16 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
         self.bind_excluding(operation, recovery_interval, &[]).await
     }
 
-    /// Selects an eligible endpoint outside `excluded` and obtains its shared connection.
+    /// Selects an eligible endpoint while keeping `excluded` open circuits out of recovery trials.
     ///
     /// Pass the endpoint indices already tried for the current request so a
-    /// retry attempt visits distinct servers even if a recovery interval
-    /// elapses or a previously proven connection left its circuit closed.
+    /// retry attempt does not revisit an open-circuit server whose recovery
+    /// interval elapsed during an earlier attempt. Endpoints whose circuit
+    /// remained closed (such as a proven connection that dropped after valid
+    /// exchanges) remain eligible to reconnect once before opening their circuit.
     ///
     /// # Errors
-    /// Returns an error if no remaining endpoint is eligible or available for the operation.
+    /// Returns an error if no endpoint is eligible or available for the operation.
     pub async fn bind_excluding(
         &self,
         operation: OperationKind,
@@ -306,10 +308,9 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
             .active_position
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut attempted = Vec::with_capacity(route.indices.len().max(excluded.len()));
-        attempted.extend_from_slice(excluded);
+        let mut attempted = Vec::with_capacity(route.indices.len());
         for index in &route.indices {
-            if attempted.contains(index) {
+            if excluded.contains(index) {
                 continue;
             }
             let slot = &self.catalog.endpoints[*index];
@@ -340,31 +341,22 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
                 }
             }
         }
-        let mut skipped_closed_excluded = false;
         for offset in 0..route.indices.len() {
             let position = (start + offset) % route.indices.len();
             let index = route.indices[position];
             let slot = &self.catalog.endpoints[index];
             let circuit = &slot.operation(operation).circuit;
-            if circuit.is_open() {
-                continue;
-            }
-            if attempted.contains(&index) {
-                if excluded.contains(&index) {
-                    skipped_closed_excluded = true;
-                }
+            if attempted.contains(&index) || circuit.is_open() {
                 continue;
             }
             let revision = circuit.revision();
             attempted.push(index);
             match self.ensure_connection(slot, operation).await {
                 Ok(cached) => {
-                    if !skipped_closed_excluded {
-                        *route
-                            .active_position
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = position;
-                    }
+                    *route
+                        .active_position
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = position;
                     return Ok(self.binding(index, operation, cached, None, revision));
                 }
                 Err(error) => {
@@ -378,40 +370,42 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
                 }
             }
         }
-        for offset in 0..route.indices.len() {
-            let position = (start + offset) % route.indices.len();
-            let index = route.indices[position];
-            if attempted.contains(&index) {
-                continue;
-            }
-            let slot = &self.catalog.endpoints[index];
-            let Some(revision) = slot.operation(operation).circuit.open_revision() else {
-                continue;
-            };
-            attempted.push(index);
-            log::debug!(
-                "Using {} for {} although its circuit is open because no other server is available",
-                slot.endpoint.prepared().address(),
-                operation.name()
-            );
-            match self.ensure_connection(slot, operation).await {
-                Ok(cached) => {
-                    return Ok(self.binding(
-                        index,
-                        operation,
-                        cached,
-                        Some(RecoveryClaim::LastResort(revision)),
-                        revision,
-                    ));
+        for skip_excluded in [true, false] {
+            for offset in 0..route.indices.len() {
+                let position = (start + offset) % route.indices.len();
+                let index = route.indices[position];
+                if attempted.contains(&index) || (skip_excluded && excluded.contains(&index)) {
+                    continue;
                 }
-                Err(error) => {
-                    log::warn!(
-                        "{} last-resort connection to {} failed: {:#}",
-                        operation.name(),
-                        slot.endpoint.prepared().address(),
-                        error.source
-                    );
-                    self.note_connect_failure(index, operation, error.generation, revision);
+                let slot = &self.catalog.endpoints[index];
+                let Some(revision) = slot.operation(operation).circuit.open_revision() else {
+                    continue;
+                };
+                attempted.push(index);
+                log::debug!(
+                    "Using {} for {} although its circuit is open because no other server is available",
+                    slot.endpoint.prepared().address(),
+                    operation.name()
+                );
+                match self.ensure_connection(slot, operation).await {
+                    Ok(cached) => {
+                        return Ok(self.binding(
+                            index,
+                            operation,
+                            cached,
+                            Some(RecoveryClaim::LastResort(revision)),
+                            revision,
+                        ));
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "{} last-resort connection to {} failed: {:#}",
+                            operation.name(),
+                            slot.endpoint.prepared().address(),
+                            error.source
+                        );
+                        self.note_connect_failure(index, operation, error.generation, revision);
+                    }
                 }
             }
         }
@@ -1984,12 +1978,12 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn bind_excluding_skips_attempted_endpoints_across_all_passes() {
+    async fn bind_excluding_skips_excluded_open_circuits_while_allowing_proven_reconnect() {
         let client = distinct_pair();
         let operation = OperationKind::Authentication;
 
-        // Pass 2 (closed circuit): primary stays closed after a proven transport failure,
-        // yet excluding index 0 moves a retry of the same request to secondary.
+        // Pass 2 (closed circuit): a proven transport failure keeps primary's circuit closed
+        // so the immediate reconnect attempt still tests primary once before opening its circuit.
         let primary = client.bind(operation, HOLD).await.unwrap();
         assert_eq!(primary.index(), 0);
         primary.note_success().await;
@@ -2000,15 +1994,12 @@ mod tests {
             .operation(operation)
             .circuit
             .is_open());
-        let retry = client.bind_excluding(operation, HOLD, &[0]).await.unwrap();
-        assert_eq!(retry.endpoint().name(), "secondary");
-        assert_eq!(retry.index(), 1);
+        let reconnect = client.bind_excluding(operation, HOLD, &[0]).await.unwrap();
+        assert_eq!(reconnect.endpoint().name(), "primary");
 
-        // Pass 1 (due recovery trial): even after recovery_interval elapses on primary,
-        // excluding index 0 neither consumes its recovery permit nor re-selects primary.
-        let primary_again = client.bind(operation, HOLD).await.unwrap();
-        assert_eq!(primary_again.endpoint().name(), "primary");
-        primary_again.note_server_failure().await;
+        // Pass 1 (due recovery trial): once primary's circuit is open, excluding index 0
+        // skips primary even after recovery_interval elapses, leaving its permit for the next request.
+        reconnect.note_server_failure().await;
         tokio::time::advance(HOLD).await;
         let retry_after_interval = client.bind_excluding(operation, HOLD, &[0]).await.unwrap();
         assert_eq!(retry_after_interval.endpoint().name(), "secondary");
@@ -2016,14 +2007,10 @@ mod tests {
         assert_eq!(later_request.endpoint().name(), "primary");
         later_request.note_server_failure().await;
 
-        // Pass 3 (last resort): when both circuits are open, excluding index 1 selects primary.
+        // Pass 3 (last resort): when both circuits are open, unexcluded endpoints are preferred first.
         retry_after_interval.note_server_failure().await;
         let last_resort = client.bind_excluding(operation, HOLD, &[1]).await.unwrap();
         assert_eq!(last_resort.endpoint().name(), "primary");
-        assert!(client
-            .bind_excluding(operation, HOLD, &[0, 1])
-            .await
-            .is_err());
     }
 
     #[tokio::test(start_paused = true)]

@@ -195,7 +195,7 @@ where
         self.header_filled = 0;
         self.body_filled = 0;
 
-        let session_id = header.session_id;
+        let correlation = tacacsrs_protocol::header::wire_correlation(header.session_id);
         let reply_obfuscation = if header
             .flags
             .contains(TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG)
@@ -206,12 +206,12 @@ where
         };
 
         let mut packet = Packet::new(header, body).with_context(|| {
-            format!("Failed to create TACACS+ proxy packet for session {session_id:#x}")
+            format!("Failed to create TACACS+ proxy packet for session {correlation}")
         })?;
 
         log::debug!(
-            "Read a downstream TACACS+ proxy packet: session_id={:#x}, seq_no={}, type={}, flags={:?}, body_length={}, obfuscated={}",
-            packet.header().session_id,
+            "Read a downstream TACACS+ proxy packet: correlation={}, seq_no={}, type={}, flags={:?}, body_length={}, obfuscated={}",
+            correlation,
             packet.header().seq_no,
             packet.header().tacacs_type,
             packet.header().flags,
@@ -222,7 +222,7 @@ where
         if reply_obfuscation == DownstreamObfuscation::Obfuscated {
             if let Some(key) = &self.obfuscation_key {
                 log::debug!(
-                    "Deobfuscating a downstream TACACS+ proxy packet body for session {session_id:#x}"
+                    "Deobfuscating a downstream TACACS+ proxy packet body for session {correlation}"
                 );
                 packet = packet.to_deobfuscated(key.expose_secret());
             }

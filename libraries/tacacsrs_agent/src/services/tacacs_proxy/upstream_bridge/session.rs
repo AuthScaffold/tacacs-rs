@@ -157,15 +157,14 @@ where
         }
         Ok(result) => return result,
     };
+    let correlation = tacacsrs_protocol::header::wire_correlation(downstream_session_id);
     let Some(request) = channel.pending else {
         log::info!(
-            "Ended TACACS+ proxy session {downstream_session_id:#x} while it waited for the client: {elapsed}"
+            "Ended TACACS+ proxy session {correlation} while it waited for the client: {elapsed}"
         );
         return Ok(());
     };
-    log::warn!(
-        "TACACS+ proxy session {downstream_session_id:#x} did not complete a request: {elapsed}"
-    );
+    log::warn!("TACACS+ proxy session {correlation} did not complete a request: {elapsed}");
     // The request deadline has expired, so the reply uses the downstream
     // write budget instead.
     let write_deadline =

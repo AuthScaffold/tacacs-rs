@@ -17,6 +17,7 @@ members = [
     "libraries/tacacsrs_sonic",
     "libraries/tacacsrs_kubesonic",
     "libraries/tacacsrs_bash_plugin",
+    "libraries/tacacsrs_testkit",
     "executables/tacon",
     "executables/session_wrapper",
     "executables/tacacsrs_agentd",

@@ -138,8 +138,10 @@ where
                         // One failed session must not end the other sessions
                         // that share this connection.
                         session_senders.remove(&session_id);
+                        let correlation =
+                            tacacsrs_protocol::header::wire_correlation(session_id);
                         log::warn!(
-                            "Ended TACACS+ proxy session {session_id:#x} without a reply: {error:#}"
+                            "Ended TACACS+ proxy session {correlation} without a reply: {error:#}"
                         );
                     }
                     Ok((session_id, Err(error))) => {

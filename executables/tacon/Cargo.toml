@@ -28,6 +28,7 @@ tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "net", "par
 
 [dev-dependencies]
 openssl = "0.10.81"
+tacacsrs-testkit = { path = "../../libraries/tacacsrs_testkit" }
 tempfile = "3.27"
 tokio = { version = "1.52.3", features = ["process"] }
 tokio-openssl = "0.6.5"

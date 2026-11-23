@@ -1,0 +1,36 @@
+[package]
+name = "tacacsrs-testkit"
+description = "Shared test PKI, TLS/PSK peers, and scripted TACACS+ upstream fixtures."
+version = "0.0.0-dev"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+anyhow = "1"
+foreign-types = "0.3.2"
+openssl = "0.10.80"
+openssl-sys = "0.9.116"
+tacacsrs-config = { path = "../tacacsrs_config" }
+tacacsrs-networking = { path = "../tacacsrs_networking" }
+tacacsrs-protocol = { path = "../tacacsrs_protocol" }
+tacacsrs-secrets = { path = "../tacacsrs_secrets" }
+tokio = { version = "1.52.3", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tokio-openssl = "0.6.5"
+tokio-util = "0.7.18"
+
+[dev-dependencies]
+tokio = { version = "1.52.3", features = ["rt-multi-thread"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+async-trait = "0.1"
+futures-util = { version = "0.3", default-features = false }
+serde_json = "1"
+tacacsrs-agent = { path = "../tacacsrs_agent" }
+tacacsrs-credential-resolution = { path = "../tacacsrs_credential_resolution" }
+tacacsrs-sonic = { path = "../tacacsrs_sonic" }
+
+[lints]
+workspace = true

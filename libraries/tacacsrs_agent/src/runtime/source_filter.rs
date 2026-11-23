@@ -187,7 +187,7 @@ mod tests {
     use tacacsrs_secrets::SecretString;
 
     fn test_config_from_host_ports(addresses: &[(&str, u16)]) -> TacacsPlus {
-        test_config_from_host_ports_and_secrets(
+        test_config_from_entries(
             &addresses
                 .iter()
                 .map(|(address, port)| (*address, *port, Some("test-secret")))
@@ -195,13 +195,11 @@ mod tests {
         )
     }
 
-    fn test_config_from_host_ports_and_secrets(
-        addresses: &[(&str, u16, Option<&str>)],
-    ) -> TacacsPlus {
+    fn test_config_from_entries(addresses: &[(&str, u16, Option<&str>)]) -> TacacsPlus {
         addresses
             .iter()
             .enumerate()
-            .map(|(index, (address, port, shared_secret))| {
+            .map(|(index, (address, port, obfuscation))| {
                 let builder = TacacsPlusServerBuilder::new(
                     format!("server-{index}"),
                     TacacsPlusServerType::AUTHENTICATION
@@ -210,8 +208,8 @@ mod tests {
                     (*address).to_owned(),
                     *port,
                 );
-                if let Some(shared_secret) = shared_secret {
-                    builder.with_shared_secret((*shared_secret).to_owned())
+                if let Some(obfuscation) = obfuscation {
+                    builder.with_shared_secret((*obfuscation).to_owned())
                 } else {
                     builder
                 }
@@ -324,7 +322,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_row_supplies_proxy_credentials_without_mutating_canonical_source() {
-        let canonical = test_config_from_host_ports_and_secrets(&[
+        let canonical = test_config_from_entries(&[
             ("127.0.0.1", 49, Some("local-test-key")),
             ("192.0.2.20", 49, Some("remote-test-key")),
         ]);
@@ -596,13 +594,13 @@ mod tests {
 
     #[tokio::test]
     async fn proxy_filter_preserves_explicit_secret_despite_matching_local_row() {
-        let config = test_config_from_host_ports_and_secrets(&[
-            ("127.0.0.1", 9050, Some("local-row-secret")),
-            ("192.0.2.20", 49, Some("upstream-secret")),
+        let config = test_config_from_entries(&[
+            ("127.0.0.1", 9050, Some("local-row-obfuscation")),
+            ("192.0.2.20", 49, Some("upstream-obfuscation")),
         ]);
         let filter = TestFilter::new_with_policy(
             "127.0.0.1:9050".parse().expect("socket must parse"),
-            credential_source(Some("cli-proxy-secret")),
+            credential_source(Some("cli-proxy-obfuscation")),
         );
 
         let filtered = filter.filter(config).await.expect("filter must succeed");
@@ -610,16 +608,16 @@ mod tests {
         assert_eq!(filtered.tacacs_plus.server.len(), 1);
         assert_eq!(
             filtered.proxy_downstream_obfuscation,
-            proxy_obfuscation(Some("cli-proxy-secret"))
+            proxy_obfuscation(Some("cli-proxy-obfuscation"))
         );
     }
 
     #[tokio::test]
     async fn proxy_filter_uses_highest_priority_matching_proxy_secret() {
-        let config = test_config_from_host_ports_and_secrets(&[
-            ("127.0.0.1", 9050, Some("highest-priority-secret")),
-            ("localhost", 9050, Some("lower-priority-secret")),
-            ("192.0.2.20", 49, Some("upstream-secret")),
+        let config = test_config_from_entries(&[
+            ("127.0.0.1", 9050, Some("highest-priority-obfuscation")),
+            ("localhost", 9050, Some("lower-priority-obfuscation")),
+            ("192.0.2.20", 49, Some("upstream-obfuscation")),
         ]);
         let filter = TestFilter::new("127.0.0.1:9050".parse().expect("socket must parse"));
 
@@ -629,16 +627,16 @@ mod tests {
         assert_eq!(filtered.tacacs_plus.server[0].address, "192.0.2.20");
         assert_eq!(
             filtered.proxy_downstream_obfuscation,
-            proxy_obfuscation(Some("highest-priority-secret"))
+            proxy_obfuscation(Some("highest-priority-obfuscation"))
         );
     }
 
     #[tokio::test]
     async fn proxy_filter_rejects_missing_highest_priority_secret_without_downgrade() {
-        let config = test_config_from_host_ports_and_secrets(&[
+        let config = test_config_from_entries(&[
             ("127.0.0.1", 9050, None),
-            ("localhost", 9050, Some("lower-priority-secret")),
-            ("192.0.2.20", 49, Some("upstream-secret")),
+            ("localhost", 9050, Some("lower-priority-obfuscation")),
+            ("192.0.2.20", 49, Some("upstream-obfuscation")),
         ]);
         let filter = TestFilter::new("127.0.0.1:9050".parse().expect("socket must parse"));
 
@@ -648,9 +646,9 @@ mod tests {
     #[tokio::test]
     async fn row_policy_rejects_missing_and_empty_replacements_without_mutating_source() {
         let filter = TestFilter::new("127.0.0.1:9050".parse().unwrap());
-        let source = test_config_from_host_ports_and_secrets(&[
-            ("127.0.0.1", 9050, Some("original-local-key")),
-            ("192.0.2.20", 49, Some("upstream-key")),
+        let source = test_config_from_entries(&[
+            ("127.0.0.1", 9050, Some("original-local-obfuscation")),
+            ("192.0.2.20", 49, Some("upstream-obfuscation")),
         ]);
         let original = source.clone();
         let accepted = filter.filter(source.clone()).await.unwrap();

@@ -69,6 +69,12 @@
       "tacacsrs-ipc",
       "tacacsrs-protocol"
     ],
+    "tacacsrs-testkit": [
+      "tacacsrs-config",
+      "tacacsrs-networking",
+      "tacacsrs-protocol",
+      "tacacsrs-secrets"
+    ],
     "tacon": [
       "tacacsrs-config",
       "tacacsrs-ipc",
@@ -339,6 +345,7 @@
         "session-wrapper",
         "tacacsrs-agent-ipc-emulator",
         "tacacsrs-agent-ipc-emulatord",
+        "tacacsrs-testkit",
         "regorus",
         "libseccomp"
       ]

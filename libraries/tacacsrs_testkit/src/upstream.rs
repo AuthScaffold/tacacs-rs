@@ -1,19 +1,9 @@
-//! Scripted plain-TCP TACACS+ upstream server with injectable faults.
+//! Scripted plain-TCP and TLS 1.3 TACACS+ upstream server with injectable faults.
 //!
 //! The server echoes the request user name in `server_msg` of every reply,
-//! including error replies. A client can therefore detect a reply that the
-//! proxy delivered to the wrong session. A replaceable fault plan selects the
-//! behavior of each request from its operation and its per-operation index.
-//!
-//! PAP authentication completes in one round trip. ASCII authentication asks
-//! for the password with `GETPASS` and completes with the `CONTINUE` packet.
-//! The fixture can also send malformed replies: wrong session identifiers,
-//! wrong sequence numbers, invalid headers, oversized lengths, unknown
-//! statuses, and bodies that use the wrong shared secret.
-//!
-//! [`Upstream::start_tls`] serves the same behavior over TLS 1.3. Packets then
-//! use the cleartext framing of RFC 9887 and the fixture records failed
-//! handshakes. The fixture also records the source address of each connection.
+//! including error replies, so callers can detect session misrouting. A
+//! replaceable fault plan selects per-request behavior from its operation and
+//! arrival index.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -23,9 +13,8 @@ use std::time::Duration;
 
 use openssl::ssl::{Ssl, SslContext};
 use tacacsrs_networking::{PacketReadResult, PacketReader, PacketWriteResult, PacketWriter};
-use tacacsrs_protocol::accounting::reply::AccountingReply;
+use tacacsrs_protocol::accounting::reply::{ACCOUNTING_REPLY_STATUS_OFFSET, AccountingReply};
 use tacacsrs_protocol::accounting::request::AccountingRequest;
-use tacacsrs_protocol::accounting::reply::ACCOUNTING_REPLY_STATUS_OFFSET;
 use tacacsrs_protocol::authentication::continue_packet::AuthenticationContinue;
 use tacacsrs_protocol::authentication::reply::{
     AUTHENTICATION_REPLY_STATUS_OFFSET, AuthenticationReply,
@@ -41,7 +30,7 @@ use tacacsrs_protocol::enumerations::{
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
 use tacacsrs_secrets::SecretBytes;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -49,13 +38,23 @@ use tokio_util::sync::CancellationToken;
 static UPSTREAM_KEY: OnceLock<String> = OnceLock::new();
 static GOOD_PASSWORD: OnceLock<Vec<u8>> = OnceLock::new();
 
-/// Returns a random shared secret for the daemon and this upstream fixture.
-pub(crate) fn upstream_key() -> &'static str {
+/// Returns a random shared obfuscation key for plain-TCP upstream fixtures.
+///
+/// # Panics
+///
+/// Panics if OpenSSL cannot generate random bytes.
+#[must_use]
+pub fn upstream_key() -> &'static str {
     UPSTREAM_KEY.get_or_init(random_fixture_secret)
 }
 
 /// Returns the password that the fixture accepts for PAP and ASCII authentication.
-pub(crate) fn good_password() -> &'static [u8] {
+///
+/// # Panics
+///
+/// Panics if OpenSSL cannot generate random bytes.
+#[must_use]
+pub fn good_password() -> &'static [u8] {
     GOOD_PASSWORD
         .get_or_init(|| random_fixture_secret().into_bytes())
         .as_slice()
@@ -67,25 +66,29 @@ fn random_fixture_secret() -> String {
     openssl::base64::encode_block(&bytes)
 }
 
-/// Response of the fixture to a single-connection request from the daemon.
+/// Response of the fixture to a single-connection request from a client.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SingleConnect {
-    /// Set the flag in the first reply and keep the connection for more sessions.
+pub enum SingleConnect {
+    /// Echo the single-connect flag in the first reply and multiplex sessions.
     Accept,
     /// Clear the flag in the reply and close the connection after one session.
     Decline,
 }
 
-/// Operation of one upstream request.
+/// Operation category of one upstream request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Kind {
+pub enum Kind {
+    /// TACACS+ authentication.
     Authentication = 0,
+    /// TACACS+ authorization.
     Authorization = 1,
+    /// TACACS+ accounting.
     Accounting = 2,
 }
 
 impl Kind {
-    pub(crate) const ALL: [Self; 3] = [Self::Authentication, Self::Authorization, Self::Accounting];
+    /// All three TACACS+ operation kinds in index order.
+    pub const ALL: [Self; 3] = [Self::Authentication, Self::Authorization, Self::Accounting];
 
     const fn from_type(tacacs_type: TacacsType) -> Self {
         match tacacs_type {
@@ -96,21 +99,22 @@ impl Kind {
     }
 }
 
-/// One request as the fault plan sees it.
+/// One request observed by a [`Plan`].
 #[derive(Clone, Debug)]
-pub(crate) struct Request {
-    pub(crate) kind: Kind,
+pub struct Request {
+    /// Operation category.
+    pub kind: Kind,
     /// Zero-based arrival index of this request within its operation.
-    pub(crate) index: u64,
+    pub index: u64,
     /// True for an authentication `CONTINUE` packet of an ASCII login.
-    pub(crate) continuation: bool,
+    pub continuation: bool,
     /// User name of the request, or of the login that a `CONTINUE` belongs to.
-    pub(crate) user: String,
+    pub user: String,
 }
 
 /// Behavior of the fixture for one request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Fault {
+pub enum Fault {
     /// Send the normal reply immediately.
     None,
     /// Send the normal reply after a delay.
@@ -155,10 +159,12 @@ impl Fault {
     }
 }
 
-pub(crate) type Plan = Arc<dyn Fn(&Request) -> Fault + Send + Sync>;
+/// Per-request fault selector.
+pub type Plan = Arc<dyn Fn(&Request) -> Fault + Send + Sync>;
 
 /// Returns a plan that answers every request normally.
-pub(crate) fn healthy() -> Plan {
+#[must_use]
+pub fn healthy() -> Plan {
     Arc::new(|_| Fault::None)
 }
 
@@ -181,7 +187,6 @@ impl PerKind {
 
 struct State {
     mode: SingleConnect,
-    /// Obfuscation key. TLS connections use cleartext packets and no key.
     key: Option<SecretBytes>,
     tls: Option<SslContext>,
     peers: Mutex<Vec<SocketAddr>>,
@@ -195,8 +200,8 @@ struct State {
     max_in_flight: [AtomicUsize; 3],
 }
 
-/// Running fixture. Dropping it stops the listener and every connection.
-pub(crate) struct Upstream {
+/// Running scripted TACACS+ server. Dropping it stops the listener and all connections.
+pub struct Upstream {
     address: SocketAddr,
     state: Arc<State>,
     stop: CancellationToken,
@@ -211,22 +216,32 @@ impl Drop for Upstream {
 }
 
 impl Upstream {
-    pub(crate) async fn start(mode: SingleConnect) -> Self {
+    /// Starts a plain-TCP upstream server on an ephemeral loopback port.
+    ///
+    /// # Panics
+    ///
+    /// Panics if binding an ephemeral loopback listener fails.
+    pub async fn start(mode: SingleConnect) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         Self::serve(mode, listener, None)
     }
 
-    /// Starts a fixture that accepts only TLS connections that `context` allows.
-    pub(crate) async fn start_tls(mode: SingleConnect, context: SslContext) -> Self {
+    /// Starts a TLS upstream server using `context` on an ephemeral loopback port.
+    ///
+    /// # Panics
+    ///
+    /// Panics if binding an ephemeral loopback listener fails.
+    pub async fn start_tls(mode: SingleConnect, context: SslContext) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         Self::serve(mode, listener, Some(context))
     }
 
-    /// Starts a fixture on a fixed address, for example to restart a server.
+    /// Starts a plain-TCP upstream server on a fixed loopback address.
     ///
-    /// The bind retries for a short time because a dropped fixture releases
-    /// its listener asynchronously.
-    pub(crate) async fn start_on(mode: SingleConnect, address: SocketAddr) -> Self {
+    /// # Panics
+    ///
+    /// Panics if `address` remains unavailable after bounded retries.
+    pub async fn start_on(mode: SingleConnect, address: SocketAddr) -> Self {
         let mut attempts = 0;
         loop {
             match TcpListener::bind(address).await {
@@ -266,43 +281,62 @@ impl Upstream {
         }
     }
 
-    pub(crate) const fn address(&self) -> SocketAddr {
+    /// Bound loopback socket address.
+    #[must_use]
+    pub const fn address(&self) -> SocketAddr {
         self.address
     }
 
-    /// Replaces the fault plan for requests that arrive after this call.
-    pub(crate) fn set_plan(&self, plan: Plan) {
+    /// Replaces the fault plan for subsequent requests.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned.
+    pub fn set_plan(&self, plan: Plan) {
         *self.state.plan.lock().unwrap() = plan;
     }
 
-    pub(crate) fn received_total(&self) -> u64 {
+    /// Total requests received across all operations.
+    #[must_use]
+    pub fn received_total(&self) -> u64 {
         self.state.received.total()
     }
 
-    pub(crate) fn received(&self, kind: Kind) -> u64 {
+    /// Requests received for `kind`.
+    #[must_use]
+    pub fn received(&self, kind: Kind) -> u64 {
         self.state.received.get(kind)
     }
 
-    /// Returns the number of requests that received `fault`.
-    pub(crate) fn injected(&self, fault: Fault) -> u64 {
+    /// Number of requests that triggered `fault`.
+    #[must_use]
+    pub fn injected(&self, fault: Fault) -> u64 {
         fault
             .counter()
             .map_or(0, |index| self.state.injected[index].total())
     }
 
-    pub(crate) fn connections_accepted(&self) -> u64 {
+    /// Total TCP connections accepted.
+    #[must_use]
+    pub fn connections_accepted(&self) -> u64 {
         self.state.connections.load(Ordering::SeqCst)
     }
 
-    pub(crate) fn mode(&self) -> SingleConnect {
+    /// Configured single-connection mode.
+    #[must_use]
+    pub fn mode(&self) -> SingleConnect {
         self.state.mode
     }
 
-    pub(crate) fn open_connections(&self) -> usize {
+    /// Currently open connections.
+    #[must_use]
+    pub fn open_connections(&self) -> usize {
         self.state.open_connections.load(Ordering::SeqCst)
     }
 
-    pub(crate) fn in_flight(&self) -> usize {
+    /// Currently active requests across all operations.
+    #[must_use]
+    pub fn in_flight(&self) -> usize {
         self.state
             .in_flight
             .iter()
@@ -310,18 +344,79 @@ impl Upstream {
             .sum()
     }
 
-    pub(crate) fn max_in_flight(&self, kind: Kind) -> usize {
+    /// Peak concurrent requests observed for `kind`.
+    #[must_use]
+    pub fn max_in_flight(&self, kind: Kind) -> usize {
         self.state.max_in_flight[kind as usize].load(Ordering::SeqCst)
     }
 
-    /// Returns the source address of every accepted TCP connection.
-    pub(crate) fn peers(&self) -> Vec<SocketAddr> {
+    /// Source socket addresses of accepted TCP connections.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned.
+    #[must_use]
+    pub fn peers(&self) -> Vec<SocketAddr> {
         self.state.peers.lock().unwrap().clone()
     }
 
-    /// Returns the number of TLS handshakes that failed.
-    pub(crate) fn handshake_failures(&self) -> u64 {
+    /// Total failed TLS handshakes.
+    #[must_use]
+    pub fn handshake_failures(&self) -> u64 {
         self.state.handshake_failures.load(Ordering::SeqCst)
+    }
+}
+
+/// TCP listener that accepts connections and stalls without answering TLS handshakes.
+pub struct StalledHandshake {
+    address: SocketAddr,
+    connections: Arc<Mutex<Vec<TcpStream>>>,
+    task: JoinHandle<()>,
+}
+
+impl StalledHandshake {
+    /// Binds a loopback TCP listener that holds accepted sockets open silently.
+    ///
+    /// # Panics
+    ///
+    /// Panics if binding an ephemeral loopback listener fails.
+    pub async fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let connections = Arc::new(Mutex::new(Vec::new()));
+        let retained = Arc::clone(&connections);
+        let task = tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                retained.lock().unwrap().push(stream);
+            }
+        });
+        Self {
+            address,
+            connections,
+            task,
+        }
+    }
+
+    /// Bound loopback socket address.
+    #[must_use]
+    pub const fn address(&self) -> SocketAddr {
+        self.address
+    }
+
+    /// Number of TCP connections accepted and held stalled.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned.
+    #[must_use]
+    pub fn accepted(&self) -> usize {
+        self.connections.lock().unwrap().len()
+    }
+}
+
+impl Drop for StalledHandshake {
+    fn drop(&mut self) {
+        self.task.abort();
     }
 }
 
@@ -347,7 +442,7 @@ async fn accept_loop(listener: TcpListener, state: Arc<State>, stop: Cancellatio
                 tokio_openssl::SslStream::new(Ssl::new(&context).unwrap(), stream).unwrap();
             let accepted = tokio::select! {
                 () = connection.cancelled() => return,
-                accepted = Pin::new(&mut stream).accept() => accepted,
+                accepted = std::pin::Pin::new(&mut stream).accept() => accepted,
             };
             if accepted.is_err() {
                 state.handshake_failures.fetch_add(1, Ordering::SeqCst);
@@ -468,10 +563,6 @@ where
                     tokio::spawn(handler);
                     continue;
                 }
-                // A connection without single-connect carries one session.
-                // A read during a reply detects a peer that gave up. The
-                // session ends after its last reply unless the reply asks the
-                // client for more data.
                 tokio::pin!(handler);
                 let mut probe = [0_u8; 1];
                 tokio::select! {
@@ -487,7 +578,6 @@ where
                 }
                 break;
             }
-            // A closed read side ends the connection, like a real server.
             connection.cancel();
         }
     };
@@ -495,10 +585,8 @@ where
     tokio::join!(writer_task, reader_task);
 }
 
-/// User names of ASCII logins that wait for a `CONTINUE`, by session identifier.
 type Logins = Arc<Mutex<HashMap<u32, String>>>;
 
-/// Answers one request and returns true when the session expects another packet.
 async fn respond(
     state: Arc<State>,
     request: Packet,
@@ -605,7 +693,6 @@ fn key() -> SecretBytes {
     SecretBytes::new(upstream_key().as_bytes().to_vec())
 }
 
-/// Encodes `packet` as the connection would send it.
 fn wire(state: &State, packet: Packet) -> Vec<u8> {
     match &state.key {
         Some(key) => packet.to_obfuscated(key.expose_secret()).to_bytes(),
@@ -677,7 +764,6 @@ fn reply(request: &Packet, single_connect: bool, logins: &Logins, error: bool) -
     Packet::new(header, body).unwrap()
 }
 
-/// Answers a PAP `START`, an ASCII `START`, or the `CONTINUE` of an ASCII login.
 fn authentication_reply(request: &Packet, logins: &Logins, error: bool) -> AuthenticationReply {
     let session_id = request.header().session_id;
     let (user, password) = if request.header().seq_no == 1 {

@@ -11,25 +11,17 @@
 //! command-line server options support plain TCP only.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::path::Path;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use openssl::asn1::Asn1Time;
-use openssl::ec::{EcGroup, EcKey};
-use openssl::hash::MessageDigest;
-use openssl::nid::Nid;
-use openssl::pkey::PKey;
-use openssl::ssl::{SslContext, SslContextBuilder, SslMethod, SslOptions, SslVerifyMode, SslVersion};
-use openssl::x509::X509;
-use openssl::x509::extension::SubjectAlternativeName;
-use tokio::net::TcpListener;
+use openssl::ssl::SslContext;
 use tokio::task::JoinSet;
 
 use tacacsrs_config::tacacsrs::BindingPolicy;
 use tacacsrs_config::{
-    ServerAuthenticationCaCerts, TacacsPlusBuilder, TacacsPlusServer, TacacsPlusServerBuilder,
-    TacacsPlusServerType, TlsClientServerAuthentication,
+    TacacsPlusBuilder, TacacsPlusServer, TacacsPlusServerBuilder, TacacsPlusServerType,
+    TlsClientServerAuthentication,
 };
 use tacacsrs_ipc::{IpcEndpoint, ServiceClient};
 use tacacsrs_protocol::failure::FailureCategory;
@@ -40,8 +32,10 @@ use tacacsrs_protocol::operations::{
 };
 use tacacsrs_protocol::privilege::PrivilegeLevel;
 use tacacsrs_secrets::SecretBytes;
+use tacacsrs_testkit::pki::{TestPki, untrusted_server_context};
+use tacacsrs_testkit::psk_peer::psk_server_context;
+use tacacsrs_testkit::upstream::{self, Fault, Kind, SingleConnect, StalledHandshake, Upstream};
 
-use super::upstream::{self, Fault, Kind, SingleConnect, Upstream};
 use super::{
     Daemon, OPERATION_LIMIT, Options, Outcome, Status, Traffic, USER_PREFIX, assert_recovers,
     broken_upstream_run, fast_recovery, heavy, mixed, once, recovery, run_traffic, single_request,
@@ -53,128 +47,28 @@ const PSK_IDENTITY: &str = "proxy-traffic-client";
 /// Public test key for the fixture, not a deployment credential.
 const PSK_KEY: &[u8] = b"proxy-traffic-psk-0123456789abcd";
 
-// OpenSSL `SSL_OP_ALLOW_NO_DHE_KEX` lets a TLS 1.3 server accept `psk_ke`.
-const ALLOW_NO_DHE_KEX: SslOptions = SslOptions::from_bits_retain(1 << 10);
-
-// The client offers no P-224 key share, so a psk-only server cannot use DHE.
-const NO_SHARED_GROUP: &str = "P-224";
-
 // A local interface name that no test host has.
 const MISSING_INTERFACE: &str = "tacrs-none0";
 
-fn certificates() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../lde/containers/config/certificates")
+fn test_pki() -> &'static TestPki {
+    static PKI: OnceLock<TestPki> = OnceLock::new();
+    PKI.get_or_init(|| TestPki::new().expect("generate ECDSA P-256 test PKI"))
 }
 
-fn read_certificate(name: &str) -> X509 {
-    X509::from_pem(&std::fs::read(certificates().join(name)).unwrap()).unwrap()
-}
-
-fn read_key(name: &str) -> PKey<openssl::pkey::Private> {
-    PKey::private_key_from_pem(&std::fs::read(certificates().join(name)).unwrap()).unwrap()
-}
-
-fn tls13_server() -> SslContextBuilder {
-    let mut builder = SslContext::builder(SslMethod::tls_server()).unwrap();
-    builder
-        .set_min_proto_version(Some(SslVersion::TLS1_3))
-        .unwrap();
-    builder
-        .set_max_proto_version(Some(SslVersion::TLS1_3))
-        .unwrap();
-    builder
-}
-
-/// Returns a server context that presents `server.crt` and requires a client
-/// certificate from the sample CA.
 fn mtls_context() -> SslContext {
-    let mut builder = tls13_server();
-    builder
-        .set_certificate(&read_certificate("server.crt"))
-        .unwrap();
-    builder.set_private_key(&read_key("server.key")).unwrap();
-    builder
-        .cert_store_mut()
-        .add_cert(read_certificate("ca.crt"))
-        .unwrap();
-    builder.set_verify(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT);
-    builder.build()
+    test_pki().mtls_server_context().unwrap()
 }
 
-/// Returns a server context with a self-signed certificate that the client does
-/// not trust. The certificate names `127.0.0.1`, so only the trust check fails.
 fn untrusted_context() -> SslContext {
-    let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
-    let key = PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap();
-    let template = read_certificate("server.crt");
-    let mut certificate = X509::builder().unwrap();
-    certificate.set_version(2).unwrap();
-    certificate
-        .set_serial_number(template.serial_number())
-        .unwrap();
-    certificate
-        .set_subject_name(template.subject_name())
-        .unwrap();
-    certificate
-        .set_issuer_name(template.subject_name())
-        .unwrap();
-    certificate.set_pubkey(&key).unwrap();
-    certificate
-        .set_not_before(&Asn1Time::days_from_now(0).unwrap())
-        .unwrap();
-    certificate
-        .set_not_after(&Asn1Time::days_from_now(1).unwrap())
-        .unwrap();
-    let names = SubjectAlternativeName::new()
-        .ip("127.0.0.1")
-        .build(&certificate.x509v3_context(None, None))
-        .unwrap();
-    certificate.append_extension(names).unwrap();
-    certificate.sign(&key, MessageDigest::sha256()).unwrap();
-    let mut builder = tls13_server();
-    builder.set_certificate(&certificate.build()).unwrap();
-    builder.set_private_key(&key).unwrap();
-    builder.build()
+    untrusted_server_context().unwrap()
 }
 
-/// Returns a TLS 1.3 server context that accepts `PSK_IDENTITY` with `key`.
-///
-/// With `dhe`, the handshake uses `psk_dhe_ke`. Without it, the server shares
-/// no group with the client, so the handshake must use `psk_ke`.
 fn psk_context(key: &'static [u8], dhe: bool) -> SslContext {
-    let mut builder = tls13_server();
-    builder.set_ciphersuites("TLS_AES_128_GCM_SHA256").unwrap();
-    if dhe {
-        builder.set_groups_list("P-384").unwrap();
-    } else {
-        builder.set_options(ALLOW_NO_DHE_KEX);
-        builder.set_groups_list(NO_SHARED_GROUP).unwrap();
-    }
-    builder.set_psk_server_callback(move |_, identity, output| {
-        if identity != Some(PSK_IDENTITY.as_bytes()) || output.len() < key.len() {
-            return Ok(0);
-        }
-        output[..key.len()].copy_from_slice(key);
-        Ok(key.len())
-    });
-    builder.build()
+    psk_server_context(PSK_IDENTITY, key, dhe).unwrap()
 }
 
 fn trust_store() -> TlsClientServerAuthentication {
-    TlsClientServerAuthentication {
-        credentials_reference: None,
-        ca_certs: Some(ServerAuthenticationCaCerts {
-            inline_definition: Some(tacacsrs_config::truststore::CertsInlineDefinition {
-                certificate: vec![tacacsrs_config::truststore::CertsCertificate {
-                    name: "sample-ca".to_owned(),
-                    cert_data: read_certificate("ca.crt").to_der().unwrap(),
-                }],
-            }),
-            central_truststore_reference: None,
-        }),
-        ee_certs: None,
-        tls13_epsks: None,
-    }
+    test_pki().inline_ca_trust_store().unwrap()
 }
 
 fn server_builder(address: SocketAddr) -> TacacsPlusServerBuilder {
@@ -193,8 +87,9 @@ fn plain_server(address: SocketAddr) -> TacacsPlusServerBuilder {
 }
 
 fn mtls_server_with_timeout(address: SocketAddr, timeout_seconds: u16) -> TacacsPlusServer {
-    let certificate = read_certificate("client.crt").to_der().unwrap();
-    let key = read_key("client.key").private_key_to_pkcs8().unwrap();
+    let pki = test_pki();
+    let certificate = pki.client.certificate_der().unwrap();
+    let key = pki.client.private_key_pkcs8_der().unwrap();
     let mut server = server_builder(address)
         .with_timeout(timeout_seconds)
         .with_tls_client_certificate(Some(certificate), Some(key))
@@ -459,42 +354,6 @@ async fn untrusted_tls_server_fails_over_without_losing_requests() {
     daemon.stop().await;
 }
 
-/// Accepts TCP connections and never answers the TLS handshake.
-struct StalledHandshake {
-    address: SocketAddr,
-    connections: Arc<Mutex<Vec<tokio::net::TcpStream>>>,
-    task: tokio::task::JoinHandle<()>,
-}
-
-impl StalledHandshake {
-    async fn start() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let connections = Arc::new(Mutex::new(Vec::new()));
-        let held = Arc::clone(&connections);
-        let task = tokio::spawn(async move {
-            while let Ok((stream, _)) = listener.accept().await {
-                held.lock().unwrap().push(stream);
-            }
-        });
-        Self {
-            address,
-            connections,
-            task,
-        }
-    }
-
-    fn accepted(&self) -> usize {
-        self.connections.lock().unwrap().len()
-    }
-}
-
-impl Drop for StalledHandshake {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
 /// Checks that a stalled TLS handshake is bounded by the server timeout.
 ///
 /// The stalled server accepts TCP and never sends a TLS record. Each attempt
@@ -505,11 +364,12 @@ async fn stalled_tls_handshake_is_bounded_and_fails_over() {
     let stalled = StalledHandshake::start().await;
     let backup = Upstream::start_tls(SingleConnect::Accept, mtls_context()).await;
     let servers = [
-        mtls_server_with_timeout(stalled.address, 1),
+        mtls_server_with_timeout(stalled.address(), 1),
         mtls_server_with_timeout(backup.address(), 20),
     ];
     let daemon =
-        Daemon::start(stalled.address, deadline_options(20, "ordered-safe-retry", &servers)).await;
+        Daemon::start(stalled.address(), deadline_options(20, "ordered-safe-retry", &servers))
+            .await;
     let traffic = Traffic {
         clients: 6,
         operations_per_client: 12,

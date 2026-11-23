@@ -28,7 +28,7 @@ timeout --signal=TERM --kill-after=30s 40m \
         -p tacacsrs-agentd -p tacacsrs-agent-health -p tacon \
         -p tacacsrs-networking -p tacacsrs-revocation -p tacacsrs-config -p tacacsrs-agent \
         -p tacacsrs-lifecycle -p tacacsrs-composition \
-        -p tacacsrs-sonic -p tacacsrs-kubesonic -p tacacsrs-provider -p tacacsrs-ipc -p tacacsrs-agent-ipc-emulator \
+        -p tacacsrs-sonic -p tacacsrs-kubesonic -p tacacsrs-provider -p tacacsrs-ipc -p tacacsrs-agent-ipc-emulator -p tacacsrs-testkit \
         -- --test-threads=1
 
 echo "==> Release binary ABI and execution"
@@ -48,5 +48,5 @@ for name in tacacsrs-agentd tacacsrs-agent-health tacon; do
     install -m 0755 "${binary}" "/evidence/${name}"
 done
 (cd /evidence && sha256sum tacacsrs-agentd tacacsrs-agent-health tacon > SHA256SUMS)
-python3 .github/steps/kubesonic/smoke.py --bin-dir /evidence
+PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider -v tests/e2e --bin-dir /evidence
 echo "ARMhf release build, executed tests, ABI, and startup checks passed."

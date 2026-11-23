@@ -164,7 +164,8 @@ def test_platform_checks_share_one_hydrated_validation_job():
     uses = [step.get("uses", "") for step in steps]
     hydrate = uses.index("./.github/steps/inject-versions")
     for action in ("check-format", "check-unused-deps", "resolve-cargo-metadata",
-                   "run-clippy", "build-docs", "run-tests", "run-coverage", "run-miri", "run-fuzz-smoke"):
+                   "run-clippy", "build-docs", "run-tests", "run-e2e-tests",
+                   "run-coverage", "run-miri", "run-fuzz-smoke"):
         assert hydrate < uses.index(f"./.github/steps/{action}")
     assert sum(use == "./.github/steps/run-tests" for use in uses) == 1
     for step in steps:
@@ -368,6 +369,7 @@ def test_armhf_helper_builds_and_executes_the_affected_packages():
     assert "test_protoc.py" in helper
     context = (ROOT / ".dockerignore").read_text()
     for included in ("libraries/*/tests/**", "executables/*/tests/**",
+                     "tests/e2e/**",
                      "lde/containers/config/certificates/**",
                      "libraries/tacacsrs_agent_ipc_emulator/examples/policy.rego",
                      "libraries/tacacsrs_agent_ipc_emulator/examples/policy_data.json"):

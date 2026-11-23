@@ -1,11 +1,12 @@
+#![cfg(target_os = "linux")]
+
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::pin::Pin;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use openssl::nid::Nid;
-use openssl::ssl::{NameType, Ssl, SslContext, SslContextBuilder, SslMethod, SslOptions, SslVersion};
+use openssl::ssl::{NameType, Ssl, SslContext, SslContextBuilder, SslMethod, SslVersion};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio_openssl::SslStream;
@@ -38,14 +39,9 @@ use tacacsrs_protocol::exchange::accounting::AccountingExchange;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
 use tacacsrs_protocol::body::TacacsBodyTrait;
 use tacacsrs_sonic::{map_sonic_tables_to_tacacs_plus, SonicTacacsTables};
+use tacacsrs_testkit::pki::TestIdentity;
+use tacacsrs_testkit::psk_peer::{self, ALLOW_NO_DHE_KEX, NO_SHARED_GROUP};
 
-#[path = "prepared_sources/psk_peer.rs"]
-mod psk_peer;
-
-/// OpenSSL option bit 10 permits TLS 1.3 PSK exchange without DHE.
-const ALLOW_NO_DHE_KEX: SslOptions = SslOptions::from_bits_retain(1 << 10);
-/// A peer group absent from the client's default list forces the no-DHE path.
-const NO_SHARED_GROUP: &str = "P-224";
 const PSK_IDENTITY: &str = "prepared-client";
 const PSK_REFERENCE: &str = "prepared-key-reference";
 const SERVER_NAME: &str = "tacacs.example.test";
@@ -319,7 +315,7 @@ async fn exchange_with_peer(
     let peer = async {
         let (tcp, _) = listener.accept().await?;
         let mut stream = SslStream::new(Ssl::new(context)?, tcp)?;
-        Pin::new(&mut stream).accept().await?;
+        std::pin::Pin::new(&mut stream).accept().await?;
         assert_eq!(stream.ssl().version2(), Some(SslVersion::TLS1_3));
         assert_eq!(stream.ssl().servername(NameType::HOST_NAME), Some(SERVER_NAME));
         assert!(stream.ssl().session_reused());
@@ -489,35 +485,10 @@ impl tacacsrs_networking::ConnectionGuard for DelayDestinationUntilCertificateEx
 }
 
 fn certificate_source(address: SocketAddr, valid_for: Duration) -> Result<CertificateFixture> {
-    use openssl::asn1::Asn1Time;
-    use openssl::pkey::PKey;
-    use openssl::x509::X509;
     use tacacsrs_config::{TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType};
-    let samples = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../lde/containers/config/certificates");
-    let template = X509::from_pem(&std::fs::read(samples.join("client.crt"))?)?;
-    let key = PKey::private_key_from_pem(&std::fs::read(samples.join("client.key"))?)?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_secs();
-    let mut certificate = X509::builder()?;
-    certificate.set_version(2)?;
-    certificate.set_serial_number(template.serial_number())?;
-    certificate.set_subject_name(template.subject_name())?;
-    certificate.set_issuer_name(template.subject_name())?;
-    certificate.set_pubkey(&key)?;
-    certificate.set_not_before(Asn1Time::from_unix((now - 60).try_into()?)?.as_ref())?;
-    let expires_at = std::time::UNIX_EPOCH + Duration::from_secs(now) + valid_for;
-    certificate
-        .set_not_after(Asn1Time::from_unix((now + valid_for.as_secs()).try_into()?)?.as_ref())?;
-    let names = openssl::x509::extension::SubjectAlternativeName::new()
-        .dns("localhost")
-        .build(&certificate.x509v3_context(None, None))?;
-    certificate.append_extension(names)?;
-    certificate.sign(&key, openssl::hash::MessageDigest::sha256())?;
-    let certificate = certificate.build();
-    let certificate_der = certificate.to_der()?;
-    let private_key = key.private_key_to_pkcs8()?;
+    let (identity, expires_at) = TestIdentity::self_signed_for_duration("localhost", valid_for)?;
+    let certificate_der = identity.certificate_der()?;
+    let private_key = identity.private_key_pkcs8_der()?;
     let source = TacacsPlusBuilder::new()
         .with_server_builder(
             TacacsPlusServerBuilder::new(
@@ -533,9 +504,11 @@ fn certificate_source(address: SocketAddr, valid_for: Duration) -> Result<Certif
     let mut context = SslContext::builder(SslMethod::tls_server())?;
     context.set_min_proto_version(Some(SslVersion::TLS1_3))?;
     context.set_max_proto_version(Some(SslVersion::TLS1_3))?;
-    context.set_certificate(&certificate)?;
-    context.set_private_key(&key)?;
-    context.cert_store_mut().add_cert(certificate)?;
+    context.set_certificate(identity.certificate())?;
+    context.set_private_key(identity.private_key())?;
+    context
+        .cert_store_mut()
+        .add_cert(identity.certificate().clone())?;
     context.set_verify(
         openssl::ssl::SslVerifyMode::PEER | openssl::ssl::SslVerifyMode::FAIL_IF_NO_PEER_CERT,
     );
@@ -584,7 +557,7 @@ async fn established_mtls_pin_survives_authentication_certificate_expiry() -> Re
     let peer = tokio::spawn(async move {
         let (tcp, _) = listener.accept().await?;
         let mut stream = SslStream::new(Ssl::new(&context)?, tcp)?;
-        Pin::new(&mut stream).accept().await?;
+        std::pin::Pin::new(&mut stream).accept().await?;
         assert!(stream.ssl().peer_certificate().is_some());
         let _ = handshake_complete.send(());
         reply_to_accounting(&mut stream, None, true).await?;
@@ -819,7 +792,7 @@ async fn unchanged_provider_refresh_after_certificate_expiry_reuses_catalog_and_
     let peer = tokio::spawn(async move {
         let (tcp, _) = listener.accept().await?;
         let mut stream = SslStream::new(Ssl::new(&context)?, tcp)?;
-        Pin::new(&mut stream).accept().await?;
+        std::pin::Pin::new(&mut stream).accept().await?;
         reply_to_expected_accounting(&mut stream, None, true, &expected).await?;
         reply_to_expected_accounting(&mut stream, None, false, &expected).await?;
         assert_eq!(stream.read(&mut [0_u8; 1]).await?, 0);
@@ -1138,7 +1111,7 @@ async fn psk_only_rejects_dhe_before_sending_application_data() -> Result<()> {
         let peer = async {
             let (tcp, _) = listener.accept().await?;
             let mut stream = SslStream::new(Ssl::new(&context)?, tcp)?;
-            Pin::new(&mut stream).accept().await?;
+            std::pin::Pin::new(&mut stream).accept().await?;
             assert!(stream.ssl().peer_tmp_key().is_ok());
             let mut byte = [0];
             Ok::<_, anyhow::Error>(stream.read(&mut byte).await.unwrap_or(0))
@@ -1154,19 +1127,13 @@ async fn psk_only_rejects_dhe_before_sending_application_data() -> Result<()> {
 
 #[tokio::test]
 async fn psk_rejects_certificate_fallback_before_sending_application_data() -> Result<()> {
-    use openssl::pkey::PKey;
-    use openssl::x509::X509;
-
-    let samples = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../lde/containers/config/certificates");
-    let certificate = X509::from_pem(&std::fs::read(samples.join("server.crt"))?)?;
-    let key = PKey::private_key_from_pem(&std::fs::read(samples.join("server.key"))?)?;
+    let server = TestIdentity::self_signed_server("localhost")?;
     let mut context = SslContext::builder(SslMethod::tls_server())?;
     context.set_min_proto_version(Some(SslVersion::TLS1_3))?;
     context.set_max_proto_version(Some(SslVersion::TLS1_3))?;
     context.set_ciphersuites("TLS_AES_128_GCM_SHA256")?;
-    context.set_certificate(&certificate)?;
-    context.set_private_key(&key)?;
+    context.set_certificate(server.certificate())?;
+    context.set_private_key(server.private_key())?;
     let context = context.build();
     tokio::time::timeout(Duration::from_secs(10), async {
         for dhe in [false, true] {
@@ -1176,7 +1143,7 @@ async fn psk_rejects_certificate_fallback_before_sending_application_data() -> R
             let peer = async {
                 let (tcp, _) = listener.accept().await?;
                 let mut stream = SslStream::new(Ssl::new(&context)?, tcp)?;
-                Pin::new(&mut stream).accept().await?;
+                std::pin::Pin::new(&mut stream).accept().await?;
                 assert!(!stream.ssl().session_reused());
                 let mut byte = [0];
                 Ok::<_, anyhow::Error>(stream.read(&mut byte).await.unwrap_or(0))

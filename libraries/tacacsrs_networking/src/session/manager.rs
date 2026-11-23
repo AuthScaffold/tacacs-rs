@@ -368,9 +368,10 @@ impl SessionManager {
         let (duplex_channel, session_id) = self.create_channel(&mut routes);
         drop(routes);
 
+        let correlation = tacacsrs_protocol::header::wire_correlation(session_id);
         log::trace!(
             target: "tacacsrs_networking::session::manager::create_session",
-            "Created session with ID {session_id}"
+            "Created session with correlation {correlation}"
         );
 
         Ok(SharedSession::new_with_manager(session_id, duplex_channel, Some(Arc::clone(self))))
@@ -408,9 +409,10 @@ impl SessionManager {
     pub(crate) fn remove_session(&self, session_id: u32) {
         let mut duplex_channels = self.routes();
         if duplex_channels.remove(&session_id).is_some() {
+            let correlation = tacacsrs_protocol::header::wire_correlation(session_id);
             log::trace!(
                 target: "tacacsrs_networking::session::manager::remove_session",
-                "Removed session {session_id} from the session registry"
+                "Removed session {correlation} from the session registry"
             );
 
             // Check whether to signal connection closure. Hold the registry lock
@@ -557,9 +559,10 @@ impl SessionManager {
 
         match target {
             DispatchTarget::Conversation(sender) => {
+                let correlation = tacacsrs_protocol::header::wire_correlation(session_id);
                 log::trace!(
                     target: "tacacsrs_networking::session::manager::send_message_to_session",
-                    "Found channel for session ID {session_id}. Sending packet to the session"
+                    "Found channel for correlation {correlation}. Sending packet to the session"
                 );
 
                 match sender.send(packet).await {
@@ -569,7 +572,7 @@ impl SessionManager {
 
                         log::warn!(
                             target: "tacacsrs_networking::session::manager::send_message_to_session",
-                            "Failed to send packet to channel for session ID {session_id}: {e}"
+                            "Failed to send packet to channel for correlation {correlation}: {e}"
                         );
 
                         Err(PacketDispatchError::SessionClosed(session_id))

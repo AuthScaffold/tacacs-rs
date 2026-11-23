@@ -57,6 +57,10 @@ executables/*/**
 !.github/steps/armhf/
 !.github/steps/armhf/**
 
+!tests/
+!tests/e2e/
+!tests/e2e/**
+
 # Include the inputs that tacacsrs-config uses to generate YANG and configuration files.
 !libraries/tacacsrs_config/yang/
 !libraries/tacacsrs_config/yang/**

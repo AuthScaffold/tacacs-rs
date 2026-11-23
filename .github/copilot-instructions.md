@@ -162,6 +162,9 @@ session-wrapper -> tacacsrs-ipc
   and mounted credentials. `components` returns its source and registration components.
 - `tacacsrs-agent-ipc-emulator` provides OPA/Rego-driven local IPC emulation for
   integration and scenario testing.
+- `tacacsrs-testkit` provides shared test PKI/CRL generation, TLS 1.3 PSK server
+  callbacks, and scripted TACACS+ upstream fault-injection peers. It is excluded
+  from `default-members` and forbidden from production crates.
 - `tacacsrs-bash-plugin` exposes the SONiC Bash `execve` plugin surface and must
   keep FFI, runtime, configuration, logging, authorization, and session concerns
   separated.
@@ -332,7 +335,9 @@ supports the preferred shape.
 - Prefer observable behavior tests over implementation-detail tests.
 - Use `MockTransport` and `MockTransportCoordinator` for networking tests.
 - Use `tacacsrs_agent::service::test_support` for agent failover and service
-  tests.
+  tests, `tacacsrs_testkit` for shared PKI, TLS/PSK peers, and scripted upstream
+  wire fault injection, and `tests/e2e/` (`pytest`) for black-box multi-process,
+  signal, Redis, and CLI workflows.
 - When testing configuration consumers, use `ConfigDatastore` abstractions and static
   datastores instead of ad-hoc file or environment access.
 - Add regression tests with bug fixes. When behavior crosses crate, protocol,

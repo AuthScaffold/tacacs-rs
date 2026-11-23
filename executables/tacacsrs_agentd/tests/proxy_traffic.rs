@@ -11,14 +11,13 @@
 //! admission limits hold, and that the daemon recovers and releases resources
 //! after each fault.
 
-#[path = "proxy_traffic/upstream.rs"]
-mod upstream;
-
 #[path = "proxy_traffic/coverage.rs"]
 mod coverage;
 
 #[path = "proxy_traffic/transport.rs"]
 mod transport;
+
+use tacacsrs_testkit::upstream;
 
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::path::PathBuf;
@@ -663,7 +662,7 @@ const fn recovery(single_connect: bool) -> Traffic {
 async fn wait_until(what: &str, condition: impl Fn() -> bool) {
     let started = Instant::now();
     while !condition() {
-        assert!(started.elapsed() < Duration::from_secs(10), "timed out waiting for {what}");
+        assert!(started.elapsed() < OPERATION_LIMIT, "timed out waiting for {what}");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
@@ -970,14 +969,19 @@ async fn broken_upstream_case(fault: Fault, mode: SingleConnect) {
 /// `config` replaces the plain-TCP command-line server options. Servers in
 /// `config` must use a 1-second timeout.
 async fn broken_upstream_run(upstream: &Upstream, fault: Fault, config: Option<serde_json::Value>) {
+    let request_timeout_seconds = if config.is_some() {
+        4
+    } else {
+        2
+    };
     let mut daemon = Daemon::start(
         upstream.address(),
         Options {
             connect_timeout_seconds: 1,
             policy: fast_recovery(serde_json::json!({
-                "authentication": { "request-timeout-seconds": 2 },
-                "authorization": { "request-timeout-seconds": 2 },
-                "accounting": { "request-timeout-seconds": 2 },
+                "authentication": { "request-timeout-seconds": request_timeout_seconds },
+                "authorization": { "request-timeout-seconds": request_timeout_seconds },
+                "accounting": { "request-timeout-seconds": request_timeout_seconds },
             })),
             config,
             ..Options::default()
@@ -1010,7 +1014,7 @@ async fn broken_upstream_run(upstream: &Upstream, fault: Fault, config: Option<s
     assert!(upstream.injected(fault) > 0);
     for kind in Kind::ALL {
         assert!(
-            tally.max_latency[kind as usize] < Duration::from_secs(5),
+            tally.max_latency[kind as usize] < Duration::from_secs(request_timeout_seconds + 3),
             "a {kind:?} request was not bounded by its deadline: {tally:#?}"
         );
     }

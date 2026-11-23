@@ -2264,16 +2264,12 @@ dependencies = [
  "dill",
  "env_filter",
  "env_logger",
- "foreign-types",
- "futures-util",
  "log",
  "openssl",
- "openssl-sys",
  "serde_json",
  "tacacsrs-agent",
  "tacacsrs-composition",
  "tacacsrs-config",
- "tacacsrs-credential-resolution",
  "tacacsrs-ipc",
  "tacacsrs-kubesonic",
  "tacacsrs-lifecycle",
@@ -2282,8 +2278,8 @@ dependencies = [
  "tacacsrs-revocation",
  "tacacsrs-secrets",
  "tacacsrs-sonic",
+ "tacacsrs-testkit",
  "tokio",
- "tokio-openssl",
  "tokio-util",
 ]
 
@@ -2509,6 +2505,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "tacacsrs-testkit"
+version = "0.0.0-dev"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "foreign-types",
+ "futures-util",
+ "openssl",
+ "openssl-sys",
+ "serde_json",
+ "tacacsrs-agent",
+ "tacacsrs-config",
+ "tacacsrs-credential-resolution",
+ "tacacsrs-networking",
+ "tacacsrs-protocol",
+ "tacacsrs-secrets",
+ "tacacsrs-sonic",
+ "tokio",
+ "tokio-openssl",
+ "tokio-util",
+]
+
+[[package]]
 name = "tacacsrs-unix-socket"
 version = "0.0.0-dev"
 dependencies = [
@@ -2538,6 +2557,7 @@ dependencies = [
  "tacacsrs-protocol",
  "tacacsrs-revocation",
  "tacacsrs-secrets",
+ "tacacsrs-testkit",
  "tempfile",
  "tokio",
  "tokio-openssl",
