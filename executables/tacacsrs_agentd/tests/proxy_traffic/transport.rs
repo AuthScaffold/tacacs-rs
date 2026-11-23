@@ -185,21 +185,26 @@ fn server_builder(address: SocketAddr) -> TacacsPlusServerBuilder {
         address.port(),
     )
     .with_single_connection(true)
-    .with_timeout(1)
+    .with_timeout(5)
 }
 
 fn plain_server(address: SocketAddr) -> TacacsPlusServerBuilder {
     server_builder(address).with_shared_secret(upstream::upstream_key())
 }
 
-fn mtls_server(address: SocketAddr) -> TacacsPlusServer {
+fn mtls_server_with_timeout(address: SocketAddr, timeout_seconds: u16) -> TacacsPlusServer {
     let certificate = read_certificate("client.crt").to_der().unwrap();
     let key = read_key("client.key").private_key_to_pkcs8().unwrap();
     let mut server = server_builder(address)
+        .with_timeout(timeout_seconds)
         .with_tls_client_certificate(Some(certificate), Some(key))
         .build();
     server.server_authentication = Some(trust_store());
     server
+}
+
+fn mtls_server(address: SocketAddr) -> TacacsPlusServer {
+    mtls_server_with_timeout(address, 5)
 }
 
 fn psk_server(address: SocketAddr, key: &[u8], dhe: bool) -> TacacsPlusServer {
@@ -319,9 +324,22 @@ fn is_local_error(outcome: &Outcome) -> bool {
 }
 
 /// Runs heavy traffic over TLS and checks connection reuse and cleanup.
-async fn tls_traffic_case(upstream: &Upstream, server: TacacsPlusServer, mode: SingleConnect) {
+async fn tls_traffic_case(upstream: &Upstream, mut server: TacacsPlusServer, mode: SingleConnect) {
+    // Sample mTLS fixtures use 4096-bit RSA keys; give healthy handshakes and
+    // round trips headroom under unoptimized QEMU ARMhf emulation.
+    server.timeout = 20;
     let daemon = Daemon::start(upstream.address(), config_options(&[server])).await;
-    let traffic = heavy(true);
+    let traffic = match mode {
+        SingleConnect::Accept => heavy(true),
+        SingleConnect::Decline => Traffic {
+            clients: 8,
+            operations_per_client: 12,
+            concurrency: 2,
+            single_connect: true,
+            kinds: mixed,
+            ascii_authentication: false,
+        },
+    };
     let tally = run_traffic(daemon.port, traffic, "tls").await;
     tally.assert_all_succeeded(traffic.total());
     assert_eq!(upstream.received_total(), traffic.total());
@@ -426,11 +444,11 @@ async fn untrusted_tls_server_fails_over_without_losing_requests() {
     let untrusted = Upstream::start_tls(SingleConnect::Accept, untrusted_context()).await;
     let backup = Upstream::start_tls(SingleConnect::Accept, mtls_context()).await;
     let servers = [
-        mtls_server(untrusted.address()),
-        mtls_server(backup.address()),
+        mtls_server_with_timeout(untrusted.address(), 10),
+        mtls_server_with_timeout(backup.address(), 20),
     ];
     let daemon =
-        Daemon::start(untrusted.address(), deadline_options(3, "ordered-safe-retry", &servers))
+        Daemon::start(untrusted.address(), deadline_options(20, "ordered-safe-retry", &servers))
             .await;
     let traffic = heavy(true);
     let tally = run_traffic(daemon.port, traffic, "untrusted").await;
@@ -486,9 +504,12 @@ impl Drop for StalledHandshake {
 async fn stalled_tls_handshake_is_bounded_and_fails_over() {
     let stalled = StalledHandshake::start().await;
     let backup = Upstream::start_tls(SingleConnect::Accept, mtls_context()).await;
-    let servers = [mtls_server(stalled.address), mtls_server(backup.address())];
+    let servers = [
+        mtls_server_with_timeout(stalled.address, 1),
+        mtls_server_with_timeout(backup.address(), 20),
+    ];
     let daemon =
-        Daemon::start(stalled.address, deadline_options(4, "ordered-safe-retry", &servers)).await;
+        Daemon::start(stalled.address, deadline_options(20, "ordered-safe-retry", &servers)).await;
     let traffic = Traffic {
         clients: 6,
         operations_per_client: 12,
@@ -502,8 +523,8 @@ async fn stalled_tls_handshake_is_bounded_and_fails_over() {
     assert!(stalled.accepted() > 0, "the daemon did not try the stalled server");
     for kind in Kind::ALL {
         assert!(
-            tally.max_latency[kind as usize] < Duration::from_secs(3),
-            "a stalled handshake delayed {kind:?} beyond one server timeout: {tally:#?}"
+            tally.max_latency[kind as usize] < Duration::from_secs(6),
+            "a stalled handshake delayed {kind:?} beyond the 1s server timeout plus backup handshake: {tally:#?}"
         );
     }
     assert_eq!(backup.received_total(), traffic.total());

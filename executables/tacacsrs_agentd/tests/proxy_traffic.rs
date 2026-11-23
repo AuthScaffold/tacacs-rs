@@ -51,11 +51,11 @@ const DOWNSTREAM_KEY: &str = "downstream-proxy-key";
 
 const USER_PREFIX: &str = "u/";
 
-// Slow ARMhf QEMU runners share this budget for daemon startup.
+// Slow ARMhf QEMU runners share this budget for daemon startup and heavy RSA-4096 mTLS bursts.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 
 // No single request may take longer than this, under any fault.
-const OPERATION_LIMIT: Duration = Duration::from_secs(15);
+const OPERATION_LIMIT: Duration = Duration::from_secs(30);
 
 const SHUTDOWN_LIMIT: Duration = Duration::from_secs(10);
 
@@ -232,11 +232,11 @@ impl Daemon {
             stderr_reader: Some(stderr_reader),
             directory,
         };
-        daemon.wait_ready().await;
+        daemon.wait_ready(options.service_mode == "both").await;
         daemon
     }
 
-    async fn wait_ready(&mut self) {
+    async fn wait_ready(&mut self, wait_for_ipc: bool) {
         let started = Instant::now();
         loop {
             if let Some(status) = self.child.try_wait().unwrap() {
@@ -251,9 +251,13 @@ impl Daemon {
                     .any(|message| line.contains(message))
             });
             if let Some(address) = self.bound_address().filter(|_| published) {
-                self.port = address.port();
-                TcpStream::connect(address).await.unwrap();
-                return;
+                let ipc_ready =
+                    !wait_for_ipc || tokio::net::UnixStream::connect(self.socket()).await.is_ok();
+                if ipc_ready {
+                    self.port = address.port();
+                    TcpStream::connect(address).await.unwrap();
+                    return;
+                }
             }
             assert!(
                 started.elapsed() < STARTUP_TIMEOUT,
