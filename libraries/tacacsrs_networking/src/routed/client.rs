@@ -156,7 +156,6 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
     /// Returns the current preferred endpoint for the operation.
     #[allow(
         clippy::unused_async,
-        clippy::unused_async_trait_impl,
         reason = "Retain the async routing API while reading state without yielding."
     )]
     pub async fn active_endpoint(&self, operation: OperationKind) -> Option<&Endpoint> {

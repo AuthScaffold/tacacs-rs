@@ -5,11 +5,8 @@ use std::sync::Arc;
 
 use anyhow::{ensure, Context};
 use async_trait::async_trait;
-use futures_util::{future::BoxFuture, FutureExt, StreamExt};
+use futures_util::{FutureExt, StreamExt};
 use redis::IntoConnectionInfo;
-use tokio::sync::watch;
-use tokio::task::JoinHandle;
-use tokio::time::Instant;
 
 use tacacsrs_config::{TacacsPlus, TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType};
 use tacacsrs_config::{
@@ -18,8 +15,8 @@ use tacacsrs_config::{
 };
 use tacacsrs_config::keystore::EndEntityCertWithKeyCentralKeystoreReference;
 use tacacsrs_config::source::{
-    ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigDatastore, ConfigDelta,
-    ConfigObservation, SourceBehavior,
+    ChangeNotificationMode, ConfigDatastore, ConfigObservation, ObservationSchedule,
+    ObservedSnapshot, SignalObservation, SourceBehavior,
 };
 
 use crate::credentials::{CA_REFERENCE, IDENTITY_REFERENCE};
@@ -59,6 +56,10 @@ pub fn is_loopback(address: &str) -> bool {
 pub fn map_rows(rows: Vec<ServerRow>, settings: &SourceSettings) -> anyhow::Result<TacacsPlus> {
     let mut servers = Vec::new();
     for row in rows {
+        ensure!(
+            !row.address.trim().is_empty() && row.address.trim() == row.address,
+            "Invalid ConfigDB server configuration"
+        );
         if is_loopback(&row.address) {
             continue;
         }
@@ -106,7 +107,8 @@ pub fn map_rows(rows: Vec<ServerRow>, settings: &SourceSettings) -> anyhow::Resu
         servers
             .into_iter()
             .fold(TacacsPlusBuilder::new(), |builder, (_, _, server)| builder.with_server(server))
-            .build()?
+            .build()
+            .context("Invalid ConfigDB server configuration")?
     };
     config
         .certificate_revocation
@@ -247,117 +249,71 @@ impl ConfigDatastore for KubeSonicConfigDb {
         )
         .await
         .context("ConfigDB subscription timed out")??;
-        let (sender, signals) = watch::channel(());
-        let pump = tokio::spawn(async move {
-            let mut messages = pubsub.on_message();
-            loop {
-                tokio::select! {
-                    biased;
-                    () = sender.closed() => break,
-                    message = messages.next() => {
-                        if message.is_none() { break; }
-                        sender.send_replace(());
+        let settings = self.settings.clone();
+        let schedule = ObservationSchedule {
+            debounce: settings.debounce,
+            max_delay: Some(settings.max_delay),
+            reconcile_interval: Some(settings.reconcile_interval),
+            retry_interval: Some(settings.retry_interval),
+        };
+        let notifications = pubsub.into_on_message().map(|_| ());
+        Ok(Box::new(SignalObservation::spawn(
+            notifications,
+            schedule,
+            "ConfigDB subscription disconnected",
+            move || {
+                let settings = settings.clone();
+                async move {
+                    match settings.snapshot().await {
+                        Ok(config) => Ok(ObservedSnapshot::config_only(Arc::new(config))),
+                        Err(error) => {
+                            let reason = classify_snapshot_error(&error);
+                            log::warn!(
+                                "KubeSONiC ConfigDB snapshot rejected ({reason}); retaining known-good configuration"
+                            );
+                            Err(())
+                        }
                     }
                 }
-            }
-        });
-        Ok(Box::new(Observation {
-            settings: self.settings.clone(),
-            signals,
-            pump,
-            previous: None,
-            rejected: false,
-            read: None,
-            due: Instant::now(),
-            burst: None,
-            quiet: None,
-        }))
+                .boxed()
+            },
+        )))
     }
 }
 
-struct Observation {
-    settings: SourceSettings,
-    signals: watch::Receiver<()>,
-    pump: JoinHandle<()>,
-    previous: Option<Arc<TacacsPlus>>,
-    // A rejection degrades the source. The next valid snapshot must clear that
-    // state, even when it equals the previous one.
-    rejected: bool,
-    read: Option<BoxFuture<'static, anyhow::Result<TacacsPlus>>>,
-    due: Instant,
-    burst: Option<Instant>,
-    quiet: Option<Instant>,
-}
-
-impl Drop for Observation {
-    fn drop(&mut self) {
-        self.pump.abort();
-    }
-}
-
-#[async_trait]
-impl ConfigObservation for Observation {
-    async fn next(&mut self) -> anyhow::Result<Option<ConfigChangeEvent>> {
-        loop {
-            self.signals
-                .has_changed()
-                .context("ConfigDB subscription disconnected")?;
-            if self.read.is_none() {
-                let deadline = self.quiet.map_or(self.due, |quiet| quiet.min(self.due));
-                tokio::select! {
-                    biased;
-                    signal = self.signals.changed() => {
-                        signal.context("ConfigDB subscription disconnected")?;
-                        let now = Instant::now();
-                        let start = *self.burst.get_or_insert(now);
-                        self.quiet = Some((now + self.settings.debounce).min(start + self.settings.max_delay));
-                        continue;
-                    }
-                    () = tokio::time::sleep_until(deadline) => {}
-                }
-                self.signals.borrow_and_update();
-                self.burst = None;
-                self.quiet = None;
-                let settings = self.settings.clone();
-                self.read = Some(async move { settings.snapshot().await }.boxed());
-            }
-            let mut connection = self.signals.clone();
-            let disconnected = async move { while connection.changed().await.is_ok() {} };
-            let read = self.read.as_mut().context("ConfigDB read is missing")?;
-            let result = tokio::select! {
-                biased;
-                () = disconnected => anyhow::bail!("ConfigDB subscription disconnected"),
-                result = read => result,
-            };
-            self.read = None;
-            match result {
-                Ok(config) => {
-                    self.due = Instant::now() + self.settings.reconcile_interval;
-                    if !self.rejected && self.previous.as_deref() == Some(&config) {
-                        continue;
-                    }
-                    self.rejected = false;
-                    let config = Arc::new(config);
-                    let delta = ConfigDelta::diff(self.previous.as_deref(), &config);
-                    self.previous = Some(config.clone());
-                    return Ok(Some(ConfigChangeEvent::Changed(ConfigChange {
-                        config,
-                        delta,
-                        runtime_policy: None,
-                        local_services: None,
-                    })));
-                }
-                Err(_) => {
-                    log::warn!(
-                        "KubeSONiC ConfigDB snapshot rejected; retaining known-good configuration"
-                    );
-                    self.due = Instant::now() + self.settings.retry_interval;
-                    self.rejected = true;
-                    return Ok(Some(ConfigChangeEvent::CandidateRejected));
-                }
-            }
+/// Maps a snapshot error to a static, secret-free diagnostic category.
+fn classify_snapshot_error(error: &anyhow::Error) -> &'static str {
+    for cause in error.chain() {
+        let message = cause.to_string();
+        if message.contains("ConfigDB connection timed out") {
+            return "connection timed out";
+        }
+        if message.contains("ConfigDB connection failed")
+            || message.contains("Invalid ConfigDB connection configuration")
+        {
+            return "connection failed";
+        }
+        if message.contains("ConfigDB snapshot timed out") {
+            return "snapshot timed out";
+        }
+        if message.contains("upstream row limit exceeded") {
+            return "upstream row limit exceeded";
+        }
+        if message.contains("upstream key too long") || message.contains("upstream field too long")
+        {
+            return "upstream key or field limit exceeded";
+        }
+        if message.contains("ConfigDB upstream row is not a hash") {
+            return "row is not a hash";
+        }
+        if message.contains("ConfigDB numeric field") {
+            return "invalid numeric field";
+        }
+        if message.contains("Invalid ConfigDB server configuration") {
+            return "invalid server configuration";
         }
     }
+    "snapshot query failed"
 }
 
 #[cfg(test)]
@@ -452,5 +408,43 @@ mod tests {
             assert_eq!(source.certificate_revocation, settings.certificate_revocation);
             assert!(source.certificate_revocation.is_some());
         }
+    }
+
+    #[test]
+    fn snapshot_error_categories_are_sanitized() {
+        let settings = Environment::parse(BTreeMap::new()).unwrap().source;
+        let bad_hash = map_rows(
+            vec![ServerRow {
+                address: "192.0.2.99-secret-sentinel".into(),
+                port: None,
+                priority: None,
+                valid_hash: false,
+            }],
+            &settings,
+        )
+        .unwrap_err();
+        let bad_port = map_rows(
+            vec![ServerRow {
+                address: "192.0.2.1".into(),
+                port: Some("secret-port-sentinel".into()),
+                priority: None,
+                valid_hash: true,
+            }],
+            &settings,
+        )
+        .unwrap_err();
+        let bad_server = map_rows(
+            vec![ServerRow {
+                address: String::new(),
+                port: None,
+                priority: None,
+                valid_hash: true,
+            }],
+            &settings,
+        )
+        .unwrap_err();
+        assert_eq!(classify_snapshot_error(&bad_hash), "row is not a hash");
+        assert_eq!(classify_snapshot_error(&bad_port), "invalid numeric field");
+        assert_eq!(classify_snapshot_error(&bad_server), "invalid server configuration");
     }
 }

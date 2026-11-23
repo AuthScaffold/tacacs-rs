@@ -16,7 +16,6 @@ use std::sync::Arc;
 use futures_util::FutureExt;
 #[cfg(test)]
 use tacacsrs_config::TacacsPlus;
-use tacacsrs_provider::LocalServicesOverlay;
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 
@@ -43,7 +42,7 @@ pub(crate) struct ServiceRuntime<
 > {
     /// Validated operator configuration.
     pub(super) config: ServiceConfig,
-    /// Active local services, their overlays, and the proxy loop guard.
+    /// Active local services and the proxy loop guard.
     pub(super) local_services: LocalServicesState,
     /// The accepted runtime policy for components.
     pub(super) runtime_policy: ConfigPublisher<RuntimePolicy>,
@@ -126,7 +125,6 @@ impl ServiceRuntime<ServiceConnector> {
             health,
             servers.into_iter().map(Arc::new).collect(),
             configuration_applied,
-            Vec::new(),
             crate::UpstreamRevocation::default(),
             |guard, revocation| {
                 ServiceConnector(NetworkUpstreamConnector::new(guard, revocation).erased())
@@ -146,7 +144,6 @@ impl ServiceRuntime<ServiceConnector> {
             health,
             servers.into_iter().map(Arc::new).collect(),
             true,
-            Vec::new(),
             crate::UpstreamRevocation::default(),
             |_, _| ServiceConnector(connector),
         )
@@ -162,14 +159,15 @@ where
         health: RuntimeHealthPublisher,
         servers: Vec<Arc<tacacsrs_config::TacacsPlusServer>>,
         configuration_applied: bool,
-        local_services_overlays: Vec<Arc<dyn LocalServicesOverlay>>,
         revocation: crate::UpstreamRevocation,
         factory: impl FnOnce(ProxyLoopGuard, crate::UpstreamRevocation) -> Connector,
     ) -> anyhow::Result<Self> {
-        let local_services = LocalServicesState::new(
-            ActiveLocalServices::new(config.local_services.clone())?,
-            local_services_overlays,
-        );
+        let local_services =
+            LocalServicesState::new(ActiveLocalServices::new(config.local_services.clone())?);
+        revocation.set_default_network(tacacsrs_networking::RevocationNetwork::new(
+            tacacsrs_networking::LocalBinding::default(),
+            Some(Arc::new(local_services.proxy_loop_guard().clone())),
+        ));
         let connector = factory(local_services.proxy_loop_guard().clone(), revocation.clone());
         let proxy_policy = if !configuration_applied
             && config.local_services.proxy_credential_source
@@ -347,6 +345,7 @@ where
         sections: Option<&crate::runtime::CandidateSections>,
     ) -> anyhow::Result<()> {
         let candidate = self.prepare_materialized_servers(candidate).await?;
+        let revocation_binding = candidate.revocation_binding().unwrap_or_default();
         let _reload_guard = if let Some(preparation) = candidate.preparation.as_ref() {
             preparation
                 .admission
@@ -357,6 +356,11 @@ where
         };
         self.manager
             .reload_shared_servers_then(candidate, None, || {
+                self.revocation
+                    .set_default_network(tacacsrs_networking::RevocationNetwork::new(
+                        revocation_binding,
+                        Some(Arc::new(self.local_services.proxy_loop_guard().clone())),
+                    ));
                 if let Some(sections) = sections {
                     self.publish_sections_locked(sections);
                 }

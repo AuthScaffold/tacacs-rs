@@ -32,9 +32,11 @@ pub(crate) mod directory_watch;
 pub mod policy;
 mod file;
 mod file_observation;
+mod signal_observation;
 mod static_datastore;
 
 pub use file::CliFileDatastore;
+pub use signal_observation::{ObservationSchedule, ObservedSnapshot, SignalObservation, SnapshotFuture};
 pub use static_datastore::StaticDatastore;
 
 /// Description of how the configuration changed between two snapshots.

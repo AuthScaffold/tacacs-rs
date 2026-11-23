@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
-use tacacsrs_networking::{PreparedEndpoint, RevocationSettings, RevocationVerifier};
+use tacacsrs_networking::{PreparedEndpoint, RevocationNetwork, RevocationSettings, RevocationVerifier};
 
 /// Certificate revocation input for the upstream connector.
 ///
@@ -20,6 +20,7 @@ use tacacsrs_networking::{PreparedEndpoint, RevocationSettings, RevocationVerifi
 pub struct UpstreamRevocation {
     verifier: Option<Arc<dyn RevocationVerifier>>,
     settings: Arc<watch::Sender<RevocationSettings>>,
+    network: Arc<watch::Sender<RevocationNetwork>>,
 }
 
 impl UpstreamRevocation {
@@ -29,9 +30,20 @@ impl UpstreamRevocation {
         verifier: Arc<dyn RevocationVerifier>,
         settings: watch::Sender<RevocationSettings>,
     ) -> Self {
+        Self::with_network(verifier, settings, watch::channel(RevocationNetwork::default()).0)
+    }
+
+    /// Creates an input with a verifier, settings channel, and default prefetch network channel.
+    #[must_use]
+    pub fn with_network(
+        verifier: Arc<dyn RevocationVerifier>,
+        settings: watch::Sender<RevocationSettings>,
+        network: watch::Sender<RevocationNetwork>,
+    ) -> Self {
         Self {
             verifier: Some(verifier),
             settings: Arc::new(settings),
+            network: Arc::new(network),
         }
     }
 
@@ -43,7 +55,20 @@ impl UpstreamRevocation {
         Self {
             verifier: None,
             settings: Arc::new(watch::channel(RevocationSettings::default()).0),
+            network: Arc::new(watch::channel(RevocationNetwork::default()).0),
         }
+    }
+
+    /// Publishes the default network context used for CRL prefetching.
+    pub(crate) fn set_default_network(&self, network: RevocationNetwork) {
+        self.network.send_if_modified(|current| {
+            let changed = current.binding() != network.binding()
+                || format!("{current:?}") != format!("{network:?}");
+            if changed {
+                *current = network;
+            }
+            changed
+        });
     }
 
     /// Returns the active settings.

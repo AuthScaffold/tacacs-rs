@@ -192,7 +192,7 @@ session-wrapper -> tacacsrs-ipc
   TACACS+ servers. Its profiles convert arguments to component settings and
   select components, and `tacacsrs_agent::host` runs them. The only component
   of the daemon is `RevocationComponent`, which injects the CRL verifier and
-  runs the CRL refresh service. Add sources, credential layers, overlays, startup checks,
+  runs the CRL refresh service. Add sources, startup checks,
   listeners, hosted services, and health members as components, not as
   host code changes.
 - `tacacsrs-agent-ipc-emulatord` runs the OPA/Rego-driven IPC emulator as a process.

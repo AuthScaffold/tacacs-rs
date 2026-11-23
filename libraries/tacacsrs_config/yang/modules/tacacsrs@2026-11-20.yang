@@ -255,16 +255,16 @@ module tacacsrs {
   typedef distribution-point-pattern {
     type string {
       length "1..2048";
-      pattern 'https?://[^/?#]+(/.*)?';
+      pattern 'http://[^/?#]+(/.*)?';
     }
     description
-      "An HTTP or HTTPS URL pattern for CRL distribution points.
+      "An HTTP URL pattern for CRL distribution points.
        In the host, '*' matches exactly one DNS label and '**' matches
        one or more labels. Wildcards must be whole labels on the left.
        At least two literal labels must follow the last wildcard.
        In the path, '*' matches characters inside one segment and '**'
        matches zero or more whole segments. The scheme and port match
-       exactly. Userinfo and fragments are not allowed.";
+       exactly. Userinfo, queries, and fragments are not allowed.";
   }
 
   augment "/sys:system/sys-tcs-plus:tacacs-plus" {
@@ -330,7 +330,7 @@ module tacacsrs {
       leaf-list prefetch-distribution-point {
         type string {
           length "1..2048";
-          pattern 'https?://[^/?#*]+(/[^*]*)?';
+          pattern 'http://[^/?#*]+(/[^*]*)?';
         }
         ordered-by user;
         description
@@ -368,7 +368,7 @@ module tacacsrs {
       leaf cache-directory {
         type string {
           length "1..4096";
-          pattern '/.*';
+          pattern '(/|[A-Za-z]:[/\\]).*';
         }
         description
           "Absolute directory for a persistent CRL cache. When present,

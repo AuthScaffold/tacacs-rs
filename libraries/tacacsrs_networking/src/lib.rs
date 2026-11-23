@@ -15,7 +15,7 @@
 //!
 //! Certificate TLS validates local and peer authentication dates during each
 //! handshake. Established connections continue after those dates expire.
-//! Independent OCSP and CRL freshness can still close a transport.
+//! Revocation checks also run only during connection establishment.
 //!
 //! On 32-bit musl, use musl 1.2 or later and compile dependencies with `--cfg=libc_unstable_musl_v1_2` in `RUSTFLAGS`. This selects the 64-bit time ABI required by modern system OpenSSL.
 //!

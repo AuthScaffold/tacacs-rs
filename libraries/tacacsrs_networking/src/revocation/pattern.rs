@@ -254,32 +254,47 @@ fn host_without_brackets(url: &url::Url) -> &str {
 
 fn parse_path(source: &str, raw_path: &str) -> Result<Vec<PathSegment>> {
     let raw_path = raw_path.strip_prefix('/').unwrap_or(raw_path);
-    raw_path
-        .split('/')
-        .map(|segment| {
-            if segment == "**" {
-                Ok(PathSegment::AnySegments)
-            } else if segment.contains("**") {
-                bail!("Distribution point pattern {source} uses '**' inside a path segment")
-            } else {
-                Ok(PathSegment::Glob(segment.to_owned()))
+    let mut segments = Vec::new();
+    for segment in raw_path.split('/') {
+        if segment == "**" {
+            if !matches!(segments.last(), Some(PathSegment::AnySegments)) {
+                segments.push(PathSegment::AnySegments);
             }
-        })
-        .collect()
+        } else if segment.contains("**") {
+            bail!("Distribution point pattern {source} uses '**' inside a path segment");
+        } else {
+            segments.push(PathSegment::Glob(segment.to_owned()));
+        }
+    }
+    Ok(segments)
 }
 
 fn match_segments(pattern: &[PathSegment], segments: &[&str]) -> bool {
-    match pattern.split_first() {
-        None => segments.is_empty(),
-        Some((PathSegment::AnySegments, rest)) => {
-            (0..=segments.len()).any(|skip| match_segments(rest, &segments[skip..]))
-        }
-        Some((PathSegment::Glob(glob), rest)) => {
-            segments.split_first().is_some_and(|(segment, tail)| {
-                glob_matches(glob, segment) && match_segments(rest, tail)
-            })
+    let mut p = 0usize;
+    let mut s = 0usize;
+    let mut star: Option<(usize, usize)> = None;
+    while s < segments.len() {
+        if matches!(pattern.get(p), Some(PathSegment::AnySegments)) {
+            star = Some((p, s + 1));
+            p += 1;
+        } else if matches!(
+            pattern.get(p),
+            Some(PathSegment::Glob(glob)) if glob_matches(glob, segments[s])
+        ) {
+            p += 1;
+            s += 1;
+        } else if let Some((star_p, next_s)) = star {
+            p = star_p + 1;
+            s = next_s;
+            star = Some((star_p, next_s + 1));
+        } else {
+            return false;
         }
     }
+    while matches!(pattern.get(p), Some(PathSegment::AnySegments)) {
+        p += 1;
+    }
+    p == pattern.len()
 }
 
 fn glob_matches(glob: &str, value: &str) -> bool {
@@ -357,6 +372,13 @@ mod tests {
         assert!(any.matches(&url("http://crl.example.com/a/b/c.crl")));
         let ip = DistributionPointPattern::parse("http://[2001:db8::1]:8080/*.crl").unwrap();
         assert!(ip.matches(&url("http://[2001:db8::1]:8080/a.crl")));
+
+        let multi = DistributionPointPattern::parse("http://crl.example.com/**/**/a/**/b/**/*.crl")
+            .unwrap();
+        let deep_miss = format!("http://crl.example.com/{}/x.txt", vec!["a"; 64].join("/"));
+        assert!(!multi.matches(&url(&deep_miss)));
+        let deep_hit = format!("http://crl.example.com/{}/b/c/leaf.crl", vec!["a"; 32].join("/"));
+        assert!(multi.matches(&url(&deep_hit)));
     }
 
     #[test]

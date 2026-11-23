@@ -3,8 +3,10 @@
 //! The guard knows the configured proxy target and each bound TCP proxy
 //! address. During an endpoint move, the old and the new listener are both
 //! bound for a short time. The guard checks each upstream destination against
-//! every bound address. It fails closed while the configured TCP target has
-//! no bound listener.
+//! every bound address. It fails closed while a configured TCP target has no
+//! bound listener. While the proxy waits for a dynamic source to supply an
+//! endpoint, no new TCP socket is being bound, so only still-bound retiring
+//! proxy addresses remain excluded.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, RwLock};
@@ -47,16 +49,13 @@ struct GuardState {
 impl GuardState {
     fn bound_addresses(&self) -> anyhow::Result<Vec<SocketAddr>> {
         match self.target {
-            ProxyGuardTarget::Waiting => {
-                anyhow::bail!("Proxy listener must bind before upstream connections open")
-            }
             ProxyGuardTarget::Tcp(configured) => ensure!(
                 self.bound
                     .iter()
                     .any(|(_, address)| matches_configured(configured, *address)),
                 "Proxy listener must bind before upstream connections open"
             ),
-            ProxyGuardTarget::Inactive | ProxyGuardTarget::Unix => {}
+            ProxyGuardTarget::Inactive | ProxyGuardTarget::Waiting | ProxyGuardTarget::Unix => {}
         }
         Ok(self.bound.iter().map(|(_, address)| *address).collect())
     }
@@ -210,18 +209,27 @@ mod tests {
     }
 
     #[test]
-    fn waiting_listener_fails_closed_until_it_binds() {
+    fn waiting_listener_allows_client_api_upstreams_until_tcp_target_is_configured() {
         let guard = ProxyLoopGuard::with_target(ProxyGuardTarget::Waiting);
         let destination = "192.0.2.20:49".parse().unwrap();
-        assert!(guard.check_destination(destination).is_err());
+        assert!(guard.check_destination(destination).is_ok());
         assert!(guard.bind("127.0.0.1:49".parse().unwrap()).is_err());
         guard.configure(ProxyGuardTarget::Tcp("127.0.0.1:49".parse().unwrap()));
         assert!(guard.check_destination(destination).is_err());
-        let _binding = guard.bind("127.0.0.1:49".parse().unwrap()).unwrap();
+        let binding = guard.bind("127.0.0.1:49".parse().unwrap()).unwrap();
         assert!(guard.check_destination(destination).is_ok());
         assert!(guard
             .check_destination("127.0.0.1:49".parse().unwrap())
             .is_err());
+        // Returning to Waiting keeps excluding a still-bound retiring listener until it drops.
+        guard.configure(ProxyGuardTarget::Waiting);
+        assert!(guard
+            .check_destination("127.0.0.1:49".parse().unwrap())
+            .is_err());
+        drop(binding);
+        assert!(guard
+            .check_destination("127.0.0.1:49".parse().unwrap())
+            .is_ok());
     }
 
     #[test]

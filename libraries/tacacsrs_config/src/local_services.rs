@@ -75,6 +75,9 @@ impl LocalServicesPatch {
         }
         if let Some(selection) = self.proxy_credential_source {
             source.proxy_credential_source = selection;
+            if selection != ProxyCredentialSource::Inline && self.proxy_shared_secret.is_none() {
+                source.proxy_shared_secret = None;
+            }
         }
         prepare_local_services(&source)?;
         Ok(source)
@@ -438,6 +441,16 @@ mod tests {
         assert!(patched.tacacs_proxy_enabled);
         assert_eq!(patched.proxy_credential_source, ProxyCredentialSource::Inline);
         assert!(!format!("{patch:?} {patched:?}").contains("private-downstream-key"));
+
+        // Overriding an inline source with another credential source clears the old inline secret.
+        let non_inline = LocalServicesPatch {
+            proxy_credential_source: Some(ProxyCredentialSource::Unobfuscated),
+            ..LocalServicesPatch::default()
+        }
+        .apply(patched.clone())
+        .unwrap();
+        assert_eq!(non_inline.proxy_credential_source, ProxyCredentialSource::Unobfuscated);
+        assert!(non_inline.proxy_shared_secret.is_none());
     }
 
     #[test]

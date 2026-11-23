@@ -114,6 +114,7 @@ pub fn prepare_endpoint(
     if let Some(secret) = &server.shared_secret {
         payload.retain(secret.expose_secret().len())?;
     }
+    // Routed EndpointInputs and EndpointLifecycle each retain one owned copy of `server.name`.
     payload.retain(server.name.len())?;
     payload.retain(server.name.len())?;
     for value in [

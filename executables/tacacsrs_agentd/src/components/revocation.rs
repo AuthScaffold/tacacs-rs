@@ -30,10 +30,15 @@ impl Component for RevocationComponent {
 
     fn register(self: Box<Self>, composition: &mut Composition) -> anyhow::Result<()> {
         let (sender, receiver) = watch::channel(RevocationSettings::default());
+        let (network_sender, network_receiver) = watch::channel(RevocationNetwork::default());
         let verifier = CrlVerifier::new(receiver);
         let shared: Arc<dyn RevocationVerifier> = Arc::new(verifier.clone());
-        composition.shared(Arc::new(UpstreamRevocation::new(shared, sender)))?;
-        composition.hosted_service(CrlRefresh::builder(verifier))
+        composition.shared(Arc::new(UpstreamRevocation::with_network(
+            shared,
+            sender,
+            network_sender,
+        )))?;
+        composition.hosted_service(CrlRefresh::builder(verifier, network_receiver))
     }
 }
 
@@ -44,6 +49,8 @@ impl Component for RevocationComponent {
 struct CrlRefresh {
     #[component(explicit)]
     verifier: CrlVerifier,
+    #[component(explicit)]
+    network: watch::Receiver<RevocationNetwork>,
 }
 
 impl Named for CrlRefresh {
@@ -57,9 +64,10 @@ impl HostedService for CrlRefresh {
     }
 
     async fn run(self: Arc<Self>, shutdown: ShutdownSignal) -> anyhow::Result<()> {
-        let refresh = self.verifier.spawn_refresh(RevocationNetwork::default());
+        let refresh = self.verifier.spawn_refresh_observed(self.network.clone());
         shutdown.requested().await;
         refresh.abort();
+        let _ = refresh.await;
         Ok(())
     }
 }

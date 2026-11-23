@@ -12,6 +12,8 @@ use tonic_health::pb::health_check_response::ServingStatus;
 const EXIT_NOT_SERVING: u8 = 1;
 const EXIT_INVOCATION_ERROR: u8 = 2;
 const EXIT_CHECK_ERROR: u8 = 3;
+const DEFAULT_PROBE_TIMEOUT_SECONDS: u64 = 2;
+const DEFAULT_QUERY_TIMEOUT_SECONDS: u64 = 5;
 
 mod details;
 mod statistics;
@@ -68,9 +70,9 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
-    /// Maximum duration of the health check.
-    #[arg(long, global = true, default_value_t = 2, value_parser = clap::value_parser!(u64).range(1..))]
-    timeout_seconds: u64,
+    /// Maximum duration in seconds (default: 2 for --check, 5 for subcommands).
+    #[arg(long, global = true, value_parser = clap::value_parser!(u64).range(1..))]
+    timeout_seconds: Option<u64>,
 }
 
 #[tokio::main]
@@ -100,7 +102,8 @@ async fn main() -> ExitCode {
             eprintln!("--check cannot be combined with {}", command.name());
             return ExitCode::from(EXIT_INVOCATION_ERROR);
         }
-        let timeout = Duration::from_secs(cli.timeout_seconds);
+        let timeout =
+            Duration::from_secs(cli.timeout_seconds.unwrap_or(DEFAULT_QUERY_TIMEOUT_SECONDS));
         let result = match &command {
             Command::Statistics(arguments) => {
                 tokio::time::timeout(timeout, statistics::query(endpoint, arguments)).await
@@ -127,11 +130,9 @@ async fn main() -> ExitCode {
     let Some(check) = cli.check else {
         return ExitCode::from(EXIT_INVOCATION_ERROR);
     };
-    match tokio::time::timeout(
-        Duration::from_secs(cli.timeout_seconds),
-        check_health(&endpoint, check),
-    )
-    .await
+    let probe_timeout = cli.timeout_seconds.unwrap_or(DEFAULT_PROBE_TIMEOUT_SECONDS);
+    match tokio::time::timeout(Duration::from_secs(probe_timeout), check_health(&endpoint, check))
+        .await
     {
         Ok(Ok(ServingStatus::Serving)) => ExitCode::SUCCESS,
         Ok(Ok(ServingStatus::NotServing | ServingStatus::Unknown)) => {
@@ -177,7 +178,7 @@ mod tests {
 
         assert_eq!(cli.endpoint, "127.0.0.1:9049");
         assert_eq!(cli.check.unwrap().service_name(), READINESS_HEALTH_SERVICE);
-        assert_eq!(cli.timeout_seconds, 2);
+        assert_eq!(cli.timeout_seconds, Some(2));
     }
 
     #[test]

@@ -31,7 +31,6 @@
 mod address;
 mod certificate;
 mod crl;
-mod der;
 mod disk;
 mod evaluate;
 mod fetch;

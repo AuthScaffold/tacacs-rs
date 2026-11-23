@@ -15,7 +15,7 @@ The `host` module builds and runs an agent runtime from selectable components. A
 1. Each component prepares in order with `prepare_all`. Preparation can do I/O. If shutdown is requested, `run_until` drops the bootstrap future.
 2. `declare` adds the host inputs, roles, and deferred values to a `Composition`. Then each component registers.
 3. `Composition::validate` checks the complete graph before any component is constructed.
-4. `PreparedHost::prepare` reads the inputs, applies the credential layers and the local services overlays in registration order, and calls `AgentRuntime::prepare`.
+4. `PreparedHost::prepare` reads the inputs and calls `AgentRuntime::prepare`.
 5. The host supplies the deferred values and runs each `StartupCheck` in registration order.
 6. The host constructs the enabled listeners and the hosted services. Then it drops the graph.
 
@@ -41,8 +41,6 @@ A component shares an input with `Composition::shared`. `tacacsrs_composition::V
 
 A component adds role members with `Composition::member`. Each member type has a unique `Named::NAME`.
 
-- `dyn CredentialLayer` wraps the resolver of the source, for example to put another credential provider in front of it.
-- `dyn LocalServicesOverlay` changes the local services of the source before the runtime prepares them.
 - `dyn StartupCheck` checks the prepared host before any listener binds. A failed check stops startup.
 - `dyn ListenerFactory` creates one runtime listener. A factory can return `None` when it has no listener to supply. The standard listeners always exist and follow the active local services.
 - `dyn HostedService` runs until shutdown. Use `Composition::hosted_service`.
@@ -157,7 +155,6 @@ async fn run(source: TacacsPlus, stop: tokio_util::sync::CancellationToken) -> a
                 tacacs_proxy_endpoint: Some("127.0.0.1:9049".to_owned()),
                 ..Default::default()
             },
-            local_services_overlays: Vec::new(),
         },
         policy: PolicyInput::Canonical(Default::default()),
         certificate_verification: CertificateVerification::Required,

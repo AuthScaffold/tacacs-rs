@@ -1,7 +1,7 @@
 //! Acceptance tests for host composition.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -16,13 +16,12 @@ use tacacsrs_config::{
     EpskSupportedHash, TacacsPlusBuilder, TacacsPlusServerBuilder, TacacsPlusServerType, Tls13Epsk,
     TlsClientClientIdentity,
 };
-use tacacsrs_credential_resolution::{CredentialResolver, FakeCredentialResolver};
 use tacacsrs_lifecycle::{
     ApplicationReadiness, BoxError, EmptyGroup, HealthCheck, HealthCheckContext, HealthCheckResult,
     HealthGroup, HealthGroupKind, HealthMember, HostedService, ShutdownSignal,
 };
 use tacacsrs_networking::CertificateVerification;
-use tacacsrs_provider::{CredentialLayer, CredentialProvider, LocalServicesOverlay, SourceDatastore};
+use tacacsrs_provider::{CredentialProvider, SourceDatastore};
 
 use super::{bootstrap, run_until, StartupCheck};
 use crate::components::{InvalidSourceShutdownComponent, TacacsProxyComponent};
@@ -314,108 +313,6 @@ async fn missing_source_fails_before_runtime_preparation() {
         .collect();
     let error = bootstrap(components).await.err().unwrap();
     assert!(format!("{error:#}").contains("SourceDatastore"), "{error:#}");
-}
-
-type Calls = Mutex<Vec<&'static str>>;
-
-macro_rules! layer {
-    ($type:ident, $name:literal) => {
-        struct $type(Arc<Calls>);
-
-        #[component]
-        #[dill::scope(dill::Singleton)]
-        #[dill::interface(dyn CredentialLayer)]
-        impl $type {
-            fn new(calls: Arc<Calls>) -> Self {
-                Self(calls)
-            }
-        }
-
-        impl Named for $type {
-            const NAME: &'static str = $name;
-        }
-
-        impl CredentialLayer for $type {
-            fn name(&self) -> &'static str {
-                $name
-            }
-
-            fn wrap(
-                &self,
-                inner: Option<Arc<dyn CredentialResolver>>,
-            ) -> anyhow::Result<Arc<dyn CredentialResolver>> {
-                self.0.lock().unwrap().push($name);
-                Ok(inner.unwrap_or_else(|| Arc::new(FakeCredentialResolver::new())))
-            }
-        }
-    };
-}
-
-macro_rules! overlay {
-    ($type:ident, $name:literal) => {
-        struct $type(Arc<Calls>);
-
-        #[component]
-        #[dill::scope(dill::Singleton)]
-        #[dill::interface(dyn LocalServicesOverlay)]
-        impl $type {
-            fn new(calls: Arc<Calls>) -> Self {
-                Self(calls)
-            }
-        }
-
-        impl Named for $type {
-            const NAME: &'static str = $name;
-        }
-
-        impl LocalServicesOverlay for $type {
-            fn name(&self) -> &'static str {
-                $name
-            }
-
-            fn apply(&self, source: LocalServices) -> anyhow::Result<LocalServices> {
-                self.0.lock().unwrap().push($name);
-                Ok(source)
-            }
-        }
-    };
-}
-
-layer!(LayerB, "layer b");
-layer!(LayerA, "layer a");
-overlay!(OverlayB, "overlay b");
-overlay!(OverlayA, "overlay a");
-
-struct OrderComponent(Arc<Calls>);
-
-impl Component for OrderComponent {
-    fn name(&self) -> &'static str {
-        "order"
-    }
-
-    fn register(self: Box<Self>, composition: &mut Composition) -> anyhow::Result<()> {
-        composition.shared(self.0)?;
-        composition
-            .member::<dyn CredentialLayer, LayerB, _>(<LayerB as dill::Component>::builder())?;
-        composition
-            .member::<dyn CredentialLayer, LayerA, _>(<LayerA as dill::Component>::builder())?;
-        composition.member::<dyn LocalServicesOverlay, OverlayB, _>(
-            <OverlayB as dill::Component>::builder(),
-        )?;
-        composition.member::<dyn LocalServicesOverlay, OverlayA, _>(
-            <OverlayA as dill::Component>::builder(),
-        )
-    }
-}
-
-#[tokio::test]
-async fn layers_and_overlays_apply_in_registration_order() {
-    let calls = Arc::new(Calls::default());
-    let host = bootstrap(components(vec![Box::new(OrderComponent(calls.clone()))]))
-        .await
-        .unwrap();
-    assert_eq!(*calls.lock().unwrap(), ["layer b", "layer a", "overlay b", "overlay a"]);
-    drop(host);
 }
 
 struct FailingCheck;

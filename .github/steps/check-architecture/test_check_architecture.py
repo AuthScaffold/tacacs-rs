@@ -52,7 +52,7 @@ CORE_DEFAULT_MEMBERS = [
     "tacacsrs-provider",
     "tacacsrs-config",
     "tacacsrs-credential-resolution",
-    "tacacsrs-credential-http",
+    "tacacsrs-revocation",
     "tacacsrs-sonic",
     "tacacsrs-kubesonic",
     "tacacsrs-bash-plugin",

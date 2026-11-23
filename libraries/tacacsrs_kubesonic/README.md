@@ -67,7 +67,7 @@ The credential provider monitors the client certificate, private key, CA bundle,
 
 For `TACACSD_TLS_CA_FILE` and `TACACSD_TLS_CLIENT_CERTIFICATE`, changing file contents triggers reload without a daemon restart. Changing the environment paths requires a restart.
 
-The provider reads the CA bundle and hashed files such as `012abcde.0`. It does not trust arbitrary un-hashed PEM files from the directory. It deduplicates certificates before native preparation. Missing or invalid configured trust fails closed.
+The provider reads the CA bundle and hashed files such as `012abcde.0`. It does not trust arbitrary un-hashed PEM files from the directory. It deduplicates certificates before native preparation. An explicitly configured CA file or CA directory must exist on disk, while an unset default path can be absent when the other trust source supplies at least one valid certificate. Missing explicit paths, invalid PEM inputs, and empty combined trust sets fail closed.
 
 Canonical snapshots contain opaque credential references, not private-key bytes. The provider authorizes only those references and the configured paths. Blocking work retains its native work lease through result consumption or disposal.
 
@@ -92,7 +92,7 @@ Canonical validation applies to these values. An enabled enforcement requires at
 
 ```bash
 TACACSD_REVOCATION_ENFORCEMENT=soft-fail
-TACACSD_REVOCATION_ALLOWED_DISTRIBUTION_POINTS="http://*.pki.core.windows.net/** http://crl.microsoft.com/**"
+TACACSD_REVOCATION_ALLOWED_DISTRIBUTION_POINTS="http://**.pki.core.windows.net/** http://crl.microsoft.com/**"
 TACACSD_REVOCATION_PREFETCH_DISTRIBUTION_POINTS=http://primary-cdn.pki.core.windows.net/eastus2/crls/ccmeeastus2pki/ccmeeastus2ica01/22/current.crl
 TACACSD_REVOCATION_CACHE_DIRECTORY=/var/cache/tacacsrs/crl
 ```

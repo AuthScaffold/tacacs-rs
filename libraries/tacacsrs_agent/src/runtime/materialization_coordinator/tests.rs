@@ -1642,13 +1642,9 @@ async fn revocation_policy_change_publishes_settings_without_retiring_servers() 
     );
     let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
     let revocation = crate::UpstreamRevocation::without_verifier();
-    let service = TacacsClientService::with_overlays(
-        service_config(),
-        health.clone(),
-        Vec::new(),
-        revocation.clone(),
-    )
-    .unwrap();
+    let service =
+        TacacsClientService::with_revocation(service_config(), health.clone(), revocation.clone())
+            .unwrap();
     let canonical = source("object-a", "192.0.2.20");
     let attempt = coordinator
         .accept_source(canonical.clone(), canonical, PreparedProxyPolicy::unobfuscated())

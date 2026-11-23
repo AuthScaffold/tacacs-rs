@@ -84,13 +84,8 @@ impl AgentRuntime {
         };
         let health = RuntimeHealthPublisher::new(config.enabled_services());
         let service = Arc::new(
-            TacacsClientService::with_overlays(
-                config,
-                health.clone(),
-                source.local_services_overlays,
-                revocation,
-            )
-            .context("Failed to build TACACS+ client service configuration")?,
+            TacacsClientService::with_revocation(config, health.clone(), revocation)
+                .context("Failed to build TACACS+ client service configuration")?,
         );
         let mut supervisor = ConfigSupervisor::new(
             source.datastore,

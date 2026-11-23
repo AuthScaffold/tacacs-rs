@@ -79,35 +79,50 @@ impl MountedCredentials {
     }
 
     fn authorities(&self, scope: &WorkScope) -> anyhow::Result<ResolvedCredential> {
-        let bundle_before = std::fs::metadata(&self.settings.ca_file)?;
-        let directory_before = std::fs::metadata(&self.settings.ca_directory)?;
+        let bundle_before =
+            optional_metadata(&self.settings.ca_file, self.settings.ca_file_required)
+                .context("Read mounted CA bundle metadata")?;
+        let directory_before =
+            optional_metadata(&self.settings.ca_directory, self.settings.ca_directory_required)
+                .context("Read mounted trust directory metadata")?;
         let mut certificates = BTreeSet::new();
-        self.add_certificates(&self.settings.ca_file, &mut certificates)?;
-        let mut entries = 0usize;
-        for entry in std::fs::read_dir(&self.settings.ca_directory)
-            .context("Read mounted trust directory")?
-        {
-            ensure!(scope.register().is_some(), "Credential resolution was cancelled");
-            let entry = entry.context("Read mounted trust entry")?;
-            entries += 1;
-            ensure!(
-                entries <= self.settings.max_directory_entries,
-                "Mounted trust directory exceeds its entry limit"
-            );
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else {
-                continue;
-            };
-            if hashed_certificate_name(name) {
-                self.add_certificates(&entry.path(), &mut certificates)?;
+        if bundle_before.is_some() {
+            self.add_certificates(&self.settings.ca_file, &mut certificates)?;
+        }
+        if directory_before.is_some() {
+            let mut entries = 0usize;
+            for entry in std::fs::read_dir(&self.settings.ca_directory)
+                .context("Read mounted trust directory")?
+            {
+                ensure!(scope.register().is_some(), "Credential resolution was cancelled");
+                let entry = entry.context("Read mounted trust entry")?;
+                entries += 1;
+                ensure!(
+                    entries <= self.settings.max_directory_entries,
+                    "Mounted trust directory exceeds its entry limit"
+                );
+                let name = entry.file_name();
+                let Some(name) = name.to_str() else {
+                    continue;
+                };
+                if hashed_certificate_name(name) {
+                    self.add_certificates(&entry.path(), &mut certificates)?;
+                }
             }
         }
         ensure!(!certificates.is_empty(), "Mounted trust has no certificates");
-        ensure!(
-            same_file(&bundle_before, &std::fs::metadata(&self.settings.ca_file)?)
-                && same_file(&directory_before, &std::fs::metadata(&self.settings.ca_directory)?),
-            "Mounted trust changed during its read"
-        );
+        if let Some(before) = &bundle_before {
+            ensure!(
+                same_file(before, &std::fs::metadata(&self.settings.ca_file)?),
+                "Mounted trust changed during its read"
+            );
+        }
+        if let Some(before) = &directory_before {
+            ensure!(
+                same_file(before, &std::fs::metadata(&self.settings.ca_directory)?),
+                "Mounted trust changed during its read"
+            );
+        }
         Ok(ResolvedCredential::CaCertificateBag(CertificateBagMaterial {
             validity: CredentialValidity::unbounded(),
             certificates: certificates
@@ -150,6 +165,14 @@ impl MountedCredentials {
         }
         ensure!(found, "Mounted CA file has no PEM certificates");
         Ok(())
+    }
+}
+
+fn optional_metadata(path: &Path, required: bool) -> std::io::Result<Option<Metadata>> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && !required => Ok(None),
+        Err(error) => Err(error),
     }
 }
 
@@ -285,13 +308,27 @@ impl CredentialChangeSource for MountedCredentials {
             Config::default(),
         )
         .map_err(|_| CredentialChangeError)?;
-        let mut directories = BTreeSet::from([self.settings.ca_directory.clone()]);
-        for path in [
-            &self.settings.certificate,
-            &self.settings.key,
-            &self.settings.ca_file,
-        ] {
+        let mut directories = BTreeSet::new();
+        for path in [&self.settings.certificate, &self.settings.key] {
             directories.insert(path.parent().ok_or(CredentialChangeError)?.to_path_buf());
+        }
+        let ca_parent = self
+            .settings
+            .ca_file
+            .parent()
+            .ok_or(CredentialChangeError)?;
+        if self.settings.ca_file_required || ca_parent.exists() {
+            directories.insert(ca_parent.to_path_buf());
+        }
+        if self.settings.ca_directory_required || self.settings.ca_directory.exists() {
+            directories.insert(self.settings.ca_directory.clone());
+        } else if let Some(parent) = self
+            .settings
+            .ca_directory
+            .parent()
+            .filter(|parent| parent.exists())
+        {
+            directories.insert(parent.to_path_buf());
         }
         for directory in directories {
             watcher
@@ -495,5 +532,43 @@ mod tests {
         assert!(read_file(&path, 4).is_err());
         assert_eq!(read_file(&path, 5).unwrap().expose_secret(), b"12345");
         assert!(read_file(directory.path(), 5).is_err());
+    }
+
+    #[tokio::test]
+    async fn explicit_ca_file_works_without_default_ca_directory_and_fails_when_missing() {
+        use std::collections::BTreeMap;
+
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let sample_ca = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../lde/containers/config/certificates/ca.crt");
+        let ca_file = root.join("custom-ca.pem");
+        std::fs::copy(&sample_ca, &ca_file).unwrap();
+        let identity = root.join("client.pem");
+        std::fs::write(&identity, "placeholder").unwrap();
+
+        let mut settings = crate::environment::Environment::parse(BTreeMap::from([(
+            "TACACSD_TLS_CA_FILE".to_owned(),
+            ca_file.to_str().unwrap().to_owned(),
+        )]))
+        .unwrap()
+        .credentials;
+        settings.certificate = identity.clone();
+        settings.key = identity;
+        settings.ca_directory = root.join("absent-default-trust-dir");
+        assert!(settings.ca_file_required && !settings.ca_directory_required);
+
+        let provider = MountedCredentials::new(settings.clone());
+        let (_control, scope) = WorkScope::new(());
+        let resolved = provider.authorities(&scope).unwrap();
+        assert!(matches!(
+            resolved,
+            ResolvedCredential::CaCertificateBag(bag) if !bag.certificates.is_empty()
+        ));
+        assert!(provider.subscribe().await.is_ok());
+
+        // An explicitly configured CA file that is missing still fails closed.
+        std::fs::remove_file(&ca_file).unwrap();
+        assert!(provider.authorities(&scope).is_err());
     }
 }

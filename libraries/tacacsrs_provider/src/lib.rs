@@ -4,4 +4,4 @@ mod credentials;
 mod source;
 
 pub use credentials::CredentialProvider;
-pub use source::{CredentialLayer, LocalServicesOverlay, SourceBundle, SourceDatastore};
+pub use source::{SourceBundle, SourceDatastore};

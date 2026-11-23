@@ -90,7 +90,6 @@ fn bundle() -> SourceBundle {
         datastore: Arc::new(StaticDatastore::new(TacacsPlus::empty())),
         credentials: CredentialProvider::none(),
         local_services: LocalServices::default(),
-        local_services_overlays: Vec::new(),
     }
 }
 
@@ -738,6 +737,139 @@ async fn a_local_proxy_row_proxy_applies_servers_while_it_waits_for_an_endpoint(
     .await
     .unwrap()
     .unwrap();
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri does not support TCP listeners.
+async fn client_api_serves_upstreams_and_reports_listening_while_proxy_waits_for_forwarder() {
+    use tacacsrs_config::tacacsrs::ProxyCredentialSource;
+    use tacacsrs_networking::{PacketReadResult, PacketReader, PacketWriter};
+    use tacacsrs_protocol::accounting::reply::AccountingReply;
+    use tacacsrs_protocol::body::TacacsBodyTrait;
+    use tacacsrs_protocol::enumerations::TacacsAccountingStatus;
+    use tacacsrs_protocol::packet::{Packet, PacketTrait};
+    use tacacsrs_secrets::SecretBytes;
+
+    let listener_tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server_addr = listener_tcp.local_addr().unwrap();
+    let upstream_task = tokio::spawn(async move {
+        let (tcp, _) = listener_tcp.accept().await.unwrap();
+        let (reader, mut writer) = tokio::io::split(tcp);
+        let mut reader = tokio::io::BufReader::new(reader);
+        let key = Some(SecretBytes::new(b"sonic-key".to_vec()));
+        let packet_reader = PacketReader::new(key.clone());
+        let packet_writer = PacketWriter::new(key);
+        let PacketReadResult::Success(request) = packet_reader.read_packet(&mut reader).await
+        else {
+            panic!("expected valid TACACS+ accounting request");
+        };
+        let mut header = request.header().clone();
+        let reply_body = AccountingReply {
+            status: TacacsAccountingStatus::TacPlusAcctStatusSuccess,
+            server_msg: String::new(),
+            data: String::new(),
+        }
+        .to_bytes()
+        .unwrap();
+        header.seq_no += 1;
+        header.length = u32::try_from(reply_body.len()).unwrap();
+        let reply = Packet::new(header, reply_body).unwrap();
+        let _ = packet_writer.write_packet(&mut writer, reply).await;
+    });
+
+    let (sender, receiver) = mpsc::channel(4);
+    let waiting_services = LocalServices {
+        client_api_enabled: true,
+        tacacs_proxy_enabled: true,
+        tacacs_proxy_endpoint: None,
+        proxy_credential_source: ProxyCredentialSource::LocalProxyRow,
+        ..LocalServices::default()
+    };
+
+    let mut source = bundle();
+    source.local_services = waiting_services.clone();
+    source.datastore = Arc::new(Notifications(tokio::sync::Mutex::new(Some(receiver))));
+    let runtime = runtime(source).await;
+    let health = runtime.health().clone();
+    let handle = runtime.service().client_api_handle();
+    let proxy_listener = runtime.service().tacacs_proxy_listener();
+    let (api_listener, _) = listener(ListenerMode::Drain);
+
+    let stop = async {
+        // Before any ConfigDB snapshot arrives, systemd-facing `is_listening()` becomes true.
+        let mut changes = health.subscribe();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            changes.wait_for(|snapshot| snapshot.is_listening()),
+        )
+        .await
+        .expect("bound client API must report listening while proxy waits for forwarder")
+        .unwrap();
+        assert!(!health.snapshot().is_readiness_serving());
+
+        // Publish upstream servers with no forwarder row: readiness serves and Client API works.
+        let upstream = Arc::new(
+            TacacsPlusBuilder::new()
+                .with_server_builder(
+                    TacacsPlusServerBuilder::new(
+                        "upstream",
+                        TacacsPlusServerType::all(),
+                        server_addr.ip().to_string(),
+                        server_addr.port(),
+                    )
+                    .with_shared_secret("sonic-key")
+                    .with_single_connection(false),
+                )
+                .build()
+                .unwrap(),
+        );
+        sender
+            .send(ConfigChangeEvent::Changed(ConfigChange {
+                runtime_policy: None,
+                local_services: Some(Arc::new(waiting_services)),
+                delta: ConfigDelta::diff(None, &upstream),
+                config: upstream,
+            }))
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            changes.wait_for(|snapshot| snapshot.is_readiness_serving()),
+        )
+        .await
+        .expect("client API must become ready without a forwarder row")
+        .unwrap();
+
+        let response = handle
+            .accounting_record(tacacsrs_protocol::accounting::request::AccountingRequest {
+                flags: tacacsrs_protocol::enumerations::TacacsAccountingFlags::WATCHDOG,
+                authen_method:
+                    tacacsrs_protocol::enumerations::TacacsAuthenticationMethod::TacPlusAuthenMethodNotSet,
+                priv_lvl: 0,
+                authen_type:
+                    tacacsrs_protocol::enumerations::TacacsAuthenticationType::TacPlusAuthenTypeNotSet,
+                authen_service:
+                    tacacsrs_protocol::enumerations::TacacsAuthenticationService::TacPlusAuthenSvcNone,
+                user: "alice".to_owned(),
+                port: "tty0".to_owned(),
+                rem_address: "192.0.2.50".to_owned(),
+                args: vec!["cmd=show".to_owned()],
+            })
+            .await
+            .expect("client API upstream request must succeed without a forwarder row");
+        assert_eq!(
+            response.status,
+            tacacsrs_protocol::operations::AccountingResponseStatus::Success
+        );
+    };
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        runtime.run_until(stop, vec![api_listener, proxy_listener], Vec::new()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    upstream_task.await.unwrap();
 }
 
 #[tokio::test]

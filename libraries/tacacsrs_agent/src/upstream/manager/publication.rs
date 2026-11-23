@@ -77,6 +77,15 @@ pub(crate) struct PublicationCandidate<
     pub(crate) preparation: Option<Arc<crate::runtime::candidate_preparation::Preparation>>,
 }
 
+impl<Commit, Connector: EndpointConnector> PublicationCandidate<Commit, Connector> {
+    pub(crate) fn revocation_binding(&self) -> Option<tacacsrs_networking::LocalBinding> {
+        self.prepared_servers
+            .iter()
+            .find(|server| server.endpoint.prepared().verifies_server_certificate())
+            .map(|server| server.endpoint.prepared().local_binding().clone())
+    }
+}
+
 struct PreparedCatalog<Connector: EndpointConnector> {
     base: Arc<ServerSet<Connector>>,
     replacement: Arc<ServerSet<Connector>>,

@@ -295,7 +295,7 @@ impl<Instances: ListenerInstances> Reconciler<Instances> {
                     self.retire(active);
                 }
                 self.clear_retry();
-                self.set_state(ListenerState::Pending);
+                self.health.set_listener_waiting(self.service());
                 return false;
             }
             DesiredListener::Ready(target) => target,

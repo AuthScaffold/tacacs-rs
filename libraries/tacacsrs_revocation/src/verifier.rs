@@ -213,14 +213,29 @@ impl CrlVerifier {
     /// earlier.
     #[must_use]
     pub fn spawn_refresh(&self, network: RevocationNetwork) -> JoinHandle<()> {
+        let (_sender, receiver) = watch::channel(network);
+        self.spawn_refresh_observed(receiver)
+    }
+
+    /// Starts the background refresh with a dynamically updated default network.
+    ///
+    /// A host uses this method so prefetch fetches inherit the VRF, egress
+    /// binding, and connection guard of the active server configuration.
+    #[must_use]
+    pub fn spawn_refresh_observed(
+        &self,
+        mut network: watch::Receiver<RevocationNetwork>,
+    ) -> JoinHandle<()> {
         let weak = Arc::downgrade(&self.inner);
         let mut changes = lock(&self.inner.settings).receiver.clone();
+        let mut network_open = true;
         tokio::spawn(async move {
             loop {
                 let Some(inner) = weak.upgrade() else {
                     break;
                 };
-                let wait = inner.refresh_once(&network).await;
+                let current_network = network.borrow_and_update().clone();
+                let wait = inner.refresh_once(&current_network).await;
                 drop(inner);
                 tokio::select! {
                     () = tokio::time::sleep(wait) => {}
@@ -228,6 +243,9 @@ impl CrlVerifier {
                         if changed.is_err() {
                             tokio::time::sleep(wait).await;
                         }
+                    }
+                    changed = network.changed(), if network_open => {
+                        network_open = changed.is_ok();
                     }
                 }
             }

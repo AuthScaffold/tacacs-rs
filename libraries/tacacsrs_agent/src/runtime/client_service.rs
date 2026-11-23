@@ -217,23 +217,20 @@ impl TacacsClientService {
     /// # Errors
     /// Returns an error for invalid listener controls or inconsistent health services.
     pub fn new(config: ServiceConfig, health: RuntimeHealthPublisher) -> anyhow::Result<Self> {
-        Self::with_overlays(config, health, Vec::new(), crate::UpstreamRevocation::default())
+        Self::with_revocation(config, health, crate::UpstreamRevocation::default())
     }
 
-    /// Builds a native service that applies local services overlays to each
-    /// datastore change.
+    /// Builds a native service with host-supplied revocation controls.
     ///
-    /// The overlays run in order. The bootstrap local services in `config`
-    /// must already contain the overlays. The service publishes the revocation
-    /// settings of each accepted change through `revocation`, and attaches its
-    /// verifier to new certificate TLS connections.
+    /// The service publishes the revocation settings of each accepted change
+    /// through `revocation`, and attaches its verifier to new certificate TLS
+    /// connections.
     ///
     /// # Errors
     /// Returns an error for invalid listener controls.
-    pub fn with_overlays(
+    pub fn with_revocation(
         config: ServiceConfig,
         health: RuntimeHealthPublisher,
-        overlays: Vec<Arc<dyn tacacsrs_provider::LocalServicesOverlay>>,
         revocation: crate::UpstreamRevocation,
     ) -> anyhow::Result<Self> {
         Ok(Self {
@@ -242,7 +239,6 @@ impl TacacsClientService {
                 health,
                 Vec::new(),
                 false,
-                overlays,
                 revocation,
                 NetworkUpstreamConnector::new,
             )?,

@@ -152,6 +152,8 @@ pub struct RuntimeHealthSnapshot {
     enabled_services: EnabledServices,
     client_api_listener: ListenerState,
     tacacs_proxy_listener: ListenerState,
+    client_api_waiting_for_endpoint: bool,
+    tacacs_proxy_waiting_for_endpoint: bool,
     eligible_server_count: usize,
     upstream_availability: UpstreamAvailability,
     upstream_watchdog_armed: bool,
@@ -278,9 +280,7 @@ impl RuntimeHealthSnapshot {
     /// readiness through [`is_readiness_serving`](Self::is_readiness_serving).
     #[must_use]
     pub fn is_startup_serving(&self) -> bool {
-        self.accepts_health_requests()
-            && self.applied_configuration
-            && self.all_enabled_listeners_bound()
+        self.is_listening() && self.applied_configuration
     }
 
     /// Returns whether the process and local health event loop are running.
@@ -309,14 +309,19 @@ impl RuntimeHealthSnapshot {
                 .contains(&DegradationReason::UpstreamWatchdogPending)
     }
 
-    /// Returns whether the process is live and each enabled listener is bound.
+    /// Returns whether the process is live, at least one enabled listener is
+    /// bound, and each enabled listener with a configured endpoint is bound.
     ///
-    /// This state does not need applied configuration. A host can use it to
-    /// report that the process started. Requests that arrive before the first
-    /// configuration receive a retryable unavailable error.
+    /// A listener that waits for a dynamic source to supply its endpoint does
+    /// not block another bound listener from serving. This state does not need
+    /// applied configuration. A host can use it to report that the process
+    /// started. Requests that arrive before the first configuration receive a
+    /// retryable unavailable error.
     #[must_use]
     pub fn is_listening(&self) -> bool {
-        self.accepts_health_requests() && self.all_enabled_listeners_bound()
+        self.accepts_health_requests()
+            && self.configured_listeners_bound()
+            && self.any_enabled_listener_bound()
     }
 
     fn accepts_health_requests(&self) -> bool {
@@ -339,10 +344,19 @@ impl RuntimeHealthSnapshot {
         }
     }
 
-    fn all_enabled_listeners_bound(&self) -> bool {
-        (!self.enabled_services.client_api() || self.client_api_listener == ListenerState::Bound)
+    fn configured_listeners_bound(&self) -> bool {
+        (!self.enabled_services.client_api()
+            || self.client_api_listener == ListenerState::Bound
+            || self.client_api_waiting_for_endpoint)
             && (!self.enabled_services.tacacs_proxy()
-                || self.tacacs_proxy_listener == ListenerState::Bound)
+                || self.tacacs_proxy_listener == ListenerState::Bound
+                || self.tacacs_proxy_waiting_for_endpoint)
+    }
+
+    fn any_enabled_listener_bound(&self) -> bool {
+        (self.enabled_services.client_api() && self.client_api_listener == ListenerState::Bound)
+            || (self.enabled_services.tacacs_proxy()
+                && self.tacacs_proxy_listener == ListenerState::Bound)
     }
 }
 
@@ -375,6 +389,8 @@ impl RuntimeHealthPublisher {
             enabled_services,
             client_api_listener,
             tacacs_proxy_listener,
+            client_api_waiting_for_endpoint: false,
+            tacacs_proxy_waiting_for_endpoint: false,
             eligible_server_count: 0,
             upstream_availability: UpstreamAvailability::Unknown,
             upstream_watchdog_armed: false,
@@ -431,10 +447,25 @@ impl RuntimeHealthPublisher {
     /// valid for each service. A service is enabled while its listener state
     /// is not [`ListenerState::Disabled`].
     pub fn set_listener(&self, service: RuntimeService, state: ListenerState) {
+        self.set_listener_inner(service, state, false);
+    }
+
+    /// Marks an enabled listener as waiting for a dynamic source to supply its endpoint.
+    pub(crate) fn set_listener_waiting(&self, service: RuntimeService) {
+        self.set_listener_inner(service, ListenerState::Pending, true);
+    }
+
+    fn set_listener_inner(&self, service: RuntimeService, state: ListenerState, waiting: bool) {
         self.update(|snapshot| {
             match service {
-                RuntimeService::ClientApi => snapshot.client_api_listener = state,
-                RuntimeService::TacacsProxy => snapshot.tacacs_proxy_listener = state,
+                RuntimeService::ClientApi => {
+                    snapshot.client_api_listener = state;
+                    snapshot.client_api_waiting_for_endpoint = waiting;
+                }
+                RuntimeService::TacacsProxy => {
+                    snapshot.tacacs_proxy_listener = state;
+                    snapshot.tacacs_proxy_waiting_for_endpoint = waiting;
+                }
             }
             snapshot.enabled_services = EnabledServices::new(
                 snapshot.client_api_listener != ListenerState::Disabled,
@@ -686,10 +717,7 @@ impl RuntimeHealthPublisher {
         self.sender.send_if_modified(|snapshot| {
             let previous = snapshot.clone();
             mutation.take().expect("the health mutation must run once")(snapshot);
-            if snapshot.lifecycle == RuntimeLifecycle::Starting
-                && snapshot.applied_configuration
-                && snapshot.all_enabled_listeners_bound()
-            {
+            if snapshot.lifecycle == RuntimeLifecycle::Starting && snapshot.is_startup_serving() {
                 snapshot.lifecycle = RuntimeLifecycle::Serving;
             }
             let ready = snapshot.is_readiness_serving();
@@ -774,8 +802,39 @@ mod tests {
         assert_eq!(snapshot.listener(RuntimeService::TacacsProxy), ListenerState::Pending);
         assert_eq!(snapshot.upstream_availability(), UpstreamAvailability::Unknown);
         assert!(snapshot.is_liveness_serving());
+        assert!(!snapshot.is_listening());
         assert!(!snapshot.is_startup_serving());
         assert!(!snapshot.is_readiness_serving());
+    }
+
+    #[test]
+    fn waiting_proxy_does_not_block_bound_client_api_listening_or_readiness() {
+        let publisher = RuntimeHealthPublisher::new(EnabledServices::BOTH);
+        publisher.set_listener(RuntimeService::ClientApi, ListenerState::Bound);
+        assert!(!publisher.snapshot().is_listening());
+
+        // When the proxy waits for a dynamic source endpoint, the bound client API is listening.
+        publisher.set_listener_waiting(RuntimeService::TacacsProxy);
+        let before_config = publisher.snapshot();
+        assert_eq!(before_config.listener(RuntimeService::TacacsProxy), ListenerState::Pending);
+        assert!(before_config.is_listening());
+        assert!(!before_config.is_startup_serving());
+        assert!(!before_config.is_readiness_serving());
+
+        // Once servers arrive, client API readiness serves even while the forwarder row is absent.
+        publisher.publish_runtime(RuntimeGeneration::new(1), 1, Some(true), true, || None);
+        let serving = publisher.snapshot();
+        assert_eq!(serving.lifecycle(), RuntimeLifecycle::Serving);
+        assert!(serving.is_startup_serving());
+        assert!(serving.is_readiness_serving());
+
+        // Proxy-only waiting with zero bound listeners never reports listening or readiness.
+        let proxy_only = RuntimeHealthPublisher::new(EnabledServices::TACACS_PROXY);
+        proxy_only.set_listener_waiting(RuntimeService::TacacsProxy);
+        proxy_only.publish_runtime(RuntimeGeneration::new(1), 1, Some(true), true, || None);
+        assert!(!proxy_only.snapshot().is_listening());
+        assert!(!proxy_only.snapshot().is_startup_serving());
+        assert!(!proxy_only.snapshot().is_readiness_serving());
     }
 
     #[test]

@@ -366,7 +366,7 @@ Some issuers, for example Azure, publish CRLs below host names that you cannot k
       "enforcement": "soft-fail",
       "soft-fail-grace-seconds": 86400,
       "allowed-distribution-point": [
-        "http://*.pki.core.windows.net/**",
+        "http://**.pki.core.windows.net/**",
         "http://crl.microsoft.com/**"
       ],
       "prefetch-distribution-point": [

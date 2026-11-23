@@ -1,16 +1,14 @@
 //! The local services that the runtime applies now.
 //!
-//! A datastore change can contain new local services. The runtime applies the
-//! local services overlays to that value and prepares it. The candidate is
-//! published together with the upstream servers of the same change. Then the
-//! listener reconcilers bind, move, or stop the local listeners.
+//! A datastore change can contain new local services. The runtime prepares
+//! that value and publishes the candidate together with the upstream servers
+//! of the same change. Then the listener reconcilers bind, move, or stop the
+//! local listeners.
 
 use std::sync::Arc;
 
-use anyhow::Context;
 use tacacsrs_config::local_services::{prepare_local_services, PreparedLocalServices};
 use tacacsrs_config::tacacsrs::LocalServices;
-use tacacsrs_provider::LocalServicesOverlay;
 use super::config_view::{ConfigPublisher, LocalServicesView};
 use super::proxy_loop_guard::{ProxyGuardTarget, ProxyLoopGuard};
 
@@ -31,7 +29,7 @@ impl ActiveLocalServices {
         Ok(Self { settings, prepared })
     }
 
-    /// Returns the local services after the overlays.
+    /// Returns the canonical local services.
     #[must_use]
     pub const fn settings(&self) -> &LocalServices {
         &self.settings
@@ -52,21 +50,16 @@ impl ActiveLocalServices {
     }
 }
 
-/// Owns the active local services and the overlays of the runtime.
+/// Owns the active local services of the runtime.
 pub(crate) struct LocalServicesState {
-    overlays: Vec<Arc<dyn LocalServicesOverlay>>,
     publisher: ConfigPublisher<ActiveLocalServices>,
     proxy_loop_guard: ProxyLoopGuard,
 }
 
 impl LocalServicesState {
-    pub(crate) fn new(
-        initial: ActiveLocalServices,
-        overlays: Vec<Arc<dyn LocalServicesOverlay>>,
-    ) -> Self {
+    pub(crate) fn new(initial: ActiveLocalServices) -> Self {
         let proxy_loop_guard = ProxyLoopGuard::with_target(initial.proxy_guard_target());
         Self {
-            overlays,
             publisher: ConfigPublisher::new(Arc::new(initial)),
             proxy_loop_guard,
         }
@@ -84,18 +77,13 @@ impl LocalServicesState {
         self.publisher.current()
     }
 
-    /// Applies the overlays in order and prepares the result.
+    /// Prepares a candidate local-services snapshot.
     pub(crate) fn prepare_candidate(
         &self,
         source: &LocalServices,
     ) -> anyhow::Result<Arc<ActiveLocalServices>> {
-        let mut settings = source.clone();
-        for overlay in &self.overlays {
-            settings = overlay.apply(settings).with_context(|| {
-                format!("Could not apply the local services overlay {}", overlay.name())
-            })?;
-        }
-        Ok(Arc::new(ActiveLocalServices::new(settings)?))
+        let _ = self;
+        Ok(Arc::new(ActiveLocalServices::new(source.clone())?))
     }
 
     /// Publishes new local services. An unchanged value does nothing.

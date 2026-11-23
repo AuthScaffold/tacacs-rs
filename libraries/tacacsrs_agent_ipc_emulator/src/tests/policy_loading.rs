@@ -12,7 +12,7 @@ use crate::{EmulatorPolicy, IpcEmulator, MockControllerClient};
 
 #[tokio::test]
 async fn source_loading_defers_rego_validation() {
-    let directory = tempfile::tempdir_in(".").unwrap();
+    let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("policy.rego");
     std::fs::write(&source, "this is not rego").unwrap();
     for policy in [
@@ -30,7 +30,7 @@ async fn source_loading_defers_rego_validation() {
 
 #[tokio::test]
 async fn data_loading_decodes_json_before_explicit_compilation() {
-    let directory = tempfile::tempdir_in(".").unwrap();
+    let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("policy.rego");
     let data = directory.path().join("data.json");
     std::fs::write(&source, ACCOUNTING_POLICY).unwrap();
@@ -55,7 +55,7 @@ async fn data_loading_decodes_json_before_explicit_compilation() {
 
 #[tokio::test]
 async fn invalid_startup_policy_does_not_touch_the_endpoint() {
-    let directory = tempfile::tempdir_in(".").unwrap();
+    let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("untouched");
     std::fs::write(&path, "existing endpoint path").unwrap();
     for policy in [

@@ -5,16 +5,13 @@ use std::time::Duration;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use futures_util::{future::BoxFuture, FutureExt, StreamExt};
-use tokio::sync::watch;
-use tokio::task::JoinHandle;
-use tokio::time::Instant;
+use futures_util::{FutureExt, StreamExt};
 use tacacsrs_config::local_services::LocalServicesPatch;
 use tacacsrs_config::tacacsrs::LocalServices;
 use tacacsrs_config::{TacacsPlus, ValidationOptions, ValidationRelaxation};
 use tacacsrs_config::source::{
-    ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigDatastore, ConfigDelta,
-    ConfigObservation, SourceBehavior,
+    ChangeNotificationMode, ConfigChangeEvent, ConfigDatastore, ConfigObservation,
+    ObservationSchedule, ObservedSnapshot, SignalObservation, SourceBehavior,
 };
 
 use crate::{
@@ -119,16 +116,7 @@ fn forwarder_local_services(
 }
 
 struct SonicObservation {
-    settings: SonicConnection,
-    listener_patch: Option<LocalServicesPatch>,
-    signals: watch::Receiver<()>,
-    pump: JoinHandle<()>,
-    previous: Option<Arc<TacacsPlus>>,
-    previous_local_services: Option<Arc<LocalServices>>,
-    candidate_rejected: bool,
-    pending: bool,
-    debounce_until: Option<Instant>,
-    reload: Option<BoxFuture<'static, anyhow::Result<ReloadedCandidate>>>,
+    inner: SignalObservation,
 }
 
 impl SonicObservation {
@@ -146,146 +134,58 @@ impl SonicObservation {
             .psubscribe(settings.keyspace_pattern())
             .await
             .context("subscribe to ConfigDB changes")?;
-        let (events, signals) = watch::channel(());
-        let pump = tokio::spawn(async move {
-            let mut messages = pubsub.on_message();
-            loop {
-                tokio::select! {
-                    biased;
-                    () = events.closed() => break,
-                    message = messages.next() => {
-                        if message.is_none() { break; }
-                        events.send_replace(());
-                    }
+        let schedule = ObservationSchedule::debounced(settings.debounce);
+        let notifications = pubsub.into_on_message().map(|_| ());
+        let inner = SignalObservation::spawn(
+            notifications,
+            schedule,
+            "ConfigDB observation disconnected",
+            move || {
+                let settings = settings.clone();
+                let listener_patch = listener_patch.clone();
+                async move {
+                    load_observed_snapshot(&settings, listener_patch.as_ref())
+                        .await
+                        .map_err(|_| {
+                            log::warn!(
+                                "Rejected ConfigDB candidate. Keeping the previous configuration"
+                            );
+                        })
                 }
-            }
-        });
-        Ok(Self {
-            settings,
-            listener_patch,
-            signals,
-            pump,
-            previous: None,
-            previous_local_services: None,
-            candidate_rejected: false,
-            pending: true,
-            debounce_until: None,
-            reload: None,
-        })
-    }
-
-    async fn read_candidate(&mut self) -> anyhow::Result<ReloadedCandidate> {
-        if self.reload.is_none() {
-            if let Some(deadline) = self.debounce_until {
-                tokio::time::sleep_until(deadline).await;
-            }
-            self.signals.borrow_and_update();
-            let settings = self.settings.clone();
-            self.reload = Some(async move { reload_with_retry(&settings).await }.boxed());
-        }
-        let mut connection = self.signals.clone();
-        let closed = async move { while connection.changed().await.is_ok() {} };
-        let candidate = tokio::select! {
-            biased;
-            () = closed => anyhow::bail!("ConfigDB observation disconnected"),
-            candidate = self.reload.as_mut().context("ConfigDB reload is missing")? => candidate,
-        };
-        self.reload = None;
-        self.pending = false;
-        self.debounce_until = None;
-        candidate
-    }
-}
-
-impl Drop for SonicObservation {
-    fn drop(&mut self) {
-        self.pump.abort();
+                .boxed()
+            },
+        );
+        Ok(Self { inner })
     }
 }
 
 #[async_trait]
 impl ConfigObservation for SonicObservation {
     async fn next(&mut self) -> anyhow::Result<Option<ConfigChangeEvent>> {
-        loop {
-            if let Some(event) = self.next_candidate().await? {
-                return Ok(Some(event));
-            }
-        }
+        self.inner.next().await
     }
 }
 
-impl SonicObservation {
-    /// Reads one candidate. Returns `None` when the candidate does not change
-    /// the configuration or the local services.
-    async fn next_candidate(&mut self) -> anyhow::Result<Option<ConfigChangeEvent>> {
-        self.signals
-            .has_changed()
-            .context("ConfigDB observation disconnected")?;
-        if !self.pending {
-            self.signals
-                .changed()
-                .await
-                .context("ConfigDB observation disconnected")?;
-            self.pending = true;
-            self.debounce_until = Some(
-                Instant::now()
-                    .checked_add(self.settings.debounce)
-                    .context("ConfigDB debounce exceeds the clock range")?,
-            );
-        }
-        let candidate = self.read_candidate().await;
-        self.signals
-            .has_changed()
-            .context("ConfigDB observation disconnected")?;
-        let candidate = candidate.and_then(|candidate| {
-            let local_services = self
-                .listener_patch
-                .as_ref()
-                .map(|patch| forwarder_local_services(patch, candidate.forwarder))
-                .transpose()?;
-            Ok((candidate.config, local_services))
-        });
-        let Ok((config, local_services)) = candidate else {
-            self.candidate_rejected = true;
-            log::warn!("Rejected ConfigDB candidate. Keeping the previous configuration");
-            return Ok(Some(ConfigChangeEvent::CandidateRejected));
-        };
-        let snapshot = Arc::new(config);
-        let local_services = local_services.map(Arc::new);
-        let local_services_changed = local_services != self.previous_local_services;
-        let change = config_change(
-            self.previous.as_deref(),
-            snapshot.clone(),
-            std::mem::take(&mut self.candidate_rejected) || local_services_changed,
-        );
-        self.previous = Some(snapshot);
-        self.previous_local_services.clone_from(&local_services);
-        Ok(change.map(|change| {
-            ConfigChangeEvent::Changed(ConfigChange {
-                runtime_policy: None,
-                local_services,
-                ..change
-            })
-        }))
-    }
+async fn load_observed_snapshot(
+    settings: &SonicConnection,
+    listener_patch: Option<&LocalServicesPatch>,
+) -> anyhow::Result<ObservedSnapshot> {
+    let candidate = reload_with_retry(settings).await?;
+    candidate_to_observed(candidate, listener_patch)
 }
 
-/// Returns a change for a baseline, a forced change, or a non-empty delta.
-///
-/// The caller forces a change after a rejected candidate or when the local
-/// services change.
-fn config_change(
-    previous: Option<&TacacsPlus>,
-    snapshot: Arc<TacacsPlus>,
-    forced: bool,
-) -> Option<ConfigChange> {
-    let is_baseline = previous.is_none();
-    let delta = ConfigDelta::diff(previous, &snapshot);
-    (is_baseline || forced || !delta.is_empty()).then_some(ConfigChange {
-        config: snapshot,
-        delta,
+fn candidate_to_observed(
+    candidate: ReloadedCandidate,
+    listener_patch: Option<&LocalServicesPatch>,
+) -> anyhow::Result<ObservedSnapshot> {
+    let local_services = listener_patch
+        .map(|patch| forwarder_local_services(patch, candidate.forwarder))
+        .transpose()?
+        .map(Arc::new);
+    Ok(ObservedSnapshot {
+        config: Arc::new(candidate.config),
+        local_services,
         runtime_policy: None,
-        local_services: None,
     })
 }
 
@@ -327,21 +227,11 @@ mod tests {
     use std::time::Duration;
 
     use redis::AsyncCommands;
+    use tacacsrs_config::source::ConfigChange;
     use tokio::time::timeout;
 
     use super::*;
     use crate::sonic_server_name;
-
-    #[test]
-    fn config_change_emits_baseline_and_recovery_but_suppresses_ordinary_unchanged_snapshot() {
-        let snapshot = Arc::new(TacacsPlus::empty());
-
-        assert!(config_change(None, Arc::clone(&snapshot), false).is_some());
-        assert!(config_change(Some(&snapshot), Arc::clone(&snapshot), false).is_none());
-        let recovery =
-            config_change(Some(&snapshot), Arc::clone(&snapshot), true).expect("recovery change");
-        assert!(recovery.delta.is_empty());
-    }
 
     async fn next_event(
         events: &mut Box<dyn ConfigObservation>,
@@ -545,9 +435,9 @@ mod tests {
         let mut observation = SonicObservation::open(settings.clone(), None)
             .await
             .unwrap();
-        let baseline = try_reload(&settings).await.unwrap();
+        let baseline = candidate_to_observed(try_reload(&settings).await.unwrap(), None).unwrap();
         let (release, pending) = tokio::sync::oneshot::channel::<()>();
-        observation.reload = Some(
+        observation.inner.replace_pending_read(
             async move {
                 pending.await.unwrap();
                 Ok(baseline)
@@ -565,7 +455,7 @@ mod tests {
         }
         set_field(&mut connection, "TACPLUS_SERVER|192.0.2.10", "timeout", "9").await;
         timeout(Duration::from_secs(1), async {
-            while !observation.signals.has_changed().unwrap() {
+            while !observation.inner.has_pending_signal().unwrap() {
                 tokio::task::yield_now().await;
             }
         })
@@ -598,7 +488,7 @@ mod tests {
                 .timeout,
             9
         );
-        let pump = observation.pump.abort_handle();
+        let pump = observation.inner.pump_abort_handle();
         drop(observation);
         timeout(Duration::from_secs(1), async {
             while !pump.is_finished() {
@@ -625,7 +515,9 @@ mod tests {
         let mut observation = SonicObservation::open(settings.clone(), None)
             .await
             .unwrap();
-        observation.reload = Some(std::future::pending().boxed());
+        observation
+            .inner
+            .replace_pending_read(std::future::pending().boxed());
         let _: i64 = redis::cmd("CLIENT")
             .arg("KILL")
             .arg("TYPE")

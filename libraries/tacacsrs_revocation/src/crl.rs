@@ -4,15 +4,87 @@ use std::cmp::Ordering;
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail, ensure};
+use der::asn1::{BitString, Uint};
+use der::oid::ObjectIdentifier;
+use der::{Decode, Sequence};
 use openssl::bn::BigNum;
 use openssl::hash::{MessageDigest, hash};
 use openssl::x509::X509Crl;
+use x509_cert::Version;
+use x509_cert::crl::RevokedCert;
+use x509_cert::ext::{Extension, Extensions};
+use x509_cert::ext::pkix::crl::dp::IssuingDistributionPoint;
+use x509_cert::ext::pkix::name::DistributionPointName;
+use x509_cert::ext::pkix::{BaseCrlNumber, CrlNumber, FreshestCrl};
+use x509_cert::name::Name;
+use x509_cert::spki::AlgorithmIdentifierOwned;
+use x509_cert::time::Time;
 
-use crate::certificate::CertificateInfo;
-use crate::der::{self, Reader, Unsigned};
+use crate::certificate::{
+    CertificateInfo, OID_FRESHEST_CRL, distribution_point_uris, general_name_uris,
+    reject_duplicate_extensions,
+};
 
 /// RFC 5280 limits CRL numbers to 20 octets.
 const MAXIMUM_CRL_NUMBER_OCTETS: usize = 20;
+
+const OID_CRL_NUMBER: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.20");
+const OID_DELTA_CRL_INDICATOR: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.27");
+const OID_ISSUING_DISTRIBUTION_POINT: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.28");
+const OID_CERTIFICATE_ISSUER: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.29");
+/// AD CS "Next CRL Publish" extension OID.
+const OID_NEXT_CRL_PUBLISH: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.311.21.4");
+
+/// Nonnegative CRL sequence number ordered by numeric value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CrlSequenceNumber(Vec<u8>);
+
+impl CrlSequenceNumber {
+    fn from_uint(value: &Uint) -> Result<Self> {
+        let magnitude = value.as_bytes();
+        ensure!(magnitude.len() <= MAXIMUM_CRL_NUMBER_OCTETS, "CRL number exceeds 20 octets");
+        let start = magnitude
+            .iter()
+            .position(|octet| *octet != 0)
+            .unwrap_or(magnitude.len());
+        Ok(Self(magnitude[start..].to_vec()))
+    }
+}
+
+impl PartialOrd for CrlSequenceNumber {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for CrlSequenceNumber {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0
+            .len()
+            .cmp(&other.0.len())
+            .then_with(|| self.0.cmp(&other.0))
+    }
+}
+
+/// RFC 5280 `CertificateList` with optional `version` per Section 5.1.2.1.
+#[derive(Sequence)]
+struct DecodedCertificateList {
+    tbs_cert_list: DecodedTbsCertList,
+    signature_algorithm: AlgorithmIdentifierOwned,
+    signature: BitString,
+}
+
+#[derive(Sequence)]
+struct DecodedTbsCertList {
+    version: Option<Version>,
+    signature: AlgorithmIdentifierOwned,
+    issuer: Name,
+    this_update: Time,
+    next_update: Option<Time>,
+    revoked_certificates: Option<Vec<RevokedCert>>,
+    #[asn1(context_specific = "0", tag_mode = "EXPLICIT", optional = "true")]
+    crl_extensions: Option<Extensions>,
+}
 
 /// A parsed CRL. The signature is not verified at this stage.
 pub(crate) struct Crl {
@@ -22,8 +94,8 @@ pub(crate) struct Crl {
     pub(crate) this_update: SystemTime,
     pub(crate) next_update: Option<SystemTime>,
     pub(crate) next_publish: Option<SystemTime>,
-    pub(crate) number: Option<Unsigned>,
-    pub(crate) delta_base: Option<Unsigned>,
+    pub(crate) number: Option<CrlSequenceNumber>,
+    pub(crate) delta_base: Option<CrlSequenceNumber>,
     pub(crate) scope: CrlScope,
     pub(crate) freshest: Vec<String>,
 }
@@ -52,43 +124,35 @@ impl CrlScope {
     }
 
     fn read(value: &[u8]) -> Result<Self> {
-        let sequence = der::single(value, der::SEQUENCE)?;
-        let mut fields = Reader::new(sequence.value);
-        let mut scope = Self {
-            identity: Some(value.to_vec()),
-            ..Self::default()
+        let decoded =
+            IssuingDistributionPoint::from_der(value).context("Invalid CRL scope extension")?;
+        let names = match &decoded.distribution_point {
+            None => Vec::new(),
+            Some(DistributionPointName::FullName(general_names)) => {
+                let uris = general_name_uris(general_names);
+                ensure!(!uris.is_empty(), "CRL scopes without URI names are not supported");
+                uris
+            }
+            Some(DistributionPointName::NameRelativeToCRLIssuer(_)) => {
+                bail!("CRL scopes relative to the CRL issuer are not supported")
+            }
         };
-        if let Some(point) = fields.optional(der::constructed(0))? {
-            let choice = der::single_any(point.value)?;
-            ensure!(
-                choice.tag == der::constructed(0),
-                "CRL scopes relative to the CRL issuer are not supported"
-            );
-            scope.names = der::general_name_uris(choice.value)?;
-            ensure!(!scope.names.is_empty(), "CRL scopes without URI names are not supported");
-        }
-        if let Some(value) = fields.optional(der::primitive(1))? {
-            scope.only_user = der::boolean(value)?;
-        }
-        if let Some(value) = fields.optional(der::primitive(2))? {
-            scope.only_ca = der::boolean(value)?;
-        }
+        ensure!(decoded.only_some_reasons.is_none(), "CRL reason partitions are not supported");
+        ensure!(!decoded.indirect_crl, "Indirect CRLs are not supported");
         ensure!(
-            fields.optional(der::primitive(3))?.is_none(),
-            "CRL reason partitions are not supported"
+            !decoded.only_contains_attribute_certs,
+            "Attribute certificate CRLs are not supported"
         );
-        if let Some(value) = fields.optional(der::primitive(4))? {
-            ensure!(!der::boolean(value)?, "Indirect CRLs are not supported");
-        }
-        if let Some(value) = fields.optional(der::primitive(5))? {
-            ensure!(!der::boolean(value)?, "Attribute certificate CRLs are not supported");
-        }
-        ensure!(fields.is_empty(), "CRL scope has unknown fields");
         ensure!(
-            !(scope.only_user && scope.only_ca),
+            !(decoded.only_contains_user_certs && decoded.only_contains_ca_certs),
             "CRL scope has contradictory certificate types"
         );
-        Ok(scope)
+        Ok(Self {
+            identity: Some(value.to_vec()),
+            only_user: decoded.only_contains_user_certs,
+            only_ca: decoded.only_contains_ca_certs,
+            names,
+        })
     }
 }
 
@@ -105,35 +169,17 @@ impl Crl {
             body.to_vec()
         };
         let crl = X509Crl::from_der(&der).context("Invalid DER CRL")?;
-        let outer = der::single(&der, der::SEQUENCE).context("CRL must be one DER object")?;
-        let mut outer = Reader::new(outer.value);
-        let tbs = outer.expect(der::SEQUENCE)?;
-        let mut tbs = Reader::new(tbs.value);
-        tbs.optional(der::INTEGER)?;
-        tbs.expect(der::SEQUENCE)?;
-        tbs.expect(der::SEQUENCE)?;
-        let this_update = der::time(tbs.read()?).context("Invalid CRL thisUpdate")?;
-        let next_update = match tbs.peek_tag() {
-            Some(der::UTC_TIME | der::GENERALIZED_TIME) => {
-                Some(der::time(tbs.read()?).context("Invalid CRL nextUpdate")?)
-            }
-            _ => None,
-        };
-        if let Some(revoked) = tbs.optional(der::SEQUENCE)? {
-            let mut entries = Reader::new(revoked.value);
-            while !entries.is_empty() {
-                let entry = entries.expect(der::SEQUENCE)?;
-                let mut fields = Reader::new(entry.value);
-                fields.expect(der::INTEGER)?;
-                let date = fields.read()?;
-                ensure!(
-                    matches!(date.tag, der::UTC_TIME | der::GENERALIZED_TIME),
-                    "Invalid CRL entry revocation date"
-                );
-                if let Some(extensions) = fields.optional(der::SEQUENCE)? {
-                    for extension in der::extensions(extensions.value)? {
+        let decoded = DecodedCertificateList::from_der(&der).context("Invalid RFC 5280 CRL")?;
+        let _ = (&decoded.signature_algorithm, &decoded.signature);
+        let tbs = decoded.tbs_cert_list;
+        let _ = (tbs.version, &tbs.signature, &tbs.issuer);
+        if let Some(revoked) = &tbs.revoked_certificates {
+            for entry in revoked {
+                if let Some(extensions) = &entry.crl_entry_extensions {
+                    reject_duplicate_extensions(extensions)?;
+                    for extension in extensions {
                         ensure!(
-                            extension.oid != der::OID_CERTIFICATE_ISSUER,
+                            extension.extn_id != OID_CERTIFICATE_ISSUER,
                             "Indirect CRL entries are not supported"
                         );
                         ensure!(
@@ -142,28 +188,26 @@ impl Crl {
                         );
                     }
                 }
-                ensure!(fields.is_empty(), "CRL entry has unknown fields");
             }
         }
         let mut parsed = Self {
             digest: digest(&der)?,
             crl,
             der: Vec::new(),
-            this_update,
-            next_update,
+            this_update: tbs.this_update.to_system_time(),
+            next_update: tbs.next_update.map(|time| time.to_system_time()),
             next_publish: None,
             number: None,
             delta_base: None,
             scope: CrlScope::default(),
             freshest: Vec::new(),
         };
-        if let Some(wrapper) = tbs.optional(der::constructed(0))? {
-            let sequence = der::single(wrapper.value, der::SEQUENCE)?;
-            for extension in der::extensions(sequence.value)? {
+        if let Some(extensions) = &tbs.crl_extensions {
+            reject_duplicate_extensions(extensions)?;
+            for extension in extensions {
                 parsed.read_extension(extension)?;
             }
         }
-        ensure!(tbs.is_empty(), "CRL has unknown fields");
         if parsed.delta_base.is_some() {
             ensure!(parsed.number.is_some(), "Delta CRL has no CRL number");
             ensure!(
@@ -179,33 +223,26 @@ impl Crl {
         Ok(parsed)
     }
 
-    fn read_extension(&mut self, extension: der::Extension<'_>) -> Result<()> {
-        match extension.oid {
-            der::OID_CRL_NUMBER => {
-                let value = der::single(extension.value, der::INTEGER)?;
-                self.number = Some(Unsigned::read(value.value, MAXIMUM_CRL_NUMBER_OCTETS)?);
-            }
-            der::OID_DELTA_CRL_INDICATOR => {
-                ensure!(extension.critical, "The delta CRL indicator must be critical");
-                let value = der::single(extension.value, der::INTEGER)?;
-                self.delta_base = Some(Unsigned::read(value.value, MAXIMUM_CRL_NUMBER_OCTETS)?);
-            }
-            der::OID_ISSUING_DISTRIBUTION_POINT => {
-                ensure!(extension.critical, "The CRL scope must be critical");
-                self.scope = CrlScope::read(extension.value)?;
-            }
-            der::OID_FRESHEST_CRL => {
-                self.freshest = crate::certificate::distribution_point_uris(extension.value)
-                    .context("Invalid freshest CRL extension")?;
-            }
-            der::OID_NEXT_CRL_PUBLISH => {
-                // The value is only a refresh hint. Ignore a malformed hint.
-                self.next_publish = der::single_any(extension.value)
-                    .ok()
-                    .and_then(|value| der::time(value).ok());
-            }
-            _ if extension.critical => bail!("CRL has an unsupported critical extension"),
-            _ => {}
+    fn read_extension(&mut self, extension: &Extension) -> Result<()> {
+        let value = extension.extn_value.as_bytes();
+        if extension.extn_id == OID_CRL_NUMBER {
+            let number = CrlNumber::from_der(value).context("Invalid CRL number")?;
+            self.number = Some(CrlSequenceNumber::from_uint(&number.0)?);
+        } else if extension.extn_id == OID_DELTA_CRL_INDICATOR {
+            ensure!(extension.critical, "The delta CRL indicator must be critical");
+            let base = BaseCrlNumber::from_der(value).context("Invalid delta CRL indicator")?;
+            self.delta_base = Some(CrlSequenceNumber::from_uint(&base.0)?);
+        } else if extension.extn_id == OID_ISSUING_DISTRIBUTION_POINT {
+            ensure!(extension.critical, "The CRL scope must be critical");
+            self.scope = CrlScope::read(value)?;
+        } else if extension.extn_id == OID_FRESHEST_CRL {
+            let points = FreshestCrl::from_der(value).context("Invalid freshest CRL extension")?;
+            self.freshest = distribution_point_uris(&points.0);
+        } else if extension.extn_id == OID_NEXT_CRL_PUBLISH {
+            // The value is only a refresh hint. Ignore a malformed hint.
+            self.next_publish = Time::from_der(value).ok().map(|time| time.to_system_time());
+        } else if extension.critical {
+            bail!("CRL has an unsupported critical extension");
         }
         Ok(())
     }
@@ -260,4 +297,20 @@ pub(crate) fn hex(data: &[u8]) -> String {
             let _ = write!(text, "{octet:02x}");
             text
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crl_sequence_numbers_order_numerically() {
+        let small = CrlSequenceNumber::from_uint(&Uint::new(&[0xff]).unwrap()).unwrap();
+        let large = CrlSequenceNumber::from_uint(&Uint::new(&[0x01, 0x00]).unwrap()).unwrap();
+        assert!(small < large);
+        assert_eq!(
+            CrlSequenceNumber::from_uint(&Uint::new(&[0x00]).unwrap()).unwrap(),
+            CrlSequenceNumber::from_uint(&Uint::new(&[]).unwrap()).unwrap()
+        );
+    }
 }

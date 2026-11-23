@@ -269,9 +269,9 @@ impl RevocationRejection {
 /// Host-owned revocation checks for new certificate TLS connections.
 ///
 /// `decide` runs inside the OpenSSL verify callback on the async worker. It must
-/// do only an in-memory lookup. It must not block, perform I/O, or verify CRL
-/// signatures. `obtain` runs after the handshake pauses. It can fetch and
-/// validate evidence, but it must move CPU-heavy work off the async worker.
+/// return promptly from in-memory state and bounded local checks without I/O or
+/// blocking waits. `obtain` runs after the handshake pauses. It can fetch and
+/// validate evidence, moving CPU-heavy work off the async worker.
 #[async_trait]
 pub trait RevocationVerifier: Send + Sync {
     /// Returns the current decision for a verified path.

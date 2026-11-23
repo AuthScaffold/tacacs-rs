@@ -24,9 +24,7 @@ use tacacsrs_composition::{prepare_all, register_all, Component, Composition, Gr
 use tacacsrs_config::tacacsrs::LocalServices;
 use tacacsrs_lifecycle::{ApplicationLifetime, ApplicationReadiness, HostedService};
 use tacacsrs_networking::CertificateVerification;
-use tacacsrs_provider::{
-    CredentialLayer, CredentialProvider, LocalServicesOverlay, SourceBundle, SourceDatastore,
-};
+use tacacsrs_provider::{CredentialProvider, SourceBundle, SourceDatastore};
 
 mod roles;
 #[cfg(test)]
@@ -61,8 +59,6 @@ pub fn declare(composition: &mut Composition) -> anyhow::Result<()> {
     composition.require::<CertificateVerification>();
     composition.role::<dyn ListenerFactory>("listener");
     composition.role::<dyn StartupCheck>("startup check");
-    composition.role::<dyn CredentialLayer>("credential layer");
-    composition.role::<dyn LocalServicesOverlay>("local services overlay");
     composition.deferred::<DiagnosticsHandle>()?;
     composition.deferred::<RuntimeHealth>()?;
     composition.deferred::<ClientApiAccess>()?;
@@ -88,19 +84,18 @@ pub struct PreparedHost {
 impl PreparedHost {
     /// Prepares the agent runtime from a validated graph.
     ///
-    /// The host reads the inputs, applies the credential layers and the local
-    /// services overlays in registration order, and prepares the runtime.
-    /// Then it supplies the deferred values and runs the startup checks in
-    /// registration order. Last, it constructs the enabled listeners and the
-    /// hosted services, and drops the graph.
+    /// The host reads the inputs and prepares the runtime. Then it supplies
+    /// the deferred values and runs the startup checks in registration order.
+    /// Last, it constructs the enabled listeners and the hosted services, and
+    /// drops the graph.
     ///
     /// Each runtime service can have at most one selected listener. A service
     /// that the bootstrap local services enable must have one.
     ///
     /// # Errors
-    /// Returns an input, layer, overlay, runtime, startup check, or
-    /// construction error. Also returns an error when a runtime service has
-    /// more than one listener, or when an enabled service has no listener.
+    /// Returns an input, runtime, startup check, or construction error. Also
+    /// returns an error when a runtime service has more than one listener, or
+    /// when an enabled service has no listener.
     pub async fn prepare(graph: Graph) -> anyhow::Result<Self> {
         let inputs = read_inputs(&graph)?;
         let runtime = AgentRuntime::prepare(inputs).await?;
@@ -204,26 +199,13 @@ fn check_listeners(
 
 fn read_inputs(graph: &Graph) -> anyhow::Result<RuntimeInputs> {
     let datastore = graph.one::<SourceDatastore>()?.0.clone();
-    let mut credentials = (*graph.one::<CredentialProvider>()?).clone();
-    for layer in graph.members::<dyn CredentialLayer>(|layer| layer.name())? {
-        credentials = credentials
-            .layer(|inner| layer.wrap(inner))
-            .with_context(|| format!("Could not apply the credential layer {}", layer.name()))?;
-    }
-    let mut local_services = (*graph.one::<LocalServices>()?).clone();
-    let local_services_overlays =
-        graph.members::<dyn LocalServicesOverlay>(|overlay| overlay.name())?;
-    for overlay in &local_services_overlays {
-        local_services = overlay.apply(local_services).with_context(|| {
-            format!("Could not apply the local services overlay {}", overlay.name())
-        })?;
-    }
+    let credentials = (*graph.one::<CredentialProvider>()?).clone();
+    let local_services = (*graph.one::<LocalServices>()?).clone();
     Ok(RuntimeInputs {
         source: SourceBundle {
             datastore,
             credentials,
             local_services,
-            local_services_overlays,
         },
         policy: (*graph.one::<PolicyInput>()?).clone(),
         certificate_verification: *graph.one::<CertificateVerification>()?,

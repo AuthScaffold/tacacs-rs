@@ -46,7 +46,9 @@ pub struct CredentialSettings {
     pub certificate: PathBuf,
     pub key: PathBuf,
     pub ca_file: PathBuf,
+    pub ca_file_required: bool,
     pub ca_directory: PathBuf,
+    pub ca_directory_required: bool,
     pub debounce: Duration,
     pub reconcile_interval: Duration,
     pub max_identity_bytes: u64,
@@ -318,11 +320,15 @@ impl Environment {
                 .to_str()
                 .context("Client certificate path is not Unicode")?,
         )?;
+        let ca_file_required = inputs.0.contains_key("TACACSD_TLS_CA_FILE");
+        let ca_directory_required = inputs.0.contains_key("TACACSD_TLS_CA_DIRECTORY");
         let credentials = CredentialSettings {
             certificate,
             key,
             ca_file: path(&mut inputs, "TLS_CA_FILE", "/etc/ssl/certs/ca-certificates.crt")?,
+            ca_file_required,
             ca_directory: path(&mut inputs, "TLS_CA_DIRECTORY", "/etc/ssl/certs")?,
+            ca_directory_required,
             debounce: inputs.duration("TLS_WATCH_DEBOUNCE_MILLISECONDS", 200, true)?,
             reconcile_interval: inputs.duration(
                 "TLS_WATCH_RECONCILE_INTERVAL_SECONDS",
