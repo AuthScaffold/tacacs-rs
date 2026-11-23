@@ -17,6 +17,15 @@ pub(super) enum RecoveryClaim {
 struct BindingReport {
     reported: AtomicBool,
     revision: AtomicU64,
+    recovery: Option<RecoveryClaim>,
+}
+
+impl BindingReport {
+    fn fail_recovery(&self) {
+        if let Some(RecoveryClaim::Trial(permit)) = &self.recovery {
+            permit.fail();
+        }
+    }
 }
 
 /// Reports an upstream attempt that its deadline interrupted.
@@ -68,13 +77,15 @@ impl<Connector: EndpointConnector> FailureObservation<Connector> {
         if self.report.reported.swap(true, Ordering::AcqRel) {
             return;
         }
-        if let Some(connection) = self.client.invalidate_failure(
+        let detached = self.client.invalidate_failure(
             self.index,
             self.operation,
             self.generation,
             kind,
             self.report.revision.load(Ordering::Acquire),
-        ) {
+        );
+        self.report.fail_recovery();
+        if let Some(connection) = detached {
             self.client.catalog.endpoints[self.index]
                 .lifecycle
                 .retire_detached(connection);
@@ -98,7 +109,6 @@ pub struct BoundEndpoint<Connector: EndpointConnector = NativeConnector> {
     index: usize,
     operation: OperationKind,
     cached: CachedConnection<Connector::Connection>,
-    recovery: Option<RecoveryClaim>,
     report: Arc<BindingReport>,
 }
 
@@ -116,10 +126,10 @@ impl<Connector: EndpointConnector> BoundEndpoint<Connector> {
             index,
             operation,
             cached,
-            recovery,
             report: Arc::new(BindingReport {
                 reported: AtomicBool::new(false),
                 revision: AtomicU64::new(revision),
+                recovery,
             }),
         }
     }
@@ -183,13 +193,15 @@ impl<Connector: EndpointConnector> BoundEndpoint<Connector> {
         if self.report.reported.swap(true, Ordering::AcqRel) {
             return;
         }
-        if let Some(connection) = self.client.invalidate_failure(
+        let detached = self.client.invalidate_failure(
             self.index,
             self.operation,
             self.cached.generation,
             FailureKind::Server,
             self.report.revision.load(Ordering::Acquire),
-        ) {
+        );
+        self.report.fail_recovery();
+        if let Some(connection) = detached {
             self.client.catalog.endpoints[self.index]
                 .lifecycle
                 .retire_detached(connection);
@@ -222,7 +234,7 @@ impl<Connector: EndpointConnector> BoundEndpoint<Connector> {
             }
             slot.proven_generation
                 .store(self.cached.generation, Ordering::Release);
-            match &self.recovery {
+            match &self.report.recovery {
                 None => false,
                 Some(RecoveryClaim::Trial(permit)) => permit.succeed(),
                 Some(RecoveryClaim::LastResort(revision)) => circuit.close_if_unchanged(*revision),

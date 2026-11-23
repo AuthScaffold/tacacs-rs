@@ -34,8 +34,9 @@
 //! connection. For example, after every operation returns to a recovered
 //! endpoint, the backup endpoint's connection closes.
 //! Combine bindings with [`crate::retry`] for conservative, bounded retries.
-//! Each bind tries an endpoint at most once. Later operation attempts can
-//! revisit it through live selection, including a due recovery trial.
+//! [`RoutedClient::bind_excluding`] skips endpoints already tried for the
+//! current request so each retry visits a distinct server. Separate requests
+//! can revisit an endpoint through live selection, including a due recovery trial.
 //! Schedule [`RoutedClient::retire_replaced_until`] when publishing a replacement.
 //! Removed endpoints remain usable by captured catalogs until that cutoff.
 //! Use [`RoutedClient::retire_replaced_with_deadlines`] to select cutoffs per endpoint,

@@ -136,7 +136,6 @@ impl RecoveryPermit {
         self.circuit.resolve_recovery(self.revision, Some(true))
     }
 
-    #[cfg(test)]
     pub(super) fn fail(&self) {
         self.circuit.resolve_recovery(self.revision, Some(false));
     }

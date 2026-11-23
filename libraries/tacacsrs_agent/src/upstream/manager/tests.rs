@@ -1060,11 +1060,13 @@ async fn binding_outcomes_outlive_router_and_manager() {
     let initial = request.bind().await.unwrap();
     initial.note_server_failure().await;
     tokio::time::advance(Duration::from_secs(5)).await;
-    let recovery = request.bind().await.unwrap();
+    let recovery_request = router.capture_request(OperationKind::Authentication);
+    let recovery = recovery_request.bind().await.unwrap();
     assert_eq!(recovery.connection.server_address(), primary.address);
     let owner = Arc::downgrade(&manager);
     drop(initial);
     drop(request);
+    drop(recovery_request);
     drop(router);
     drop(manager);
     assert!(owner.upgrade().is_none());

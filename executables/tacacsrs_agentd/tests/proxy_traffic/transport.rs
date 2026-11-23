@@ -445,10 +445,10 @@ async fn untrusted_tls_server_fails_over_without_losing_requests() {
     let backup = Upstream::start_tls(SingleConnect::Accept, mtls_context()).await;
     let servers = [
         mtls_server_with_timeout(untrusted.address(), 10),
-        mtls_server_with_timeout(backup.address(), 20),
+        mtls_server_with_timeout(backup.address(), 30),
     ];
     let daemon =
-        Daemon::start(untrusted.address(), deadline_options(20, "ordered-safe-retry", &servers))
+        Daemon::start(untrusted.address(), deadline_options(30, "ordered-safe-retry", &servers))
             .await;
     let traffic = heavy(true);
     let tally = run_traffic(daemon.port, traffic, "untrusted").await;

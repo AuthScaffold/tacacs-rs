@@ -280,6 +280,23 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
         operation: OperationKind,
         recovery_interval: Duration,
     ) -> anyhow::Result<BoundEndpoint<Connector>> {
+        self.bind_excluding(operation, recovery_interval, &[]).await
+    }
+
+    /// Selects an eligible endpoint outside `excluded` and obtains its shared connection.
+    ///
+    /// Pass the endpoint indices already tried for the current request so a
+    /// retry attempt visits distinct servers even if a recovery interval
+    /// elapses or a previously proven connection left its circuit closed.
+    ///
+    /// # Errors
+    /// Returns an error if no remaining endpoint is eligible or available for the operation.
+    pub async fn bind_excluding(
+        &self,
+        operation: OperationKind,
+        recovery_interval: Duration,
+        excluded: &[usize],
+    ) -> anyhow::Result<BoundEndpoint<Connector>> {
         self.runtime.ensure_open()?;
         let route = self.catalog.route(operation);
         if route.indices.is_empty() {
@@ -289,8 +306,12 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
             .active_position
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut attempted = Vec::with_capacity(route.indices.len());
+        let mut attempted = Vec::with_capacity(route.indices.len().max(excluded.len()));
+        attempted.extend_from_slice(excluded);
         for index in &route.indices {
+            if attempted.contains(index) {
+                continue;
+            }
             let slot = &self.catalog.endpoints[*index];
             let circuit = &slot.operation(operation).circuit;
             let Some(permit) = circuit.try_begin_recovery(recovery_interval) else {
@@ -319,22 +340,31 @@ impl<Connector: EndpointConnector> RoutedClient<Connector> {
                 }
             }
         }
+        let mut skipped_closed_excluded = false;
         for offset in 0..route.indices.len() {
             let position = (start + offset) % route.indices.len();
             let index = route.indices[position];
             let slot = &self.catalog.endpoints[index];
             let circuit = &slot.operation(operation).circuit;
-            if attempted.contains(&index) || circuit.is_open() {
+            if circuit.is_open() {
+                continue;
+            }
+            if attempted.contains(&index) {
+                if excluded.contains(&index) {
+                    skipped_closed_excluded = true;
+                }
                 continue;
             }
             let revision = circuit.revision();
             attempted.push(index);
             match self.ensure_connection(slot, operation).await {
                 Ok(cached) => {
-                    *route
-                        .active_position
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = position;
+                    if !skipped_closed_excluded {
+                        *route
+                            .active_position
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = position;
+                    }
                     return Ok(self.binding(index, operation, cached, None, revision));
                 }
                 Err(error) => {
@@ -1951,5 +1981,78 @@ mod tests {
                 .name(),
             "all"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn bind_excluding_skips_attempted_endpoints_across_all_passes() {
+        let client = distinct_pair();
+        let operation = OperationKind::Authentication;
+
+        // Pass 2 (closed circuit): primary stays closed after a proven transport failure,
+        // yet excluding index 0 moves a retry of the same request to secondary.
+        let primary = client.bind(operation, HOLD).await.unwrap();
+        assert_eq!(primary.index(), 0);
+        primary.note_success().await;
+        primary
+            .observe_failure(crate::RequestDeadline::after(Duration::from_secs(60)).unwrap())
+            .fail();
+        assert!(!client.catalog.endpoints[0]
+            .operation(operation)
+            .circuit
+            .is_open());
+        let retry = client.bind_excluding(operation, HOLD, &[0]).await.unwrap();
+        assert_eq!(retry.endpoint().name(), "secondary");
+        assert_eq!(retry.index(), 1);
+
+        // Pass 1 (due recovery trial): even after recovery_interval elapses on primary,
+        // excluding index 0 neither consumes its recovery permit nor re-selects primary.
+        let primary_again = client.bind(operation, HOLD).await.unwrap();
+        assert_eq!(primary_again.endpoint().name(), "primary");
+        primary_again.note_server_failure().await;
+        tokio::time::advance(HOLD).await;
+        let retry_after_interval = client.bind_excluding(operation, HOLD, &[0]).await.unwrap();
+        assert_eq!(retry_after_interval.endpoint().name(), "secondary");
+        let later_request = client.bind(operation, HOLD).await.unwrap();
+        assert_eq!(later_request.endpoint().name(), "primary");
+        later_request.note_server_failure().await;
+
+        // Pass 3 (last resort): when both circuits are open, excluding index 1 selects primary.
+        retry_after_interval.note_server_failure().await;
+        let last_resort = client.bind_excluding(operation, HOLD, &[1]).await.unwrap();
+        assert_eq!(last_resort.endpoint().name(), "primary");
+        assert!(client
+            .bind_excluding(operation, HOLD, &[0, 1])
+            .await
+            .is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_recovery_trial_restarts_interval_after_concurrent_reconnect() {
+        let client = distinct_pair();
+        let auth = OperationKind::Authentication;
+        let acct = OperationKind::Accounting;
+        let deadline = || crate::RequestDeadline::after(Duration::from_secs(60)).unwrap();
+
+        let initial = client.bind(auth, HOLD).await.unwrap();
+        initial.note_server_failure().await;
+        tokio::time::advance(HOLD).await;
+
+        // Authentication starts a recovery trial on primary while Accounting
+        // experiences a transport failure and reconnects primary to a new generation.
+        let trial = client.bind(auth, HOLD).await.unwrap();
+        assert_eq!(trial.endpoint().name(), "primary");
+        let acct_binding = client.bind(acct, HOLD).await.unwrap();
+        acct_binding.note_success().await;
+        acct_binding.observe_failure(deadline()).fail();
+        let reconnected = client.bind(acct, HOLD).await.unwrap();
+        assert_ne!(reconnected.connection_generation(), trial.connection_generation());
+
+        // The recovery trial fails with a server ERROR on the older generation.
+        // Drop must not leave opened_at expired for the next Authentication request.
+        trial.note_server_failure().await;
+        drop(trial);
+
+        let next = client.bind(auth, HOLD).await.unwrap();
+        assert_eq!(next.endpoint().name(), "secondary");
     }
 }

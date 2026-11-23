@@ -1098,3 +1098,60 @@ async fn explicit_accounting_error_retries_the_next_server() {
     assert_eq!(response.status, AccountingResponseStatus::Success);
     assert_eq!(response.server, "backup:49");
 }
+
+#[tokio::test(start_paused = true)]
+async fn ordered_retry_does_not_revisit_primary_when_recovery_interval_elapses_mid_request() {
+    use crate::config::RequestLimits;
+
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let primary = Arc::new(ScriptedConnection {
+        accounting_status: TacacsAccountingStatus::TacPlusAcctStatusError,
+        accounting_barrier: Some((Arc::clone(&entered), Arc::clone(&release))),
+        ..ScriptedConnection::successful("primary:49")
+    });
+    let backup = Arc::new(ScriptedConnection::successful("backup:49"));
+    let connector = Arc::new(OperationConnector::new(operation_map(
+        primary,
+        backup,
+        OperationKind::Accounting,
+    )));
+    let limits = RequestLimits::new(1024, 4)
+        .unwrap()
+        .with_request_timeout(Duration::from_secs(30))
+        .unwrap();
+    let policy = RuntimePolicy::new(
+        FailoverStrategy::OrderedSafeRetry,
+        FailoverStrategy::OrderedSafeRetry,
+        OperationPolicies::new(limits, limits, limits),
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    let bridge = bridge_with_policy(connector, policy);
+
+    // Two concurrent requests both bind primary before its circuit opens.
+    let first = tokio::spawn({
+        let bridge = bridge.clone();
+        async move { bridge.execute_accounting_request(accounting()).await }
+    });
+    entered.notified().await;
+    let second = tokio::spawn({
+        let bridge = bridge.clone();
+        async move { bridge.execute_accounting_request(accounting()).await }
+    });
+    entered.notified().await;
+
+    // The first request finishes on primary (opening primary's circuit at t = 0) and succeeds on backup.
+    release.notify_one();
+    assert_eq!(first.await.unwrap().unwrap().server, "backup:49");
+
+    // Advance past primary's 1s recovery interval before releasing the second request's Attempt 1.
+    // Attempt 2 of the second request must try backup instead of re-selecting primary via recovery.
+    tokio::time::advance(Duration::from_secs(2)).await;
+    release.notify_one();
+    let second_response = second
+        .await
+        .unwrap()
+        .expect("second request must fail over to backup");
+    assert_eq!(second_response.server, "backup:49");
+}
