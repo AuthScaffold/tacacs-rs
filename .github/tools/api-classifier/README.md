@@ -86,7 +86,7 @@ analysis libraries understand:
 
 | Component | Version | rustdoc JSON format |
 | --- | --- | --- |
-| `cargo-semver-checks` | `0.47.0` | supports 56, 57 |
+| `cargo-semver-checks` | `0.49.0` | supports 56, 57, 60 |
 | `public-api` | `0.52.0` (via `rustdoc-types` 0.57.4) | 57 |
 
 `nightly-2025-11-23` emits rustdoc JSON **format 57**, which both engines
@@ -100,14 +100,13 @@ Install it with:
 rustup toolchain install nightly-2025-11-23 --profile minimal
 ```
 
-The adapter binary requires Rust **1.91**. The product workspace still requires
-Rust **1.88**. The separate tool lockfile uses MSRV-aware resolution for Rust 1.91.
+The adapter binary requires Rust **1.91**. The product workspace also requires
+Rust **1.91**. The separate tool lockfile uses MSRV-aware resolution for Rust 1.91.
 
 `cargo-semver-checks` 0.44 and 0.45 depend on vulnerable `gix-date` 0.10.
 Version 0.46 depends on vulnerable `gix-date` 0.11.
-Version 0.47 requires Rust 1.91 and resolves to fixed `gix-date` 0.13.0.
-This upgrade fixes RUSTSEC-2025-0140 and removes the transitive `atty` dependency.
-It also removes JSON 55 support, so callers must use the new nightly pin.
+Versions 0.47 and 0.48 depend on `gix` 0.78 (`gix-fs` 0.19, `gix-pack` 0.65, and `gix-transport` 0.53), which trigger Dependabot alerts.
+Version 0.49 requires Rust 1.91 and resolves to `gix` 0.85 while retaining JSON 57 support.
 
 The exact `public-api` pin matters: version 0.52.2 reads JSON 59, not JSON 57.
 The minimum-nightly constant in version 0.52.0 is stale. Use the verified pin above.

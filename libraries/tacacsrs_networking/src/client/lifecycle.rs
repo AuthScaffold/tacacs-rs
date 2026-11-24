@@ -6,6 +6,7 @@ use anyhow::{Context, ensure};
 use tokio::sync::oneshot;
 
 use crate::{PreparedEndpoint, RequestDeadline};
+use crate::connection::failure::record_failure;
 use crate::connection::task::DriverTask;
 use crate::transport::BoxedTransport;
 use crate::transport::managed::{TransportActivity, TransportControl};
@@ -15,7 +16,6 @@ struct State {
     closed: bool,
     setups: Vec<Arc<DriverTask>>,
     transports: Vec<Weak<TransportControl>>,
-    evidence_expiries: Vec<Arc<DriverTask>>,
 }
 
 #[derive(Default)]
@@ -63,10 +63,6 @@ impl ClientLifecycle {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         ensure!(!state.closed, "The TACACS+ client closed during connection setup");
         let (transport, control) = TransportControl::wrap(transport, self.activity.clone());
-        state.evidence_expiries.retain(|task| !task.is_finished());
-        if let Some(task) = control.evidence_expiry_task() {
-            state.evidence_expiries.push(task);
-        }
         state
             .transports
             .retain(|transport| transport.strong_count() > 0);
@@ -122,9 +118,7 @@ impl ClientLifecycle {
         let mut failure = None;
         for task in setups {
             if let Err(error) = task.join_until(deadline).await {
-                if failure.is_none() {
-                    failure = Some(error);
-                }
+                record_failure(&mut failure, error);
             }
         }
         self.state
@@ -137,30 +131,6 @@ impl ClientLifecycle {
 
     pub(super) async fn wait_for_transports(&self) {
         self.activity.wait_for_close().await;
-    }
-
-    pub(super) async fn join_evidence_expiries(
-        &self,
-        deadline: RequestDeadline,
-    ) -> anyhow::Result<()> {
-        let tasks = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .evidence_expiries
-            .clone();
-        let mut failure = None;
-        for task in tasks {
-            if let Err(error) = task.join_until(deadline).await {
-                failure.get_or_insert(error);
-            }
-        }
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .evidence_expiries
-            .retain(|task| !task.is_finished());
-        failure.map_or(Ok(()), Err)
     }
 
     pub(super) fn force_close_transports(&self) {

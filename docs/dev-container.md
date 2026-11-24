@@ -90,9 +90,9 @@ Do not commit the bundle into the repository.
 
 ## Installed Tools
 
-The image retains Rust 1.88.0 as the workspace default and installs its Clippy and coverage components.
+The image uses Rust 1.91.0 as the workspace default and installs its Clippy and coverage components.
 Nightly supplies rustfmt, Clippy, Miri, and `rust-src` for the Miri sysroot.
-Rust 1.91.0 builds the standalone API classifier. Its rustdoc analysis uses `nightly-2025-11-23`.
+Rust 1.91.0 also builds the standalone API classifier. Its rustdoc analysis uses `nightly-2025-11-23`.
 Stable builds standalone Cargo tools without changing the workspace MSRV.
 The configuration disables remote-user UID updates because all writable paths use named volumes.
 The initialization command assigns those volumes to the `vscode` user.
@@ -110,7 +110,7 @@ The image also builds `tac_plus-ng` revision `70bf938b542d63bca00d50be0874a38a29
 The installation records the upstream commit in `source-revision` and removes the temporary build tree.
 `TACPLUS_SERVER_BINARY` and `TACPLUS_LIBRARY_DIR` select this installation for the [native interoperability runner](tacplus-interop.md#devcontainer-server).
 The server does not start automatically. The runner owns temporary loopback listeners and stops them after each scenario.
-It also installs `cargo-audit`, `cargo-fuzz`, `cargo-llvm-cov`, `cargo-outdated`, `cargo-udeps`, and `mdbook`.
+It also installs `cargo-audit`, `cargo-fuzz`, `cargo-llvm-cov`, `cargo-machete`, and `mdbook`.
 Source-only releases do not require an archive SBOM generator.
 Buf comes from the versioned upstream container image.
 Other standalone Cargo tool versions follow their locked published releases at image-build time.

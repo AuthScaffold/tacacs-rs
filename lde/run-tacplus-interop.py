@@ -87,7 +87,7 @@ def run_mode(binary, mode, work, environment):
             for case in CASES[mode]:
                 print(f"Checking {mode}: {case}", flush=True)
                 subprocess.run(
-                    ["cargo", "test", "-p", "tacacsrs-agentd", "--test", "tacplus_interop", "--locked",
+                    ["cargo", "test", "-p", "tacacsrs-config", "--test", "tacplus_interop", "--locked",
                      "--", "--ignored", "--exact", case, "--test-threads=1"],
                     cwd=ROOT, env={**environment, **addresses}, check=True, timeout=180,
                 )
@@ -127,7 +127,7 @@ def main():
     print(f"Server logs and generated configurations: {work}", flush=True)
     subprocess.run([str(args.server_binary.resolve()), "-v"], env=environment, check=True, timeout=10)
     subprocess.run(
-        ["cargo", "test", "-p", "tacacsrs-agentd", "--test", "tacplus_interop", "--locked", "--no-run"],
+        ["cargo", "test", "-p", "tacacsrs-config", "--test", "tacplus_interop", "--locked", "--no-run"],
         cwd=ROOT, env=environment, check=True, timeout=600,
     )
     modes = CASES if args.mode == "all" else [args.mode]

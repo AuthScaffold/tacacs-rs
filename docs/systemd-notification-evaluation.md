@@ -90,18 +90,9 @@ Neither notification API exposes its socket, a nonblocking setting, or a send de
 
 ## Ownership And Deletion Assessment
 
-The current [host adapter](../executables/tacacsrs_agentd/src/host_integration.rs) remains daemon-owned.
-It selects none, auto, or strict systemd mode and delegates delivery to `systemd-notify --pid=parent`.
-Auto mode logs a warning and retries an owed one-shot flag after a one-second backoff.
-Strict errors remain fatal.
-The adapter marks ready and stopping flags as delivered only after command success.
-Repeated health snapshots do not resend a successfully delivered one-shot flag.
-Status text remains sanitized.
+The current [systemd component](../libraries/tacacsrs_agent/src/components/systemd.rs) owns systemd notification delivery for the agent runtime. It selects auto or required systemd mode (when host integration is not `none`) and delegates delivery to `systemd-notify --pid=parent`. Auto mode logs a warning and retries an owed one-shot flag after a one-second backoff, whereas required mode treats notification errors as fatal. The component marks the ready and stopping flags as delivered only after command success, so repeated health snapshots do not resend a delivered one-shot flag, and status text remains sanitized.
 
-The [supervisor](../executables/tacacsrs_agentd/src/supervision.rs) captures one cleanup deadline.
-Its task abort drops the asynchronous child owner, whose `kill_on_drop(true)` terminates a stalled helper.
-This bound applies to teardown, not to each notification during normal service.
-The native regression confirms that a stalled helper does not hold shutdown open.
+The [agent runtime](../libraries/tacacsrs_agent/src/runtime/application_tasks.rs) captures one shared cleanup deadline across supervision and hosted tasks. Its task abort drops the asynchronous child owner, whose `kill_on_drop(true)` terminates a stalled helper. This bound applies to teardown, not to each notification during normal service, and the black-box process regression confirms that a stalled helper does not hold shutdown open.
 
 An in-process blocking send does not preserve this cancellation contract.
 `spawn_blocking` cannot cancel an active native call and does not establish bounded runtime shutdown.

@@ -73,6 +73,8 @@ async fn operational_counters_cover_shared_sessions_and_connection_outcomes() {
     assert_eq!(snapshot.connection_closes, 1);
     assert_eq!(snapshot.connection_aborts, 0);
     assert_eq!(snapshot.connection_failures, 0);
+    assert_eq!(snapshot.diagnostics.read_errors, 0);
+    assert_eq!(snapshot.diagnostics.peer_disconnects, 0);
 
     let reserved_socket = tokio::net::TcpSocket::new_v4().unwrap();
     reserved_socket
@@ -1837,7 +1839,7 @@ async fn stale_negotiation_attempt_uses_dedicated_stream_after_not_supported() {
     client.update_single_connection_state(SingleConnectionState::NotSupported);
 
     let session = client
-        .create_single_connect_negotiation_session(None)
+        .create_single_connect_negotiation_session(None, None)
         .await
         .unwrap();
     run_session_exchange(&session).await;
@@ -1852,36 +1854,426 @@ async fn stale_negotiation_attempt_uses_dedicated_stream_after_not_supported() {
 }
 
 #[tokio::test]
-async fn concurrent_session_during_negotiation_does_not_start_second_probe() {
+async fn concurrent_sessions_wait_for_first_reply_and_fan_out_to_dedicated_when_declined() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let listener_address = listener.local_addr().unwrap();
-    let (mut request_receiver, server_task) =
-        spawn_accounting_server(listener, 2, TacacsFlags::empty());
+    let (first_accepted_tx, first_accepted_rx) = tokio::sync::oneshot::channel();
+    let (release_first_reply_tx, release_first_reply_rx) = tokio::sync::oneshot::channel();
+    let (request_sender, mut request_receiver) = mpsc::channel(2);
+
+    let server_task = tokio::spawn(async move {
+        let (mut first_stream, _) = listener.accept().await.unwrap();
+        first_accepted_tx.send(()).unwrap();
+        let reader = PacketReader::new(None);
+        let PacketReadResult::Success(first_packet) = reader.read_packet(&mut first_stream).await
+        else {
+            panic!("first request must decode");
+        };
+        release_first_reply_rx.await.unwrap();
+        let reply = accounting_success_reply(&first_packet, TacacsFlags::empty());
+        first_stream.write_all(&reply.to_bytes()).await.unwrap();
+        request_sender.send(first_packet).await.unwrap();
+
+        let (mut second_stream, _) = listener.accept().await.unwrap();
+        let PacketReadResult::Success(second_packet) = reader.read_packet(&mut second_stream).await
+        else {
+            panic!("second request must decode");
+        };
+        let reply = accounting_success_reply(&second_packet, TacacsFlags::empty());
+        second_stream.write_all(&reply.to_bytes()).await.unwrap();
+        request_sender.send(second_packet).await.unwrap();
+    });
 
     let mut server = server_template();
     server.address = listener_address.try_into().unwrap();
-    let client = TacacsClient::from_prepared(server);
+    let counters = server.counters();
+    let client = std::sync::Arc::new(TacacsClient::from_prepared(server));
 
     let first_session = client.create_session().await.unwrap();
+    first_accepted_rx.await.unwrap();
     assert_eq!(client.single_connection_state(), SingleConnectionState::Negotiating);
+    assert_eq!(counters.snapshot().connection_opens, 1);
 
-    let second_session = client.create_session().await.unwrap();
+    let first_id = first_session.session_id();
+    first_session
+        .send_packet(test_packet(first_id, 1, TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG))
+        .await
+        .unwrap();
+
+    let second_client = std::sync::Arc::clone(&client);
+    let mut second_create = Box::pin(second_client.create_session());
+    assert!(
+        futures::poll!(&mut second_create).is_pending(),
+        "concurrent callers must wait while the first reply is pending"
+    );
+    assert_eq!(
+        counters.snapshot().connection_opens,
+        1,
+        "gated callers must not open extra probe connections before the first reply"
+    );
+
+    release_first_reply_tx.send(()).unwrap();
+    first_session.receive_packet().await.unwrap();
+
+    let second_session = tokio::time::timeout(Duration::from_secs(1), second_create)
+        .await
+        .expect("the gated caller must wake as soon as the first reply arrives")
+        .unwrap();
+    assert_eq!(client.single_connection_state(), SingleConnectionState::NotSupported);
+
     run_session_exchange(&second_session).await;
     second_session.complete().await;
-    let second_request = receive_request(&mut request_receiver).await;
+    first_session.complete().await;
 
+    let first_request = receive_request(&mut request_receiver).await;
+    let second_request = receive_request(&mut request_receiver).await;
+    assert!(first_request
+        .header()
+        .flags
+        .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
     assert!(!second_request
         .header()
         .flags
         .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
-    assert_eq!(client.single_connection_state(), SingleConnectionState::Negotiating);
+    assert_eq!(counters.snapshot().connection_opens, 2);
+    server_task.await.unwrap();
+}
 
-    run_session_exchange(&first_session).await;
-    first_session.complete().await;
+#[tokio::test]
+async fn concurrent_cold_burst_shares_one_connection_after_first_reply_gate() {
+    const CALLERS: usize = 16;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let listener_address = listener.local_addr().unwrap();
+    let (mut request_receiver, server_task) = spawn_single_stream_accounting_server(
+        listener,
+        CALLERS,
+        TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+    );
+
+    let mut server = server_template();
+    server.address = listener_address.try_into().unwrap();
+    let counters = server.counters();
+    let client = std::sync::Arc::new(TacacsClient::connect_prepared(server).await.unwrap());
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(CALLERS));
+
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..CALLERS {
+        let client = std::sync::Arc::clone(&client);
+        let barrier = std::sync::Arc::clone(&barrier);
+        tasks.spawn(async move {
+            barrier.wait().await;
+            client
+                .execute(&test_accounting_exchange(accounting_watchdog_preflight_request()))
+                .await
+                .unwrap();
+        });
+    }
+    while let Some(joined) = tasks.join_next().await {
+        joined.unwrap();
+    }
+
     let first_request = receive_request(&mut request_receiver).await;
     assert!(first_request
         .header()
         .flags
         .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
+    for _ in 1..CALLERS {
+        let later_request = receive_request(&mut request_receiver).await;
+        assert!(!later_request
+            .header()
+            .flags
+            .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
+    }
+
+    assert_eq!(counters.snapshot().connection_opens, 1);
+    assert_eq!(client.single_connection_state(), SingleConnectionState::Supported);
     server_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn interactive_conversation_promotes_on_first_reply_before_round_two_completes() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server_task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let reader = PacketReader::new(None);
+
+        let PacketReadResult::Success(round_one) = reader.read_packet(&mut stream).await else {
+            panic!("first interactive packet must decode");
+        };
+        assert!(round_one
+            .header()
+            .flags
+            .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
+        let getpass = authentication_reply(
+            &round_one,
+            TacacsAuthenticationStatus::TacPlusAuthenStatusGetpass,
+            TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+        );
+        stream.write_all(&getpass.to_bytes()).await.unwrap();
+
+        let PacketReadResult::Success(concurrent_accounting) =
+            reader.read_packet(&mut stream).await
+        else {
+            panic!("concurrent session packet must multiplex before round two");
+        };
+        assert!(!concurrent_accounting
+            .header()
+            .flags
+            .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
+        let acct_reply = accounting_success_reply(&concurrent_accounting, TacacsFlags::empty());
+        stream.write_all(&acct_reply.to_bytes()).await.unwrap();
+
+        let PacketReadResult::Success(round_two) = reader.read_packet(&mut stream).await else {
+            panic!("second interactive packet must decode");
+        };
+        assert!(!round_two
+            .header()
+            .flags
+            .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
+        let pass = authentication_reply(
+            &round_two,
+            TacacsAuthenticationStatus::TacPlusAuthenStatusPass,
+            TacacsFlags::empty(),
+        );
+        stream.write_all(&pass.to_bytes()).await.unwrap();
+    });
+
+    let mut endpoint = server_template();
+    endpoint.address = address.try_into().unwrap();
+    let counters = endpoint.counters();
+    let client = std::sync::Arc::new(TacacsClient::connect_prepared(endpoint).await.unwrap());
+
+    let mut conversation = client.open_conversation().await.unwrap();
+    let session_id = conversation.session_id().unwrap();
+
+    let concurrent_client = std::sync::Arc::clone(&client);
+    let concurrent_accounting = tokio::spawn(async move {
+        concurrent_client
+            .execute(&test_accounting_exchange(accounting_watchdog_preflight_request()))
+            .await
+            .unwrap()
+    });
+    tokio::task::yield_now().await;
+
+    let first_reply = conversation
+        .round_trip(authentication_request(session_id, 1))
+        .await
+        .unwrap();
+    assert_eq!(
+        AuthenticationReply::from_packet(&first_reply)
+            .unwrap()
+            .status,
+        TacacsAuthenticationStatus::TacPlusAuthenStatusGetpass
+    );
+    assert_eq!(client.single_connection_state(), SingleConnectionState::Supported);
+
+    let acct_reply = tokio::time::timeout(Duration::from_secs(1), concurrent_accounting)
+        .await
+        .expect("concurrent session must multiplex while interactive login is still open")
+        .unwrap();
+    assert_eq!(acct_reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
+
+    let second_reply = conversation
+        .round_trip(authentication_request(session_id, 3))
+        .await
+        .unwrap();
+    assert_eq!(
+        AuthenticationReply::from_packet(&second_reply)
+            .unwrap()
+            .status,
+        TacacsAuthenticationStatus::TacPlusAuthenStatusPass
+    );
+    conversation.complete().await;
+
+    assert_eq!(counters.snapshot().connection_opens, 1);
+    server_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn accounting_watchdog_preflight_accepts_error_reply_and_skips_non_accounting_servers() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server_task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let reader = PacketReader::new(None);
+        let PacketReadResult::Success(preflight) = reader.read_packet(&mut stream).await else {
+            panic!("preflight request must decode");
+        };
+        let error_body = AccountingReply {
+            status: TacacsAccountingStatus::TacPlusAcctStatusError,
+            server_msg: "unsupported watchdog".to_owned(),
+            data: String::new(),
+        }
+        .to_bytes()
+        .unwrap();
+        let mut header = preflight.header().clone();
+        header.seq_no = 2;
+        header.flags =
+            TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG | TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG;
+        header.length = u32::try_from(error_body.len()).unwrap();
+        stream
+            .write_all(&Packet::new(header, error_body).unwrap().to_bytes())
+            .await
+            .unwrap();
+
+        let PacketReadResult::Success(next) = reader.read_packet(&mut stream).await else {
+            panic!("subsequent request must reuse promoted connection");
+        };
+        assert!(!next
+            .header()
+            .flags
+            .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
+        stream
+            .write_all(&accounting_success_reply(&next, TacacsFlags::empty()).to_bytes())
+            .await
+            .unwrap();
+    });
+
+    let endpoint = server_template()
+        .with_preflight(ConnectPreflight::AccountingWatchdog)
+        .with_supports_accounting(true);
+    let mut endpoint = endpoint;
+    endpoint.address = address.try_into().unwrap();
+    let counters = endpoint.counters();
+
+    let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+    assert_eq!(client.single_connection_state(), SingleConnectionState::Supported);
+    assert!(client.shared_connection.current().await.is_some());
+    let diagnostics = counters.snapshot().diagnostics;
+    assert_eq!(diagnostics.watchdog_preflights, 1);
+    assert_eq!(diagnostics.watchdog_successes, 1);
+    assert_eq!(diagnostics.watchdog_failures, 0);
+
+    let reply = client
+        .execute(&test_accounting_exchange(accounting_watchdog_preflight_request()))
+        .await
+        .unwrap();
+    assert_eq!(reply.status, TacacsAccountingStatus::TacPlusAcctStatusSuccess);
+    assert_eq!(counters.snapshot().connection_opens, 1);
+    server_task.await.unwrap();
+
+    let mut auth_only = server_template()
+        .with_preflight(ConnectPreflight::AccountingWatchdog)
+        .with_supports_accounting(false);
+    auth_only.address = crate::ServerAddress::parse("127.0.0.1:1", 49).unwrap();
+    let auth_counters = auth_only.counters();
+    let auth_client = TacacsClient::connect_prepared(auth_only).await.unwrap();
+    assert_eq!(auth_client.single_connection_state(), SingleConnectionState::Initial);
+    assert_eq!(auth_counters.snapshot().diagnostics.watchdog_preflights, 0);
+    assert_eq!(auth_counters.snapshot().connection_opens, 0);
+}
+
+#[tokio::test]
+async fn dropping_client_without_join_drops_shared_cache_and_closes_peer_stream() {
+    use tokio::io::AsyncReadExt;
+
+    use crate::{PacketWriteResult, PacketWriter};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let key = b"shared-secret-cycle-regression";
+    let server_key = SecretBytes::new(key.to_vec());
+
+    let peer_task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let reader = PacketReader::new(Some(server_key.clone()));
+        let writer = PacketWriter::new(Some(server_key));
+        let PacketReadResult::Success(request) = reader.read_packet(&mut stream).await else {
+            panic!("obfuscated single-connect request must decode");
+        };
+        assert!(request
+            .header()
+            .flags
+            .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
+        let reply = accounting_success_reply(&request, TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG);
+        assert!(matches!(
+            writer.write_packet(&mut stream, reply).await,
+            PacketWriteResult::Success
+        ));
+        let mut byte = [0; 1];
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), stream.read(&mut byte))
+                .await
+                .expect("peer stream must close when client drops")
+                .unwrap(),
+            0
+        );
+    });
+
+    let endpoint = PreparedEndpoint::new(
+        address.try_into().unwrap(),
+        crate::PreparedTransport::Tcp,
+        true,
+        Some(SecretBytes::new(key.to_vec())),
+        ConnectOptions::default(),
+    );
+    let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+    client
+        .execute(&test_accounting_exchange(accounting_watchdog_preflight_request()))
+        .await
+        .unwrap();
+    assert_eq!(client.single_connection_state(), SingleConnectionState::Supported);
+    assert!(client.shared_connection.current().await.is_some());
+
+    let weak_cache = std::sync::Arc::downgrade(&client.shared_connection);
+    assert!(weak_cache.upgrade().is_some());
+    drop(client);
+    assert!(weak_cache.upgrade().is_none());
+
+    peer_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn clean_idle_peer_close_on_shared_connection_records_zero_read_errors() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+
+    let server_task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let PacketReadResult::Success(request) =
+            PacketReader::new(None).read_packet(&mut stream).await
+        else {
+            panic!("request must decode");
+        };
+        let reply = accounting_success_reply(&request, TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG);
+        stream.write_all(&reply.to_bytes()).await.unwrap();
+        stream.shutdown().await.unwrap();
+    });
+
+    let mut endpoint = server_template();
+    endpoint.address = address.try_into().unwrap();
+    let counters = endpoint.counters();
+    let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+    client
+        .execute(&test_accounting_exchange(accounting_watchdog_preflight_request()))
+        .await
+        .unwrap();
+    server_task.await.unwrap();
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while counters.snapshot().diagnostics.connected > 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("idle peer EOF must retire the shared connection");
+
+    let snapshot = counters.snapshot();
+    assert_eq!(snapshot.connection_closes, 1);
+    assert_eq!(snapshot.connection_aborts, 0);
+    assert_eq!(snapshot.diagnostics.read_errors, 0);
+    assert_eq!(snapshot.diagnostics.write_errors, 0);
+    assert_eq!(snapshot.diagnostics.resets, 0);
+    assert_eq!(snapshot.diagnostics.peer_disconnects, 0);
+    assert_eq!(
+        snapshot.diagnostics.last_disconnect_reason,
+        Some(crate::DisconnectReason::Graceful)
+    );
+
+    client
+        .close_and_join(crate::RequestDeadline::after(Duration::from_secs(1)).unwrap())
+        .await
+        .unwrap();
 }

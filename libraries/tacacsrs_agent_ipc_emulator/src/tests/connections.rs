@@ -77,7 +77,7 @@ async fn tcp_clients_reuse_channels() {
 
 #[tokio::test]
 async fn unix_clients_reuse_channels() {
-    let directory = tempfile::tempdir_in(".").unwrap();
+    let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("emulator.sock");
     let listener = tokio::net::UnixListener::bind(&path).unwrap();
     exercise_channels(UnixListenerStream::new(listener), IpcEndpoint::Unix(path)).await;
@@ -85,7 +85,7 @@ async fn unix_clients_reuse_channels() {
 
 #[tokio::test]
 async fn connection_errors_identify_both_endpoint_types() {
-    let directory = tempfile::tempdir_in(".").unwrap();
+    let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("missing.sock");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -103,7 +103,7 @@ async fn connection_errors_identify_both_endpoint_types() {
 
 #[tokio::test]
 async fn emulator_binds_unix_endpoint_for_both_clients() {
-    let directory = tempfile::tempdir_in(".").unwrap();
+    let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("emulator.sock");
     let expected = IpcEndpoint::Unix(path.clone());
     let (emulator, endpoint) = IpcEmulator::from_policy_at_endpoint(

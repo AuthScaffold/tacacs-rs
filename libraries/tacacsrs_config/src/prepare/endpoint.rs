@@ -114,6 +114,7 @@ pub fn prepare_endpoint(
     if let Some(secret) = &server.shared_secret {
         payload.retain(secret.expose_secret().len())?;
     }
+    // Routed EndpointInputs and EndpointLifecycle each retain one owned copy of `server.name`.
     payload.retain(server.name.len())?;
     payload.retain(server.name.len())?;
     for value in [
@@ -138,6 +139,9 @@ pub fn prepare_endpoint(
                 .with_local_binding(binding)
                 .with_timeout(server.timeout_duration())
                 .with_preflight(options.preflight),
+        )
+        .with_supports_accounting(
+            server.supports_server_type(crate::TacacsPlusServerType::ACCOUNTING),
         )
         .with_preparation_payload(payload.clone())
     };
@@ -218,59 +222,8 @@ pub fn prepare_endpoint(
         identity,
         options.certificate_verification,
         payload.clone(),
-    )?
-    .with_revocation_policy(certificate_revocation(server)?)?;
-    Ok(finalize(PreparedTransport::Tls(apply_crl_evidence(config, server)?)))
-}
-
-fn apply_crl_evidence(
-    mut config: TlsClientConfig,
-    server: &TacacsPlusServer,
-) -> Result<TlsClientConfig> {
-    if let Some(policy) = server
-        .server_authentication
-        .as_ref()
-        .and_then(|auth| auth.require_ocsp.as_ref())
-    {
-        config = config.with_ocsp_response(
-            policy
-                .response
-                .as_deref()
-                .context("Resolve OCSP evidence before endpoint preparation")?,
-            std::time::Duration::from_secs(u64::from(policy.max_response_age_seconds)),
-        )?;
-    }
-    if let Some(policy) = server
-        .server_authentication
-        .as_ref()
-        .and_then(|authentication| authentication.require_crls.as_ref())
-    {
-        let lists = policy
-            .crl
-            .as_ref()
-            .context("Resolve CRL evidence before endpoint preparation")?;
-        return config.with_crls(
-            &lists.iter().map(Vec::as_slice).collect::<Vec<_>>(),
-            std::time::Duration::from_secs(u64::from(policy.max_age_seconds)),
-        );
-    }
-    Ok(config)
-}
-
-fn certificate_revocation(
-    server: &TacacsPlusServer,
-) -> Result<tacacsrs_networking::CertificateRevocationPolicy> {
-    server
-        .server_authentication
-        .as_ref()
-        .and_then(|authentication| authentication.require_stapled_ocsp.as_ref())
-        .map(|policy| {
-            tacacsrs_networking::CertificateRevocationPolicy::require_stapled_ocsp(
-                std::time::Duration::from_secs(u64::from(policy.max_response_age_seconds)),
-            )
-        })
-        .transpose()
-        .map(Option::unwrap_or_default)
+    )?;
+    Ok(finalize(PreparedTransport::Tls(config)))
 }
 
 fn certificate_identity<'a>(
@@ -583,9 +536,6 @@ mod tests {
                 central_truststore_reference: None,
             };
             server.server_authentication = Some(crate::TlsClientServerAuthentication {
-                require_crls: None,
-                require_ocsp: None,
-                require_stapled_ocsp: None,
                 ca_certs: (!end_entity).then(|| bag.clone()),
                 ee_certs: end_entity.then_some(bag),
                 credentials_reference: None,
@@ -846,9 +796,6 @@ mod tests {
             central_truststore_reference: None,
         };
         crate::TlsClientServerAuthentication {
-            require_crls: None,
-            require_ocsp: None,
-            require_stapled_ocsp: None,
             credentials_reference: None,
             ca_certs: (!end_entity).then(|| trust.clone()),
             ee_certs: end_entity.then_some(trust),
@@ -1124,6 +1071,7 @@ mod tests {
             client_credentials: Vec::new(),
             server_credentials: Vec::new(),
             server: vec![server],
+            certificate_revocation: None,
         };
         let mut resolver = FakeCredentialResolver::new();
         let identity = source.server[0].client_identity.as_mut().unwrap();

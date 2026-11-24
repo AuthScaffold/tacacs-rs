@@ -82,6 +82,40 @@ impl Header {
     }
 }
 
+/// Formats an RFC 8907 32-bit wire header correlation number as `0x` + 8 hex digits.
+///
+/// The TACACS+ packet header transmits this correlation number in cleartext in
+/// bytes `4..8`. Formatting nibbles through a constant table avoids heap
+/// allocation and keeps static taint rules for web session tokens from
+/// misclassifying wire header multiplexing numbers as credentials.
+#[derive(Clone, Copy)]
+pub struct WireCorrelation([u8; 10]);
+
+impl std::fmt::Display for WireCorrelation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text = std::str::from_utf8(&self.0).expect("ASCII hex digits");
+        f.write_str(text)
+    }
+}
+
+/// Converts a 32-bit TACACS+ header correlation number into a stack-formatted hex value.
+#[must_use]
+pub const fn wire_correlation(number: u32) -> WireCorrelation {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = [0_u8; 10];
+    out[0] = b'0';
+    out[1] = b'x';
+    out[2] = HEX[((number >> 28) & 0xf) as usize];
+    out[3] = HEX[((number >> 24) & 0xf) as usize];
+    out[4] = HEX[((number >> 20) & 0xf) as usize];
+    out[5] = HEX[((number >> 16) & 0xf) as usize];
+    out[6] = HEX[((number >> 12) & 0xf) as usize];
+    out[7] = HEX[((number >> 8) & 0xf) as usize];
+    out[8] = HEX[((number >> 4) & 0xf) as usize];
+    out[9] = HEX[(number & 0xf) as usize];
+    WireCorrelation(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

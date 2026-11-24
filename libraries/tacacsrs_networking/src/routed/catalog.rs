@@ -2,14 +2,15 @@
 //!
 //! A [`Catalog`] is the per-publication routing table a
 //! [`RoutedClient`](super::RoutedClient) captures. It maps each eligible
-//! [`Endpoint`] to per-operation slots that cache a connection and track circuit
-//! state:
+//! [`Endpoint`] to a slot that caches one connection shared by every
+//! operation, and to per-operation slots that track circuit state:
 //!
 //! ```text
 //! Catalog
+//!   -> OperationRoute    (one per operation kind, with its active position)
 //!   -> EndpointSlot    (one per endpoint, keyed by cloned Endpoint identity)
-//!        -> OperationSlot    (one per operation kind)
-//!             -> CachedConnection    (reused until reconnect or retirement)
+//!        -> CachedConnection    (shared by all operations until reconnect or retirement)
+//!        -> OperationSlot    (one circuit per operation kind)
 //! ```
 //!
 //! [`Endpoint`] identity is an opaque `Arc`: cloning reuses a cache slot across
@@ -23,7 +24,7 @@
 //! lifecycle, whose name drops before its shared payload accounting guard.
 
 use std::sync::{Arc, Mutex as StateMutex, Weak};
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 
 use tokio::sync::Mutex;
 
@@ -105,31 +106,39 @@ pub(super) struct CachedConnection<Connection: ?Sized> {
     pub(super) connection: Arc<Connection>,
 }
 
-pub(super) struct OperationSlot<Connection: ?Sized> {
-    pub(super) connection: StateMutex<Option<CachedConnection<Connection>>>,
-    pub(super) connect_lock: Mutex<()>,
-    pub(super) completed_connect_attempts: AtomicU64,
-    pub(super) connection_generation: AtomicU64,
-    pub(super) failed_generation: AtomicU64,
+/// Circuit state for one operation on one endpoint.
+pub(super) struct OperationSlot {
     pub(super) circuit: Arc<OperationCircuit>,
 }
 
-impl<Connection: ?Sized> Default for OperationSlot<Connection> {
+impl Default for OperationSlot {
     fn default() -> Self {
         Self {
-            connection: StateMutex::new(None),
-            connect_lock: Mutex::new(()),
-            completed_connect_attempts: AtomicU64::new(0),
-            connection_generation: AtomicU64::new(0),
-            failed_generation: AtomicU64::new(u64::MAX),
             circuit: Arc::new(OperationCircuit::default()),
         }
     }
 }
 
+/// One endpoint's shared connection and its per-operation circuits.
+///
+/// All operations that route to this endpoint share one cached connection.
+/// Each operation keeps its own circuit, so an `ERROR` or a timeout for one
+/// operation moves only that operation away from the endpoint.
 pub(super) struct EndpointSlot<Connector: EndpointConnector> {
     pub(super) endpoint: Endpoint,
-    pub(super) operations: [OperationSlot<Connector::Connection>; 3],
+    pub(super) connection: StateMutex<Option<CachedConnection<Connector::Connection>>>,
+    pub(super) connect_lock: Mutex<()>,
+    pub(super) completed_connect_attempts: AtomicU64,
+    pub(super) connection_generation: AtomicU64,
+    /// The latest connection generation that completed a valid exchange.
+    pub(super) proven_generation: AtomicU64,
+    /// Bindings that still hold a connection from this slot.
+    ///
+    /// Change this count only while holding the `connection` lock, so an
+    /// unused-connection sweep cannot retire a connection that a new binding
+    /// has just received.
+    pub(super) bindings: AtomicUsize,
+    pub(super) operations: [OperationSlot; 3],
     pub(super) lifecycle: Arc<EndpointLifecycle<Connector>>,
     runtime: Weak<RoutingRuntime<Connector>>,
 }
@@ -142,16 +151,19 @@ impl<Connector: EndpointConnector> EndpointSlot<Connector> {
     ) -> Self {
         Self {
             endpoint,
+            connection: StateMutex::new(None),
+            connect_lock: Mutex::new(()),
+            completed_connect_attempts: AtomicU64::new(0),
+            connection_generation: AtomicU64::new(0),
+            proven_generation: AtomicU64::new(u64::MAX),
+            bindings: AtomicUsize::new(0),
             lifecycle,
             operations: std::array::from_fn(|_| OperationSlot::default()),
             runtime,
         }
     }
 
-    pub(super) fn operation(
-        &self,
-        operation: OperationKind,
-    ) -> &OperationSlot<Connector::Connection> {
+    pub(super) fn operation(&self, operation: OperationKind) -> &OperationSlot {
         &self.operations[operation.index()]
     }
 }
@@ -167,6 +179,8 @@ impl<Connector: EndpointConnector> Drop for EndpointSlot<Connector> {
 pub(super) struct Catalog<Connector: EndpointConnector> {
     pub(super) endpoints: Vec<Arc<EndpointSlot<Connector>>>,
     routes: [OperationRoute; 3],
+    /// The catalog published after this one. Links point only to newer catalogs.
+    successor: StateMutex<Option<Arc<Self>>>,
 }
 
 impl<Connector: EndpointConnector> Catalog<Connector> {
@@ -179,11 +193,57 @@ impl<Connector: EndpointConnector> Catalog<Connector> {
                 .collect(),
             active_position: StateMutex::new(0),
         });
-        Self { endpoints, routes }
+        Self {
+            endpoints,
+            routes,
+            successor: StateMutex::new(None),
+        }
+    }
+
+    /// Records the catalog that replaced this one after publication.
+    pub(super) fn supersede(&self, successor: &Arc<Self>) {
+        *self
+            .successor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(successor));
+    }
+
+    /// Reports whether any operation routes to the slot in the newest catalog that retains it.
+    ///
+    /// Bindings from an older catalog use this check when they finish, so
+    /// that a reload which moves every operation away from an endpoint can
+    /// retire its connection.
+    pub(super) fn routes_to(self: &Arc<Self>, slot: &Arc<EndpointSlot<Connector>>) -> bool {
+        let mut current = Arc::clone(self);
+        loop {
+            let next = current
+                .successor
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            match next {
+                Some(next) if next.endpoints.iter().any(|other| Arc::ptr_eq(other, slot)) => {
+                    current = next;
+                }
+                _ => break,
+            }
+        }
+        current
+            .endpoints
+            .iter()
+            .position(|other| Arc::ptr_eq(other, slot))
+            .is_some_and(|index| current.is_active_anywhere(index))
     }
 
     pub(super) fn route(&self, operation: OperationKind) -> &OperationRoute {
         &self.routes[operation.index()]
+    }
+
+    /// Reports whether any operation route currently prefers the endpoint.
+    pub(super) fn is_active_anywhere(&self, index: usize) -> bool {
+        self.routes
+            .iter()
+            .any(|route| route.active_index() == Some(index))
     }
 }
 
@@ -193,6 +253,14 @@ pub(super) struct OperationRoute {
 }
 
 impl OperationRoute {
+    pub(super) fn active_index(&self) -> Option<usize> {
+        let active = *self
+            .active_position
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.indices.get(active).copied()
+    }
+
     pub(super) fn advance_if_active(&self, failed_index: usize) {
         if self.indices.is_empty() {
             return;

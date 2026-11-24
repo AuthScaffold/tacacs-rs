@@ -208,6 +208,89 @@ impl SonicForwarderSettings {
             ..Default::default()
         }
     }
+
+    /// Applies host listener settings to the local services of this row.
+    ///
+    /// SONiC enables both local services and rejects inline proxy secrets. The
+    /// patch can override the client API path, the Unix socket mode, listener
+    /// limits, or switch `proxy_credential_source` to `unobfuscated`. If the
+    /// patch specifies a proxy endpoint, it must match the endpoint of this
+    /// row.
+    ///
+    /// # Errors
+    /// Returns an error when the patch disables a service, supplies an inline
+    /// proxy secret, specifies a conflicting proxy endpoint, or produces an
+    /// invalid configuration.
+    pub fn local_services_with(
+        self,
+        patch: &tacacsrs_config::local_services::LocalServicesPatch,
+    ) -> anyhow::Result<tacacsrs_config::tacacsrs::LocalServices> {
+        check_listener_patch(patch)?;
+        if let Some(endpoint) = &patch.tacacs_proxy_endpoint {
+            anyhow::ensure!(
+                endpoint.parse::<std::net::SocketAddr>().ok() == Some(self.socket_address()),
+                "The proxy endpoint conflicts with TACPLUS_FORWARDER|global"
+            );
+        }
+        patch.apply(self.local_services())
+    }
+}
+
+/// Checks the parts of a listener patch that do not depend on the forwarder
+/// row.
+///
+/// The check applies the patch to a representative forwarder row. A proxy
+/// endpoint in the patch must be a loopback socket address with a nonzero
+/// port, because every valid forwarder row has this form.
+pub(crate) fn check_listener_patch(
+    patch: &tacacsrs_config::local_services::LocalServicesPatch,
+) -> anyhow::Result<()> {
+    deferred_local_services(patch).map(|_| ())
+}
+
+/// Applies host listener settings to the SONiC local services before the
+/// forwarder row is known.
+///
+/// The result has no proxy endpoint, because the forwarder row supplies it
+/// later. The function also returns the proxy endpoint of the patch, if any.
+/// The forwarder row must agree with this endpoint.
+pub(crate) fn deferred_local_services(
+    patch: &tacacsrs_config::local_services::LocalServicesPatch,
+) -> anyhow::Result<(tacacsrs_config::tacacsrs::LocalServices, Option<std::net::SocketAddr>)> {
+    use tacacsrs_config::local_services::ServiceSelection;
+
+    anyhow::ensure!(
+        patch
+            .services
+            .is_none_or(|services| services == ServiceSelection::Both),
+        "SONiC central-agent mode requires both local services"
+    );
+    anyhow::ensure!(
+        patch.proxy_shared_secret.is_none(),
+        "SONiC central-agent mode does not accept an inline proxy shared secret"
+    );
+    let expected = patch
+        .tacacs_proxy_endpoint
+        .as_deref()
+        .map(|endpoint| {
+            let endpoint = endpoint
+                .parse::<std::net::SocketAddr>()
+                .context("The SONiC proxy endpoint must be a socket address")?;
+            let address = endpoint.ip().to_canonical();
+            anyhow::ensure!(
+                address.is_loopback() && endpoint.port() != 0,
+                "The SONiC proxy endpoint must be a loopback address with a nonzero port"
+            );
+            Ok(std::net::SocketAddr::new(address, endpoint.port()))
+        })
+        .transpose()?;
+    let representative = SonicForwarderSettings {
+        listen_address: expected.map_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), |e| e.ip()),
+        listen_port: expected.map_or(DEFAULT_TACACS_TCP_PORT, |e| e.port()),
+    };
+    let mut services = patch.apply(representative.local_services())?;
+    services.tacacs_proxy_endpoint = None;
+    Ok((services, expected))
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -1251,6 +1334,80 @@ mod tests {
         ]))
         .expect_err("zero port must be rejected");
         assert!(error.to_string().contains("1..65535"));
+    }
+
+    #[test]
+    fn forwarder_listener_patch_keeps_both_services_and_the_row_endpoint() {
+        use tacacsrs_config::local_services::{LocalServicesPatch, ServiceSelection};
+
+        let settings = SonicForwarderSettings::from_hash(&h(&[
+            ("local_listen_address", "127.0.0.1"),
+            ("local_listen_port", "49"),
+        ]))
+        .unwrap()
+        .unwrap();
+        let patched = settings
+            .local_services_with(&LocalServicesPatch {
+                client_api_endpoint: Some("/run/tacacs/custom.sock".to_owned()),
+                tacacs_proxy_endpoint: Some("127.0.0.1:49".to_owned()),
+                services: Some(ServiceSelection::Both),
+                ..LocalServicesPatch::default()
+            })
+            .unwrap();
+        assert_eq!(patched.client_api_endpoint, "/run/tacacs/custom.sock");
+        assert!(patched.client_api_enabled && patched.tacacs_proxy_enabled);
+        for patch in [
+            LocalServicesPatch {
+                services: Some(ServiceSelection::ClientApi),
+                ..LocalServicesPatch::default()
+            },
+            LocalServicesPatch {
+                tacacs_proxy_endpoint: Some("127.0.0.1:50".to_owned()),
+                ..LocalServicesPatch::default()
+            },
+        ] {
+            assert!(settings.local_services_with(&patch).is_err(), "accepted {patch:?}");
+        }
+    }
+
+    #[test]
+    fn listener_patch_check_rejects_invalid_values_without_a_forwarder_row() {
+        use tacacsrs_config::local_services::LocalServicesPatch;
+
+        for patch in [
+            LocalServicesPatch {
+                tacacs_proxy_endpoint: Some("192.0.2.1:49".to_owned()),
+                ..LocalServicesPatch::default()
+            },
+            LocalServicesPatch {
+                tacacs_proxy_endpoint: Some("127.0.0.1:0".to_owned()),
+                ..LocalServicesPatch::default()
+            },
+            LocalServicesPatch {
+                tacacs_proxy_endpoint: Some("localhost:49".to_owned()),
+                ..LocalServicesPatch::default()
+            },
+            LocalServicesPatch {
+                unix_socket_mode: Some(0o1000),
+                ..LocalServicesPatch::default()
+            },
+            LocalServicesPatch {
+                proxy_shared_secret: tacacsrs_config::local_services::parse_local_services(
+                    br#"{"tacacsrs:local-services":{"tacacs-proxy-enabled":true,"tacacs-proxy-endpoint":"127.0.0.1:49","proxy-credential-source":"inline","proxy-shared-secret":"secret"}}"#,
+                )
+                .unwrap()
+                .proxy_shared_secret,
+                ..LocalServicesPatch::default()
+            },
+        ] {
+            assert!(check_listener_patch(&patch).is_err(), "accepted {patch:?}");
+        }
+        check_listener_patch(&LocalServicesPatch {
+            tacacs_proxy_endpoint: Some("127.0.0.1:4949".to_owned()),
+            unix_socket_mode: Some(0o660),
+            ..LocalServicesPatch::default()
+        })
+        .unwrap();
     }
 
     #[test]

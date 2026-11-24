@@ -10,7 +10,7 @@ cargo --version
 protoc --version
 qemu-arm --version
 test "${CARGO_BUILD_TARGET}" = armv7-unknown-linux-gnueabihf
-find Cargo.toml Cargo.lock .cargo libraries executables lde .github/steps/armhf \
+find Cargo.toml Cargo.lock .cargo libraries executables tests/e2e lde .github/steps/armhf \
     -type f -print0 | sort -z | xargs -0 sha256sum > /evidence/SOURCE_SHA256SUMS
 
 echo "==> Protobuf compiler selection regressions"
@@ -26,9 +26,10 @@ echo "==> ARMhf unit and integration tests (including subprocess execution)"
 timeout --signal=TERM --kill-after=30s 40m \
     cargo test --locked \
         -p tacacsrs-agentd -p tacacsrs-agent-health -p tacon \
-        -p tacacsrs-networking -p tacacsrs-config -p tacacsrs-agent \
-        -p tacacsrs-sonic -p tacacsrs-ipc -p tacacsrs-agent-ipc-emulator \
-        -- --test-threads=2
+        -p tacacsrs-networking -p tacacsrs-revocation -p tacacsrs-config -p tacacsrs-agent \
+        -p tacacsrs-lifecycle -p tacacsrs-composition \
+        -p tacacsrs-sonic -p tacacsrs-kubesonic -p tacacsrs-provider -p tacacsrs-ipc -p tacacsrs-agent-ipc-emulator -p tacacsrs-testkit \
+        -- --test-threads=1
 
 echo "==> Release binary ABI and execution"
 for name in tacacsrs-agentd tacacsrs-agent-health tacon; do
@@ -47,4 +48,5 @@ for name in tacacsrs-agentd tacacsrs-agent-health tacon; do
     install -m 0755 "${binary}" "/evidence/${name}"
 done
 (cd /evidence && sha256sum tacacsrs-agentd tacacsrs-agent-health tacon > SHA256SUMS)
+PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider -v tests/e2e --bin-dir /evidence
 echo "ARMhf release build, executed tests, ABI, and startup checks passed."

@@ -14,24 +14,22 @@ use tokio::task::JoinSet;
 use self::error::ProxyConnectionError;
 use self::error_reply::local_error_reply;
 use self::packet_io::{DownstreamReader, write_downstream_packet};
-use self::session::{
-    ProxyConversationProvider, SessionPacket, SessionReply, UpstreamConversationProvider,
-    run_proxy_session,
-};
+use self::conversation::{ProxyConversationProvider, UpstreamConversationProvider};
+use self::session::{SessionPacket, SessionReply, run_proxy_session};
 #[cfg(test)]
 use self::reply_action::{ReplyAction, reply_action};
 #[cfg(test)]
-use self::session::ProxyConversation;
+use self::conversation::ProxyConversation;
 #[cfg(test)]
 use self::session_mapping::rewrite_session_id;
 use crate::config::{PolicyService, PreparedProxyPolicy};
-use crate::runtime::RequestGuard;
 use crate::upstream::OperationRouter;
 use crate::upstream::manager::UpstreamManager;
 use crate::upstream::UpstreamConnection;
 use tacacsrs_networking::routed::EndpointConnector;
 
 mod error;
+mod conversation;
 mod error_reply;
 mod packet_io;
 mod reply_action;
@@ -68,7 +66,6 @@ where
         &self,
         stream: Stream,
         peer_label: String,
-        _request_guard: RequestGuard,
     ) -> anyhow::Result<()>
     where
         Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -77,18 +74,23 @@ where
         let router =
             OperationRouter::new(Arc::clone(&self.upstream_manager), PolicyService::TacacsProxy);
         log::debug!("Accepted TACACS+ proxy client {peer_label}");
-        proxy_multiplexed_connection(
+        match proxy_multiplexed_connection(
             stream,
             transport.read_timeout(),
             downstream_obfuscation_key(transport.downstream_obfuscation())?,
             Arc::new(UpstreamConversationProvider::new(router)),
         )
         .await
-        .map_err(|error| match error {
-            ProxyConnectionError::Upstream(error) | ProxyConnectionError::Downstream(error) => {
-                error
+        {
+            Ok(()) => Ok(()),
+            // Client resets, malformed frames, and idle timeouts are normal
+            // client behavior. They are not agent faults.
+            Err(ProxyConnectionError::Downstream(error)) => {
+                log::info!("Closed TACACS+ proxy client {peer_label}: {error:#}");
+                Ok(())
             }
-        })
+            Err(ProxyConnectionError::Upstream(error)) => Err(error),
+        }
     }
 }
 
@@ -120,6 +122,7 @@ where
     let mut session_tasks = JoinSet::new();
 
     let result = loop {
+        let sessions_in_flight = !session_tasks.is_empty();
         tokio::select! {
             biased;
             writer_result = &mut writer_task => {
@@ -130,6 +133,16 @@ where
                 match session_result {
                     Ok((session_id, Ok(()))) => {
                         session_senders.remove(&session_id);
+                    }
+                    Ok((session_id, Err(ProxyConnectionError::Upstream(error)))) => {
+                        // One failed session must not end the other sessions
+                        // that share this connection.
+                        session_senders.remove(&session_id);
+                        let correlation =
+                            tacacsrs_protocol::header::wire_correlation(session_id);
+                        log::warn!(
+                            "Ended TACACS+ proxy session {correlation} without a reply: {error:#}"
+                        );
                     }
                     Ok((session_id, Err(error))) => {
                         session_senders.remove(&session_id);
@@ -142,9 +155,20 @@ where
                     }
                 }
             }
-            packet_result = downstream.next_packet() => {
+            packet_result = downstream.next_packet(sessions_in_flight) => {
                 let received = match packet_result {
-                    Ok(packet) => packet,
+                    Ok(Some(packet)) => packet,
+                    Ok(None) => {
+                        if session_tasks.is_empty() {
+                            log::debug!("The TACACS+ proxy client closed the connection");
+                        } else {
+                            log::debug!(
+                                "The TACACS+ proxy client closed the connection with {} sessions in flight",
+                                session_tasks.len()
+                            );
+                        }
+                        break Ok(());
+                    }
                     Err(error) => break Err(error),
                 };
                 let session_id = received.packet.header().session_id;
@@ -171,7 +195,7 @@ where
                 let reservation = match provider.reserve(&routing, packet.packet.body().len()) {
                     Ok(reservation) => reservation,
                     Err(error) => {
-                        let reply = match local_error_reply(&packet.packet, &error.to_string()) {
+                        let reply = match local_error_reply(packet.packet.header(), &error.to_string()) {
                             Ok(reply) => reply,
                             Err(error) => break Err(ProxyConnectionError::Downstream(error)),
                         };
@@ -288,8 +312,9 @@ where
     })?;
 
     loop {
-        let downstream_packet = match downstream.next_packet().await {
-            Ok(packet) => packet,
+        let downstream_packet = match downstream.next_packet(false).await {
+            Ok(Some(packet)) => packet,
+            Ok(None) => return Ok(()),
             Err(error) => return Err(error),
         };
         let downstream_reply_obfuscation = downstream_packet.reply_obfuscation;
@@ -687,7 +712,7 @@ mod tests {
             .reserve(tacacsrs_networking::RequestDeadline::after(Duration::from_secs(1)).unwrap())
             .is_err());
         drop(peer);
-        assert!(proxy.await.unwrap().is_err());
+        proxy.await.unwrap().unwrap();
         provider
             .admission
             .acquire(tacacsrs_networking::RequestDeadline::after(Duration::from_secs(1)).unwrap())
@@ -809,7 +834,8 @@ mod tests {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let manager = Arc::new(UpstreamManager::new(
                 vec![native_server(&listener)],
-                NetworkUpstreamConnector::new(ProxyLoopGuard::new(None)).erased(),
+                NetworkUpstreamConnector::new(ProxyLoopGuard::new(None), Default::default())
+                    .erased(),
                 Duration::from_secs(30),
                 RuntimeHealthPublisher::new(EnabledServices::TACACS_PROXY),
             ));
@@ -859,11 +885,14 @@ mod tests {
             .await;
             read_packet(&mut downstream).await;
             manager.reload_runtime_policy(policy(Duration::from_secs(10)));
-            assert!(
-                proxy.await.unwrap().is_err(),
+            assert_eq!(
+                upstream.read(&mut [0; 1]).await.unwrap(),
+                0,
                 "waiting for a continuation must consume the captured budget"
             );
-            assert_eq!(upstream.read(&mut [0; 1]).await.unwrap(), 0);
+            assert!(!proxy.is_finished(), "one expired session must not close the connection");
+            drop(downstream);
+            proxy.await.unwrap().unwrap();
             let next = provider.capture_request(OperationKind::Authentication);
             provider
                 .admit(&next, provider.reserve(&next, 1).unwrap())
@@ -902,7 +931,8 @@ mod tests {
             };
             let manager = Arc::new(UpstreamManager::new(
                 vec![native_server(&primary), native_server(&backup)],
-                NetworkUpstreamConnector::new(ProxyLoopGuard::new(None)).erased(),
+                NetworkUpstreamConnector::new(ProxyLoopGuard::new(None), Default::default())
+                    .erased(),
                 Duration::from_secs(30),
                 RuntimeHealthPublisher::new(EnabledServices::TACACS_PROXY),
             ));
@@ -998,19 +1028,27 @@ mod tests {
         use crate::upstream::NetworkUpstreamConnector;
         use crate::EnabledServices;
 
-        for continuation in [false, true] {
+        for (continuation, request_timeout) in [
+            (false, Duration::from_millis(200)),
+            (true, Duration::from_millis(200)),
+            (false, Duration::from_secs(2)),
+            (true, Duration::from_secs(2)),
+        ] {
             tokio::time::timeout(Duration::from_secs(3), async {
                 let primary = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
                 let backup = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let mut primary_server = native_server(&primary);
+                primary_server.timeout = 1;
                 let manager = Arc::new(UpstreamManager::new(
-                    vec![native_server(&primary), native_server(&backup)],
-                    NetworkUpstreamConnector::new(ProxyLoopGuard::new(None)).erased(),
+                    vec![primary_server, native_server(&backup)],
+                    NetworkUpstreamConnector::new(ProxyLoopGuard::new(None), Default::default())
+                        .erased(),
                     Duration::from_secs(30),
                     RuntimeHealthPublisher::new(EnabledServices::TACACS_PROXY),
                 ));
                 let limits = RequestLimits::new(1024, 2)
                     .unwrap()
-                    .with_request_timeout(Duration::from_millis(200))
+                    .with_request_timeout(request_timeout)
                     .unwrap();
                 manager.reload_runtime_policy(
                     RuntimePolicy::new(
@@ -1066,7 +1104,16 @@ mod tests {
                     .await;
                     read_packet(&mut upstream).await;
                 }
-                assert!(proxy.await.unwrap().is_err());
+                let expired = read_packet(&mut client).await;
+                assert_eq!(expired.header().session_id, 1);
+                assert_eq!(
+                    AuthenticationReply::from_packet(&expired).unwrap().status,
+                    TacacsAuthenticationStatus::TacPlusAuthenStatusError,
+                    "an expired request must receive a local ERROR reply"
+                );
+                assert!(!proxy.is_finished(), "one expired session must not close the connection");
+                drop(client);
+                proxy.await.unwrap().unwrap();
                 let unexpected_backup = backup.accept();
                 tokio::pin!(unexpected_backup);
                 std::future::poll_fn(|context| {
@@ -1105,7 +1152,7 @@ mod tests {
                 .await;
                 assert_eq!(read_packet(&mut next_client).await.header().session_id, 2);
                 drop(next_client);
-                assert!(next_proxy.await.unwrap().is_err());
+                next_proxy.await.unwrap().unwrap();
             })
             .await
             .expect("proxy timeout and failover must finish");
@@ -1229,6 +1276,94 @@ mod tests {
             .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
 
         proxy_task.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn multiplexed_proxy_waits_past_read_timeout_for_in_flight_replies() {
+        let upstream_id = 0x5555_6666;
+        let reply_body = accounting_reply_body(TacacsAccountingStatus::TacPlusAcctStatusSuccess);
+        let provider = Arc::new(FakeConversationProvider::new(vec![FakeProxySession::new(
+            upstream_id,
+            vec![test_packet(
+                TacacsType::TacPlusAccounting,
+                upstream_id,
+                reply_body,
+            )],
+        )
+        .with_reply_delay(Duration::from_secs(3))]));
+        let (proxy_stream, mut client_stream) = tokio::io::duplex(4096);
+        let proxy_task = tokio::spawn(proxy_multiplexed_connection(
+            proxy_stream,
+            Duration::from_secs(1),
+            None,
+            Arc::clone(&provider),
+        ));
+        let request = |session_id| {
+            test_packet_with_sequence(
+                TacacsType::TacPlusAccounting,
+                session_id,
+                1,
+                TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+                b"request".to_vec(),
+            )
+        };
+
+        write_packet(&mut client_stream, &request(0x1111_2222)).await;
+        let reply = read_packet(&mut client_stream).await;
+        assert_eq!(reply.header().session_id, 0x1111_2222);
+
+        // With no session in flight, the read timeout limits idle time again.
+        let started = tokio::time::Instant::now();
+        let result = proxy_task.await.unwrap();
+        assert!(matches!(result, Err(ProxyConnectionError::Downstream(_))));
+        assert!(started.elapsed() <= Duration::from_secs(1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn multiplexed_proxy_bounds_a_partial_frame_while_sessions_are_in_flight() {
+        let upstream_id = 0x5555_6666;
+        let provider = Arc::new(FakeConversationProvider::new(vec![FakeProxySession::new(
+            upstream_id,
+            vec![],
+        )
+        .with_reply_delay(Duration::from_secs(20))]));
+        let (proxy_stream, mut client_stream) = tokio::io::duplex(4096);
+        let proxy_task = tokio::spawn(proxy_multiplexed_connection(
+            proxy_stream,
+            Duration::from_secs(1),
+            None,
+            Arc::clone(&provider),
+        ));
+        let request = |session_id| {
+            test_packet_with_sequence(
+                TacacsType::TacPlusAccounting,
+                session_id,
+                1,
+                TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
+                b"request".to_vec(),
+            )
+            .to_bytes()
+        };
+
+        client_stream
+            .write_all(&request(0x1111_2222))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let started = tokio::time::Instant::now();
+        client_stream
+            .write_all(&request(0x3333_4444)[..6])
+            .await
+            .unwrap();
+
+        let result = proxy_task.await.unwrap();
+        let Err(ProxyConnectionError::Downstream(error)) = result else {
+            panic!("a stalled partial frame must close the connection");
+        };
+        assert!(error
+            .to_string()
+            .contains("No downstream TACACS+ packet arrived"));
+        assert!(started.elapsed() <= Duration::from_secs(1));
     }
 
     #[tokio::test]

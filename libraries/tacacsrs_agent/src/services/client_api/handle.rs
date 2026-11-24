@@ -5,6 +5,7 @@ use tacacsrs_protocol::operations::{
     AuthorizationOperationResponse, PapAuthenticationOperation, PapAuthenticationOperationResponse,
 };
 use tacacsrs_protocol::failure::ServiceError;
+use tacacsrs_protocol::accounting::request::AccountingRequest;
 
 use super::upstream_bridge::UpstreamBridge;
 use crate::upstream::NetworkUpstreamConnector;
@@ -22,6 +23,13 @@ pub struct ClientApiHandle {
 }
 
 impl ClientApiHandle {
+    pub(crate) async fn accounting_record(
+        &self,
+        request: AccountingRequest,
+    ) -> Result<AccountingOperationResponse, ServiceError> {
+        self.bridge.execute_accounting_record(request).await
+    }
+
     /// Creates a handle over the shared client API bridge.
     pub(crate) fn new(bridge: UpstreamBridge<NetworkUpstreamConnector>) -> Self {
         Self { bridge }

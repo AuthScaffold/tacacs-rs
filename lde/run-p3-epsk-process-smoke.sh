@@ -16,8 +16,8 @@ set -euo pipefail
 #   * tac_plus-ng interprets `tls psk key` as hexadecimal data. The EPSK
 #     credential object contains the 16 raw bytes from the container key.
 #   * If tac_plus-ng interprets the key as ASCII, run with `PSK_RAW=1`.
-#   * The proxy listener uses no obfuscation by default. Thus, tacon connects
-#     without a shared secret and uses the plain-TCP validation relaxation.
+#   * In SONiC mode, the proxy listener uses `local-proxy-row` obfuscation from
+#     `TACPLUS_SERVER|127.0.0.1`, so tacon connects with `-k`.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
@@ -28,8 +28,9 @@ fi
 
 redis_port="${REDIS_PORT:-6388}"
 proxy_port="${PROXY_PORT:-10492}"
+proxy_passkey="p3-proxy-passkey"
 redis_db="${REDIS_DB:-4}"
-upstream_host="127.0.0.1"
+upstream_host="${UPSTREAM_HOST:-127.0.0.2}"
 upstream_port="${UPSTREAM_PORT:-4450}"
 psk_identity="${PSK_IDENTITY:-psk-demo}"
 psk_hex="${PSK_HEX:-1ba799729c830152c91d4fbca5149972}"
@@ -148,7 +149,7 @@ tacacs_exchange() {
     local label="$1"
     if ! timeout 20 "$tacon" \
         --server-addr "127.0.0.1:${proxy_port}" \
-        --validation-relaxation allow-plain-tcp-without-shared-secret \
+        -k "$proxy_passkey" \
         accounting --user testuser --port tty0 --rem-addr 127.0.0.1 "show version" \
         >>"$tacon_log" 2>&1; then
         echo "The TACACS+ accounting session returned an error at: $label" >&2
@@ -157,7 +158,7 @@ tacacs_exchange() {
 }
 
 export CARGO_INCREMENTAL=0
-cargo build -p tacacsrs-agentd -p tacon --bins >/dev/null
+cargo build -p tacacsrs-agentd -p tacacsrs-agent-health -p tacon --bins >/dev/null
 target_dir="${CARGO_TARGET_DIR:-target}"
 agent="$target_dir/debug/tacacsrs-agentd"
 probe="$target_dir/debug/tacacsrs-agent-health"
@@ -184,6 +185,11 @@ redis-cli -p "$redis_port" -n "$redis_db" HSET \
     local_listen_address 127.0.0.1 \
     local_listen_port "$proxy_port" >/dev/null
 redis-cli -p "$redis_port" -n "$redis_db" HSET \
+    'TACPLUS_SERVER|127.0.0.1' \
+    priority 64 \
+    tcp_port "$proxy_port" \
+    passkey "$proxy_passkey" >/dev/null
+redis-cli -p "$redis_port" -n "$redis_db" HSET \
     "TACPLUS_SERVER_TLS|${upstream_host}" \
     priority 64 \
     tcp_port "$upstream_port" \
@@ -200,7 +206,7 @@ redis-cli -p "$redis_port" -n "$redis_db" HSET \
 agent_pid=$!
 
 wait_for_readiness
-wait_for_log_count 1 'Reloaded TACACS+ upstream server set: 1 server'
+wait_for_log_count 1 'Reloaded the TACACS+ server set: 1 server(s)'
 tacacs_exchange "initial EPSK generation"
 
 # For immutable-ID rotation, select a new credential object with the same key.
@@ -208,7 +214,7 @@ tacacs_exchange "initial EPSK generation"
 write_object object-b
 redis-cli -p "$redis_port" -n "$redis_db" HSET \
     "TACPLUS_SERVER_TLS|${upstream_host}" psk_secret_ref object-b >/dev/null
-wait_for_log_count 2 'Reloaded TACACS+ upstream server set: 1 server'
+wait_for_log_count 2 'Reloaded the TACACS+ server set: 1 server(s)'
 wait_for_readiness
 tacacs_exchange "immutable-ID rotation"
 
@@ -221,7 +227,7 @@ else
 fi
 chmod 0640 "$temporary"
 mv -f "$temporary" "$epsk_root/object-b"
-wait_for_log_count 3 'Reloaded TACACS+ upstream server set: 1 server'
+wait_for_log_count 3 'Reloaded the TACACS+ server set: 1 server(s)'
 wait_for_readiness
 tacacs_exchange "same-ID atomic replacement"
 
@@ -237,10 +243,10 @@ fi
 # Reject an invalid replacement. The agent completes a new session with the previous valid key.
 redis-cli -p "$redis_port" -n "$redis_db" HSET \
     "TACPLUS_SERVER_TLS|${upstream_host}" psk_secret_ref missing-object >/dev/null
-wait_for_log_count 1 'configuration candidate was rejected by runtime validation'
+wait_for_log_count 1 'configuration candidate was rejected\|Failed to prepare or publish the configuration candidate'
 wait_for_readiness
 tacacs_exchange "rejected-candidate fallback"
-[[ "$(grep -c 'Reloaded TACACS+ upstream server set: 1 server' "$agent_log")" -eq 3 ]]
+[[ "$(grep -c 'Reloaded the TACACS+ server set: 1 server(s)' "$agent_log")" -eq 3 ]]
 
 for forbidden in \
     "$psk_hex" \

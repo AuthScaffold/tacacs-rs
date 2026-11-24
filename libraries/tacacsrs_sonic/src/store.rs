@@ -79,6 +79,10 @@ pub struct SonicConnection {
     /// Debounce window for keyspace notifications. One reload handles all
     /// changes in this window.
     pub debounce: Duration,
+    /// Delay before retrying after a rejected ConfigDB snapshot.
+    pub retry_interval: Duration,
+    /// Interval between full-read reconciliations without keyspace notifications.
+    pub reconcile_interval: Duration,
     /// EPSK root watched for same-ID atomic replacement.
     pub credential_watch_root: Option<PathBuf>,
 }
@@ -89,6 +93,8 @@ impl Default for SonicConnection {
             url: DEFAULT_REDIS_URL.to_string(),
             db_index: 4,
             debounce: Duration::from_millis(250),
+            retry_interval: Duration::from_secs(5),
+            reconcile_interval: Duration::from_secs(60),
             credential_watch_root: Some(PathBuf::from(
                 crate::SonicCredentialRoots::DEFAULT_EPSK_ROOT,
             )),
@@ -104,6 +110,8 @@ impl fmt::Debug for SonicConnection {
             .field("url", &"<redacted>")
             .field("db_index", &self.db_index)
             .field("debounce", &self.debounce)
+            .field("retry_interval", &self.retry_interval)
+            .field("reconcile_interval", &self.reconcile_interval)
             .field(
                 "credential_watch_root",
                 &self.credential_watch_root.as_ref().map(|_| "<redacted>"),
@@ -687,6 +695,7 @@ mod tests {
             db_index: 4,
             debounce: Duration::from_millis(0),
             credential_watch_root: Some(PathBuf::from(format!("/var/lib/{SENTINEL_WATCH_ROOT}"))),
+            ..SonicConnection::default()
         }
     }
 

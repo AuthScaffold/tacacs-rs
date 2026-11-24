@@ -1,33 +1,14 @@
 name: Make Sure That Dependencies Are Used
-description: Run cargo-udeps for a target platform
-
-inputs:
-  package-args:
-    description: 'Cargo workspace or package selection arguments'
-    required: false
-    default: '--workspace'
-  target:
-    description: 'Rust target triple for the validation'
-    required: true
-  feature-args:
-    description: 'Cargo feature arguments to append'
-    required: false
-    default: ''
+description: Run cargo-machete across workspace manifests
 
 runs:
   using: composite
   steps:
-    - name: Install cargo-udeps
-      uses: taiki-e/install-action@7be9fd86bd1707236395105d6e9329dd1511a7e1 # v2.79.0
+    - name: Install cargo-machete
+      uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
       with:
-        tool: cargo-udeps
+        tool: cargo-machete
 
-    - name: Run cargo-udeps
+    - name: Run cargo-machete
       shell: bash
-      run: |
-        export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }--cfg tokio_unstable"
-        cargo +nightly udeps \
-          ${{ inputs.package-args }} \
-          --all-targets \
-          --target "${{ inputs.target }}" \
-          ${{ inputs.feature-args }}
+      run: cargo machete --with-metadata --skip-target-dir . .github/tools/api-classifier

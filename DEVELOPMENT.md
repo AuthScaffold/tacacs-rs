@@ -26,10 +26,7 @@ This document describes the development, CI, and release processes for tacacs-rs
 cargo install cargo-llvm-cov
 
 # Unused dependencies check
-cargo install cargo-udeps
-
-# Outdated dependencies check
-cargo install cargo-outdated
+cargo install cargo-machete
 
 # Security audit
 cargo install cargo-audit
@@ -97,7 +94,7 @@ cargo test --workspace
 
 ### Building with OpenSSL-backed TLS
 
-The `tacacsrs_networking` library uses dynamically linked OpenSSL for certificate-based TLS. The `psk` feature adds TLS 1.3 pre-shared key support.
+The `tacacsrs_networking` library uses dynamically linked OpenSSL for certificate-based TLS and TLS 1.3 pre-shared key (PSK) support.
 
 #### Linux
 
@@ -164,7 +161,7 @@ cargo build --package tacon
 ## Running Tests
 
 ```bash
-# Run all tests
+# Run all Rust unit, integration, and doc tests
 cargo test --workspace
 
 # Run tests with output
@@ -175,6 +172,9 @@ cargo test test_name
 
 # Run tests for a specific crate
 cargo test -p tacacsrs-protocol
+
+# Run Linux black-box end-to-end process tests (builds current debug binaries unless --bin-dir is given)
+python3 -m pytest -v tests/e2e
 ```
 
 ### Session Wrapper Smoke Tests
@@ -224,7 +224,7 @@ cargo +nightly fmt --all
 ### Linting
 
 Blocking checks include default Clippy, checked numeric conversions, error and panic documentation, unsafe-block explanations, and internal API visibility.
-Broad pedantic and nursery checks are advisory. Function length is not a design requirement.
+Function length is not a design requirement.
 Keep a cohesive state transition together when extraction would hide its sequencing or ownership.
 
 The workspace allows `assert_is_empty` and `chunks_exact_to_as_chunks`.
@@ -232,21 +232,17 @@ Simple emptiness assertions avoid extra type annotations and do not print collec
 Checked chunk iterators keep argument grouping and remainder validation together.
 Keep correctness checks enabled. Add a specific global allowance when a style rule makes the code less clear.
 
-Dependency freshness is a report, not a requirement to adopt unrelated major upgrades.
-Security audits, unused-dependency checks, and tool execution failures remain blocking.
+Security audits, unused-dependency checks, protobuf backward-compatibility checks, Miri, and tool execution failures are blocking.
 
 ```bash
 # Run clippy
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-# Inspect advisory style findings
-cargo clippy --workspace --all-targets --all-features -- -W clippy::pedantic -W clippy::nursery
-
 # Match CI documentation coverage, including private implementation modules
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --document-private-items
 
 # Verify the declared minimum supported compiler
-cargo +1.88.0 check --workspace --all-targets --all-features --locked
+cargo +1.91.0 check --workspace --all-targets --all-features --locked
 ```
 
 Every package inherits `rust-version.workspace`. Parser fuzz failures are blocking, not advisory.
@@ -274,14 +270,11 @@ Publication keeps runtime state, health, and coordinator bookkeeping in one non-
 ### Other Checks
 
 ```bash
-# Check for unused dependencies (requires nightly + cargo-udeps)
-cargo +nightly udeps --workspace --all-targets
+# Check for unused dependencies
+cargo machete --with-metadata --skip-target-dir . .github/tools/api-classifier
 
-# Check for outdated dependencies
-cargo outdated --workspace
-
-# Security audit
-cargo audit
+# Security audit against committed Cargo.lock
+cargo audit --file Cargo.lock
 ```
 
 ## YANG Code Generation
@@ -387,34 +380,31 @@ ARMhf, minimum-Rust, and delivery-automation checks remain separate jobs.
 |-----|-------------|
 | **Rustfmt** | Rust formatting validation |
 | **Clippy** | Linting and static analysis |
-| **Test** | Run unit, integration, and documentation tests for the complete workspace, with Linux-only packages excluded on Windows |
+| **Test** | Run unit, integration, and documentation tests for the complete workspace (plus Linux `pytest -v tests/e2e`), with Linux-only packages excluded on Windows |
 | **Default Features** | Type-check each Linux selection and Windows `tacon` independently with `cargo check` |
 | **ARMhf** | Build and execute tests with QEMU, then validate ABI and startup behavior |
 | **Documentation** | Builds documentation without warnings |
 | **Coverage** | Generate and upload code coverage |
-| **Security Audit** | Finds known vulnerabilities after dependency changes |
+| **Unused Dependencies** | Checks workspace and `.github/tools/api-classifier` manifests with `cargo machete` |
+| **Security Audit** | Audits the committed `Cargo.lock` after dependency changes |
+| **Protobuf Compatibility** | Verifies backward compatibility against `main` with `buf breaking` |
 | **YANG Verification** | Offline hash and version check plus generator unit tests for the pinned model (Linux) |
-| **Fuzz Smoke** | Blocking libFuzzer smoke tests for the protocol parsers (Linux, nightly) |
+| **Miri** | Blocking Miri checks for Miri-compatible crates when relevant paths change on PRs, and unconditionally on `main`/scheduled runs |
+| **Fuzz Smoke** | Blocking libFuzzer smoke tests for the protocol parsers when relevant paths change on PRs, and unconditionally on `main`/scheduled runs |
 
 All jobs must pass before you merge the pull request.
 
 Unit and integration tests compile their required binaries.
 There is no separate product-build job.
 Default-feature checks retain configuration coverage without another binary build.
-Linux uses `cargo test --locked --workspace --all-features --release`.
-This command includes experimental workspace members, not only the supported-core default members.
-Windows also selects `--workspace`, but excludes the Linux-only packages:
+Linux runs `cargo test --locked --workspace --all-features --release` and `pytest -v tests/e2e`, plus `cargo machete --with-metadata --skip-target-dir . .github/tools/api-classifier`. The Linux test selection includes experimental workspace members, not only the supported-core default members. Windows also selects `--workspace`, and excludes the eleven Linux-only packages:
 
 - `session-wrapper`.
 - `tacacsrs-agent`, `tacacsrs-agentd`, and `tacacsrs-agent-health`.
 - `tacacsrs-agent-ipc-emulator` and `tacacsrs-agent-ipc-emulatord`.
-- `tacacsrs-bash-plugin`, `tacacsrs-ipc`, `tacacsrs-sonic`, and `tacacsrs-unix-socket`.
+- `tacacsrs-bash-plugin`, `tacacsrs-ipc`, `tacacsrs-kubesonic`, `tacacsrs-sonic`, and `tacacsrs-unix-socket`.
 
-The Windows selection includes `tacon` and all six portable libraries.
-This includes the credential-resolution and HTTP credential libraries, whose tests were absent from the previous explicit package selection.
-Linting, documentation, unused-dependency checks, and tests use the same platform selection.
-There is no separate job that repeats the tests for individual crate groups.
-Architecture guards enforce the dependency boundaries.
+The Windows selection includes `tacon` and all ten portable libraries (`tacacsrs-composition`, `tacacsrs-config`, `tacacsrs-credential-resolution`, `tacacsrs-lifecycle`, `tacacsrs-networking`, `tacacsrs-protocol`, `tacacsrs-provider`, `tacacsrs-revocation`, `tacacsrs-secrets`, and `tacacsrs-testkit`). Linting, documentation, and tests use the same platform selection, with no separate job repeating tests for individual crate groups, while architecture guards enforce dependency boundaries.
 
 PRs validate source without publishing release assets.
 CI reports are diagnostic outputs, not installation packages.

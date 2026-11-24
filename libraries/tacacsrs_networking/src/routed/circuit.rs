@@ -27,6 +27,7 @@ impl OperationCircuit {
             .is_some()
     }
 
+    #[cfg(test)]
     pub(super) fn open(&self) {
         let mut state = self
             .state
@@ -35,6 +36,55 @@ impl OperationCircuit {
         state.opened_at = Some(Instant::now());
         state.recovery_trial_active = false;
         state.revision = state.revision.wrapping_add(1);
+    }
+
+    /// Returns the current revision, which changes on every open or close.
+    pub(super) fn revision(&self) -> u64 {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .revision
+    }
+
+    /// Opens the circuit if no other outcome changed it after `revision`.
+    ///
+    /// An already open circuit restarts its recovery interval.
+    pub(super) fn open_if_unchanged(&self, revision: u64) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.revision != revision {
+            return false;
+        }
+        state.opened_at = Some(Instant::now());
+        state.recovery_trial_active = false;
+        state.revision = state.revision.wrapping_add(1);
+        true
+    }
+
+    /// Returns the circuit revision while the circuit is open.
+    pub(super) fn open_revision(&self) -> Option<u64> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.opened_at.map(|_| state.revision)
+    }
+
+    /// Closes the circuit if no other outcome changed it after `revision`.
+    pub(super) fn close_if_unchanged(&self, revision: u64) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.revision != revision || state.opened_at.is_none() {
+            return false;
+        }
+        state.opened_at = None;
+        state.recovery_trial_active = false;
+        state.revision = state.revision.wrapping_add(1);
+        true
     }
 
     fn resolve_recovery(&self, revision: u64, succeeded: Option<bool>) -> bool {
@@ -86,7 +136,6 @@ impl RecoveryPermit {
         self.circuit.resolve_recovery(self.revision, Some(true))
     }
 
-    #[cfg(test)]
     pub(super) fn fail(&self) {
         self.circuit.resolve_recovery(self.revision, Some(false));
     }

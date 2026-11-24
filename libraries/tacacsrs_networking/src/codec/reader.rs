@@ -60,6 +60,12 @@ impl PacketReader {
         self.counters = counters;
         self
     }
+
+    pub(crate) fn record_io_error(&self, error: &std::io::Error) {
+        if let Some(counters) = &self.counters {
+            counters.io_error(error, false);
+        }
+    }
 }
 
 impl PacketReader {
@@ -72,7 +78,7 @@ impl PacketReader {
         if let Some(counters) = &self.counters {
             match &result {
                 PacketReadResult::HeaderReadError(error)
-                | PacketReadResult::BodyReadError { error, .. } => counters.io_error(error, false),
+                | PacketReadResult::BodyReadError { error, .. } => self.record_io_error(error),
                 PacketReadResult::Success(_) => {}
                 _ => counters.disconnect_reason(crate::DisconnectReason::MalformedPacket),
             }
@@ -97,6 +103,7 @@ impl PacketReader {
         };
 
         let session_id = header.session_id;
+        let correlation = tacacsrs_protocol::header::wire_correlation(session_id);
 
         // Check the body length before allocation. This check prevents:
         // 1. Memory-exhaustion denial-of-service attacks from malicious peers.
@@ -104,8 +111,8 @@ impl PacketReader {
         if header.length > TACACS_MAX_BODY_LENGTH {
             log::warn!(
                 target: "tacacsrs_networking::codec::reader::read_packet",
-                "Rejected packet with excessive body length: session ID {}, body length {}, maximum {}",
-                session_id, header.length, TACACS_MAX_BODY_LENGTH
+                "Rejected packet with excessive body length: correlation {}, body length {}, maximum {}",
+                correlation, header.length, TACACS_MAX_BODY_LENGTH
             );
             return PacketReadResult::BodyLengthExceeded {
                 session_id,
@@ -116,8 +123,8 @@ impl PacketReader {
 
         log::trace!(
             target: "tacacsrs_networking::codec::reader::read_packet",
-            "Received header for session ID {}. Reading a body of {} bytes",
-            session_id, header.length
+            "Received header for correlation {}. Reading a body of {} bytes",
+            correlation, header.length
         );
 
         // The check above makes this cast safe. TACACS_MAX_BODY_LENGTH (65536)
@@ -135,7 +142,7 @@ impl PacketReader {
 
         log::trace!(
             target: "tacacsrs_networking::codec::reader::read_packet",
-            "Received body for session ID {session_id}"
+            "Received body for correlation {correlation}"
         );
 
         // Create the packet.
@@ -160,7 +167,7 @@ impl PacketReader {
                 packet = packet.to_deobfuscated(key.expose_secret());
                 log::trace!(
                     target: "tacacsrs_networking::codec::reader::read_packet",
-                    "Deobfuscated packet for session ID {session_id}"
+                    "Deobfuscated packet for correlation {correlation}"
                 );
             }
         }

@@ -8,8 +8,9 @@ After=database.service network-online.target
 Wants=database.service network-online.target
 
 [Service]
-# The unit stays in "activating" until SONiC supplies the first TACACS+ server.
-# The daemon sends READY=1 after it receives the initial configuration.
+# The daemon sends READY=1 after it binds its listeners.
+# It does not wait for the first TACACS+ server. The status text and the
+# readiness health name show the wait for configuration.
 Type=notify
 NotifyAccess=all
 ExecStart=/usr/sbin/tacacsrs-agentd \
@@ -24,7 +25,7 @@ Restart=on-failure
 RestartSec=2s
 RuntimeDirectory=tacacs
 RuntimeDirectoryMode=0755
-TimeoutStartSec=0
+TimeoutStartSec=90s
 TimeoutStopSec=15s
 
 # Hot reload requires Redis keyspace notifications.

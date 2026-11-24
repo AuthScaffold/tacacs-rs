@@ -46,12 +46,18 @@ tacon --service-endpoint /run/tacacs/tacacs.sock \
 
 ## Command-Line Options
 
-### Upstream Servers (required)
+### Configuration Source (one required)
+
+Exactly one configuration source selector (`--server-addr`, `--config`, `--sonic`, or `--kubesonic`) is required.
 
 | Flag | Description |
 |------|-------------|
-| `--server-addr <ADDR>` | TACACS+ server address (repeatable, ordered by preference). First entry is the preferred server. |
+| `--server-addr <ADDR>` | TACACS+ server address (repeatable, ordered by preference). The first entry is the preferred server. |
 | `--config <FILE>` | Load upstream server definitions from a YANG JSON configuration file |
+| `--sonic` | Load TACACS+ upstream servers and local forwarder configuration from SONiC ConfigDB |
+| `--sonic-redis-url <URL>` | Override the SONiC ConfigDB Redis URL (requires `--sonic`; default `unix:///var/run/redis/redis.sock?db=4`) |
+| `--sonic-redis-db <INDEX>` | Override the SONiC ConfigDB database index (requires `--sonic`; default `4`) |
+| `--kubesonic` | Load KubeSONiC ConfigDB server rows and `TACACSD_` environment inputs (exclusive; cannot be combined with other CLI flags) |
 
 ### IPC Listener
 
@@ -105,9 +111,9 @@ Example resource for `--local-services`:
 
 The default document is `{"tacacsrs:local-services":{}}`. It enables only the client API with permissions `0660`.
 YANG JSON encodes permission bits as a decimal number from 0 through 511. The CLI `--socket-mode` input remains octal.
-The resource file loads once at startup. Listener changes require a restart.
+The resource file loads once at startup. A change to the file has no effect until the daemon starts again. A source that supplies local services at runtime, such as SONiC ConfigDB, can change the listeners without a restart.
 It cannot be combined with listener flags, `--proxy-credential-source`, or `--sonic`.
-SONiC mode still loads its forwarder row and normalizes the result into the canonical resource.
+In SONiC mode, the forwarder row supplies the proxy endpoint after startup. The proxy listener reports `Pending` until the first valid row arrives.
 
 Each listener serves at most `max-connections` connections. Further connections wait in the operating system's bounded listen backlog.
 The client API permits at most `max-client-api-streams` concurrent HTTP/2 streams on each connection.
@@ -163,6 +169,7 @@ Proxy mode preserves TACACS+ packet bodies while managing session routing:
 - Each downstream session owns one sequential upstream conversation with independent sequence validation.
 - Different sessions can receive replies out of request order. One downstream writer serializes the resulting packets onto the TCP stream.
 - Per-session input and connection reply queues are bounded to apply backpressure.
+- The downstream read timeout equals the largest configured server timeout. The proxy closes an idle downstream connection when no packet arrives within this timeout. While any session on the connection waits for an upstream reply, the idle timeout does not apply, so a slow upstream server does not cause the proxy to drop the client. A packet that has started to arrive must always complete within the timeout.
 - Packet bodies are forwarded unchanged. The proxy rewrites only session IDs and the locally advertised single-connect flag.
 - The proxy advertises single-connect support based on its own downstream multiplexer, not the selected upstream server's flag.
 - The downstream client and proxy negotiate single-connect mode in the first request and reply. Later packets can omit the flag without ending connection reuse.
@@ -197,9 +204,7 @@ Cached clients retain the same live guard across reconnects and configuration re
 
 Downstream TACACS+ obfuscation is independent of the selected upstream transport. In SONiC mode, the daemon filters rows that target its loopback proxy.
 
-SONiC mode selects `local-proxy-row` by default. The selected row's mapped `passkey` supplies downstream material.
-For intentional plaintext downstream traffic, select `--proxy-credential-source unobfuscated` explicitly.
-Outside SONiC mode, `--proxy-shared-secret` selects inline policy unless an explicit source selector conflicts with it.
+SONiC mode always uses `local-proxy-row` from ConfigDB and rejects `--proxy-credential-source` and `--proxy-shared-secret` on the command line; the matching loopback row's mapped `passkey` supplies downstream material. Outside SONiC mode, downstream proxy traffic defaults to `unobfuscated`, `--proxy-shared-secret` selects `inline` policy unless an explicit `--proxy-credential-source` conflicts with it, and `--proxy-credential-source unobfuscated` keeps plaintext downstream traffic explicit.
 
 This replaces the previous implicit local-row override and missing-secret fallback.
 A missing row, missing secret, or empty secret rejects the candidate generation in row-derived mode.
@@ -207,27 +212,26 @@ Rejected updates retain the previous upstream set and downstream credentials, ev
 Before the first valid generation, the proxy rejects connections without reading packets. It never substitutes unobfuscated traffic for unresolved credentials.
 Upstream failover does not change downstream credentials. Source preparation publishes valid credential and upstream changes together.
 
-TACACS+ has no general in-band request to drain an established single-connect connection. Clearing the single-connect flag after negotiation has no effect. In this proxy, a TACACS+ `ERROR` is session-scoped and does not close the downstream connection.
+If the proxy returns an `ERROR`, only the affected downstream session ends. Other sessions can continue on the same downstream connection. The [failover strategies](#failover-strategies) determine whether the proxy retries the request or returns an `ERROR` to the client.
 
-An explicit upstream `ERROR` on the first request is safe to replay. With `ordered-safe-retry`, the proxy closes that upstream session and tries the next eligible server. If another server succeeds, the downstream client receives that result instead of the first `ERROR`. The default `deferred-failover` strategy returns the `ERROR` for the current session and moves the next session to the fallback route. An `ERROR` after a continuing authentication session is pinned does not retry another server.
-
-To retire a downstream connection, the server must close the TCP transport. Close idle connections when possible because closing a connection with active sessions interrupts those sessions.
-
-A server can enforce its own drain by returning `ERROR` for new sessions, finishing sessions that are already active, and then closing TCP. A routing client can send those rejected new sessions to another server. The `ERROR` does not tell the client to stop creating sessions. The server must continue to reject new sessions until it closes the connection.
+TACACS+ has no general in-band request to drain a single-connect connection. Clearing the single-connect flag after negotiation has no effect. A server can reject new sessions with `ERROR` until active sessions finish, then close the TCP connection. A downstream client can also close its connection. If it closes at a packet boundary, the daemon logs a normal disconnect at the info level.
 
 ### Upstream Encryption
 
+Inline upstream flags (`-k`/`--shared-secret`, `--use-tls`, `--client-certificate`, `--client-key`, `--insecure-disable-certificate-verification`, `--connect-timeout-seconds`, `--dedicated`, `--psk-identity`, `--psk-key`, `--psk-key-exchange`, and `--psk-key-exchange-groups`) apply only with `--server-addr` and are rejected with `--config`, `--sonic`, and `--kubesonic`. `--use-tls` conflicts with `-k`/`--shared-secret`, `--client-certificate` and `--client-key` require `--use-tls` and each other, and `--insecure-disable-certificate-verification` requires `--use-tls` and conflicts with `--psk-*`.
+
 | Flag | Description |
 |------|-------------|
-| `-k, --shared-secret <KEY>` | Shared secret for TACACS+ packet obfuscation |
-| `--use-tls` | Enable TLS 1.3 for upstream connections |
-| `--client-certificate <FILE>` | PEM- or DER-encoded client TLS certificate (requires `--client-key`) |
-| `--client-key <FILE>` | PEM- or DER-encoded client TLS private key (requires `--client-certificate`) |
-| `--insecure-disable-certificate-verification` | Skip TLS cert verification |
-| `--psk-identity <ID>` | TLS 1.3 pre-shared key identity *(requires `psk` feature)* |
-| `--psk-key <KEY>` | TLS 1.3 pre-shared key *(requires `psk` feature)* |
-| `--psk-key-exchange <MODE>` | Select `psk-dhe` or explicit `psk-only` interoperability mode *(requires `psk` feature)* |
-| `--psk-key-exchange-groups <GROUP[,GROUP...]>` | Comma-separated PSK-DHE supported groups in preferred order, for example `secp384r1,secp256r1` *(requires `psk` feature)* |
+| `-k, --shared-secret <KEY>` | Shared secret for TACACS+ packet obfuscation (requires `--server-addr`; conflicts with `--use-tls`) |
+| `--use-tls` | Enable TLS 1.3 for upstream connections (requires `--server-addr`; conflicts with `--shared-secret`) |
+| `--client-certificate <FILE>` | PEM client certificate chain or single DER certificate (requires `--server-addr`, `--use-tls`, and `--client-key`) |
+| `--client-key <FILE>` | PEM- or DER-encoded client TLS private key (requires `--server-addr`, `--use-tls`, and `--client-certificate`) |
+| `--insecure-disable-certificate-verification` | Skip upstream TLS certificate verification (requires `--server-addr` and `--use-tls`; conflicts with `--psk-*`) |
+| `--psk-identity <ID>` | TLS 1.3 pre-shared key identity (requires `--server-addr`, `--use-tls`, and `--psk-key`) |
+| `--psk-key <KEY>` | Standard base64-encoded TLS 1.3 pre-shared key (requires `--server-addr`, `--use-tls`, and `--psk-identity`) |
+| `--psk-key-exchange <MODE>` | Select `psk-dhe` or explicit `psk-only` interoperability mode |
+| `--psk-key-exchange-groups <GROUP[,GROUP...]>` | Comma-separated PSK-DHE supported groups in preferred order, for example `secp384r1,secp256r1` |
+| `--dedicated` | Open a dedicated upstream connection per request instead of negotiating TACACS+ single-connection mode (requires `--server-addr`) |
 
 ### TLS Client Certificates and Keys
 
@@ -250,67 +254,38 @@ Configured CA trust and exact end-entity trust are now separate. Empty explicit 
 A rejected replacement leaves the previous prepared generation active.
 See [certificate trust](yang-config-guide.md#certificate-trust) for exact-match renewal behavior and additive trust rules.
 
-### HTTP CRL Registration
+### Certificate Revocation
 
-`--http-crl-source REFERENCE URL` authorizes a public HTTP(S) CRL location for one opaque evidence reference.
-Repeat the flag with the same reference to add issuer lists in fetch order:
+The daemon checks upstream server certificates against certificate revocation lists (CRLs). The global `tacacsrs:certificate-revocation` YANG container configures the policy. The daemon has no command-line flags for revocation. In KubeSONiC mode, the `TACACSD_REVOCATION_` environment variables set the same container. See [certificate revocation](yang-config-guide.md#certificate-revocation) for the leaves and an example.
 
-```bash
-tacacsrs-agentd --config /etc/tacacs/upstreams.json \
-    --http-crl-source primary-ca-crls https://pki.example.net/root.crl \
-    --http-crl-source primary-ca-crls https://pki.example.net/issuer.crl
-```
+Both the static or SONiC profile and the KubeSONiC profile select `RevocationComponent`. The component creates the `CrlVerifier` of [`tacacsrs-revocation`](../libraries/tacacsrs_revocation/README.md) and gives it to the agent. It also runs the "CRL revocation refresh" hosted service, which prefetches and refreshes allowed CRLs until shutdown. While `enforcement` is `disabled`, the component does no work.
 
-The canonical `tacacsrs:require-crls/evidence-reference` must contain `primary-ca-crls` for this example.
-Registration does not enable CRL verification by itself or replace the canonical revocation policy.
-The startup map remains fixed until restart. Live source changes can select registered references but cannot authorize new URLs.
-Invalid registrations fail before source bootstrap or listener binding, including in SONiC mode.
+The `enforcement` leaf selects one of these policies:
 
-Each set permits at most 16 unique locations. The daemon uses a 10-second whole-set timeout, a 4 MiB body cap, and four active fetches.
-All locations must succeed. Redirects, environment proxies, decompression, URL credentials, queries, and fragments are disabled or rejected.
-Locations must contain no secrets, including path components. Process arguments and backend diagnostics can expose them.
-Registration authorizes each host and its DNS results; it is not a network sandbox.
-HTTPS verifies platform CA trust and host identity independently of upstream TACACS+ trust configuration.
-Downloaded CRLs still require native signature, freshness, path, and revocation checks.
+- `disabled` is the default. The daemon does not check revocation.
+- `hard-fail` rejects the server when no valid current CRL is available.
+- `soft-fail` accepts a validated CRL for `soft-fail-grace-seconds` after its `nextUpdate`. After that time, the daemon rejects the server. The grace never excuses a listed certificate or an invalid CRL.
+- `warn-only` accepts the server and logs a warning when CRL evidence is unavailable. It still rejects a certificate that a valid CRL lists.
 
-In SONiC mode, HTTP resolution composes with the existing credential provider and retains its notifications.
-Other credential kinds and unregistered references use the SONiC provider. A failed registered HTTP fetch never uses that fallback.
-Outside SONiC mode, unregistered references fail resolution.
+The daemon checks revocation only when it establishes a new certificate TLS connection. When the verifier needs a CRL, the handshake pauses and the verifier fetches the CRL within the connection timeout. The handshake then continues on the same socket. The daemon never closes an established connection because a CRL expires, a refresh fails, or a refreshed CRL lists the server. A policy-only change applies to future handshakes and retires no connection and no server.
 
-The existing `credential-refresh-interval-seconds` policy schedules retrieval without a separate HTTP task or notification source.
-Failed refresh uses the credential-staleness budget, then withdraws readiness. Signed evidence expiry applies independently.
-Successful refresh restores an expired credential catalog without changing canonical references or restarting the process.
-SIGINT and SIGTERM cancel pending retrieval during startup and live refresh.
-See [the YANG CRL guide](yang-config-guide.md#required-full-crls) for evidence requirements and unsupported modes.
+The check applies only to CA-authenticated certificate TLS servers. Exact pinned end-entity trust and disabled `certificate-verification` skip the check. TCP and TLS-PSK servers are not affected.
 
-### Certificate Discovery and OCSP
+`tacacsrs-agent-health statistics` reports these per-server counters next to `tls-revoked-certificates`:
 
-`--http-crl-certificate REFERENCE CERTIFICATE` selects certificate-driven CRL discovery for a registered CRL reference.
-The certificate file must contain one DER certificate. Repeat the option for a chain.
-For that reference, `--http-crl-source` URLs form an exact allowlist, not an instruction to fetch every URL.
-Every discovered full URI must be authorized. Relative distribution points are unsupported.
-
-`--http-ocsp-source REFERENCE URL CERTIFICATE ISSUER` registers an online OCSP query with an explicit responder and DER certificate files.
-Alternatively, `--http-ocsp-certificate REFERENCE CERTIFICATE ISSUER` selects an AIA responder from the certificate.
-Each eligible responder URL must be registered with `--http-ocsp-allow-url URL`.
-All URLs remain public, secret-free, and subject to the same proxy and redirect restrictions as CRL retrieval.
-
-The canonical `tacacsrs:require-ocsp/evidence-reference` selects the OCSP reference.
-The daemon periodically queries the responder through the existing credential refresh loop.
-Responses are limited to 64 KiB and use the shared provider timeout and concurrency cap.
-The supplied response does not replace a separately required TLS staple.
-
-Certificate files are bounded reads at startup. Changes to certificates or authorization maps require restart.
-The provider does not follow arbitrary URLs from live TLS peers. A renewed peer certificate must match freshly registered query material.
-Native verification rejects mismatched evidence before client authentication. Signed expiry still withdraws stale evidence while a fetch is pending.
-Readiness reports configuration availability, not a completed upstream certificate-status check.
+| Counter | Recorded event |
+| --- | --- |
+| `revocation-evidence-waits` | A TLS handshake paused while the verifier obtained CRL evidence |
+| `revocation-unverified-accepts` | A connection accepted without fresh CRL evidence under `soft-fail` or `warn-only` |
+| `revocation-pinned-skips` | A connection to an exactly pinned peer that skipped the CRL check |
 
 ### Timeouts and Failover
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--connect-timeout-seconds <SECS>` | `5` | Timeout for upstream TACACS+ connections |
+| `--connect-timeout-seconds <SECS>` | `5` | Timeout for upstream TACACS+ connections when `--server-addr` is used. It bounds the TCP connect and the TLS or PSK handshake together. |
 | `--runtime-policy <FILE>` | none | Optional live JSON policy for failover and request limits |
+| `--upstream-watchdog-interval-seconds <SECS>` | none (disabled) | Interval between upstream watchdog probes. See [Host Integration](#host-integration). |
 
 ### Operational Statistics
 
@@ -375,69 +350,81 @@ Atomic replacement prevents partial reports but does not make filesystem I/O har
 | `-vvv` | Debug |
 | `-vvvv` | Trace |
 
-## Failover Behavior
+## Failover behavior
 
-The server configuration order sets the preference order. Each operation uses
-only servers that declare support for that operation.
+Each operation (authentication, authorization, or accounting) has its own active route and its own circuit on each server. The route contains only servers that support the operation, in configuration order. IPC and proxy requests share that route. Each server has one cached upstream connection, and all three operations use it. With single-connect, sessions of every operation share that connection.
 
-Authentication, authorization, and accounting have independent routing
-cursors. IPC and proxy requests share the cursor for a given operation.
+### State transitions
 
-Each server has a separate connection for each operation. Therefore, an
-authorization connection failure does not close authentication or accounting
-sessions.
+A closed circuit lets a server receive new sessions. A failed connection attempt, an upstream `ERROR`, or a timeout during an upstream exchange opens the circuit for that operation only. If the failed server was active, the operation's route advances one position. After an `ERROR` or a timeout, the shared connection stays open, because the other operations can still be healthy on that server. A downstream disconnect alone leaves the circuit unchanged.
 
-### State Transitions
+A lost connection or a truncated reply is a transport fault. The routed client discards the shared connection for all operations. If the connection already completed a valid exchange for any operation, the circuit stays closed. The next session of each operation reconnects to the same server, and the operations share the new connection. The session that was in progress on the lost connection fails. The circuit opens only if the reconnect fails, the server times out, or the server returns `ERROR`. A transport fault on a connection that has not completed a valid exchange opens the circuit, so a server that accepts connections and then drops them cannot keep traffic. This rule also applies when another session has already replaced the failed connection. The late report does not close the replacement connection. It opens the circuit for its operation unless the failed connection or a newer connection to the same server has completed a valid exchange.
 
-```
-preferred route
-      |
-      | retryable operation failure
-      v
-open circuit and select the next eligible server
-      |
-      | recovery interval expires
-      v
-allow one real operation as a recovery trial
-      |
-      +-- success --> restore the higher-priority route
-      |
-      +-- failure --> reopen the circuit
-```
+For each new binding, the routed client tries each eligible server at most once across three passes:
 
-### Failover Strategies
+1. **Recovery trial.** In configuration order, the client tries open circuits whose `failover-recovery-interval-seconds` has elapsed (default: 30 seconds). Each circuit allows one recovery trial at a time.
+2. **Healthy servers.** The client tries closed circuits from the active position and wraps to the start of the route. The first server that connects becomes active.
+3. **Last resort.** If neither pass found a connection, the client tries the remaining open circuits from the active position, without waiting for recovery.
 
-The default strategy is `deferred-failover`. The current request returns its
-failure. The next request uses the next eligible server.
+A connection failure in any pass opens that server's circuit or keeps it open, and selection continues within the same call. If another server connects and answers in time, the downstream client receives its reply. Concurrent callers share a connection attempt for the same server, whatever their operations. After a successful exchange on a recovery trial or last-resort binding, the circuit closes. That server becomes active if it comes before the active server in configuration order, or if the active server's circuit is open.
 
-The `ordered-safe-retry` strategy can try the next eligible server during the
-current request. These replay rules always apply:
+Each operation attempt makes a new binding. A later binding can revisit an endpoint, including a due recovery trial. The attempt budget does not guarantee one attempt per endpoint. With one upstream, later requests can use that upstream through the last-resort pass without a recovery delay.
 
-- A denial is a valid response and does not cause failover.
-- A server `ERROR` reply can use the next server.
-- Unknown authentication, authorization, and accounting outcomes stop the current request without another attempt.
-- Proven-unsent failures can use the next server within the configured attempt budget.
-- A continuing authentication session stays on the server that sent its first valid reply.
+### Connection sharing and retirement
 
-This changes earlier `ordered-safe-retry` behavior, which could replay uncertain authentication and authorization requests.
-Those operations can affect audit or lockout state, so their unknown outcomes now remain failures with no automatic replay.
-The default deferred strategy is unchanged. No uncertain-outcome replay opt-in is currently exposed.
+An operation that moves to a server with an open connection uses that connection. It does not open a second one. The routed client retires a server's connection when no operation's route has that server active and no session holds the connection. A retired connection refuses new sessions and closes after its active sessions finish.
 
-### Preferred Server Recovery
+For example, the configuration lists A, then B:
 
-The daemon does not use a cross-operation probe. After the recovery interval,
-one real request tests a higher-priority server. Other requests continue to use
-the active fallback during this trial.
+- **Authorization receives `ERROR` on A.** Authorization moves to B and opens one connection to B. Authentication and accounting keep using the connection to A.
+- **Accounting then receives `ERROR` on A.** Accounting moves to B and uses the existing connection to B.
+- **A recovers.** A recovery trial for authorization succeeds on A's existing connection, and authorization returns to A. Accounting returns after its own trial. When no operation uses B and its last session ends, the connection to B closes.
+- **A shuts down.** Each operation finds out separately, when its next session fails to reach A. Each one then moves to B, and all three share one connection to B. B receives one connection from each proxy.
 
-### Reconnect Behavior
+### Failover strategies
 
-One connection attempt runs for each server and operation. Concurrent callers
-share its result instead of starting duplicate TLS handshakes.
+Under [RFC 8907 section 4.4](https://www.rfc-editor.org/rfc/rfc8907#section-4.4), an `ERROR` status means the server did not finish the request. The client must treat the server as unreachable and can try a backup. A denial is a completed decision and leaves the route unchanged.
+
+The `tacacs-proxy-failover-strategy` policy controls how the proxy handles the first packet of a session:
+
+- `deferred-failover` (default) allows one first-packet attempt. The proxy forwards an upstream `ERROR`. The next session uses the updated route.
+- `ordered-safe-retry` retries on the next eligible server after a first-packet `ERROR` or proven non-delivery. The attempt budget equals the number of eligible servers. If the last attempt returns `ERROR`, the proxy forwards it. A timeout after transmission or a lost reply leaves the outcome unknown. The proxy stops because replay can duplicate accounting records or affect audit or lockout state.
+
+After an authentication challenge, the session stays on the server that sent the challenge. Under either strategy, the proxy forwards a later `ERROR`. If the proxy has no upstream reply to forward, it sends a local `ERROR`. An upstream failure ends only the affected session. Other sessions can continue on the same downstream connection.
+
+For a connection-related `ERROR` in single-connect mode, section 4.4 says that the client must not start new sessions on that connection, and must close it after its active sessions finish. The proxy applies this rule per operation. It stops new sessions of the failed operation on that server, and keeps the shared connection open for the other operations. This is a deliberate trade-off. An `ERROR` often comes from one request type or one request's content, and closing the connection would move every operation to the backup at once. If the server is down for every operation, each operation fails over when its own sessions fail. When a retired connection closes and the connector takes more than one second to initiate retirement, the routed client forces closure. Sessions that have already started to drain have no separate one-second cutoff.
+
+[RFC 8907 section 3.6](https://www.rfc-editor.org/rfc/rfc8907#section-3.6) also calls for `ERROR` for an unsupported or unrecognized option. The status alone cannot distinguish this case from a server fault. One such request can therefore move its operation to a backup.
+
+### Preferred server recovery
+
+A recovery trial uses a real request and takes priority over a healthy server. While the trial runs, other requests can use the active server. If the trial server refuses the connection, the same request continues to the next candidate. If the trial server accepts the connection but returns `ERROR`, drops the reply, or times out, the recovery interval starts again.
+
+While a healthy server remains available, each persistently unhealthy server can cost about one failed trial request per operation per recovery interval. With deferred failover, the client receives `ERROR` for that exchange. With ordered safe retry, a backup can answer a first-packet `ERROR`. Neither strategy replays a request after a lost reply or a timeout after transmission.
+
+### Server selection scenarios
+
+The examples describe new proxy sessions. If a slow server answers before both the server timeout and the request deadline, it still counts as healthy. The proxy does not compare response times. In the [runtime policy](#runtime-policy), `request-timeout-seconds` sets the total budget for each operation (default: 30 seconds). Admission, connection setup, retries, and authentication continuations share that budget. A shorter server timeout can end an exchange earlier.
+
+| Eligible servers | Where requests go | What the client sees |
+| --- | --- | --- |
+| One healthy or slow server | Every request uses that server. | The client waits for its reply. |
+| One unhealthy server | The next request tries the same server immediately. Before the recovery interval expires, it uses the last-resort pass. | A refusal produces a local `ERROR`. If the server accepts but never replies, each exchange waits until its timeout or deadline. |
+| Two responsive servers (fast or slow) | The first server stays active while it answers in time. A faster backup does not attract traffic. | The active server determines the response time. |
+| One healthy server and one unhealthy server | If the healthy server is active, it keeps new sessions. If the other server fails first, the healthy server takes over. | A refusal can be invisible to the client. A failure after connection follows the [failover strategy](#failover-strategies). |
+| One slow server and one unhealthy server | The slow server keeps new sessions between recovery trials as long as it answers in time. | The client waits for the slow reply. If that server also times out, both servers now have open circuits. |
+| Three or more servers, some responsive | Selection skips failed servers between recovery trials. The first responsive server on the active route keeps traffic. | The client receives that server’s reply. Only recovery trials revisit failed servers while a healthy route remains available. |
+| Two or more servers, all unhealthy | Each new session tries due recovery trials, then any remaining servers as a last resort. Selection stops at the first connection. | The proxy forwards the final upstream `ERROR`. Without a reply, it sends a local `ERROR`. A session can fail before every server receives a packet. |
+
+For example, the configuration lists A, B, then C. A returns `ERROR`, B accepts the request but times out, and C is healthy. Assume that no recovery trial is due yet. With deferred failover, the first session receives A’s `ERROR`, the second receives a local `ERROR` after B’s timeout, and the third uses C. With ordered safe retry, the first session retries on B after A’s `ERROR` and stops at B’s timeout. The next session uses C.
+
+In both cases, new sessions stay on C between recovery trials. If A’s recovery interval expires during B’s timeout, A can receive a trial before C serves its first request.
 
 ## Startup Warm-up
 
-The daemon creates operation connections on first use. It does not send an
-accounting watchdog to test authentication or authorization routes.
+The daemon creates server connections on first use by default. When a server enables `single-connection`, concurrent sessions wait for the first reply on the new connection before multiplexing onto that connection or falling back to dedicated connections. Set `connect-preflight` to `accounting-watchdog` in the [runtime policy](#runtime-policy) to send an accounting `WATCHDOG` probe when opening an accounting-capable upstream client; any valid accounting reply proves transport reachability and discovers single-connection support ahead of user traffic.
+
+The optional periodic upstream watchdog acts as an in-process client and submits accounting `WATCHDOG` records. It uses normal client API admission, request deadlines, retry policy, and networking recovery. The watchdog does not select endpoints or change circuits itself. It does not test authentication or authorization routes.
 
 ## Runtime Policy
 
@@ -457,6 +444,7 @@ failover for both local services:
         "failover-recovery-interval-seconds": 30,
         "client-api-failover-strategy": "ordered-safe-retry",
         "tacacs-proxy-failover-strategy": "ordered-safe-retry",
+        "connect-preflight": "disabled",
         "authentication": {
             "max-body-length": 4096,
             "max-concurrent-requests": 64,
@@ -482,7 +470,7 @@ Unknown fields, trailing JSON, zero intervals, and zero concurrency limits are r
 Body limits range from 1 through 65536 bytes. Recovery seconds and concurrent-request limits are unsigned 32-bit values.
 An omitted operation or field uses the corresponding YANG default, including authentication's smaller body limit.
 
-The resource is defined by the [project YANG augmentation](../libraries/tacacsrs_config/yang/modules/tacacsrs@2026-10-06.yang) under `ietf-system:system`.
+The resource is defined by the [project YANG augmentation](../libraries/tacacsrs_config/yang/modules/tacacsrs@2026-11-20.yang) under `ietf-system:system`.
 It is a sibling of the upstream `tacacs-plus` resource, not a field inside the server list.
 The policy file remains an independently watched resource. Policy and server changes use the shared runtime-generation publication boundary.
 
@@ -495,7 +483,7 @@ After the first observed stale-source condition, retries, credential refresh, an
 At expiry the agent withdraws the upstream catalog, retires the old endpoints, and reports `SourceExpired`.
 Readiness becomes `NOT_SERVING`; liveness and configuration observation remain active.
 A valid source publication restores service without a process restart. Credential refresh alone cannot revive an expired unavailable source.
-The source budget is independent of provider validity and revocation-evidence freshness.
+The source budget is independent of provider validity.
 
 `credential-stale-timeout-seconds` defaults to 300 seconds and rejects zero.
 Relevant credential invalidation, failed refresh, or notification loss starts a grace period for referenced material.
@@ -504,13 +492,13 @@ Inline-only catalogs are not expired by loss of an unused credential notificatio
 Repeated failures and policy changes cannot renew the current grace period.
 Expiry withdraws the whole upstream catalog and reports `CredentialsExpired`, even if the source remains current.
 Fresh complete revalidation restores service. Pre-expiry work cannot revive withdrawn credentials, and credential recovery cannot bypass an expired source.
-These staleness budgets do not implement provider validity or revocation retrieval.
+These staleness budgets do not implement provider validity or CRL retrieval.
 
 The daemon validates client-certificate dates during preparation and before each new connection.
 It validates peer certificates in the native TLS handshake.
 An established connection continues after an authentication certificate expires.
 Certificate dates do not withdraw a catalog or shorten a request deadline.
-Provider validity, source staleness, OCSP and CRL freshness, and administrative revocation remain independent limits.
+Provider validity, source staleness, and administrative revocation remain independent limits. CRL freshness affects only new connections. See [certificate revocation](#certificate-revocation).
 
 IPC and proxy clients share each operation's active capacity and bounded FIFO admission queue.
 The pending limit equals `max-concurrent-requests`. A full queue returns an immediate overload error without upstream I/O.
@@ -530,7 +518,7 @@ A final reply retains admission capacity until the writer acknowledges delivery.
 Full continuation queues also close the connection so one session cannot block dispatch to all other sessions.
 Client API physical delivery is bounded by the connection lifetime; its operation deadline still bounds upstream execution.
 
-SONiC ConfigDB is supervised differently from local CLI or file input. Before constructing the service, the daemon waits for a valid `TACPLUS_FORWARDER|global` row and uses its loopback address and port for the raw TACACS+ proxy listener. SONiC mode always hosts both the Client API and proxy. A conflicting `--proxy-endpoint` or non-`both` service mode is rejected. Ctrl-C or SIGTERM cancels this pre-bind retry.
+SONiC ConfigDB is supervised differently from local CLI or file input. The daemon does not read ConfigDB at startup. The Client API and the health service bind at once. The raw TACACS+ proxy listener reports `pending` until the daemon reads a valid `TACPLUS_FORWARDER|global` row. The proxy then binds to the loopback address and port of that row. While the row is missing, the server configuration applies and the proxy waits. An invalid row rejects the ConfigDB candidate, and the active configuration and listeners stay. SONiC mode always hosts both the Client API and proxy. A conflicting `--proxy-endpoint` or non-`both` service mode is rejected.
 
 After forwarder bootstrap, the daemon binds both listeners with an empty upstream configuration and reports startup and readiness as not serving. It then retries server and credential dependencies with capped jittered backoff. Each candidate is loaded, filtered, bundle-enumerated, completely resolved through the SONiC provider, materialized into generated inline server fields, and validated before one atomic apply. A missing provider root or object therefore cannot apply a partial server list.
 
@@ -538,9 +526,7 @@ When Redis and every referenced credential become available, the same process ap
 
 The daemon validates forwarder changes against the same complete ConfigDB snapshot as live upstream changes. Server and credential updates continue to apply.
 
-Changes to the forwarder configuration do not change active endpoints. Instead, the daemon reports a sanitized, restart-required degradation.
-
-The daemon clears this degradation after the bound values return. It rejects malformed rows without reporting a listener change.
+A change to the forwarder row moves the proxy at runtime. The proxy binds the new endpoint first, and then stops the old endpoint and drains its connections. If the two endpoints use the same port, the proxy stops the old endpoint first. If the new endpoint cannot bind, the old endpoint continues to serve, and the proxy tries again after 1 s, with a delay that doubles up to 30 s. A removed row stops the proxy, and the proxy reports `pending`.
 
 ## Health and Probes
 
@@ -562,17 +548,17 @@ Pending systemd helper processes are terminated when their owner is dropped.
 Future cancellation cannot preempt arbitrary blocking code; deployments still need an external process supervisor for that case.
 An embedded host can use `TacacsClientService::serve_until` to request this sequence without process signals or process exit.
 
-The Client API endpoint also serves the standard `grpc.health.v1.Health` protocol. No custom health protobuf or additional network listener is used.
+Alongside standard `grpc.health.v1.Health`, the Client API Unix domain socket serves the read-only `AgentHealth.Details` RPC (from `tacacsrs_agent_health.proto`) and `Diagnostics.Statistics` RPC (from `tacacsrs_agent.proto`) with no additional network listener.
 
 | Service name | Meaning |
 |---|---|
 | `tacacsrs.agent.health.v1.Startup` | A validated snapshot is applied and every enabled listener is bound |
 | `tacacsrs.agent.health.v1.Liveness` | The process is starting or serving and the Client API can answer |
-| `tacacsrs.agent.health.v1.Readiness` | Startup is complete and at least one eligible upstream is configured |
+| `tacacsrs.agent.health.v1.Readiness` | Startup is complete, at least one eligible upstream is configured, and the enabled upstream watchdog has a successful probe for the current server set |
 | *(empty service name)* | Same as readiness |
 | `tacacsrs.agent.v1.TacacsAgent` | Same as readiness for the business RPC service |
 
-Current upstream reachability is diagnostic and does not gate readiness or liveness. During shutdown all names become `NOT_SERVING` before listeners stop accepting work.
+Without the upstream watchdog, upstream reachability is diagnostic and does not gate readiness. Upstream reachability never gates liveness. During shutdown all names become `NOT_SERVING` before listeners stop accepting work.
 
 Use the packaged probe for Kubernetes exec probes and local diagnostics:
 
@@ -594,11 +580,17 @@ The health endpoint exists only when `client-api` is enabled. A proxy-only proce
 
 ## Host Integration
 
-`--host-integration auto` selects systemd only when `NOTIFY_SOCKET` is present. `none` never invokes a host API and is the container setting. Explicit `systemd` requires both `NOTIFY_SOCKET` and `systemd-notify`. Missing prerequisites and runtime notification failures are fatal. Systemd receives a waiting status before readiness, `READY=1` exactly once, sanitized degraded status updates, and `STOPPING=1` before listener drain.
+`--host-integration auto` selects systemd only when `NOTIFY_SOCKET` is present. `none` never invokes a host API and is the container setting. Explicit `systemd` requires both `NOTIFY_SOCKET` and `systemd-notify`. Missing prerequisites and runtime notification failures are fatal. Systemd receives `READY=1` exactly once, after the enabled listeners bind. `READY=1` does not wait for configuration or upstream health, so a start timeout cannot stop the daemon while its source is unavailable. Status updates report the wait for configuration, a failed upstream watchdog probe, and other degraded states. Systemd receives `STOPPING=1` before listener drain.
+
+The daemon does not exit because the initial configuration is unavailable. It binds its listeners, reports that it is not ready, and retries. One exception applies. If the runtime rejects the configuration of a static source, the configuration cannot change. The runtime then adds the `SourceConfigurationInvalid` degradation reason, and the daemon exits with a failure status. A credential resolver failure does not cause this exit. Use the readiness health name to find this state.
+
+The optional upstream watchdog (`--upstream-watchdog-interval-seconds`) also gates readiness. Readiness waits for the first successful probe after each new server set. A policy reload does not start a new server set. Each tick submits one logical accounting operation through the normal client API path. The operation shares admission capacity, its total request deadline, and the configured client API failover strategy with other accounting requests. Unknown delivery stops the request without special watchdog replay.
+
+A final valid accounting reply counts as connectivity success, regardless of its status. Normal retry can discard an intermediate `ERROR` and then fail on another attempt. The watchdog reports that final failure. No eligible accounting upstream also produces a failed probe. A failed probe withdraws readiness until a later probe succeeds. Capacity pressure or cancellation produces an inconclusive result and leaves watchdog health unchanged. A result from an old server set has no effect. Frequent server changes can briefly withdraw readiness while the watchdog waits for a new result.
 
 ## IPC Protocol
 
-The daemon communicates with clients through gRPC over Unix domain sockets (Linux) or loopback TCP (other platforms). The protobuf file defines the protocol:
+The daemon runs on Linux and communicates with local clients through gRPC over an absolute Unix domain socket path (`client-api-endpoint`). The protobuf schema defines these client RPCs:
 
 **Available RPCs:**
 
@@ -671,7 +663,9 @@ tacacsrs-agentd \
     --listen-endpoint /run/tacacs/tacacs.sock
 ```
 
-### Multiple Servers with Fast Failover
+### Multiple servers with fast failover
+
+See [server selection scenarios](#server-selection-scenarios) for how the proxy uses these three servers.
 
 ```bash
 tacacsrs-agentd \
@@ -706,16 +700,6 @@ tacacsrs-agentd \
     --service-mode tacacs-proxy \
     --proxy-endpoint /run/tacacs/tacacs-proxy.sock \
     --socket-mode 660 \
-    --shared-secret "shared_secret"
-```
-
-On non-Linux development hosts, use a loopback TCP proxy endpoint:
-
-```bash
-tacacsrs-agentd \
-    --server-addr 192.0.2.20:49 \
-    --listen-endpoint 127.0.0.1:9049 \
-    --proxy-endpoint 127.0.0.1:9050 \
     --shared-secret "shared_secret"
 ```
 

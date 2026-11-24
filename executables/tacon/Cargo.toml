@@ -17,14 +17,21 @@ env_logger = "0.11.10"
 futures = "0.3"
 log = "0.4"
 rpassword = "7.4.0"
-rustls-pki-types = "1.14.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tacacsrs-config = { path = "../../libraries/tacacsrs_config" }
 tacacsrs-protocol = { path = "../../libraries/tacacsrs_protocol" }
+tacacsrs-revocation = { path = "../../libraries/tacacsrs_revocation" }
 tacacsrs-networking = { path = "../../libraries/tacacsrs_networking" }
 tacacsrs-secrets = { path = "../../libraries/tacacsrs_secrets" }
 tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "net", "parking_lot", "rt", "rt-multi-thread", "sync", "time"] }
+
+[dev-dependencies]
+openssl = "0.10.81"
+tacacsrs-testkit = { path = "../../libraries/tacacsrs_testkit" }
+tempfile = "3.27"
+tokio = { version = "1.52.3", features = ["process"] }
+tokio-openssl = "0.6.5"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tacacsrs-ipc = { path = "../../libraries/tacacsrs_ipc" }
@@ -33,6 +40,10 @@ tacacsrs-ipc = { path = "../../libraries/tacacsrs_ipc" }
 clap = { version = "4.6.1", features = ["derive"] }
 clap_mangen = "0.3.0"
 tacacsrs-config = { path = "../../libraries/tacacsrs_config" }
+
+# Used in `build.rs`, which `cargo-machete` does not scan.
+[package.metadata.cargo-machete]
+ignored = ["clap_mangen"]
 
 [lints]
 workspace = true

@@ -1,28 +1,26 @@
 <#
 .SYNOPSIS
-    Runs tacacsrs-agentd with optional profiling.
+    Runs tacacsrs-agentd on Linux (WSL or development container) with optional tokio-console profiling.
 .DESCRIPTION
-    Builds and runs the TACACS+ agent daemon in release mode with full debug
-    symbols. The script supports Visual Studio Performance Profiler and
-    tokio-console.
+    Builds and runs the Linux-only TACACS+ agent daemon in release mode with
+    full debug symbols. On Windows hosts, the script stops with instructions to
+    run inside WSL or the Linux development container instead.
 .PARAMETER RunProfile
     Profiling mode:
       none           - Runs with verbose logging (default)
-      vs             - Builds and runs the agent for the VS Performance Profiler
       tokio-console  - Builds with console-subscriber and runs tokio-console
 .PARAMETER Verbosity
     Logging verbosity level (0-4). Default is 3 (debug).
     0=off, 1=warn, 2=info, 3=debug, 4=trace
 .PARAMETER TacacsObfuscationKey
     The optional shared secret for TACACS+ body obfuscation.
-    If you omit the shared secret, the packets use no obfuscation.
+    If you omit the shared secret, provide another valid upstream credential flag.
 .PARAMETER ServerAddress
     The TACACS+ server address and port. The default is 127.0.0.1:49.
 .EXAMPLE
-    .\run-tacacsrs-agentd.ps1
-    .\run-tacacsrs-agentd.ps1 -RunProfile vs
-    .\run-tacacsrs-agentd.ps1 -RunProfile tokio-console
-    .\run-tacacsrs-agentd.ps1 -Verbosity 4
+    pwsh ./lde/run-tacacsrs-agentd.ps1 -TacacsObfuscationKey test-secret
+    pwsh ./lde/run-tacacsrs-agentd.ps1 -RunProfile tokio-console -TacacsObfuscationKey test-secret
+    pwsh ./lde/run-tacacsrs-agentd.ps1 -Verbosity 4 -TacacsObfuscationKey test-secret
 #>
 [CmdletBinding()]
 param(
@@ -38,6 +36,14 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+$isLinuxHost = [bool](Get-Variable -Name IsLinux -ValueOnly -ErrorAction SilentlyContinue)
+if (-not $isLinuxHost) {
+    throw 'tacacsrs-agentd is supported on Linux only and does not build tacacsrs-agentd.exe on Windows. Run tacacsrs-agentd inside WSL or the Linux development container instead (see DEVELOPMENT.md).'
+}
+if ($RunProfile -eq 'vs') {
+    throw 'The Visual Studio Windows profiler mode is unavailable because tacacsrs-agentd is Linux-only. Use -RunProfile none or -RunProfile tokio-console on Linux (WSL or the development container).'
+}
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Resolve-Path (Join-Path $scriptDir '..')
@@ -58,48 +64,6 @@ try {
     if ($verboseFlag) { $agentArgs += $verboseFlag }
 
     switch ($RunProfile) {
-
-        # -----------------------------------------------------------------
-        # Visual Studio Performance Profiler
-        # -----------------------------------------------------------------
-        'vs' {
-            Write-Host '=== Visual Studio Profiling ===' -ForegroundColor Cyan
-            Write-Host ''
-            Write-Host 'Build the release binary with full debug symbols.'
-            cargo build --bin tacacsrs-agentd --release
-            if ($LASTEXITCODE -ne 0) { throw 'The cargo build returned an error.' }
-
-            $exe = Resolve-Path '.\target\release\tacacsrs-agentd.exe'
-            Write-Host ''
-            Write-Host 'Binary: ' -NoNewline
-            Write-Host $exe -ForegroundColor Green
-            Write-Host ''
-            Write-Host 'To profile with Visual Studio:' -ForegroundColor Yellow
-            Write-Host '  1. Open Visual Studio'
-            Write-Host '  2. Debug > Performance Profiler  (Alt+F2)'
-            Write-Host '  3. Set the analysis target to "Running Process".'
-            Write-Host '  4. Select "CPU Usage" and, if necessary, "Memory Usage".'
-            Write-Host '  5. Attach to the PID shown below.'
-            Write-Host '  6. Send requests to the agent.'
-            Write-Host '  7. Stop data collection in Visual Studio.'
-            Write-Host ''
-
-            # Start the agent. Then Visual Studio can attach to it.
-            $process = Start-Process -FilePath $exe -ArgumentList $agentArgs `
-                -PassThru -NoNewWindow
-            Write-Host "tacacsrs-agentd started. PID: $($process.Id)" -ForegroundColor Green
-            Write-Host 'Attach Visual Studio now. Press Ctrl+C to stop the agent.'
-            Write-Host ''
-
-            try {
-                $process.WaitForExit()
-            }
-            finally {
-                if (-not $process.HasExited) {
-                    Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-                }
-            }
-        }
 
         # -----------------------------------------------------------------
         # tokio-console async runtime profiling
@@ -140,7 +104,7 @@ try {
             Start-Process -FilePath 'tokio-console'
 
             Write-Host 'Start tacacsrs-agentd. Press Ctrl+C to stop it.'
-            & '.\target\release\tacacsrs-agentd.exe' @agentArgs
+            & './target/release/tacacsrs-agentd' @agentArgs
         }
 
         # -----------------------------------------------------------------

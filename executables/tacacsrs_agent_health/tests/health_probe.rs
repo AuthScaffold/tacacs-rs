@@ -96,6 +96,102 @@ async fn statistics_command_reads_text_and_json_without_changing_health_probes()
     task.await.unwrap();
 }
 
+struct HealthDetailsFixture;
+
+#[tonic::async_trait]
+impl tacacsrs_ipc::proto::agent_health_server::AgentHealth for HealthDetailsFixture {
+    async fn details(
+        &self,
+        _request: tonic::Request<tacacsrs_ipc::proto::HealthDetailsRequest>,
+    ) -> Result<tonic::Response<tacacsrs_ipc::proto::HealthDetailsReply>, tonic::Status> {
+        let mut reply = tacacsrs_ipc::proto::HealthDetailsReply {
+            liveness: true,
+            ..Default::default()
+        };
+        reply.set_lifecycle(tacacsrs_ipc::proto::RuntimeLifecycle::Serving);
+        reply.push_degradation_reasons(
+            tacacsrs_ipc::proto::DegradationReason::UpstreamWatchdogFailed,
+        );
+        Ok(tonic::Response::new(reply))
+    }
+}
+
+#[tokio::test]
+async fn details_command_reports_the_reasons_behind_the_probes() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let cancellation = CancellationToken::new();
+    let stop = cancellation.clone();
+    let task = tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(tacacsrs_ipc::proto::agent_health_server::AgentHealthServer::new(
+                HealthDetailsFixture,
+            ))
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), stop.cancelled_owned())
+            .await
+            .unwrap();
+    });
+    let output = Command::new(env!("CARGO_BIN_EXE_tacacsrs-agent-health"))
+        .args(["details", "--endpoint", &address, "--format", "json"])
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["lifecycle"], "serving");
+    assert_eq!(value["readiness"], false);
+    assert_eq!(value["degradation-reasons"][0], "upstream-watchdog-failed");
+    let invalid = Command::new(env!("CARGO_BIN_EXE_tacacsrs-agent-health"))
+        .args(["--check", "readiness", "details"])
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(invalid.status.code(), Some(2));
+    cancellation.cancel();
+    task.await.unwrap();
+}
+
+struct SlowDetailsFixture;
+
+#[tonic::async_trait]
+impl tacacsrs_ipc::proto::agent_health_server::AgentHealth for SlowDetailsFixture {
+    async fn details(
+        &self,
+        _request: tonic::Request<tacacsrs_ipc::proto::HealthDetailsRequest>,
+    ) -> Result<tonic::Response<tacacsrs_ipc::proto::HealthDetailsReply>, tonic::Status> {
+        tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
+        Ok(tonic::Response::new(tacacsrs_ipc::proto::HealthDetailsReply {
+            liveness: true,
+            ..Default::default()
+        }))
+    }
+}
+
+#[tokio::test]
+async fn details_default_timeout_outlasts_a_two_second_component_check() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let cancellation = CancellationToken::new();
+    let stop = cancellation.clone();
+    let task = tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(tacacsrs_ipc::proto::agent_health_server::AgentHealthServer::new(
+                SlowDetailsFixture,
+            ))
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), stop.cancelled_owned())
+            .await
+            .unwrap();
+    });
+    let output = Command::new(env!("CARGO_BIN_EXE_tacacsrs-agent-health"))
+        .args(["details", "--endpoint", &address, "--format", "json"])
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    cancellation.cancel();
+    task.await.unwrap();
+}
+
 #[tokio::test]
 async fn informational_flags_succeed_without_contacting_the_agent() {
     for flag in ["--help", "--version"] {

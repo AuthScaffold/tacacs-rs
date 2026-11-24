@@ -1,3 +1,8 @@
+const PROTOS: [&str; 2] = [
+    "proto/tacacsrs_agent.proto",
+    "proto/tacacsrs_agent_health.proto",
+];
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-env-changed=PROTOC");
     if std::env::var_os("PROTOC").is_none() {
@@ -15,8 +20,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute("tacacsrs.agent.v1.AuthorizationResponse", allow_partial_eq)
         .type_attribute("tacacsrs.agent.v1.AuthorizationReply", allow_partial_eq)
         .type_attribute("tacacsrs.agent.v1.AuthorizationReply.result", allow_partial_eq)
-        .compile_protos(&["proto/tacacsrs_agent.proto"], &["proto"])?;
+        .compile_protos(&PROTOS, &["proto"])?;
 
-    println!("cargo:rerun-if-changed=proto/tacacsrs_agent.proto");
+    for proto in PROTOS {
+        println!("cargo:rerun-if-changed={proto}");
+    }
     Ok(())
 }

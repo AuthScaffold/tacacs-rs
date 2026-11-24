@@ -1,22 +1,19 @@
 //! Client sessions over dedicated connections.
 //!
-//! A dedicated session can carry a [`SingleConnectPromotion`] when the server
-//! configuration requested TACACS+ single-connection mode. The session still
-//! runs as a normal request/response exchange. The promotion transfers the
-//! connection after the session completes.
+//! Dedicated sessions run one TACACS+ exchange or sequential conversation over
+//! a single unshared transport when single-connection mode is disabled or the
+//! server previously declined single-connection capability.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context;
 use tokio::sync::Mutex;
 
-use tacacsrs_protocol::enumerations::TacacsFlags;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
 
 use crate::connection::{BoxedDedicatedConnection, DedicatedConnection};
 use crate::exchange_error::{ProtocolFailure, protocol_failure};
 use crate::session::random_nonzero_session_id;
-use crate::single_connect::SingleConnectPromotion;
 use crate::transport::{BoxedTransport, Transport};
 
 pub(crate) struct DedicatedSession {
@@ -24,23 +21,17 @@ pub(crate) struct DedicatedSession {
     session_id: u32,
     expected_response_sequence: Mutex<Option<u8>>,
     complete: AtomicBool,
-    single_connect_promotion: std::sync::Mutex<Option<SingleConnectPromotion>>,
     counters: Option<crate::ServerCounters>,
 }
 
 impl DedicatedSession {
-    pub(crate) fn new(
-        transport: BoxedTransport,
-        obfuscation_key: Option<&[u8]>,
-        single_connect_promotion: Option<SingleConnectPromotion>,
-    ) -> Self {
+    pub(crate) fn new(transport: BoxedTransport, obfuscation_key: Option<&[u8]>) -> Self {
         Self {
             counters: transport.counters(),
             connection: Mutex::new(Some(DedicatedConnection::new(transport, obfuscation_key))),
             session_id: random_nonzero_session_id(),
             expected_response_sequence: Mutex::new(None),
             complete: AtomicBool::new(false),
-            single_connect_promotion: std::sync::Mutex::new(single_connect_promotion),
         }
     }
 
@@ -58,15 +49,6 @@ impl DedicatedSession {
         }
 
         let response_sequence = packet.header().seq_no.wrapping_add(1);
-        let packet = match self
-            .single_connect_promotion
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-        {
-            Some(_) => with_single_connect_flag(&packet)?,
-            None => packet,
-        };
 
         {
             let mut expected_response_sequence = self.expected_response_sequence.lock().await;
@@ -118,23 +100,10 @@ impl DedicatedSession {
             connection.take();
             return Err(error);
         }
-        let promotion = self
-            .single_connect_promotion
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if packet.header().seq_no == 2 {
             if let Some(counters) = &self.counters {
-                counters.single_connect(
-                    promotion.is_some()
-                        && packet
-                            .header()
-                            .flags
-                            .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG),
-                );
+                counters.single_connect(false);
             }
-        }
-        if let Some(promotion) = promotion.as_ref() {
-            promotion.observe_server_response(&packet);
         }
         Ok(packet)
     }
@@ -148,10 +117,6 @@ impl DedicatedSession {
         if let Some(counters) = &self.counters {
             counters.disconnect_reason(crate::DisconnectReason::MalformedPacket);
         }
-        self.single_connect_promotion
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
     }
 
     async fn validate_response_header(&self, packet: &Packet) -> anyhow::Result<()> {
@@ -181,18 +146,7 @@ impl DedicatedSession {
             return;
         }
 
-        let promotion = self
-            .single_connect_promotion
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        let Some(mut connection) = self.connection.lock().await.take() else {
-            return;
-        };
-
-        if let Some(promotion) = promotion {
-            promotion.promote_if_confirmed(connection).await;
-        } else {
+        if let Some(mut connection) = self.connection.lock().await.take() {
             connection.shutdown().await;
         }
     }
@@ -202,12 +156,6 @@ impl DedicatedSession {
             counters.disconnect_reason(crate::DisconnectReason::NoResponse);
         }
     }
-}
-
-fn with_single_connect_flag(packet: &Packet) -> anyhow::Result<Packet> {
-    let mut header = packet.header().clone();
-    header.flags |= TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG;
-    Packet::new(header, packet.body().to_vec())
 }
 
 #[cfg(test)]
@@ -220,13 +168,10 @@ mod tests {
     use tacacsrs_protocol::header::Header;
     use tacacsrs_protocol::packet::{Packet, PacketTrait};
 
-    use super::{DedicatedSession, SingleConnectPromotion, with_single_connect_flag};
+    use super::DedicatedSession;
     use crate::exchange_error::ProtocolFailure;
-    use crate::single_connect::{NegotiationState, SingleConnectionState};
     use crate::transport::BoxedTransport;
     use crate::transport::mock::MockTransport;
-
-    const TEST_SESSION_ID: u32 = 0xCAFE_BABE;
 
     struct PendingShutdown {
         entered: Arc<std::sync::atomic::AtomicBool>,
@@ -276,97 +221,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn completion_without_a_reply_releases_negotiation() {
-        let state = Arc::new(NegotiationState::new(SingleConnectionState::Initial));
-        let session = DedicatedSession::new(
-            BoxedTransport::new(MockTransport::new()),
-            None,
-            SingleConnectPromotion::begin(Arc::default(), state.clone()),
-        );
-        session.complete().await;
-        assert_eq!(state.snapshot(), SingleConnectionState::Initial);
-        assert!(session.connection.lock().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn cancelled_completion_releases_probe_while_session_is_retained() {
-        let state = Arc::new(NegotiationState::new(SingleConnectionState::Initial));
-        let cache = Arc::new(crate::single_connect::SharedConnectionCache::default());
-        let promotion = SingleConnectPromotion::begin(cache.clone(), state.clone()).unwrap();
-        promotion.observe_server_response(&test_packet(
-            TEST_SESSION_ID,
-            2,
-            TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
-            b"reply",
-        ));
-        let session =
-            DedicatedSession::new(BoxedTransport::new(MockTransport::new()), None, Some(promotion));
-        let locked_cache = cache.lock_for_test().await;
-        {
-            let mut completion = Box::pin(session.complete());
-            std::future::poll_fn(|context| {
-                assert!(std::future::Future::poll(completion.as_mut(), context).is_pending());
-                std::task::Poll::Ready(())
-            })
-            .await;
-        }
-        assert_eq!(state.snapshot(), SingleConnectionState::Initial);
-        assert!(session.connection.lock().await.is_none());
-        drop(locked_cache);
-        assert!(cache.current().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn cancelled_shutdown_releases_pending_probe_and_preserves_unsupported_result() {
-        for unsupported in [false, true] {
-            let state = Arc::new(NegotiationState::new(SingleConnectionState::Initial));
-            let cache = Arc::default();
-            let promotion =
-                SingleConnectPromotion::begin(Arc::clone(&cache), state.clone()).unwrap();
-            if unsupported {
-                promotion.observe_server_response(&test_packet(
-                    TEST_SESSION_ID,
-                    2,
-                    TacacsFlags::empty(),
-                    b"reply",
-                ));
-            }
-            let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let session = DedicatedSession::new(
-                BoxedTransport::new(PendingShutdown {
-                    entered: entered.clone(),
-                    dropped: dropped.clone(),
-                }),
-                None,
-                Some(promotion),
-            );
-            let mut completion = Box::pin(session.complete());
-            assert!(futures::poll!(&mut completion).is_pending());
-            assert!(entered.load(std::sync::atomic::Ordering::Acquire));
-            assert!(!dropped.load(std::sync::atomic::Ordering::Acquire));
-            let mut current = Box::pin(cache.current());
-            assert!(matches!(futures::poll!(&mut current), std::task::Poll::Ready(None)));
-            drop(completion);
-            assert!(dropped.load(std::sync::atomic::Ordering::Acquire));
-            assert!(session.connection.lock().await.is_none());
-            assert!(session.single_connect_promotion.lock().unwrap().is_none());
-            assert_eq!(
-                state.snapshot(),
-                if unsupported {
-                    SingleConnectionState::NotSupported
-                } else {
-                    SingleConnectionState::Initial
-                }
-            );
-        }
-    }
-
-    #[tokio::test]
     async fn malformed_response_discards_pending_shutdown_without_polling_it() {
-        let state = Arc::new(NegotiationState::new(SingleConnectionState::Initial));
-        let cache = Arc::default();
-        let promotion = SingleConnectPromotion::begin(Arc::clone(&cache), state.clone()).unwrap();
         let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let session = DedicatedSession::new(
@@ -375,7 +230,6 @@ mod tests {
                 dropped: dropped.clone(),
             }),
             None,
-            Some(promotion),
         );
 
         tokio::time::timeout(
@@ -388,46 +242,7 @@ mod tests {
         assert!(!entered.load(std::sync::atomic::Ordering::Acquire));
         assert!(dropped.load(std::sync::atomic::Ordering::Acquire));
         assert!(session.connection.lock().await.is_none());
-        assert!(session.single_connect_promotion.lock().unwrap().is_none());
-        assert!(cache.current().await.is_none());
-        assert_eq!(state.snapshot(), SingleConnectionState::Initial);
         session.complete().await;
-    }
-
-    #[tokio::test]
-    async fn only_the_first_reply_decides_probe_support() {
-        for first in [
-            TacacsFlags::empty(),
-            TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
-        ] {
-            let state = Arc::new(NegotiationState::new(SingleConnectionState::Initial));
-            let cache = Arc::default();
-            let promotion =
-                SingleConnectPromotion::begin(Arc::clone(&cache), state.clone()).unwrap();
-            promotion.observe_server_response(&test_packet(TEST_SESSION_ID, 2, first, b"reply"));
-            promotion.observe_server_response(&test_packet(
-                TEST_SESSION_ID,
-                4,
-                first ^ TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
-                b"reply",
-            ));
-            promotion
-                .promote_if_confirmed(crate::connection::DedicatedConnection::new(
-                    BoxedTransport::new(MockTransport::new()),
-                    None,
-                ))
-                .await;
-            let supported = first.contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG);
-            assert_eq!(cache.current().await.is_some(), supported);
-            assert_eq!(
-                state.snapshot(),
-                if supported {
-                    SingleConnectionState::Supported
-                } else {
-                    SingleConnectionState::NotSupported
-                }
-            );
-        }
     }
 
     fn test_packet(session_id: u32, seq_no: u8, flags: TacacsFlags, body: &[u8]) -> Packet {
@@ -446,19 +261,6 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn adds_single_connect_flag_without_changing_body() {
-        let packet =
-            test_packet(TEST_SESSION_ID, 1, TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG, b"request");
-        let updated = with_single_connect_flag(&packet).unwrap();
-
-        assert!(updated
-            .header()
-            .flags
-            .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
-        assert_eq!(updated.body(), packet.body());
-    }
-
     #[tokio::test]
     async fn invalid_reply_header_releases_transport_without_deadlocking() {
         use std::time::Duration;
@@ -472,8 +274,7 @@ mod tests {
                 listener.accept(),
             );
             let mut peer = peer.unwrap().0;
-            let session =
-                DedicatedSession::new(BoxedTransport::new(transport.unwrap()), None, None);
+            let session = DedicatedSession::new(BoxedTransport::new(transport.unwrap()), None);
             let session_id = session.session_id();
             session
                 .send_packet(test_packet(
@@ -510,107 +311,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dedicated_session_adds_single_connect_flag_and_does_not_cache_when_absent() {
-        let mock = MockTransport::new();
-        let coordinator = mock.coordinator();
-        let shared_connection = Arc::default();
-        let single_connection_state =
-            Arc::new(NegotiationState::new(SingleConnectionState::Initial));
-        let session = DedicatedSession::new(
-            BoxedTransport::new(mock),
-            None,
-            SingleConnectPromotion::begin(
-                Arc::clone(&shared_connection),
-                Arc::clone(&single_connection_state),
-            ),
-        );
-        let session_id = session.session_id();
-        coordinator
-            .add_reply(test_packet(session_id, 2, TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG, b"reply"))
-            .await
-            .unwrap();
-
-        session
-            .send_packet(test_packet(
-                session_id,
-                1,
-                TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
-                b"request",
-            ))
-            .await
-            .unwrap();
-        let _response = session.receive_packet().await.unwrap();
-        session.complete().await;
-
-        let requests = coordinator
-            .get_requests_for_session(session_id)
-            .await
-            .unwrap();
-        assert!(requests[&1]
-            .header()
-            .flags
-            .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
-        assert!(shared_connection.current().await.is_none());
-        assert_eq!(single_connection_state.snapshot(), SingleConnectionState::NotSupported);
-    }
-
-    #[tokio::test]
-    async fn first_reply_controls_multi_round_promotion() {
-        for first_supports_sharing in [true, false] {
-            let mock = MockTransport::new();
-            let coordinator = mock.coordinator();
-            let shared_connection = Arc::default();
-            let state = Arc::new(NegotiationState::new(SingleConnectionState::Initial));
-            let session = DedicatedSession::new(
-                BoxedTransport::new(mock),
-                None,
-                SingleConnectPromotion::begin(Arc::clone(&shared_connection), Arc::clone(&state)),
-            );
-            for (request_sequence, supports_sharing) in
-                [(1, first_supports_sharing), (3, !first_supports_sharing)]
-            {
-                let mut reply_flags = TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG;
-                if supports_sharing {
-                    reply_flags |= TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG;
-                }
-                coordinator
-                    .add_reply(test_packet(
-                        session.session_id(),
-                        request_sequence + 1,
-                        reply_flags,
-                        b"reply",
-                    ))
-                    .await
-                    .unwrap();
-                session
-                    .send_packet(test_packet(
-                        session.session_id(),
-                        request_sequence,
-                        TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
-                        b"request",
-                    ))
-                    .await
-                    .unwrap();
-                session.receive_packet().await.unwrap();
-            }
-            session.complete().await;
-            assert_eq!(shared_connection.current().await.is_some(), first_supports_sharing);
-            assert_eq!(
-                state.snapshot(),
-                if first_supports_sharing {
-                    SingleConnectionState::Supported
-                } else {
-                    SingleConnectionState::NotSupported
-                }
-            );
-        }
-    }
-
-    #[tokio::test]
     async fn dedicated_session_respects_disabled_single_connection_config() {
         let mock = MockTransport::new();
         let coordinator = mock.coordinator();
-        let session = DedicatedSession::new(BoxedTransport::new(mock), None, None);
+        let session = DedicatedSession::new(BoxedTransport::new(mock), None);
         let session_id = session.session_id();
         coordinator
             .add_reply(test_packet(
@@ -647,7 +351,7 @@ mod tests {
     #[tokio::test]
     async fn dedicated_session_rejects_send_while_response_is_pending() {
         let mock = MockTransport::new();
-        let session = DedicatedSession::new(BoxedTransport::new(mock), None, None);
+        let session = DedicatedSession::new(BoxedTransport::new(mock), None);
         let session_id = session.session_id();
 
         session
@@ -673,108 +377,5 @@ mod tests {
         assert!(error
             .to_string()
             .contains("already has a request awaiting response"));
-    }
-
-    #[tokio::test]
-    async fn late_promotion_retires_after_last_cache_owner_drops() {
-        use std::time::Duration;
-
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-        use crate::{PacketReader, PacketReadResult};
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let (transport, peer) = tokio::join!(
-            tokio::net::TcpStream::connect(listener.local_addr().unwrap()),
-            listener.accept(),
-        );
-        let mut peer = peer.unwrap().0;
-        let shared_connection = Arc::default();
-        let session = DedicatedSession::new(
-            BoxedTransport::new(transport.unwrap()),
-            None,
-            SingleConnectPromotion::begin(
-                Arc::clone(&shared_connection),
-                Arc::new(NegotiationState::new(SingleConnectionState::Initial)),
-            ),
-        );
-        drop(shared_connection);
-        let session_id = session.session_id();
-        session
-            .send_packet(test_packet(
-                session_id,
-                1,
-                TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
-                b"request",
-            ))
-            .await
-            .unwrap();
-        assert!(matches!(
-            PacketReader::new(None).read_packet(&mut peer).await,
-            PacketReadResult::Success(_)
-        ));
-        let reply = test_packet(
-            session_id,
-            2,
-            TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG | TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
-            b"reply",
-        );
-        peer.write_all(&reply.to_bytes()).await.unwrap();
-        session.receive_packet().await.unwrap();
-        session.complete().await;
-        drop(session);
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(1), peer.read(&mut [0; 1]))
-                .await
-                .unwrap()
-                .unwrap(),
-            0
-        );
-    }
-
-    #[tokio::test]
-    async fn dedicated_session_upgrades_and_caches_when_single_connect_is_echoed() {
-        let mock = MockTransport::new();
-        let coordinator = mock.coordinator();
-        let shared_connection = Arc::default();
-        let single_connection_state =
-            Arc::new(NegotiationState::new(SingleConnectionState::Initial));
-        let session = DedicatedSession::new(
-            BoxedTransport::new(mock),
-            None,
-            SingleConnectPromotion::begin(
-                Arc::clone(&shared_connection),
-                Arc::clone(&single_connection_state),
-            ),
-        );
-        let session_id = session.session_id();
-        coordinator
-            .add_reply(test_packet(
-                session_id,
-                2,
-                TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG | TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG,
-                b"reply",
-            ))
-            .await
-            .unwrap();
-
-        session
-            .send_packet(test_packet(
-                session_id,
-                1,
-                TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG,
-                b"request",
-            ))
-            .await
-            .unwrap();
-        let _response = session.receive_packet().await.unwrap();
-        session.complete().await;
-
-        let connection = shared_connection
-            .current()
-            .await
-            .expect("single-connect response must cache the upgraded connection");
-        assert_eq!(single_connection_state.snapshot(), SingleConnectionState::Supported);
-        assert_eq!(connection.single_connection_state(), SingleConnectionState::Supported);
     }
 }

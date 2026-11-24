@@ -5,8 +5,6 @@
 //! Request/reply body construction belongs to fixed exchange descriptors or
 //! mutable client conversations layered above this runtime.
 
-use std::sync::Arc;
-
 use anyhow::Context;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
@@ -17,14 +15,12 @@ use crate::codec::{PacketReadResult, PacketReader, PacketWriteResult, PacketWrit
 use crate::exchange_error::protocol_failure;
 use crate::transport::Transport;
 
-use super::MultiplexedConnection;
-
 /// A TACACS+ connection that carries packet exchanges over one
 /// transport.
 ///
-/// Unlike [`MultiplexedConnection`], this type does not spawn background tasks
-/// or multiplex sessions. Higher-level code can wrap it in an internal facade
-/// to run an exchange over a one-shot connection.
+/// Unlike [`MultiplexedConnection`](super::MultiplexedConnection), this type
+/// does not spawn background tasks or multiplex sessions. Higher-level code can
+/// wrap it in an internal facade to run an exchange over a one-shot connection.
 pub(crate) struct DedicatedConnection<R, W> {
     reader_half: R,
     writer_half: W,
@@ -108,41 +104,6 @@ where
 
     pub(crate) async fn shutdown(&mut self) {
         let _ = self.writer_half.shutdown().await;
-    }
-
-    /// Consumes this dedicated connection and upgrades it to a multiplexed
-    /// connection.
-    ///
-    /// The caller must only use this after the server has indicated support for
-    /// single-connection mode. The returned connection starts with
-    /// single-connect support already confirmed.
-    ///
-    /// ```text
-    /// DedicatedConnection owns reader_half + writer_half
-    ///     |
-    ///     | server confirmed single-connect and session is complete
-    ///     v
-    /// MultiplexedConnection::new_single_connect_confirmed(key)
-    ///     |
-    ///     | run_with_halves(reader_half, writer_half)
-    ///     v
-    /// background shared read/write loops own the connection halves
-    /// ```
-    #[must_use]
-    pub(crate) fn upgrade(self) -> Arc<MultiplexedConnection>
-    where
-        R: 'static,
-        W: 'static,
-    {
-        let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(
-            self.writer.obfuscation_key().cloned(),
-            self.writer.counters(),
-        ));
-        if let Some(counters) = self.writer.counters() {
-            counters.single_connect(true);
-        }
-        connection.run_with_halves(self.reader_half, self.writer_half);
-        connection
     }
 }
 

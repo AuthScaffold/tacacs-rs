@@ -1,10 +1,14 @@
 #![doc = include_str!("../README.md")]
 
-#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
-compile_error!("tacacsrs-agent supports Linux GNU only");
+#[cfg(not(all(target_os = "linux", any(target_env = "gnu", target_env = "musl"))))]
+compile_error!("tacacsrs-agent supports Linux GNU or musl only");
 
 /// Public configuration for the agent runtime.
 pub mod config;
+
+pub mod components;
+
+pub mod host;
 
 /// Long-lived service lifecycle and configuration reloads.
 pub mod runtime;
@@ -26,12 +30,13 @@ pub use config::{
     EnabledServices, FailoverStrategy, OperationPolicies, PolicyService, PreparedProxyPolicy,
     RequestLimits, RuntimePolicy, RuntimeCandidateLimits, ServiceConfig,
 };
-pub use upstream::OperationKind;
+pub use upstream::{OperationKind, UpstreamRevocation};
 pub use runtime::{
-    DiagnosticsHandle, PolicyRevision, PolicyUpdate, CredentialRevision, MaterializationRevision,
-    SourceRevision, DatastoreState, DegradationReason, ListenerRegistration, ListenerSettings,
-    ListenerState, RuntimeHealthPublisher, RuntimeGeneration, RuntimeHealthSnapshot,
-    RuntimeLifecycle, RuntimeListenerService, RuntimeService, ShutdownReceiver,
-    TacacsClientService, UpstreamAvailability,
+    ActiveLocalServices, AgentReadinessCheck, AgentRuntime, ConfigView, LocalServicesView,
+    RuntimePolicyView, RuntimeInputs, PolicyInput, DiagnosticsHandle, PolicyRevision, PolicyUpdate,
+    CredentialRevision, MaterializationRevision, SourceRevision, DatastoreState, DegradationReason,
+    ListenerRegistration, ListenerSettings, ListenerState, RuntimeHealth, RuntimeHealthPublisher,
+    RuntimeGeneration, RuntimeHealthSnapshot, RuntimeLifecycle, RuntimeListenerService,
+    RuntimeService, ShutdownReceiver, TacacsClientService, UpstreamAvailability,
 };
-pub use services::client_api::ClientApiHandle;
+pub use services::client_api::{ClientApiHandle, UpstreamProbe, UpstreamProbeOutcome};

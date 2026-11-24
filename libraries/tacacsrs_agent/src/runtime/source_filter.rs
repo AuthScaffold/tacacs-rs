@@ -1,0 +1,669 @@
+//! Configuration filters derived from the runtime's canonical listeners.
+
+use std::collections::HashSet;
+use std::net::{IpAddr, SocketAddr};
+
+use anyhow::{Context, ensure};
+use futures_util::future::{BoxFuture, FutureExt};
+use crate::runtime::{FilteredTacacsPlus, NoopTacacsPlusFilter, TacacsPlusFilter};
+use tacacsrs_config::local_services::{prepare_local_services, ListenerEndpoint};
+use tacacsrs_config::proxy_policy::prepare_proxy_policy;
+use tacacsrs_config::tacacsrs::LocalServices;
+use tacacsrs_config::{TacacsPlus, TacacsPlusServer, TacacsPlusServerExt};
+
+/// Filter that removes upstream servers targeting the local TCP proxy endpoint.
+///
+/// The filter reads the proxy endpoint from the local services of each
+/// candidate. Without a TCP proxy endpoint, the filter keeps every server and
+/// only derives the proxy policy.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct ProxySelfLoopFilter;
+
+impl ProxySelfLoopFilter {
+    async fn filter_proxy_self_loop_servers(
+        mut tacacs_plus: TacacsPlus,
+        source: &LocalServices,
+    ) -> anyhow::Result<FilteredTacacsPlus> {
+        let prepared = prepare_local_services(source)?;
+        let Some(ListenerEndpoint::Tcp(proxy_endpoint)) = prepared.tacacs_proxy().cloned() else {
+            return NoopTacacsPlusFilter.filter(tacacs_plus, source).await;
+        };
+        let original_server_count = tacacs_plus.server.len();
+        tacacsrs_config::validate_credential_references(&tacacs_plus)?;
+        let local_addresses = if proxy_endpoint.ip().to_canonical().is_unspecified() {
+            if_addrs::get_if_addrs()
+                .context("read local interfaces for proxy loop validation")?
+                .into_iter()
+                .map(|interface| interface.ip())
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let mut filtered_names = HashSet::new();
+        let mut selected_proxy_server: Option<&TacacsPlusServer> = None;
+
+        for server in &tacacs_plus.server {
+            let resolution = async {
+                tokio::net::lookup_host((server.address.as_str(), server.port))
+                    .await
+                    .map(Iterator::collect::<Vec<_>>)
+            };
+            if upstream_server_targets_proxy_endpoint(
+                server,
+                proxy_endpoint,
+                &local_addresses,
+                resolution,
+            )
+            .await?
+            {
+                ensure!(
+                    !server.is_tls(),
+                    "TLS upstream targets the local raw TACACS+ proxy endpoint"
+                );
+                log::warn!(
+                    "The daemon ignores upstream TACACS+ server '{}' at {}:{} because it resolves to the local TACACS+ proxy endpoint {}. If retained, this server sends client traffic back into the daemon.",
+                    server.name,
+                    server.address,
+                    server.port,
+                    proxy_endpoint,
+                );
+                filtered_names.insert(server.name.clone());
+                if selected_proxy_server.is_none() {
+                    selected_proxy_server = Some(server);
+                }
+            }
+        }
+
+        let proxy_downstream_obfuscation = prepare_proxy_policy(source, selected_proxy_server)?;
+
+        tacacs_plus
+            .server
+            .retain(|server| !filtered_names.contains(&server.name));
+
+        let filtered_count = original_server_count.saturating_sub(tacacs_plus.server.len());
+
+        if filtered_count > 0 {
+            log::info!(
+                "Filtered {filtered_count} upstream TACACS+ server(s) that target the local proxy endpoint {}",
+                proxy_endpoint,
+            );
+        }
+        if original_server_count > 0 && tacacs_plus.server.is_empty() {
+            log::warn!(
+                "All configured upstream TACACS+ servers target the local proxy endpoint {}. The daemon waits for a non-looping upstream configuration.",
+                proxy_endpoint,
+            );
+        }
+        Ok(FilteredTacacsPlus {
+            tacacs_plus,
+            proxy_downstream_obfuscation,
+        })
+    }
+}
+
+impl TacacsPlusFilter for ProxySelfLoopFilter {
+    fn known_payload_copies(
+        &self,
+        source: &TacacsPlus,
+        local_services: &LocalServices,
+    ) -> anyhow::Result<u64> {
+        let bytes = match local_services.proxy_credential_source {
+            tacacsrs_config::tacacsrs::ProxyCredentialSource::Unobfuscated => 0,
+            tacacsrs_config::tacacsrs::ProxyCredentialSource::Inline => local_services
+                .proxy_shared_secret
+                .as_ref()
+                .map_or(0, |secret| secret.expose_secret().len()),
+            tacacsrs_config::tacacsrs::ProxyCredentialSource::LocalProxyRow => source
+                .server
+                .iter()
+                .filter_map(|server| server.shared_secret.as_ref())
+                .map(|secret| secret.expose_secret().len())
+                .max()
+                .unwrap_or(0),
+        };
+        Ok(u64::try_from(bytes)?)
+    }
+
+    fn filter<'a>(
+        &'a self,
+        tacacs_plus: TacacsPlus,
+        local_services: &'a LocalServices,
+    ) -> BoxFuture<'a, anyhow::Result<FilteredTacacsPlus>> {
+        Self::filter_proxy_self_loop_servers(tacacs_plus, local_services).boxed()
+    }
+}
+
+async fn upstream_server_targets_proxy_endpoint(
+    server: &TacacsPlusServer,
+    proxy_endpoint: SocketAddr,
+    local_addresses: &[IpAddr],
+    resolution: impl std::future::Future<Output = std::io::Result<Vec<SocketAddr>>> + Send,
+) -> anyhow::Result<bool> {
+    if server.port != proxy_endpoint.port() {
+        return Ok(false);
+    }
+
+    let listener = ListenerEndpoint::Tcp(proxy_endpoint);
+    if let Ok(address) = server.address.parse::<IpAddr>() {
+        ensure!(
+            !address.to_canonical().is_unspecified(),
+            "Upstream address must be specified during proxy loop validation"
+        );
+        return Ok(
+            listener.covers_tcp_destination(SocketAddr::new(address, server.port), local_addresses)
+        );
+    }
+
+    let addresses = tokio::time::timeout(server.timeout_duration(), resolution)
+        .await
+        .context("DNS lookup timed out during proxy loop validation")?
+        .context("DNS lookup failed during proxy loop validation")?;
+    ensure!(!addresses.is_empty(), "DNS returned no addresses during proxy loop validation");
+    ensure!(
+        addresses
+            .iter()
+            .all(|address| !address.ip().to_canonical().is_unspecified()),
+        "DNS returned an unspecified address during proxy loop validation"
+    );
+    Ok(addresses
+        .into_iter()
+        .any(|address| listener.covers_tcp_destination(address, local_addresses)))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use super::{NoopTacacsPlusFilter, ProxySelfLoopFilter, TacacsPlusFilter};
+    use tacacsrs_config::tacacsrs::{LocalServices, ProxyCredentialSource};
+    use tacacsrs_config::proxy_policy::prepare_proxy_policy;
+    use crate::{EnabledServices, PreparedProxyPolicy};
+    use tacacsrs_ipc::IpcEndpoint;
+    use tacacsrs_config::TacacsPlusServerType;
+    use tacacsrs_config::{
+        TacacsPlus, TacacsPlusBuilder, TacacsPlusServerBuilder, ValidationOptions,
+        ValidationRelaxation,
+    };
+    use tacacsrs_secrets::SecretString;
+
+    fn test_config_from_host_ports(addresses: &[(&str, u16)]) -> TacacsPlus {
+        test_config_from_entries(
+            &addresses
+                .iter()
+                .map(|(address, port)| (*address, *port, Some("test-secret")))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn test_config_from_entries(addresses: &[(&str, u16, Option<&str>)]) -> TacacsPlus {
+        addresses
+            .iter()
+            .enumerate()
+            .map(|(index, (address, port, obfuscation))| {
+                let builder = TacacsPlusServerBuilder::new(
+                    format!("server-{index}"),
+                    TacacsPlusServerType::AUTHENTICATION
+                        | TacacsPlusServerType::AUTHORIZATION
+                        | TacacsPlusServerType::ACCOUNTING,
+                    (*address).to_owned(),
+                    *port,
+                );
+                if let Some(obfuscation) = obfuscation {
+                    builder.with_shared_secret((*obfuscation).to_owned())
+                } else {
+                    builder
+                }
+            })
+            .fold(TacacsPlusBuilder::new(), TacacsPlusBuilder::with_server_builder)
+            .build_with_options(
+                &ValidationOptions::new()
+                    .with_relaxation(ValidationRelaxation::AllowPlainTcpWithoutSharedSecret),
+            )
+            .expect("test configuration must be valid")
+    }
+
+    fn proxy_obfuscation(secret: Option<&str>) -> PreparedProxyPolicy {
+        let source = credential_source(secret);
+        prepare_proxy_policy(&source, None).unwrap()
+    }
+
+    fn credential_source(secret: Option<&str>) -> LocalServices {
+        LocalServices {
+            tacacs_proxy_enabled: true,
+            proxy_credential_source: if secret.is_some() {
+                ProxyCredentialSource::Inline
+            } else {
+                ProxyCredentialSource::Unobfuscated
+            },
+            proxy_shared_secret: secret.map(|value| SecretString::new(value.to_owned())),
+            ..LocalServices::default()
+        }
+    }
+
+    /// Runs the runtime filter with fixed local services.
+    struct TestFilter(LocalServices);
+
+    impl TestFilter {
+        fn new(proxy_endpoint: SocketAddr) -> Self {
+            Self::new_with_policy(
+                proxy_endpoint,
+                LocalServices {
+                    tacacs_proxy_enabled: true,
+                    proxy_credential_source: ProxyCredentialSource::LocalProxyRow,
+                    ..LocalServices::default()
+                },
+            )
+        }
+
+        fn new_with_policy(proxy_endpoint: SocketAddr, mut source: LocalServices) -> Self {
+            source
+                .tacacs_proxy_endpoint
+                .get_or_insert_with(|| proxy_endpoint.to_string());
+            Self(source)
+        }
+
+        async fn filter(
+            &self,
+            config: TacacsPlus,
+        ) -> anyhow::Result<crate::runtime::FilteredTacacsPlus> {
+            ProxySelfLoopFilter.filter(config, &self.0).await
+        }
+    }
+
+    fn config_filter_from_runtime_options(
+        enabled: EnabledServices,
+        endpoint: Option<&IpcEndpoint>,
+        secret: Option<&str>,
+    ) -> TestFilter {
+        let mut source = credential_source(secret);
+        source.client_api_enabled = enabled.client_api();
+        source.tacacs_proxy_enabled = enabled.tacacs_proxy();
+        source.tacacs_proxy_endpoint = enabled.tacacs_proxy().then(|| match endpoint.unwrap() {
+            IpcEndpoint::Tcp(address) => address.to_string(),
+            IpcEndpoint::Unix(path) => path.to_str().unwrap().to_owned(),
+        });
+        TestFilter(source)
+    }
+
+    #[tokio::test]
+    async fn runtime_options_select_proxy_filter_for_enabled_tcp_proxy() {
+        let endpoint = Some(
+            "127.0.0.1:9050"
+                .parse::<IpcEndpoint>()
+                .expect("TCP endpoint must parse"),
+        );
+        let config = test_config_from_host_ports(&[("127.0.0.1", 9050), ("192.0.2.20", 49)]);
+        let filter = config_filter_from_runtime_options(
+            EnabledServices::TACACS_PROXY,
+            endpoint.as_ref(),
+            None,
+        );
+
+        let filtered = filter.filter(config).await.expect("filter must succeed");
+
+        assert_eq!(filtered.tacacs_plus.server.len(), 1);
+        assert_eq!(filtered.tacacs_plus.server[0].address, "192.0.2.20");
+        assert_eq!(filtered.proxy_downstream_obfuscation, proxy_obfuscation(None));
+    }
+
+    #[tokio::test]
+    async fn wildcard_proxy_filters_loopback_without_removing_remote_servers() {
+        let source = LocalServices {
+            tacacs_proxy_enabled: true,
+            tacacs_proxy_endpoint: Some("0.0.0.0:9050".to_owned()),
+            ..LocalServices::default()
+        };
+        let filter = TestFilter(source);
+        let upstream = test_config_from_host_ports(&[("127.0.0.1", 9050), ("192.0.2.20", 9050)]);
+        let filtered = filter.filter(upstream).await.unwrap();
+        assert_eq!(filtered.tacacs_plus.server.len(), 1);
+        assert_eq!(filtered.tacacs_plus.server[0].address, "192.0.2.20");
+    }
+
+    #[tokio::test]
+    async fn local_row_supplies_proxy_credentials_without_mutating_canonical_source() {
+        let canonical = test_config_from_entries(&[
+            ("127.0.0.1", 49, Some("local-test-key")),
+            ("192.0.2.20", 49, Some("remote-test-key")),
+        ]);
+        assert_eq!(canonical.server.len(), 2);
+        let original = canonical.clone();
+        let filter = TestFilter::new("127.0.0.1:49".parse().unwrap());
+        let filtered = filter.filter(canonical.clone()).await.unwrap();
+        assert_eq!(filtered.tacacs_plus.server.len(), 1);
+        assert_eq!(filtered.tacacs_plus.server[0].address, "192.0.2.20");
+        assert_eq!(
+            filtered.proxy_downstream_obfuscation,
+            proxy_obfuscation(Some("local-test-key"))
+        );
+        assert_eq!(canonical, original);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn loop_validation_rejects_failed_empty_and_timed_out_dns() {
+        use super::upstream_server_targets_proxy_endpoint;
+        use futures_util::future::{ready, pending};
+
+        let source = test_config_from_host_ports(&[("upstream.example", 49)]);
+        let server = &source.server[0];
+        let endpoint = "127.0.0.1:49".parse().unwrap();
+        assert!(upstream_server_targets_proxy_endpoint(
+            server,
+            endpoint,
+            &[],
+            ready(Err(std::io::Error::other("unavailable")))
+        )
+        .await
+        .is_err());
+        assert!(upstream_server_targets_proxy_endpoint(
+            server,
+            endpoint,
+            &[],
+            ready(Ok(Vec::new()))
+        )
+        .await
+        .is_err());
+        assert!(upstream_server_targets_proxy_endpoint(
+            server,
+            endpoint,
+            &[],
+            ready(Ok(vec!["0.0.0.0:49".parse().unwrap()]))
+        )
+        .await
+        .is_err());
+        assert!(upstream_server_targets_proxy_endpoint(server, endpoint, &[], pending())
+            .await
+            .is_err());
+        assert!(!upstream_server_targets_proxy_endpoint(
+            server,
+            "127.0.0.1:50".parse().unwrap(),
+            &[],
+            pending()
+        )
+        .await
+        .unwrap());
+        for address in ["0.0.0.0", "::", "::ffff:0.0.0.0"] {
+            let source = test_config_from_host_ports(&[(address, 49)]);
+            assert!(upstream_server_targets_proxy_endpoint(
+                &source.server[0],
+                endpoint,
+                &[],
+                pending()
+            )
+            .await
+            .is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn loop_validation_checks_every_resolved_address_and_local_interface() {
+        use super::upstream_server_targets_proxy_endpoint;
+        use futures_util::future::ready;
+
+        let source = test_config_from_host_ports(&[("upstream.example", 49)]);
+        let server = &source.server[0];
+        let local = "192.0.2.10:49".parse::<std::net::SocketAddr>().unwrap();
+        let remote = "192.0.2.20:49".parse().unwrap();
+        let endpoint = "0.0.0.0:49".parse().unwrap();
+        assert!(upstream_server_targets_proxy_endpoint(
+            server,
+            endpoint,
+            &[local.ip()],
+            ready(Ok(vec![remote, local]))
+        )
+        .await
+        .unwrap());
+        assert!(!upstream_server_targets_proxy_endpoint(
+            server,
+            endpoint,
+            &[local.ip()],
+            ready(Ok(vec![remote]))
+        )
+        .await
+        .unwrap());
+        let mapped = "[::ffff:127.0.0.1]:49".parse().unwrap();
+        assert!(upstream_server_targets_proxy_endpoint(
+            server,
+            "127.0.0.1:49".parse().unwrap(),
+            &[],
+            ready(Ok(vec![remote, mapped]))
+        )
+        .await
+        .unwrap());
+    }
+
+    #[tokio::test]
+    async fn tls_self_target_is_rejected_by_the_shared_runtime_filter() {
+        let mut source = test_config_from_host_ports(&[("127.0.0.1", 49)]);
+        source.server[0] =
+            TacacsPlusServerBuilder::new("self", TacacsPlusServerType::all(), "127.0.0.1", 49)
+                .with_tls_server_authentication()
+                .build();
+        let canonical = source.clone();
+        let filter =
+            TestFilter::new_with_policy("127.0.0.1:49".parse().unwrap(), credential_source(None));
+        assert!(filter.filter(source).await.is_err());
+        assert!(canonical.server[0].client_identity.is_none());
+        assert!(canonical.server[0].server_authentication.is_some());
+    }
+
+    #[tokio::test]
+    async fn runtime_options_select_noop_filter_when_proxy_is_disabled() {
+        let endpoint = Some(
+            "127.0.0.1:9050"
+                .parse::<IpcEndpoint>()
+                .expect("TCP endpoint must parse"),
+        );
+        let config = test_config_from_host_ports(&[("127.0.0.1", 9050)]);
+        let filter = config_filter_from_runtime_options(
+            EnabledServices::CLIENT_API,
+            endpoint.as_ref(),
+            None,
+        );
+
+        let filtered = filter.filter(config).await.expect("filter must succeed");
+
+        assert_eq!(filtered.tacacs_plus.server.len(), 1);
+        assert_eq!(filtered.tacacs_plus.server[0].address, "127.0.0.1");
+        assert_eq!(filtered.proxy_downstream_obfuscation, PreparedProxyPolicy::unobfuscated());
+    }
+
+    #[tokio::test]
+    async fn runtime_options_select_noop_filter_for_unix_proxy() {
+        let endpoint = Some(
+            "/run/tacacs/proxy.sock"
+                .parse::<IpcEndpoint>()
+                .expect("Unix endpoint must parse"),
+        );
+        let config = test_config_from_host_ports(&[("127.0.0.1", 9050)]);
+        let filter = config_filter_from_runtime_options(
+            EnabledServices::TACACS_PROXY,
+            endpoint.as_ref(),
+            None,
+        );
+
+        let filtered = filter.filter(config).await.expect("filter must succeed");
+
+        assert_eq!(filtered.tacacs_plus.server.len(), 1);
+        assert_eq!(filtered.tacacs_plus.server[0].address, "127.0.0.1");
+        assert_eq!(filtered.proxy_downstream_obfuscation, PreparedProxyPolicy::unobfuscated());
+    }
+
+    #[tokio::test]
+    async fn noop_filter_preserves_all_servers() {
+        let config = test_config_from_host_ports(&[("127.0.0.1", 9050)]);
+
+        let filtered = NoopTacacsPlusFilter
+            .filter(config, &LocalServices::default())
+            .await
+            .expect("filter must succeed");
+
+        assert_eq!(filtered.tacacs_plus.server.len(), 1);
+        assert_eq!(filtered.tacacs_plus.server[0].address, "127.0.0.1");
+        assert_eq!(filtered.proxy_downstream_obfuscation, PreparedProxyPolicy::unobfuscated());
+    }
+
+    #[tokio::test]
+    async fn proxy_filter_removes_matching_ipv4_endpoint() {
+        let config = test_config_from_host_ports(&[("127.0.0.1", 9050), ("192.0.2.20", 49)]);
+        let filter = TestFilter::new("127.0.0.1:9050".parse().expect("socket must parse"));
+
+        let filtered = filter.filter(config).await.expect("filter must succeed");
+
+        assert_eq!(filtered.tacacs_plus.server.len(), 1);
+        assert_eq!(filtered.tacacs_plus.server[0].address, "192.0.2.20");
+        assert_eq!(filtered.proxy_downstream_obfuscation, proxy_obfuscation(Some("test-secret")));
+    }
+
+    #[tokio::test]
+    async fn proxy_filter_removes_matching_ipv6_endpoint() {
+        let config = test_config_from_host_ports(&[("::1", 9050), ("192.0.2.20", 49)]);
+        let filter = TestFilter::new("[::1]:9050".parse().expect("socket must parse"));
+
+        let filtered = filter.filter(config).await.expect("filter must succeed");
+
+        assert_eq!(filtered.tacacs_plus.server.len(), 1);
+        assert_eq!(filtered.tacacs_plus.server[0].address, "192.0.2.20");
+        assert_eq!(filtered.proxy_downstream_obfuscation, proxy_obfuscation(Some("test-secret")));
+    }
+
+    #[tokio::test]
+    async fn proxy_filter_resolves_localhost_hostname() {
+        let proxy_endpoint = tokio::net::lookup_host(("localhost", 9050))
+            .await
+            .expect("localhost must resolve")
+            .next()
+            .expect("localhost must have at least one address");
+        let config = test_config_from_host_ports(&[("localhost", 9050), ("192.0.2.20", 49)]);
+        let filter = TestFilter::new(proxy_endpoint);
+
+        let filtered = filter.filter(config).await.expect("filter must succeed");
+
+        assert_eq!(filtered.tacacs_plus.server.len(), 1);
+        assert_eq!(filtered.tacacs_plus.server[0].address, "192.0.2.20");
+        assert_eq!(filtered.proxy_downstream_obfuscation, proxy_obfuscation(Some("test-secret")));
+    }
+
+    #[tokio::test]
+    async fn proxy_filter_preserves_different_loopback_port() {
+        let config = test_config_from_host_ports(&[("127.0.0.1", 9051), ("192.0.2.20", 49)]);
+        let filter =
+            TestFilter::new_with_policy("127.0.0.1:9050".parse().unwrap(), credential_source(None));
+
+        let filtered = filter.filter(config).await.expect("filter must succeed");
+
+        assert_eq!(filtered.tacacs_plus.server.len(), 2);
+        assert_eq!(filtered.proxy_downstream_obfuscation, PreparedProxyPolicy::unobfuscated());
+    }
+
+    #[tokio::test]
+    async fn proxy_filter_preserves_non_loopback_same_port() {
+        let config = test_config_from_host_ports(&[("192.0.2.20", 9050)]);
+        let filter =
+            TestFilter::new_with_policy("127.0.0.1:9050".parse().unwrap(), credential_source(None));
+
+        let filtered = filter.filter(config).await.expect("filter must succeed");
+
+        assert_eq!(filtered.tacacs_plus.server.len(), 1);
+        assert_eq!(filtered.tacacs_plus.server[0].address, "192.0.2.20");
+        assert_eq!(filtered.proxy_downstream_obfuscation, PreparedProxyPolicy::unobfuscated());
+    }
+
+    #[tokio::test]
+    async fn runtime_options_use_cli_proxy_secret_when_no_local_proxy_row_matches() {
+        let endpoint = Some(
+            "127.0.0.1:9050"
+                .parse::<IpcEndpoint>()
+                .expect("TCP endpoint must parse"),
+        );
+        let config = test_config_from_host_ports(&[("192.0.2.20", 49)]);
+        let filter = config_filter_from_runtime_options(
+            EnabledServices::TACACS_PROXY,
+            endpoint.as_ref(),
+            Some("cli-proxy-secret"),
+        );
+
+        let filtered = filter.filter(config).await.expect("filter must succeed");
+
+        assert_eq!(filtered.tacacs_plus.server.len(), 1);
+        assert_eq!(
+            filtered.proxy_downstream_obfuscation,
+            proxy_obfuscation(Some("cli-proxy-secret"))
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_filter_preserves_explicit_secret_despite_matching_local_row() {
+        let config = test_config_from_entries(&[
+            ("127.0.0.1", 9050, Some("local-row-obfuscation")),
+            ("192.0.2.20", 49, Some("upstream-obfuscation")),
+        ]);
+        let filter = TestFilter::new_with_policy(
+            "127.0.0.1:9050".parse().expect("socket must parse"),
+            credential_source(Some("cli-proxy-obfuscation")),
+        );
+
+        let filtered = filter.filter(config).await.expect("filter must succeed");
+
+        assert_eq!(filtered.tacacs_plus.server.len(), 1);
+        assert_eq!(
+            filtered.proxy_downstream_obfuscation,
+            proxy_obfuscation(Some("cli-proxy-obfuscation"))
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_filter_uses_highest_priority_matching_proxy_secret() {
+        let config = test_config_from_entries(&[
+            ("127.0.0.1", 9050, Some("highest-priority-obfuscation")),
+            ("localhost", 9050, Some("lower-priority-obfuscation")),
+            ("192.0.2.20", 49, Some("upstream-obfuscation")),
+        ]);
+        let filter = TestFilter::new("127.0.0.1:9050".parse().expect("socket must parse"));
+
+        let filtered = filter.filter(config).await.expect("filter must succeed");
+
+        assert_eq!(filtered.tacacs_plus.server.len(), 1);
+        assert_eq!(filtered.tacacs_plus.server[0].address, "192.0.2.20");
+        assert_eq!(
+            filtered.proxy_downstream_obfuscation,
+            proxy_obfuscation(Some("highest-priority-obfuscation"))
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_filter_rejects_missing_highest_priority_secret_without_downgrade() {
+        let config = test_config_from_entries(&[
+            ("127.0.0.1", 9050, None),
+            ("localhost", 9050, Some("lower-priority-obfuscation")),
+            ("192.0.2.20", 49, Some("upstream-obfuscation")),
+        ]);
+        let filter = TestFilter::new("127.0.0.1:9050".parse().expect("socket must parse"));
+
+        assert!(filter.filter(config).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn row_policy_rejects_missing_and_empty_replacements_without_mutating_source() {
+        let filter = TestFilter::new("127.0.0.1:9050".parse().unwrap());
+        let source = test_config_from_entries(&[
+            ("127.0.0.1", 9050, Some("original-local-obfuscation")),
+            ("192.0.2.20", 49, Some("upstream-obfuscation")),
+        ]);
+        let original = source.clone();
+        let accepted = filter.filter(source.clone()).await.unwrap();
+        let mut invalid = source.clone();
+        invalid.server[0].shared_secret = Some(SecretString::new(String::new()));
+        assert!(filter.filter(invalid).await.is_err());
+        let missing = test_config_from_host_ports(&[("192.0.2.20", 49)]);
+        assert!(filter.filter(missing).await.is_err());
+        assert_eq!(source, original);
+        assert_eq!(
+            accepted
+                .proxy_downstream_obfuscation
+                .shared_secret()
+                .unwrap(),
+            source.server[0].shared_secret.as_ref()
+        );
+    }
+}

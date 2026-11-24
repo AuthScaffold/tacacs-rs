@@ -93,7 +93,7 @@ These direct helpers use caller-unowned work scopes and do not enforce a global 
 Supervised callers use `materialize_planned_servers` with preflighted typed plans and their registered work scope.
 They supply a nonblocking admission check before each typed installation.
 `ConfigurationMaterialBudget` supplies checked request counts, logical payload, retained-copy charges, and high-water checks without Tokio.
-Borrowed payload sizing covers decoded secrets, keys, certificates, intermediates, trust bags, CRLs, and OCSP responses.
+Borrowed payload sizing covers decoded secrets, keys, certificates, intermediates, and trust bags.
 Names, opaque references, metadata, and allocator slack are excluded.
 This configuration-only sizing does not exempt Rust payload created by endpoint preparation.
 `PrepareOptions::with_payload_ledger` supplies the same candidate ledger to networking through `PreparationPayloadLedger`.
@@ -137,9 +137,9 @@ Set a different timeout in the canonical YANG source or with `TacacsPlusServerBu
 Schema-free callers use `PreparedEndpoint::new` with one `PreparedTransport` and a validated `ServerAddress`.
 `ConnectOptions` controls the TCP timeout, optional preflight, and derived local binding.
 `TlsClientConfig::prepare` takes `CertificateVerification`, peer identity, trust, and optional SNI. It does not accept a verification boolean.
-Disabled verification emits a warning and rejects required revocation evidence. Credential validation and authentication certificate dates still apply.
-Attach stapled OCSP, fetched OCSP, and CRLs to that configuration before endpoint construction.
-The endpoint has no security-selection or evidence-attachment methods.
+Disabled verification emits a warning and skips revocation checks. Credential validation and authentication certificate dates still apply.
+The endpoint has no security-selection methods. A host attaches a revocation verifier with `PreparedEndpoint::with_revocation_verifier`.
+`revocation_settings` converts the global `tacacsrs:certificate-revocation` container to networking `RevocationSettings`. This crate does not create or inject a verifier.
 `PskClientConfig::prepare` validates and retains optional SNI with the PSK context.
 `PreparedTransport::Psk` accepts only that prepared configuration, with no separate SNI override.
 
@@ -170,7 +170,7 @@ Native callers pass `CertificateTrust::Platform` or `CertificateTrust::Certifica
 The explicit variant separates authority DER from exact peer DER. Its collections cannot both be empty.
 OpenSSL still enforces peer identity, validity, purpose, and path checks. The trust-role callback never changes failed native verification into success.
 Direct trust accepts a CA-signed leaf without requiring its issuer. A renewed certificate with the same key needs a new exact entry or CA trust.
-These changes do not add revocation retrieval or client certificate-chain provisioning.
+These changes do not add client certificate-chain provisioning. For CRL checks, see the [YANG guide](../../docs/yang-config-guide.md#certificate-revocation).
 
 Each certificate field contains exactly one DER certificate. Native preparation rejects concatenated certificates and trailing bytes, including with verification disabled.
 CLI PEM input likewise requires exactly one certificate. DER input is normalized without modification, then checked during native preparation.
@@ -236,9 +236,9 @@ The generated `tacacsrs::RuntimePolicy` retains absent operation containers as `
 Consumers use their generated defaults when preparing runtime behavior without changing the source value.
 `policy::validate_runtime_policy` also validates programmatically constructed generated values.
 
-The YANG defaults are 30 recovery seconds, deferred failover, and 64 concurrent requests per operation.
-Authentication defaults to a 4096-byte body limit. Authorization and accounting default to 16384 bytes.
-The runtime derives these defaults from generated types rather than independent constants.
+The YANG defaults are 30 recovery seconds, deferred failover, `connect-preflight` set to `disabled`, and 64 concurrent requests per operation. Authentication defaults to a 4096-byte body limit, while authorization and accounting default to 16384 bytes. The runtime derives these defaults from generated types rather than independent constants.
+
+`connect-preflight` accepts `disabled` or `accounting-watchdog`. When set to `accounting-watchdog`, opening a connection to an accounting-capable upstream server sends a TACACS+ accounting `WATCHDOG` preflight probe before caching the client; servers that do not support accounting skip the probe.
 
 The non-presence `candidate-preparation` container has three positive `uint32` leaves:
 
@@ -292,7 +292,8 @@ This contract uses existing inline and source-row material. It does not add a ne
 `source::ConfigDatastore` supplies canonical YANG snapshots through `load` and change events through `observe`.
 Every accepted change contains the complete snapshot. Consumers can use its delta, but the delta does not replace authoritative configuration.
 `source::StaticDatastore` holds one caller-validated snapshot and returns an empty observation stream.
-The source contract also carries validation options and initial-load and change-notification policies.
+The source contract also carries validation options and the change-notification behavior in `SourceBehavior`. `SourceBehavior` is not the YANG `tacacsrs:runtime-policy` container. An unavailable initial snapshot is never fatal for the agent. The agent retries it.
+A change can also carry the `tacacsrs:local-services` and `tacacsrs:runtime-policy` sections that the source owns. `None` keeps the active value of a section. A source that owns a section sends a value with every change.
 
 `input::CliDatastoreInput` accepts parsed executable inputs without depending on clap.
 `input::tacacs_plus_from_cli_input` converts those inputs into a validated YANG snapshot through the canonical builders and validation rules.

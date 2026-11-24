@@ -7,28 +7,26 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::task::JoinSet;
 
 use super::TacacsProxyService;
-use crate::runtime::{ListenerRegistration, ShutdownReceiver};
+use crate::runtime::{BindSignal, ShutdownReceiver};
 use crate::services::ListenerOptions;
 
 mod tcp;
 mod unix;
 
 pub(super) async fn serve<Connector: tacacsrs_networking::routed::EndpointConnector>(
-    endpoint: &ListenerEndpoint,
+    endpoint: ListenerEndpoint,
     service: TacacsProxyService<Connector>,
     options: ListenerOptions,
     shutdown: ShutdownReceiver,
-    registration: ListenerRegistration,
+    bound: BindSignal,
 ) -> anyhow::Result<()>
 where
     Connector::Connection: crate::upstream::UpstreamConnection,
 {
     match endpoint {
-        ListenerEndpoint::Unix(path) => {
-            unix::serve(path, service, options, shutdown, registration).await
-        }
+        ListenerEndpoint::Unix(path) => unix::serve(&path, service, options, shutdown, bound).await,
         ListenerEndpoint::Tcp(address) => {
-            tcp::serve(*address, service, options, shutdown, registration).await
+            tcp::serve(address, service, options, shutdown, bound).await
         }
     }
 }
@@ -69,11 +67,10 @@ where
             }
             accepted = listener.accept_proxy_stream(), if connections.len() < options.max_connections => {
                 let (stream, peer_label) = accepted?;
-                let request_guard = service.start_request();
                 let service = service.clone();
                 connections.spawn(async move {
                     let result = tokio::time::timeout(options.connection_lifetime,
-                        service.handle_connection(stream, peer_label.clone(), request_guard)).await;
+                        service.handle_connection(stream, peer_label.clone())).await;
                     if let Err(error) = result.map_err(anyhow::Error::from).and_then(std::convert::identity) {
                         log::warn!("TACACS+ proxy connection {peer_label} stopped with an error: {error:#}");
                     }
@@ -83,7 +80,6 @@ where
     }
 
     drain_connections(connections, PROXY_SHUTDOWN_GRACE, &endpoint_label).await;
-    service.wait_for_active_requests().await;
     Ok(())
 }
 
@@ -133,7 +129,6 @@ mod tests {
     use tokio::task::JoinSet;
 
     use super::drain_connections;
-    use crate::runtime::RequestTracker;
 
     struct QueuedListener {
         streams: tokio::sync::Mutex<tokio::sync::mpsc::Receiver<tokio::io::DuplexStream>>,
@@ -167,11 +162,7 @@ mod tests {
             Duration::from_secs(30),
             health,
         ));
-        let service = super::TacacsProxyService::new(
-            manager,
-            Arc::new(RequestTracker::default()),
-            ProxyLoopGuard::new(None),
-        );
+        let service = super::TacacsProxyService::new(manager, ProxyLoopGuard::new(None));
         let (sender, receiver) = tokio::sync::mpsc::channel(2);
         let (first, first_peer) = tokio::io::duplex(256);
         let (second, second_peer) = tokio::io::duplex(256);
@@ -212,11 +203,11 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // Miri does not support Tokio time.
     async fn drain_lets_short_requests_finish_before_the_deadline() {
-        let tracker = Arc::new(RequestTracker::default());
-        let guard = tracker.start_request();
+        let guard = Arc::new(());
+        let task_guard = Arc::clone(&guard);
         let mut connections = JoinSet::new();
         connections.spawn(async move {
-            let _guard = guard;
+            let _guard = task_guard;
             tokio::time::sleep(Duration::from_millis(20)).await;
         });
 
@@ -227,19 +218,17 @@ mod tests {
             start.elapsed() < Duration::from_secs(1),
             "a short request must finish before the shutdown time limit"
         );
-        tokio::time::timeout(Duration::from_millis(100), tracker.wait_for_active_requests())
-            .await
-            .expect("the request tracker must reach zero after a clean drain");
+        assert_eq!(Arc::strong_count(&guard), 1, "a clean drain must drop the connection");
     }
 
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // Miri does not support Tokio time.
     async fn drain_aborts_connections_that_outlast_the_grace_period() {
-        let tracker = Arc::new(RequestTracker::default());
-        let guard = tracker.start_request();
+        let guard = Arc::new(());
+        let task_guard = Arc::clone(&guard);
         let mut connections = JoinSet::new();
         connections.spawn(async move {
-            let _guard = guard;
+            let _guard = task_guard;
             // Model a client that sends valid traffic continuously.
             std::future::pending::<()>().await;
         });
@@ -251,8 +240,6 @@ mod tests {
             start.elapsed() < Duration::from_secs(2),
             "drain must return soon after the shutdown time limit"
         );
-        tokio::time::timeout(Duration::from_millis(100), tracker.wait_for_active_requests())
-            .await
-            .expect("cancelling the connection must drop its guard");
+        assert_eq!(Arc::strong_count(&guard), 1, "cancelling the connection must drop its task");
     }
 }

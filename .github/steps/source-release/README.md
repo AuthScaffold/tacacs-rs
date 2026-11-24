@@ -26,8 +26,8 @@ Recovery and validation require read access only.
 The candidate contains one `Source-Commit`, one `Versions`, and one `Release-Plan` trailer.
 The plan has schema version 1 and records the source, previous release head, versions, intended tags, and previous CalVer tag.
 Duplicate JSON keys and duplicate metadata are errors.
-The version map must cover exactly the library crates and the three managed executable crates.
-Unmanaged executable versions remain unchanged.
+The version map must cover exactly the managed library crates and the three managed executable crates.
+Internal test-only libraries and unmanaged executable versions remain unchanged.
 An empty tag array permits a validation-only candidate.
 The publish operation rejects such a candidate before any ref update.
 

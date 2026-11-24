@@ -6,6 +6,8 @@ use clap::CommandFactory;
 mod cli {
     include!("src/cli.rs");
 }
+#[path = "src/source_registry.rs"]
+mod source_registry;
 
 use cli::Cli;
 
@@ -24,6 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("cargo:rerun-if-changed=src/cli.rs");
     println!("cargo:rerun-if-changed=src/main.rs");
+    println!("cargo:rerun-if-changed=src/source_registry.rs");
 
     Ok(())
 }

@@ -43,4 +43,4 @@ parent directory with correct ownership and permissions.
 
 ## Platform support
 
-This crate supports Linux GNU only. It fails to compile on other targets.
+This crate supports Linux (GNU and musl). It fails to compile on non-Linux targets.

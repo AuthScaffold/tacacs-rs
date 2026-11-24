@@ -80,7 +80,6 @@ impl TlsConfigurationBuilder {
 
         builder.set_min_proto_version(Some(SslVersion::TLS1_3))?;
         builder.set_max_proto_version(Some(SslVersion::TLS1_3))?;
-        super::revocation::configure_verifier(&mut builder)?;
 
         if self.disable_certificate_verification {
             builder.set_verify(SslVerifyMode::NONE);
@@ -99,13 +98,15 @@ impl TlsConfigurationBuilder {
                     if !verified || context.error_depth() != 0 {
                         return verified;
                     }
-                    let accepted = context.ex_data(ssl_index).is_some_and(|ssl| {
-                        super::revocation::crls::verify(ssl, context.chain()).is_ok()
-                    });
-                    if !accepted {
-                        context.set_error(X509VerifyResult::APPLICATION_VERIFICATION);
-                    }
-                    accepted
+                    let Some(ssl) = context
+                        .ex_data(ssl_index)
+                        .filter(|ssl| super::revocation_hook::attached(ssl))
+                    else {
+                        return true;
+                    };
+                    let path = super::revocation_hook::owned_chain(context.chain());
+                    let verdict = super::revocation_hook::check(ssl, path);
+                    apply_verdict(context, verdict)
                 });
             }
         }
@@ -140,8 +141,8 @@ pub(super) fn validate_client_certificate_dates(
 ) -> anyhow::Result<()> {
     let now = std::time::SystemTime::now();
     let validate = |certificate: &openssl::x509::X509Ref| -> anyhow::Result<()> {
-        let valid_from = super::validity::system_time(certificate.not_before())?;
-        let valid_until = super::validity::system_time(certificate.not_after())?;
+        let valid_from = super::validity::asn1_system_time(certificate.not_before())?;
+        let valid_until = super::validity::asn1_system_time(certificate.not_after())?;
         anyhow::ensure!(
             valid_from <= now && now < valid_until,
             "Client certificate validity excludes the current time"
@@ -265,37 +266,56 @@ fn configure_certificate_trust(
                     .is_ok_and(|der| authority_der.iter().any(|pin| pin.as_slice() == der))
             });
         let accepted = if exact_peer || authority_path {
-            true
+            Some(if authority_path {
+                super::revocation_hook::owned_chain(context.chain())
+            } else {
+                None
+            })
         } else {
-            authority_store
-                .as_ref()
-                .and_then(|store| {
-                    let certificate = context.current_cert()?;
-                    let ssl = context.ex_data(ssl_index)?;
-                    let chain = ssl.peer_cert_chain()?;
-                    X509StoreContext::new()
-                        .and_then(|mut verification| {
-                            verification
-                                .init(store, certificate, chain, |verified| verified.verify_cert())
+            authority_store.as_ref().and_then(|store| {
+                let certificate = context.current_cert()?;
+                let ssl = context.ex_data(ssl_index)?;
+                let chain = ssl.peer_cert_chain()?;
+                X509StoreContext::new()
+                    .and_then(|mut verification| {
+                        verification.init(store, certificate, chain, |verified| {
+                            Ok(verified
+                                .verify_cert()?
+                                .then(|| super::revocation_hook::owned_chain(verified.chain())))
                         })
-                        .ok()
-                })
-                .unwrap_or(false)
+                    })
+                    .ok()
+                    .flatten()
+            })
         };
-        if accepted {
-            if context
-                .ex_data(ssl_index)
-                .is_some_and(|ssl| super::revocation::crls::verify(ssl, context.chain()).is_err())
-            {
-                context.set_error(X509VerifyResult::APPLICATION_VERIFICATION);
-                return false;
-            }
+        let Some(path) = accepted else {
+            context.set_error(X509VerifyResult::APPLICATION_VERIFICATION);
+            return false;
+        };
+        let Some(ssl) = context
+            .ex_data(ssl_index)
+            .filter(|ssl| super::revocation_hook::attached(ssl))
+        else {
             return true;
-        }
-        context.set_error(X509VerifyResult::APPLICATION_VERIFICATION);
-        false
+        };
+        // An exact pin without a CA path has no issuer to check revocation against.
+        let verdict = super::revocation_hook::check(ssl, path);
+        apply_verdict(context, verdict)
     });
     Ok(())
+}
+
+fn apply_verdict(
+    context: &mut openssl::x509::X509StoreContextRef,
+    verdict: super::revocation_hook::Verdict,
+) -> bool {
+    match verdict {
+        super::revocation_hook::Verdict::Continue => true,
+        super::revocation_hook::Verdict::Reject(code) => {
+            context.set_error(code);
+            false
+        }
+    }
 }
 
 #[cfg(test)]

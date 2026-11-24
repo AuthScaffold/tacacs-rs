@@ -50,9 +50,17 @@ impl SharedFixedSession {
             .send(packet)
             .await
             .context("multiplexed TACACS+ writer is closed")?;
-        receiver
+        let result = receiver
             .await
-            .context("multiplexed TACACS+ connection closed before the fixed response arrived")?
+            .context("multiplexed TACACS+ connection closed before the fixed response arrived")?;
+        if let Err(error) = &result {
+            if error.is::<crate::exchange_error::ProtocolFailure>() {
+                if let Some(connection) = &self.connection_owner {
+                    connection.wait_driver_finished().await;
+                }
+            }
+        }
+        result
     }
 
     fn mark_complete(&self) -> bool {

@@ -436,6 +436,51 @@ class TestDiscoverLibraries:
         assert crates["root-crate"].relative_dir == "."
         assert crates["alpha"].relative_dir == "crates/alpha"
 
+    def test_internal_test_only_library_excluded_while_publish_false_and_non_default_stay(
+        self, tmp_path: Path,
+    ) -> None:
+        """Only internal_test_only libraries are excluded from SemVer discovery."""
+        _put(tmp_path / "Cargo.toml", """\
+            [workspace]
+            resolver = "2"
+            members = [
+                "libraries/revocation",
+                "libraries/emulator",
+                "libraries/testkit",
+            ]
+            default-members = ["libraries/revocation"]
+            """)
+        _put(tmp_path / "libraries" / "revocation" / "Cargo.toml", """\
+            [package]
+            name = "tacacsrs-revocation"
+            version = "0.0.0-dev"
+            edition = "2021"
+            publish = false
+            """)
+        _put(tmp_path / "libraries" / "revocation" / "src" / "lib.rs", "// rev\n")
+        _put(tmp_path / "libraries" / "emulator" / "Cargo.toml", """\
+            [package]
+            name = "tacacsrs-agent-ipc-emulator"
+            version = "0.0.0-dev"
+            edition = "2021"
+            """)
+        _put(tmp_path / "libraries" / "emulator" / "src" / "lib.rs", "// emu\n")
+        _put(tmp_path / "libraries" / "testkit" / "Cargo.toml", """\
+            [package]
+            name = "tacacsrs-testkit"
+            version = "0.0.0-dev"
+            edition = "2021"
+            publish = false
+
+            [package.metadata.release]
+            internal_test_only = true
+            """)
+        _put(tmp_path / "libraries" / "testkit" / "src" / "lib.rs", "// testkit\n")
+
+        crates = discover_libraries(tmp_path)
+
+        assert set(crates) == {"tacacsrs-revocation", "tacacsrs-agent-ipc-emulator"}
+
 
 # ---------------------------------------------------------------------------
 # Unit tests: dependency graph
@@ -1125,6 +1170,77 @@ class TestComputeAllVersions:
         new_tag_names = result["new_tags"]
         assert "stable-v0.1.0" not in new_tag_names
         assert "active-v0.1.1" in new_tag_names
+
+    def test_internal_testkit_changes_skip_semver_api_analysis_and_calver(
+        self, tmp_workspace: Path,
+    ) -> None:
+        """Changes solely under an internal_test_only library trigger no release."""
+        make_library(tmp_workspace, "prod-lib", "prod_lib")
+        make_executable(tmp_workspace, "tacon", "tacon")
+        _put(tmp_workspace / "libraries" / "tacacsrs_testkit" / "Cargo.toml", """\
+            [package]
+            name = "tacacsrs-testkit"
+            version = "0.0.0-dev"
+            edition = "2021"
+            publish = false
+
+            [package.metadata.release]
+            internal_test_only = true
+
+            [dependencies]
+            prod-lib = { path = "../prod_lib" }
+            """)
+        _put(
+            tmp_workspace / "libraries" / "tacacsrs_testkit" / "src" / "lib.rs",
+            "// fixture v1\n",
+        )
+        _put(tmp_workspace / "Cargo.toml", """\
+            [workspace]
+            resolver = "2"
+            members = [
+                "libraries/prod_lib",
+                "libraries/tacacsrs_testkit",
+                "executables/tacon",
+            ]
+            default-members = [
+                "libraries/prod_lib",
+                "executables/tacon",
+            ]
+            """)
+        git_commit(tmp_workspace, "initial")
+        git_tag(tmp_workspace, "prod-lib-v0.1.0")
+        git_tag(tmp_workspace, "tacacs-rs-2026.424.0")
+
+        # Modify only tacacsrs-testkit.
+        (tmp_workspace / "libraries" / "tacacsrs_testkit" / "src" / "lib.rs").write_text(
+            "// fixture v2\n", encoding="utf-8",
+        )
+        git_commit(tmp_workspace, "update testkit only")
+
+        now = datetime(2026, 4, 24, tzinfo=timezone.utc)
+        with patch(
+            "compute_versions.classify_api_change",
+            side_effect=AssertionError("api-classifier must not run for testkit changes"),
+        ):
+            result = compute_all_versions(
+                tmp_workspace,
+                binary_name="tacon",
+                skip_semver_checks=False,
+                now=now,
+            )
+
+        assert "tacacsrs-testkit" not in result["versions"]
+        assert result["versions"] == {"prod-lib": "0.1.0", "tacon": "2026.424.0"}
+        assert result["new_tags"] == []
+        assert result["calver_tag"] == ""
+        assert result["has_release"] is False
+
+        prerelease = compute_all_versions(
+            tmp_workspace,
+            binary_name="tacon",
+            pre_release="dev",
+        )
+        assert "tacacsrs-testkit" not in prerelease["versions"]
 
 
 # ---------------------------------------------------------------------------

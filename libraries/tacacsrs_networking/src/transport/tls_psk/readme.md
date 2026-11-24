@@ -1,9 +1,6 @@
 # TLS-PSK Transport
 
-This module implements TLS 1.3 External Pre-Shared Key (EPSK) transport for
-TACACS+ connections, gated behind the `psk` feature flag. It uses OpenSSL (via
-`openssl` and `tokio-openssl` crates), matching the certificate-based TLS
-transport backend used by the default build.
+This module implements TLS 1.3 External Pre-Shared Key (EPSK) transport for TACACS+ connections. It uses OpenSSL through the `openssl` and `tokio-openssl` crates, matching the certificate-based TLS transport backend.
 
 ## Background: What is TLS-PSK?
 

@@ -276,106 +276,6 @@ async fn historical_identity_does_not_coalesce_recreated_shared_source_owner() {
         .unwrap();
     let second = state.current_server_set().servers[0].endpoint.clone();
     assert!(!first.same_identity(&second));
-    let history = state.prepared_history.lock().unwrap();
-    assert!(history.iter().any(|(endpoint, owner)| {
-        endpoint.same_identity(&second) && Arc::ptr_eq(owner, &server)
-    }));
-}
-
-#[tokio::test]
-async fn revocation_change_retires_history_after_prepared_server_owner_drops() {
-    struct GracefulConnector(Arc<FakeConnection>);
-
-    #[async_trait]
-    impl tacacsrs_networking::routed::EndpointConnector for GracefulConnector {
-        type Connection = dyn crate::upstream::UpstreamConnection;
-
-        async fn connect(
-            &self,
-            _: tacacsrs_networking::PreparedEndpoint,
-            _: OperationKind,
-        ) -> anyhow::Result<Arc<Self::Connection>> {
-            Ok(self.0.clone())
-        }
-
-        async fn retire(&self, _: &Self::Connection) {}
-
-        fn close(&self, connection: &Self::Connection) {
-            connection.close();
-        }
-
-        async fn close_and_join(
-            &self,
-            connection: &Self::Connection,
-            deadline: tacacsrs_networking::RequestDeadline,
-        ) -> anyhow::Result<()> {
-            connection.close_and_join(deadline).await
-        }
-    }
-
-    let mut server = tacacsrs_config::TacacsPlusServerBuilder::new(
-        "historical-revocation",
-        REQUIRED_SERVER_TYPES,
-        "192.0.2.70",
-        449,
-    )
-    .with_tls_server_authentication()
-    .build();
-    server
-        .server_authentication
-        .as_mut()
-        .unwrap()
-        .require_stapled_ocsp = Some(tacacsrs_config::tacacsrs::RequireStapledOcsp {
-        max_response_age_seconds: 300,
-    });
-    let connection = Arc::new(FakeConnection {
-        address: "192.0.2.70:449".to_owned(),
-        usable: AtomicBool::new(true),
-        fail_next_request: AtomicBool::new(false),
-    });
-    let state = UpstreamManager::from_connector(
-        vec![Arc::new(server.clone())],
-        PreparedProxyPolicy::unobfuscated(),
-        RuntimePolicy::default(),
-        GracefulConnector(connection.clone()),
-        test_health(),
-        tacacsrs_config::prepare::PrepareOptions::default(),
-    )
-    .unwrap();
-    let bound = state.bind_server_for_new_session().await.unwrap();
-    let old = Arc::downgrade(&state.current_server_set().servers[0]);
-    let historical_endpoint = state.current_server_set().servers[0].endpoint.clone();
-    let historical_metadata = Arc::downgrade(&bound.server);
-    state.reload_servers(Vec::new()).await.unwrap();
-    assert!(old.upgrade().is_none());
-    assert!(connection.usable.load(Ordering::Acquire));
-    server
-        .server_authentication
-        .as_mut()
-        .unwrap()
-        .require_stapled_ocsp = None;
-    state.reload_servers(vec![server]).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(1), async {
-        while connection.usable.load(Ordering::Acquire) {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("changed revocation must close historical connections before their grace cutoff");
-    drop(bound);
-    tokio::time::timeout(Duration::from_secs(1), async {
-        while state
-            .current_server_set()
-            .client
-            .retains_endpoint(&historical_endpoint)
-        {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    state.reload_servers(Vec::new()).await.unwrap();
-    assert!(historical_metadata.upgrade().is_none());
 }
 
 #[tokio::test]
@@ -595,17 +495,6 @@ async fn test_connections_open_lazily_in_preference_order() {
     assert_eq!(connector.connect_attempts_for(&second.address).await, 1);
 }
 
-async fn recover_fake_connection(connection: &FakeConnection) {
-    tokio::time::timeout(Duration::from_secs(1), async {
-        while connection.usable.load(Ordering::Acquire) {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("old connection retirement must precede simulated server recovery");
-    connection.usable.store(true, Ordering::Release);
-}
-
 #[tokio::test]
 async fn operation_failure_does_not_move_other_operation_cursors() {
     let primary = Arc::new(FakeConnection {
@@ -633,8 +522,7 @@ async fn operation_failure_does_not_move_other_operation_cursors() {
         .bind_server_for_operation(OperationKind::Authentication)
         .await
         .expect("primary authentication route");
-    authentication.note_failure().await;
-    recover_fake_connection(&primary).await;
+    authentication.note_server_failure().await;
 
     let authorization = state
         .bind_server_for_operation(OperationKind::Authorization)
@@ -1170,14 +1058,15 @@ async fn binding_outcomes_outlive_router_and_manager() {
     let router = OperationRouter::new(manager.clone(), PolicyService::ClientApi);
     let request = router.capture_request(OperationKind::Authentication);
     let initial = request.bind().await.unwrap();
-    initial.note_failure().await;
-    recover_fake_connection(&primary).await;
+    initial.note_server_failure().await;
     tokio::time::advance(Duration::from_secs(5)).await;
-    let recovery = request.bind().await.unwrap();
+    let recovery_request = router.capture_request(OperationKind::Authentication);
+    let recovery = recovery_request.bind().await.unwrap();
     assert_eq!(recovery.connection.server_address(), primary.address);
     let owner = Arc::downgrade(&manager);
     drop(initial);
     drop(request);
+    drop(recovery_request);
     drop(router);
     drop(manager);
     assert!(owner.upgrade().is_none());
@@ -1188,7 +1077,7 @@ async fn binding_outcomes_outlive_router_and_manager() {
         .await
         .unwrap();
     assert_eq!(restored.connection().server_address(), primary.address);
-    recovery.note_failure().await;
+    recovery.note_server_failure().await;
     let fallback = client
         .bind(OperationKind::Authentication, Duration::from_secs(5))
         .await
@@ -1223,8 +1112,7 @@ async fn real_request_recovers_a_higher_priority_operation_route() {
         .bind_server_for_operation(OperationKind::Authentication)
         .await
         .expect("initial primary route");
-    initial.note_failure().await;
-    recover_fake_connection(&primary).await;
+    initial.note_server_failure().await;
     let fallback = state
         .bind_server_for_operation(OperationKind::Authentication)
         .await
@@ -1281,8 +1169,7 @@ async fn stale_failure_does_not_invalidate_a_recovered_connection() {
         .bind_server_for_operation(OperationKind::Authentication)
         .await
         .expect("initial binding");
-    stale_binding.note_failure().await;
-    recover_fake_connection(&primary).await;
+    stale_binding.note_server_failure().await;
     tokio::time::advance(Duration::from_secs(5)).await;
     let recovered = state
         .bind_server_for_operation(OperationKind::Authentication)
@@ -1290,14 +1177,15 @@ async fn stale_failure_does_not_invalidate_a_recovered_connection() {
         .expect("recovered binding");
     recovered.note_success().await;
 
-    stale_binding.note_failure().await;
+    stale_binding.note_server_failure().await;
     let current = state
         .bind_server_for_operation(OperationKind::Authentication)
         .await
         .expect("current connection remains available");
 
     assert_eq!(current.binding.connection_generation(), recovered.binding.connection_generation());
-    assert_eq!(connector.connect_attempts_for(&primary.address).await, 2);
+    // An ERROR keeps the shared connection, so recovery reuses it.
+    assert_eq!(connector.connect_attempts_for(&primary.address).await, 1);
 }
 
 #[tokio::test]
@@ -1495,4 +1383,76 @@ async fn test_concurrent_failover_coalesces_connection_attempts() {
     assert_eq!(connector.connect_attempts_for(&first.address).await, 1);
     assert_eq!(connector.connect_attempts_for(&second.address).await, 1);
     assert_eq!(connector.max_in_flight_connects(), 1);
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Miri does not support Tokio tasks.
+async fn shutdown_suppresses_only_delivered_connection_failures() {
+    struct FailingJoinConnector {
+        connection: Arc<FakeConnection>,
+        error: fn() -> anyhow::Error,
+    }
+
+    #[async_trait]
+    impl tacacsrs_networking::routed::EndpointConnector for FailingJoinConnector {
+        type Connection = dyn crate::upstream::UpstreamConnection;
+
+        async fn connect(
+            &self,
+            _: tacacsrs_networking::PreparedEndpoint,
+            _: OperationKind,
+        ) -> anyhow::Result<Arc<Self::Connection>> {
+            Ok(self.connection.clone())
+        }
+
+        async fn retire(&self, _: &Self::Connection) {}
+
+        fn close(&self, connection: &Self::Connection) {
+            connection.close();
+        }
+
+        async fn close_and_join(
+            &self,
+            connection: &Self::Connection,
+            _: tacacsrs_networking::RequestDeadline,
+        ) -> anyhow::Result<()> {
+            connection.close();
+            Err((self.error)())
+        }
+    }
+
+    async fn shutdown_with(error: fn() -> anyhow::Error) -> anyhow::Result<()> {
+        let state = UpstreamManager::from_connector(
+            vec![Arc::new(test_server("server-a:49"))],
+            PreparedProxyPolicy::unobfuscated(),
+            RuntimePolicy::default(),
+            FailingJoinConnector {
+                connection: Arc::new(FakeConnection {
+                    address: "server-a:49".to_owned(),
+                    usable: AtomicBool::new(true),
+                    fail_next_request: AtomicBool::new(false),
+                }),
+                error,
+            },
+            test_health(),
+            tacacsrs_config::prepare::PrepareOptions::default(),
+        )
+        .unwrap();
+        let _bound = state.bind_server_for_new_session().await.unwrap();
+        state
+            .close_and_join(tacacsrs_networking::RequestDeadline::after(Duration::ZERO).unwrap())
+            .await
+    }
+
+    shutdown_with(|| {
+        anyhow::anyhow!("failed to read TACACS+ packet header")
+            .context(tacacsrs_networking::ConnectionFailure)
+    })
+    .await
+    .unwrap();
+
+    let error = shutdown_with(|| anyhow::anyhow!("join upstream driver"))
+        .await
+        .unwrap_err();
+    assert_eq!(error.to_string(), "join upstream driver");
 }

@@ -15,6 +15,7 @@
 //! these runtimes, so callers never hold a runtime directly.
 
 mod dedicated;
+pub(crate) mod failure;
 pub(crate) mod task;
 mod multiplexed;
 

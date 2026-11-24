@@ -1,15 +1,33 @@
 //! Cancellation-safe ownership of a single connection driver task.
 
 use std::future::Future;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tokio::task::{AbortHandle, JoinHandle};
 
 use crate::RequestDeadline;
 
+#[derive(Default)]
+struct TaskFinished {
+    done: AtomicBool,
+    notify: Notify,
+}
+
+struct TaskFinishedGuard(Arc<TaskFinished>);
+
+impl Drop for TaskFinishedGuard {
+    fn drop(&mut self) {
+        self.0.done.store(true, Ordering::Release);
+        self.0.notify.notify_waiters();
+    }
+}
+
 pub(crate) struct DriverTask {
     handle: Mutex<Option<JoinHandle<anyhow::Result<()>>>>,
     abort: AbortHandle,
+    finished: Arc<TaskFinished>,
 }
 
 impl DriverTask {
@@ -21,15 +39,33 @@ impl DriverTask {
         runtime: &tokio::runtime::Handle,
         future: impl Future<Output = anyhow::Result<()>> + Send + 'static,
     ) -> Self {
-        let handle = runtime.spawn(future);
+        let finished = Arc::new(TaskFinished::default());
+        let guard = TaskFinishedGuard(Arc::clone(&finished));
+        let handle = runtime.spawn(async move {
+            let _guard = guard;
+            future.await
+        });
         Self {
             abort: handle.abort_handle(),
             handle: Mutex::new(Some(handle)),
+            finished,
         }
     }
 
     pub(crate) fn is_finished(&self) -> bool {
-        self.abort.is_finished()
+        self.finished.done.load(Ordering::Acquire) || self.abort.is_finished()
+    }
+
+    pub(crate) async fn wait_finished(&self) {
+        loop {
+            let notified = self.finished.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.finished.done.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
     }
 
     pub(crate) fn abort(&self) {

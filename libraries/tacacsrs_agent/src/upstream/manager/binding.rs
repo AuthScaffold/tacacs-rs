@@ -37,9 +37,18 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         Ok((bound, lease.runtime.proxy_downstream_obfuscation.clone()))
     }
 
+    #[cfg(test)]
     pub(in crate::upstream) async fn bind_request(
         &self,
         lease: &RoutingLease<Connector>,
+    ) -> anyhow::Result<BoundServer<Connector>> {
+        self.bind_request_excluding(lease, &[]).await
+    }
+
+    pub(in crate::upstream) async fn bind_request_excluding(
+        &self,
+        lease: &RoutingLease<Connector>,
+        excluded: &[usize],
     ) -> anyhow::Result<BoundServer<Connector>> {
         let runtime = &lease.runtime;
         anyhow::ensure!(
@@ -58,7 +67,11 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
             .begin_attempt(runtime.availability_generation);
         match lease
             .deadline()
-            .run(client.bind(lease.operation, runtime.runtime_policy.failover_recovery_interval()))
+            .run(client.bind_excluding(
+                lease.operation,
+                runtime.runtime_policy.failover_recovery_interval(),
+                excluded,
+            ))
             .await
             .map_err(anyhow::Error::from)
             .and_then(std::convert::identity)

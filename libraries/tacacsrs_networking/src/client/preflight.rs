@@ -20,6 +20,7 @@ impl TacacsClient {
     pub(super) async fn run_preflight(&self) -> anyhow::Result<()> {
         match self.endpoint.options.preflight() {
             ConnectPreflight::Disabled => Ok(()),
+            ConnectPreflight::AccountingWatchdog if !self.endpoint.supports_accounting() => Ok(()),
             ConnectPreflight::AccountingWatchdog => self.send_accounting_watchdog_preflight().await,
         }
     }
@@ -31,7 +32,8 @@ impl TacacsClient {
             .await?;
 
         match reply.status {
-            TacacsAccountingStatus::TacPlusAcctStatusSuccess => {
+            TacacsAccountingStatus::TacPlusAcctStatusSuccess
+            | TacacsAccountingStatus::TacPlusAcctStatusError => {
                 observation.succeeded = true;
                 Ok(())
             }

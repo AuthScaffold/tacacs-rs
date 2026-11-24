@@ -8,17 +8,27 @@
 mod client_service;
 mod config_filter;
 mod config_supervisor;
+mod config_view;
 mod health;
+mod health_view;
+mod listener_reconciler;
 mod listener_service;
+mod local_services;
 mod materialization_coordinator;
 pub(crate) mod candidate_preparation;
+mod candidate_sections;
 mod policy_supervisor;
 mod proxy_loop_guard;
-mod request_tracker;
 mod revision;
 #[cfg(test)]
 mod server_catalog;
-mod shutdown;
+pub(crate) mod shutdown;
+mod application;
+mod application_tasks;
+mod source_filter;
+
+pub use application::{AgentRuntime, RuntimeInputs, PolicyInput};
+pub use health_view::{AgentReadinessCheck, RuntimeHealth};
 
 pub use client_service::{DiagnosticsHandle, ListenerSettings, TacacsClientService};
 pub use config_filter::{FilteredTacacsPlus, NoopTacacsPlusFilter, TacacsPlusFilter};
@@ -40,7 +50,14 @@ pub use health::{
 pub(crate) use server_catalog::REQUIRED_SERVER_TYPES;
 #[cfg(test)]
 pub(crate) use server_catalog::enumerate_supported_servers;
+pub(crate) use listener_reconciler::{
+    endpoints_conflict, reconcile, BindSignal, DesiredListener, ListenerInstances,
+};
+pub use config_view::{ConfigView, LocalServicesView, RuntimePolicyView};
+pub(crate) use config_view::ConfigPublisher;
+pub use local_services::ActiveLocalServices;
+pub(crate) use candidate_sections::{CandidateSections, SourcePolicy};
+pub(crate) use local_services::LocalServicesState;
 pub(crate) use proxy_loop_guard::{ProxyLoopGuard, ProxyListenerBinding};
-pub(crate) use request_tracker::{RequestGuard, RequestTracker};
 pub use shutdown::{ListenerRegistration, ShutdownReceiver};
 pub(crate) use shutdown::ShutdownCoordinator;

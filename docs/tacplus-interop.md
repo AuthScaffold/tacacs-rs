@@ -101,7 +101,7 @@ For a running peer with the corrected default fixture, run:
 TACPLUS_TCP_ADDR=127.0.0.1:4949 \
 TACPLUS_TLS_ADDR=127.0.0.1:4449 \
 TACPLUS_PSK_ADDR=127.0.0.1:4450 \
-cargo test -p tacacsrs-agentd --test tacplus_interop --locked -- \
+cargo test -p tacacsrs-config --test tacplus_interop --locked -- \
   --ignored --skip psk_only_operations --skip psk_sha384_operations \
   --skip missing_client_certificate_is_rejected --skip plain_tcp_operations --test-threads=1
 ```
