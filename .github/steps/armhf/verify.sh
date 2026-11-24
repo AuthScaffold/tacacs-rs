@@ -10,7 +10,7 @@ cargo --version
 protoc --version
 qemu-arm --version
 test "${CARGO_BUILD_TARGET}" = armv7-unknown-linux-gnueabihf
-find Cargo.toml Cargo.lock .cargo libraries executables lde .github/steps/armhf \
+find Cargo.toml Cargo.lock .cargo libraries executables tests/e2e lde .github/steps/armhf \
     -type f -print0 | sort -z | xargs -0 sha256sum > /evidence/SOURCE_SHA256SUMS
 
 echo "==> Protobuf compiler selection regressions"

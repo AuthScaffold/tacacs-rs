@@ -318,8 +318,8 @@ impl TacacsClient {
             self.endpoint.obfuscation_key.clone(),
             counters,
             publication,
-            Arc::clone(&self.shared_connection),
-            Arc::clone(&self.single_connection_state),
+            Arc::downgrade(&self.shared_connection),
+            Arc::downgrade(&self.single_connection_state),
         ));
         let session = match expected {
             Some(expected) => connection

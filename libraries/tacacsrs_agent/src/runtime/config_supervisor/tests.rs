@@ -1263,7 +1263,7 @@ fn central_test_config(server_count: usize) -> TacacsPlus {
 }
 
 fn supervisor(
-    datastore: Arc<ScriptedDatastore>,
+    datastore: Arc<impl ConfigDatastore + 'static>,
     backoff: Duration,
 ) -> (ConfigSupervisor, RuntimeHealthPublisher, Arc<TacacsClientService>) {
     let health = RuntimeHealthPublisher::new(EnabledServices::CLIENT_API);
@@ -3384,4 +3384,132 @@ async fn failed_recovery_baseline_reopens_observation_before_retry() {
     assert_eq!(datastore.subscribe_count.load(Ordering::Relaxed), 3);
     assert_eq!(service.server_count(), 2);
     assert_eq!(health.snapshot().datastore(), DatastoreState::Current);
+}
+
+#[tokio::test(start_paused = true)]
+async fn signal_observation_recovers_after_downstream_candidate_rejection() {
+    use futures_util::FutureExt;
+    use tacacsrs_config::source::{ObservationSchedule, ObservedSnapshot, SignalObservation};
+    use tokio_stream::wrappers::ReceiverStream;
+
+    use crate::runtime::config_filter::{FilteredTacacsPlus, TacacsPlusFilter};
+
+    struct SignalDatastore {
+        signals: Mutex<Option<tokio::sync::mpsc::Receiver<()>>>,
+        server_count: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl ConfigDatastore for SignalDatastore {
+        async fn observe(&self) -> anyhow::Result<Box<dyn ConfigObservation>> {
+            let rx = self
+                .signals
+                .lock()
+                .expect("signals lock")
+                .take()
+                .expect("single observation open");
+            let server_count = Arc::clone(&self.server_count);
+            Ok(Box::new(SignalObservation::spawn(
+                ReceiverStream::new(rx),
+                ObservationSchedule {
+                    debounce: Duration::ZERO,
+                    max_delay: None,
+                    reconcile_interval: Some(Duration::from_secs(60)),
+                    retry_interval: Some(Duration::from_secs(5)),
+                },
+                "signal test disconnected",
+                move || {
+                    let count = server_count.load(Ordering::Acquire);
+                    Box::pin(async move {
+                        Ok(ObservedSnapshot::config_only(Arc::new(test_config(count))))
+                    })
+                },
+            )))
+        }
+
+        fn behavior(&self) -> SourceBehavior {
+            SourceBehavior::new(ChangeNotificationMode::Continuous)
+        }
+
+        async fn load(&self) -> anyhow::Result<TacacsPlus> {
+            Ok(test_config(self.server_count.load(Ordering::Acquire)))
+        }
+
+        fn label(&self) -> &'static str {
+            "signal-datastore"
+        }
+    }
+
+    struct FlakyFilter {
+        fail_next: std::sync::atomic::AtomicBool,
+    }
+
+    impl TacacsPlusFilter for FlakyFilter {
+        fn filter<'a>(
+            &'a self,
+            candidate: TacacsPlus,
+            local_services: &'a tacacsrs_config::tacacsrs::LocalServices,
+        ) -> futures_util::future::BoxFuture<'a, anyhow::Result<FilteredTacacsPlus>> {
+            if self.fail_next.swap(false, Ordering::AcqRel) {
+                return async { Err(anyhow::anyhow!("transient DNS lookup failure")) }.boxed();
+            }
+            NoopTacacsPlusFilter.filter(candidate, local_services)
+        }
+    }
+
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    let server_count = Arc::new(AtomicUsize::new(1));
+    let datastore = Arc::new(SignalDatastore {
+        signals: Mutex::new(Some(rx)),
+        server_count: Arc::clone(&server_count),
+    });
+    let (_, health, service) = supervisor(Arc::clone(&datastore), Duration::ZERO);
+    let filter = Arc::new(FlakyFilter {
+        fail_next: std::sync::atomic::AtomicBool::new(false),
+    });
+    let mut supervisor = ConfigSupervisor::with_backoff(
+        datastore,
+        Arc::clone(&service),
+        health.clone(),
+        filter.clone(),
+        Arc::new(FixedBackoff(Duration::ZERO)),
+    );
+
+    supervisor
+        .initialize_until(std::future::pending())
+        .await
+        .expect("baseline must publish");
+    assert_eq!(service.server_count(), 1);
+
+    let cancellation = CancellationToken::new();
+    let notifications = supervisor.run_notifications(&cancellation);
+    tokio::pin!(notifications);
+    assert!(futures_util::poll!(&mut notifications).is_pending());
+
+    // Emit a valid 2-server snapshot that fails downstream filtering once.
+    filter.fail_next.store(true, Ordering::Release);
+    server_count.store(2, Ordering::Release);
+    tx.send(()).await.unwrap();
+    for _ in 0..8 {
+        let _ = futures_util::poll!(&mut notifications);
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(service.server_count(), 1);
+    assert_eq!(health.snapshot().datastore(), DatastoreState::Stale);
+    assert!(health
+        .snapshot()
+        .degradation_reasons()
+        .contains(&DegradationReason::CandidateConfigurationRejected));
+
+    // Without any new notification, retry_interval (5 s) re-emits the identical snapshot and recovers.
+    tokio::time::advance(Duration::from_secs(5)).await;
+    for _ in 0..8 {
+        let _ = futures_util::poll!(&mut notifications);
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(service.server_count(), 2);
+    assert_eq!(health.snapshot().datastore(), DatastoreState::Current);
+
+    cancellation.cancel();
+    notifications.await;
 }

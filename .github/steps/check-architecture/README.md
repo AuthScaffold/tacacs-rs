@@ -7,15 +7,9 @@ expressions do not decide workspace membership or dependency identity.
 
 ## What it checks
 
-1. **Workspace edge allowlist.** Every production (normal) edge from one
-   workspace package to another must be in the allowlist. The validator rejects
-   an unknown workspace package and any edge that is not listed.
-2. **External and transitive guards.** The validator preserves the eight guards
-   that used to run inline in `.github/steps/run-tests/action.yml`. For example,
-   the protocol package must not reach Tokio or OpenSSL, and the agent must not
-   reach the IPC crate.
-3. **Supported-core exclusion.** The production closure of the workspace default
-   members must not reach the experimental crates, Rego, or libseccomp.
+1. **Workspace edge allowlist.** Every production (normal) edge from one workspace package to another must be in the allowlist. The validator rejects an unknown workspace package and any edge that is not listed.
+2. **External and transitive guards.** The validator enforces boundary guards across the workspace, including the eight guards that used to run inline in `.github/steps/run-tests/action.yml`. For example, the protocol package must not reach Tokio or OpenSSL, and the IPC package must not reach the agent (`tacacsrs-agent -> tacacsrs-ipc` is permitted).
+3. **Supported-core exclusion.** The production closure of the workspace default members must not reach the experimental crates, `tacacsrs-testkit`, Rego, or libseccomp.
 
 The validator uses `resolve.nodes[].deps[].dep_kinds` and the platform-filtered
 resolve graph, not the declared manifest dependency list. Only normal edges
@@ -51,7 +45,7 @@ uses the special `roots` value `default-members`, which resolves to
 | `provider-neutral-agent` | `tacacsrs-agent` | clap, redis, tacacsrs-sonic, tacacsrs-kubesonic |
 | `runtime-independent-ipc` | `tacacsrs-ipc` | redis, tacacsrs-config, tacacsrs-networking, tacacsrs-credential-resolution, tacacsrs-agent, tacacsrs-sonic |
 | `unix-socket-leaf` | `tacacsrs-unix-socket` | tonic, prost, redis, openssl, tacacsrs-protocol, tacacsrs-config, tacacsrs-networking, tacacsrs-agent, tacacsrs-ipc |
-| `supported-core` | default members | session-wrapper, tacacsrs-agent-ipc-emulator, tacacsrs-agent-ipc-emulatord, regorus, libseccomp |
+| `supported-core` | default members | session-wrapper, tacacsrs-agent-ipc-emulator, tacacsrs-agent-ipc-emulatord, tacacsrs-testkit, regorus, libseccomp |
 
 ## Cargo metadata helper
 

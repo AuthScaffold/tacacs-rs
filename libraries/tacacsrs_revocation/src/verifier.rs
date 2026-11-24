@@ -1,6 +1,6 @@
 //! The CRL verifier: decision cache, evidence fetches, and background refresh.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,10 +30,9 @@ use crate::{disk, fetch};
 /// A base CRL can name a delta CRL, so one path can need several rounds.
 const MAXIMUM_ROUNDS: usize = 4;
 
-/// Time for which a decision from `obtain` survives an evidence change.
-///
-/// The handshake calls `decide` again right after `obtain`. A concurrent
-/// fetch must not turn that call into a second `NeedEvidence`.
+/// Time during which a resumed `decide` after `obtain` converts still-missing
+/// evidence into a policy decision instead of returning a second `NeedEvidence`
+/// when an unrelated store update advances `store_generation`.
 const STICKY: Duration = Duration::from_secs(10);
 
 /// Interval of the background refresh.
@@ -61,6 +60,30 @@ const INLINE_VERIFY_LIMIT: usize = 64 * 1024;
 
 type PathKey = [u8; 32];
 type FlightKey = (String, String);
+
+struct FlightGuard {
+    inner: Arc<Inner>,
+    key: FlightKey,
+    sender: Option<watch::Sender<Option<bool>>>,
+}
+
+impl FlightGuard {
+    fn complete(mut self, succeeded: bool) {
+        lock(&self.inner.flights).remove(&self.key);
+        if let Some(sender) = self.sender.take() {
+            let _ = sender.send(Some(succeeded));
+        }
+    }
+}
+
+impl Drop for FlightGuard {
+    fn drop(&mut self) {
+        if let Some(sender) = self.sender.take() {
+            lock(&self.inner.flights).remove(&self.key);
+            let _ = sender.send(Some(false));
+        }
+    }
+}
 
 /// Counters of one [`CrlVerifier`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -330,9 +353,7 @@ impl Inner {
                 self.decide_after_prepare(path, key, &settings, settings_generation)
             }
             Outcome::Need(_) => {
-                self.remember(key, path);
-                increment(&self.counters.evidence_misses, 1);
-                RevocationDecision::NeedEvidence
+                self.finish_missing_evidence(path, key, &settings, settings_generation)
             }
         }
     }
@@ -352,12 +373,34 @@ impl Inner {
                 }
                 self.count(decision)
             }
+            (Outcome::Need(need), _) if !need.prepare => {
+                self.finish_missing_evidence(path, key, settings, settings_generation)
+            }
             (Outcome::Need(_), _) => {
                 self.remember(key, path);
                 increment(&self.counters.evidence_misses, 1);
                 RevocationDecision::NeedEvidence
             }
         }
+    }
+
+    fn finish_missing_evidence(
+        &self,
+        path: &VerifiedPath,
+        key: Option<PathKey>,
+        settings: &RevocationSettings,
+        settings_generation: u64,
+    ) -> RevocationDecision {
+        if let Some(key) = key.filter(|key| self.has_recent_obtain(key, settings_generation)) {
+            if let (Outcome::Final(decision), generation) = self.evaluate(path, settings, true) {
+                log_decision(path, &decision);
+                self.cache(key, settings_generation, generation, decision.clone(), true);
+                return self.count(decision);
+            }
+        }
+        self.remember(key, path);
+        increment(&self.counters.evidence_misses, 1);
+        RevocationDecision::NeedEvidence
     }
 
     fn count(&self, decision: FinalDecision) -> RevocationDecision {
@@ -377,12 +420,19 @@ impl Inner {
         let store_generation = lock(&self.store).generation();
         let decisions = lock(&self.decisions);
         let entry = decisions.get(key)?;
-        let current = entry.store_generation == store_generation
-            || (entry.sticky && entry.created.elapsed() < STICKY);
         (entry.settings_generation == settings_generation
-            && current
+            && entry.store_generation == store_generation
             && SystemTime::now() < entry.decision.valid_until)
             .then(|| entry.decision.clone())
+    }
+
+    fn has_recent_obtain(&self, key: &PathKey, settings_generation: u64) -> bool {
+        let decisions = lock(&self.decisions);
+        decisions.get(key).is_some_and(|entry| {
+            entry.sticky
+                && entry.settings_generation == settings_generation
+                && entry.created.elapsed() < STICKY
+        })
     }
 
     fn cache(
@@ -476,19 +526,29 @@ impl Inner {
         }
         let key = path_key(path);
         self.remember(key, path);
+        let mut settled = false;
+        let mut tried = HashSet::new();
         for _ in 0..MAXIMUM_ROUNDS {
             self.prepare(path, Some(network)).await;
             let (settings, _) = self.settings();
             let need = match self.evaluate(path, &settings, false).0 {
-                Outcome::Final(_) => break,
+                Outcome::Final(_) => {
+                    settled = true;
+                    break;
+                }
                 Outcome::Need(need) => need,
             };
+            let mut fetched = false;
             for group in &need.fetch {
-                self.fetch_group(group, network, deadline).await;
+                fetched |= self.fetch_group(group, network, deadline, &mut tried).await;
             }
-            if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+            if !fetched || deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+            {
                 break;
             }
+        }
+        if !settled && !deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+            self.prepare(path, Some(network)).await;
         }
         let (settings, settings_generation) = self.settings();
         if let (Outcome::Final(decision), generation) = self.evaluate(path, &settings, true) {
@@ -617,8 +677,12 @@ impl Inner {
         group: &[DistributionPointUrl],
         network: &RevocationNetwork,
         deadline: Option<tokio::time::Instant>,
+        tried: &mut HashSet<String>,
     ) -> bool {
         for url in group {
+            if !tried.insert(url.as_str().to_owned()) {
+                continue;
+            }
             let blocked = lock(&self.backoff)
                 .blocked_until(url.as_str(), Instant::now())
                 .is_some();
@@ -666,13 +730,16 @@ impl Inner {
         let (sender, receiver) = watch::channel(None);
         flights.insert(key.clone(), receiver.clone());
         drop(flights);
-        let inner = Arc::clone(self);
+        let guard = FlightGuard {
+            inner: Arc::clone(self),
+            key,
+            sender: Some(sender),
+        };
         let url = url.clone();
         let network = network.clone();
         tokio::spawn(async move {
-            let succeeded = inner.run_fetch(&url, &network).await;
-            lock(&inner.flights).remove(&key);
-            let _ = sender.send(Some(succeeded));
+            let succeeded = guard.inner.run_fetch(&url, &network).await;
+            guard.complete(succeeded);
         });
         receiver
     }
@@ -1054,5 +1121,36 @@ mod tests {
         assert!(second_pending, "later loads must wait for the first load");
         assert!(timely, "cache loading must respect the connection deadline");
         assert_eq!(verifier.decide(&path), RevocationDecision::Verified);
+    }
+
+    #[tokio::test]
+    async fn dropped_flight_guard_removes_flight_and_notifies_waiters() {
+        let mut settings = RevocationSettings::default();
+        settings.enforcement = RevocationEnforcement::HardFail;
+        settings.allowed_distribution_points =
+            vec![DistributionPointPattern::parse("http://crl.example.test/**").unwrap()];
+        let (_sender, receiver) = watch::channel(settings);
+        let verifier = CrlVerifier::new(receiver);
+        let key: FlightKey = ("http://crl.example.test/root.crl".to_owned(), "None".to_owned());
+        let (flight_sender, mut flight_receiver) = watch::channel(None);
+        lock(&verifier.inner.flights).insert(key.clone(), flight_receiver.clone());
+
+        let task = {
+            let guard = FlightGuard {
+                inner: Arc::clone(&verifier.inner),
+                key: key.clone(),
+                sender: Some(flight_sender),
+            };
+            tokio::spawn(async move {
+                let _guard = guard;
+                std::future::pending::<()>().await;
+            })
+        };
+        tokio::task::yield_now().await;
+        task.abort();
+        let _ = task.await;
+
+        assert!(!lock(&verifier.inner.flights).contains_key(&key));
+        assert_eq!(*flight_receiver.wait_for(Option::is_some).await.unwrap(), Some(false));
     }
 }

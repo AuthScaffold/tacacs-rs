@@ -70,12 +70,7 @@ Installing the handler changes the Docker host. Do not reset unrelated handlers
 on shared hosts. Cargo's QEMU runner alone is insufficient for integration tests
 that start ARM child processes; those require working binfmt execution too.
 
-The uncached verification stage runs the three executable packages plus
-`tacacsrs-sonic`, `tacacsrs-ipc`, and `tacacsrs-agent-ipc-emulator`. Evidence
-includes the verification log, release binaries, ELF headers, help output,
-binary checksums, and a checksum manifest of the source inputs. Failures retain
-their exit status in the build log; a timeout or
-successful cross-compilation alone does not count as executed-test coverage.
+The uncached verification stage runs Cargo tests across the three executable packages (`tacacsrs-agentd`, `tacacsrs-agent-health`, and `tacon`) plus `tacacsrs-networking`, `tacacsrs-revocation`, `tacacsrs-config`, `tacacsrs-agent`, `tacacsrs-lifecycle`, `tacacsrs-composition`, `tacacsrs-sonic`, `tacacsrs-kubesonic`, `tacacsrs-provider`, `tacacsrs-ipc`, `tacacsrs-agent-ipc-emulator`, and `tacacsrs-testkit`, checks ELF32 hard-float headers and `--help` execution, and runs `pytest -v tests/e2e --bin-dir /evidence`. Evidence includes the verification log, release binaries, ELF headers, help output, binary checksums, and a checksum manifest of the source inputs; failures retain their exit status in the build log, and a timeout or cross-compilation alone does not count as executed-test coverage.
 
 PRs call the reusable pipeline, whose `CI Success` gate explicitly requires
 ARMhf success, rejecting skipped or cancelled ARMhf jobs. Repository protection
@@ -163,10 +158,7 @@ For container-based delivery of the agent, this page covers building the image.
 Runtime flags, host networking, Redis socket access, and exposure checks are
 covered in [Running tacacsrs-agentd as a SONiC Docker container](sonic-agentd-container.md).
 
-The multi-stage container build for `tacacsrs-agentd` lives under
-`containers/tacacsrs-agentd/`. It compiles the daemon from source with the `psk`
-feature and ships a minimal glibc runtime image, so it stays compatible with
-SONiC's Debian userspace.
+The multi-stage container build for `tacacsrs-agentd` lives under `containers/tacacsrs-agentd/`. It compiles `tacacsrs-agentd` and `tacacsrs-agent-health` from source against OpenSSL (including certificate TLS and TLS 1.3 PSK support) and ships a minimal glibc runtime image that stays compatible with SONiC's Debian userspace.
 
 Build and test the image with the container Makefiles (run from a Linux
 environment or WSL with Docker BuildKit available):

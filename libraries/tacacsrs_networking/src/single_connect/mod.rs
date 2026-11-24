@@ -41,4 +41,4 @@ mod tracker;
 pub(crate) use cache::SharedConnectionCache;
 pub(crate) use promotion::FirstReplyPublication;
 pub(crate) use state::{NegotiationState, SingleConnectionState};
-pub(crate) use tracker::{LocalSingleConnectState, SingleConnectFlag};
+pub(crate) use tracker::SingleConnectFlag;

@@ -81,7 +81,9 @@ LIBRARY_TARGET_KINDS = frozenset({"lib", "rlib", "cdylib"})
 
 
 def _is_library_package(package: dict) -> bool:
-    """Return ``True`` when an inventory package builds a library target."""
+    """Return ``True`` when an inventory package is a managed SemVer library."""
+    if package.get("internal_test_only", False):
+        return False
     return any(kind in LIBRARY_TARGET_KINDS for kind in package["target_kinds"])
 
 
@@ -610,21 +612,25 @@ def compute_all_versions(
     if shared_executable_names is None:
         shared_executable_names = []
 
+    # Discover and sort managed SemVer libraries before deriving executable
+    # watch paths so internal test-only libraries do not trigger CalVer tags.
+    crates = discover_libraries(workspace_root)
+    order = topological_sort(crates)
+
     if executable_watch_paths is None:
         executable_watch_paths = [f"executables/{binary_name}/"]
         executable_watch_paths.extend(
             f"executables/{name.replace('-', '_')}/"
             for name in shared_executable_names
         )
-        executable_watch_paths.append("libraries/")
+        executable_watch_paths.extend(
+            "." if crates[name].relative_dir == "." else f"{crates[name].relative_dir}/"
+            for name in sorted(crates)
+        )
         # Workspace-wide files can change the executable's build inputs or
         # resolved dependencies, so a lockfile-only security update still
         # selects it for a new CalVer.
         executable_watch_paths.extend(ROOT_WATCH_PATHS)
-
-    # Discover and sort libraries
-    crates = discover_libraries(workspace_root)
-    order = topological_sort(crates)
 
     if pre_release:
         # ── Pre-release mode: commit-distance versions and no tags ──

@@ -17,7 +17,7 @@
 //! [`TacacsClient`](crate::TacacsClient) and run higher-level
 //! flows over the returned session object.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, Weak};
 
 use anyhow::Context;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
@@ -30,7 +30,7 @@ use crate::exchange_error::protocol_failure;
 
 mod write_loop;
 
-use crate::single_connect::{LocalSingleConnectState, SingleConnectFlag, SingleConnectionState};
+use crate::single_connect::{SingleConnectFlag, SingleConnectionState};
 use crate::session::{
     ExpectedResponseHeader, PacketDispatchError, SessionManager, SharedFixedSession, SharedSession,
 };
@@ -53,8 +53,8 @@ pub(crate) struct MultiplexedConnection {
     runtime: Arc<ConnectionRuntime>,
     driver: OnceLock<DriverTask>,
     cache_eviction: Option<(
-        Arc<crate::single_connect::SharedConnectionCache>,
-        Arc<crate::single_connect::NegotiationState>,
+        Weak<crate::single_connect::SharedConnectionCache>,
+        Weak<crate::single_connect::NegotiationState>,
     )>,
 }
 
@@ -94,8 +94,8 @@ impl MultiplexedConnection {
         obfuscation_key: Option<SecretBytes>,
         counters: Option<crate::ServerCounters>,
         publication: crate::single_connect::FirstReplyPublication,
-        shared_connection: Arc<crate::single_connect::SharedConnectionCache>,
-        negotiation_state: Arc<crate::single_connect::NegotiationState>,
+        shared_connection: Weak<crate::single_connect::SharedConnectionCache>,
+        negotiation_state: Weak<crate::single_connect::NegotiationState>,
     ) -> Self {
         Self::with_manager(
             Arc::new(SessionManager::with_publication(publication)),
@@ -128,8 +128,8 @@ impl MultiplexedConnection {
         counters: Option<crate::ServerCounters>,
         negotiate_single_connect: bool,
         cache_eviction: Option<(
-            Arc<crate::single_connect::SharedConnectionCache>,
-            Arc<crate::single_connect::NegotiationState>,
+            Weak<crate::single_connect::SharedConnectionCache>,
+            Weak<crate::single_connect::NegotiationState>,
         )>,
     ) -> Self {
         Self {
@@ -167,9 +167,11 @@ impl MultiplexedConnection {
 
     async fn evict_from_cache(self: &Arc<Self>) {
         if let Some((cache, state)) = &self.cache_eviction {
-            cache
-                .evict_if_same(self, || state.update(SingleConnectionState::Initial))
-                .await;
+            if let (Some(cache), Some(state)) = (cache.upgrade(), state.upgrade()) {
+                cache
+                    .evict_if_same(self, || state.update(SingleConnectionState::Initial))
+                    .await;
+            }
         }
     }
 
@@ -337,8 +339,6 @@ impl ConnectionRuntime {
         reader: &mut R,
         owner: Option<std::sync::Weak<MultiplexedConnection>>,
     ) -> anyhow::Result<()> {
-        let mut local_state = LocalSingleConnectState::default();
-
         loop {
             let read_result = tokio::select! {
                 () = self.session_manager.wait_for_close() => {
@@ -429,7 +429,8 @@ impl ConnectionRuntime {
 
             match self.session_manager.prepare_dispatch(packet) {
                 Ok(dispatch) => {
-                    local_state = local_state.process_packet(flag, &self.session_manager);
+                    self.session_manager
+                        .set_single_connection_state(flag.is_set());
                     if let Some(publication) = self.session_manager.take_publication() {
                         if let Some(conn) = owner.as_ref().and_then(std::sync::Weak::upgrade) {
                             publication

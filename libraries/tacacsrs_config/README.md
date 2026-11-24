@@ -236,9 +236,9 @@ The generated `tacacsrs::RuntimePolicy` retains absent operation containers as `
 Consumers use their generated defaults when preparing runtime behavior without changing the source value.
 `policy::validate_runtime_policy` also validates programmatically constructed generated values.
 
-The YANG defaults are 30 recovery seconds, deferred failover, and 64 concurrent requests per operation.
-Authentication defaults to a 4096-byte body limit. Authorization and accounting default to 16384 bytes.
-The runtime derives these defaults from generated types rather than independent constants.
+The YANG defaults are 30 recovery seconds, deferred failover, `connect-preflight` set to `disabled`, and 64 concurrent requests per operation. Authentication defaults to a 4096-byte body limit, while authorization and accounting default to 16384 bytes. The runtime derives these defaults from generated types rather than independent constants.
+
+`connect-preflight` accepts `disabled` or `accounting-watchdog`. When set to `accounting-watchdog`, opening a connection to an accounting-capable upstream server sends a TACACS+ accounting `WATCHDOG` preflight probe before caching the client; servers that do not support accounting skip the probe.
 
 The non-presence `candidate-preparation` container has three positive `uint32` leaves:
 

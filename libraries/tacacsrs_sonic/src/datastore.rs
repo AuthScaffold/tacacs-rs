@@ -115,6 +115,15 @@ fn forwarder_local_services(
     }
 }
 
+const fn observation_schedule(settings: &SonicConnection) -> ObservationSchedule {
+    ObservationSchedule {
+        debounce: settings.debounce,
+        max_delay: None,
+        reconcile_interval: Some(settings.reconcile_interval),
+        retry_interval: Some(settings.retry_interval),
+    }
+}
+
 struct SonicObservation {
     inner: SignalObservation,
 }
@@ -134,7 +143,7 @@ impl SonicObservation {
             .psubscribe(settings.keyspace_pattern())
             .await
             .context("subscribe to ConfigDB changes")?;
-        let schedule = ObservationSchedule::debounced(settings.debounce);
+        let schedule = observation_schedule(&settings);
         let notifications = pubsub.into_on_message().map(|_| ());
         let inner = SignalObservation::spawn(
             notifications,
@@ -163,6 +172,10 @@ impl SonicObservation {
 impl ConfigObservation for SonicObservation {
     async fn next(&mut self) -> anyhow::Result<Option<ConfigChangeEvent>> {
         self.inner.next().await
+    }
+
+    fn record_rejection(&mut self) {
+        self.inner.record_rejection();
     }
 }
 
@@ -356,9 +369,25 @@ mod tests {
 
     #[test]
     fn runtime_policy_retries_and_maintains_continuous_notifications() {
-        let datastore = SonicConfigDb::new(SonicConnection::default());
+        let settings = SonicConnection::default();
+        let schedule = observation_schedule(&settings);
+        assert_eq!(schedule.debounce, Duration::from_millis(250));
+        assert_eq!(schedule.retry_interval, Some(Duration::from_secs(5)));
+        assert_eq!(schedule.reconcile_interval, Some(Duration::from_secs(60)));
+
+        let datastore = SonicConfigDb::new(settings);
 
         assert_eq!(datastore.behavior(), SourceBehavior::new(ChangeNotificationMode::Continuous));
+    }
+
+    fn test_settings(url: String, debounce: Duration) -> SonicConnection {
+        SonicConnection {
+            url,
+            db_index: 15,
+            debounce,
+            credential_watch_root: None,
+            ..SonicConnection::default()
+        }
     }
 
     #[tokio::test]
@@ -366,12 +395,7 @@ mod tests {
         let Ok(url) = std::env::var("TACACSRS_SONIC_TEST_REDIS_URL") else {
             return;
         };
-        let settings = SonicConnection {
-            url,
-            db_index: 15,
-            debounce: Duration::ZERO,
-            credential_watch_root: None,
-        };
+        let settings = test_settings(url, Duration::ZERO);
         let mut connection = settings.connect().await.unwrap();
         seed_redis(&mut connection).await;
         let mut observation = SonicObservation::open(settings, None).await.unwrap();
@@ -424,12 +448,7 @@ mod tests {
         let Ok(url) = std::env::var("TACACSRS_SONIC_TEST_REDIS_URL") else {
             return;
         };
-        let settings = SonicConnection {
-            url,
-            db_index: 15,
-            debounce: Duration::ZERO,
-            credential_watch_root: None,
-        };
+        let settings = test_settings(url, Duration::ZERO);
         let mut connection = settings.connect().await.unwrap();
         seed_redis(&mut connection).await;
         let mut observation = SonicObservation::open(settings.clone(), None)
@@ -504,12 +523,7 @@ mod tests {
         let Ok(url) = std::env::var("TACACSRS_SONIC_TEST_REDIS_URL") else {
             return;
         };
-        let settings = SonicConnection {
-            url,
-            db_index: 15,
-            debounce: Duration::ZERO,
-            credential_watch_root: None,
-        };
+        let settings = test_settings(url, Duration::ZERO);
         let mut connection = settings.connect().await.unwrap();
         seed_redis(&mut connection).await;
         let mut observation = SonicObservation::open(settings.clone(), None)
@@ -552,12 +566,7 @@ mod tests {
         let Ok(url) = std::env::var("TACACSRS_SONIC_TEST_REDIS_URL") else {
             return;
         };
-        let settings = SonicConnection {
-            url,
-            db_index: 15,
-            debounce: Duration::ZERO,
-            credential_watch_root: None,
-        };
+        let settings = test_settings(url, Duration::ZERO);
         let mut connection = settings.connect().await.unwrap();
         seed_redis(&mut connection).await;
         let datastore = SonicConfigDb::new(settings);
@@ -604,12 +613,7 @@ mod tests {
         let Ok(url) = std::env::var("TACACSRS_SONIC_TEST_REDIS_URL") else {
             return;
         };
-        let settings = SonicConnection {
-            url,
-            db_index: 15,
-            debounce: Duration::from_millis(20),
-            credential_watch_root: None,
-        };
+        let settings = test_settings(url, Duration::from_millis(20));
         let mut connection = settings.connect().await.expect("connect test Redis");
         seed_redis(&mut connection).await;
         connection
@@ -645,12 +649,7 @@ mod tests {
         let Ok(url) = std::env::var("TACACSRS_SONIC_TEST_REDIS_URL") else {
             return;
         };
-        let settings = SonicConnection {
-            url,
-            db_index: 15,
-            debounce: Duration::from_millis(20),
-            credential_watch_root: None,
-        };
+        let settings = test_settings(url, Duration::from_millis(20));
         let mut connection = settings.connect().await.expect("connect test Redis");
         seed_redis(&mut connection).await;
 

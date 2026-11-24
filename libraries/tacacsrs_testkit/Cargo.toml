@@ -6,7 +6,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+publish = false
 readme = "README.md"
+
+[package.metadata.release]
+internal_test_only = true
 
 [dependencies]
 anyhow = "1"

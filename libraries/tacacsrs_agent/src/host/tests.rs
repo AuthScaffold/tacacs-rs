@@ -520,3 +520,97 @@ async fn a_datastore_change_moves_the_client_api_socket() {
     assert!(!second.exists(), "shutdown must remove the socket");
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)]
+async fn live_local_services_reload_cannot_replace_the_statistics_file() {
+    let directory = std::env::temp_dir().join(format!(
+        "tacacsrs-host-stats-protect-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let socket = directory.join("tacacs.sock");
+    let stats_file = directory.join("statistics.json");
+    let (sender, receiver) = tokio::sync::mpsc::channel(2);
+    let components: Vec<Box<dyn Component>> = vec![
+        Box::new(Value::new("runtime policy", PolicyInput::Canonical(RuntimePolicy::default()))),
+        Box::new(Value::new("certificate verification", CertificateVerification::Required)),
+        Box::new(ChangeSource {
+            datastore: Arc::new(ChangeDatastore(tokio::sync::Mutex::new(Some(receiver)))),
+            client_api: socket.clone(),
+        }),
+        Box::new(crate::components::ClientApiComponent),
+        Box::new(crate::components::StatisticsComponent::new(stats_file.clone(), Vec::new())),
+    ];
+    let host = bootstrap(components).await.unwrap();
+    let health = host.runtime().health();
+    let config = Arc::new(
+        TacacsPlusBuilder::new()
+            .with_server_builder(
+                TacacsPlusServerBuilder::new(
+                    "fixture",
+                    TacacsPlusServerType::all(),
+                    "192.0.2.10",
+                    49,
+                )
+                .with_shared_secret("test-key"),
+            )
+            .build()
+            .unwrap(),
+    );
+    let stop = async {
+        sender
+            .send(tacacsrs_config::source::ConfigChangeEvent::Changed(
+                tacacsrs_config::source::ConfigChange {
+                    runtime_policy: None,
+                    local_services: None,
+                    delta: tacacsrs_config::source::ConfigDelta::diff(None, &config),
+                    config: Arc::clone(&config),
+                },
+            ))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while tokio::net::UnixStream::connect(&socket).await.is_err()
+                || !health.snapshot().has_applied_configuration()
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("baseline socket and configuration must apply");
+
+        sender
+            .send(tacacsrs_config::source::ConfigChangeEvent::Changed(
+                tacacsrs_config::source::ConfigChange {
+                    runtime_policy: None,
+                    local_services: Some(Arc::new(client_api_only(&stats_file))),
+                    delta: tacacsrs_config::source::ConfigDelta::default(),
+                    config: Arc::clone(&config),
+                },
+            ))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !health
+                .snapshot()
+                .degradation_reasons()
+                .contains(&crate::DegradationReason::CandidateConfigurationRejected)
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("reloaded listener targeting statistics file must be rejected");
+        assert!(tokio::net::UnixStream::connect(&socket).await.is_ok());
+    };
+    tokio::time::timeout(Duration::from_secs(10), host.run_until(stop))
+        .await
+        .unwrap()
+        .unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}

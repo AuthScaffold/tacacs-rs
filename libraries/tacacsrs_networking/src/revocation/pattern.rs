@@ -221,6 +221,18 @@ impl fmt::Debug for DistributionPointPattern {
 fn parse_http(value: &str) -> Result<url::Url> {
     let url = url::Url::parse(value).with_context(|| format!("Invalid URL {value}"))?;
     ensure!(url.scheme() == "http", "URL {value} must use http");
+    let rest = value
+        .get(..7)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("http://"))
+        .map(|_| &value[7..])
+        .with_context(|| format!("URL {value} must start with http://"))?;
+    ensure!(
+        !value
+            .bytes()
+            .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control()),
+        "URL {value} contains whitespace or control characters"
+    );
+    ensure!(!rest.contains('\\'), "URL {value} contains a backslash");
     ensure!(url.host().is_some(), "URL {value} has no host");
     ensure!(
         url.username().is_empty() && url.password().is_none(),
@@ -228,10 +240,7 @@ fn parse_http(value: &str) -> Result<url::Url> {
     );
     ensure!(url.query().is_none(), "URL {value} contains a query");
     ensure!(url.fragment().is_none(), "URL {value} contains a fragment");
-    let raw_path = value
-        .strip_prefix("http://")
-        .and_then(|rest| rest.find('/').map(|index| &rest[index..]))
-        .unwrap_or("/");
+    let raw_path = rest.find('/').map_or("/", |index| &rest[index..]);
     for segment in raw_path.split('/') {
         let lower = segment.to_ascii_lowercase();
         if lower.contains("%2f") || lower.contains("%5c") || segment.contains('\\') {
@@ -405,8 +414,20 @@ mod tests {
             "http://user:pass@crl.example.com/x.crl",
             "http://crl.example.com/a/../x.crl",
             "http://crl.example.com/a%2fb.crl",
+            "HTTP://crl.example.com/a/%2f/b",
+            "Http://crl.example.com/a/%5c/b",
+            "HTTP://crl.example.com/../crl.der",
+            "Http://crl.example.com/./crl.der",
+            "HtTp://crl.example.com/%2e%2E/crl.der",
+            "HTTP://crl.example.com/a\\b/crl.der",
         ] {
             assert!(DistributionPointUrl::parse(value).is_err(), "{value}");
         }
+        let upper = url("HTTP://crl.example.com/ca/current.crl");
+        assert_eq!(upper.as_str(), "http://crl.example.com/ca/current.crl");
+        let mixed = url("Http://crl.example.com:80/ca/current.crl");
+        assert!(DistributionPointPattern::parse("http://crl.example.com/ca/*.crl")
+            .unwrap()
+            .matches(&mixed));
     }
 }

@@ -89,6 +89,8 @@ done
 "$container_runtime" exec "$redis_name" redis-cli -n 4 \
     HSET 'TACPLUS_FORWARDER|global' local_listen_address 127.0.0.1 local_listen_port "${proxy_port}" >/dev/null
 "$container_runtime" exec "$redis_name" redis-cli -n 4 \
+    HSET 'TACPLUS_SERVER|127.0.0.1' priority 64 tcp_port "${proxy_port}" passkey placeholder >/dev/null
+"$container_runtime" exec "$redis_name" redis-cli -n 4 \
     HSET 'TACPLUS_SERVER|192.0.2.10' priority 64 tcp_port 49 timeout 5 >/dev/null
 
 ready=0

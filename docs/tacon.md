@@ -46,11 +46,17 @@ tacon --service-endpoint /run/tacacs/tacacs.sock \
 | --- | --- |
 | `-k, --shared-secret <KEY>` | Shared secret for TACACS+ packet obfuscation |
 | `--use-tls` | Enable TLS 1.3 |
-| `--client-certificate <FILE>` | Client TLS certificate (requires `--client-key`) |
-| `--client-key <FILE>` | Client TLS private key (requires `--client-certificate`) |
-| `--insecure-disable-certificate-verification` | Skip server certificate verification |
-| `--psk-identity <ID>` | TLS 1.3 pre-shared key identity *(requires `psk` feature)* |
-| `--psk-key <KEY>` | TLS 1.3 pre-shared key *(requires `psk` feature)* |
+| `--tls-server-name <NAME>` | TLS server name used for SNI and certificate verification (requires `--use-tls`) |
+| `--client-certificate <FILE>` | Client TLS certificate (requires `--use-tls` and `--client-key`) |
+| `--client-key <FILE>` | Client TLS private key (requires `--use-tls` and `--client-certificate`) |
+| `--insecure-disable-certificate-verification` | Skip server certificate verification (conflicts with `--psk-*`) |
+| `--psk-identity <ID>` | TLS 1.3 pre-shared key identity (requires `--use-tls` and `--psk-key`) |
+| `--psk-key <KEY>` | Standard base64-encoded TLS 1.3 pre-shared key (requires `--use-tls` and `--psk-identity`) |
+| `--psk-key-exchange <MODE>` | Select `psk-dhe` or explicit `psk-only` interoperability mode |
+| `--psk-key-exchange-groups <GROUP[,GROUP...]>` | Comma-separated TLS 1.3 PSK-DHE groups in preferred order |
+| `--validation-relaxation <RELAXATION>` | Opt into `allow-tls-with-shared-secret` or `allow-plain-tcp-without-shared-secret` |
+
+Strict validation rejects combining `--use-tls` with `-k`/`--shared-secret` because RFC 9887 TLS replaces TACACS+ body obfuscation; pass `--validation-relaxation allow-tls-with-shared-secret` only when migrating against a server that still requires both.
 
 ### Connection Behavior (direct mode only)
 
@@ -260,8 +266,6 @@ tacon -s tacacs-server:449 --use-tls \
 ```
 
 ### TLS 1.3 with Pre-Shared Keys
-
-*(Requires the `psk` feature.)*
 
 ```bash
 tacon -s tacacs-server:449 --use-tls \

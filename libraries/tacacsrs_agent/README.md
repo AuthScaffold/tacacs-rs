@@ -719,44 +719,25 @@ The client API component also serves this snapshot as detailed health. It adds t
 
 ## Configuration details
 
-### IPC endpoint format
+### Local listener endpoints
 
-`ServiceConfig::endpoint` is explicit rather than permissive:
+`ServiceConfig::local_services` (`tacacsrs:local-services`) configures listener endpoints rather than a single endpoint field:
 
-- Values containing `/` are treated as Unix domain socket paths, for
-  example `/run/tacacs/tacacs.sock`.
-- Values that parse as `SocketAddr` identify TCP endpoints for the TACACS+
-  proxy or IPC emulator. The client API rejects TCP endpoints.
-- An empty string is rejected as invalid configuration. It does **not** fall
-  back to the default endpoint.
+- `client-api-endpoint` must be an absolute Linux Unix domain socket path of at most 107 bytes, defaulting to `/run/tacacs/tacacs.sock`. The client API rejects TCP endpoints and empty strings.
+- `tacacs-proxy-endpoint` accepts either an absolute Unix domain socket path or a TCP `SocketAddr` when the proxy is enabled.
+- Empty strings, lexical endpoint collisions, and listener paths that target a protected operational statistics file fail validation before binding.
 
-The only way to opt into the built-in default endpoint is to call
-`IpcEndpoint::default_local()`.
+### Upstream connection establishment
 
-### Upstream warm-up behavior
+Startup binds listeners without running a connection warm-up pass across configured TACACS+ servers. Upstream connections open on demand when client requests arrive, or when the optional `UpstreamWatchdogComponent` sends an accounting `WATCHDOG` probe. When `connect-preflight` is `accounting-watchdog`, opening a connection to an accounting-capable server also runs an accounting `WATCHDOG` preflight probe before caching the client.
 
-At startup the service performs a best-effort warm-up pass across the configured
-TACACS+ servers until it finds the first responsive server. Once the warm-up
-caches one usable upstream connection, it stops immediately. It does **not**
-establish full TACACS+ connections to every configured server.
+Per-server reconnect attempts are serialized inside `UpstreamManager`. When concurrent requests target the same TACACS+ server, they share one in-flight connection attempt instead of opening duplicate TCP or TLS handshakes. If that attempt succeeds, waiting callers reuse the cached client; if it fails, they fail over according to the active failover policy.
 
-This keeps startup load bounded in large deployments where many clients can
-start at once against a relatively small TACACS+ server pool. If no server is
-reachable during startup, the service still starts and later IPC requests retry
-failover on demand.
+### Client API request handling
 
-Per-server reconnect attempts are serialized inside the upstream manager. When
-many IPC requests arrive at once, they share one in-flight reconnect attempt for
-a given TACACS+ server instead of generating a burst of duplicate TLS handshakes.
-After that reconnect attempt finishes, queued callers reuse the cached
-connection if it succeeded. If it failed, they fail over without an immediate
-retry against the same server for that burst of IPC work.
+Each accepted Unix domain socket connection serves HTTP/2 gRPC streams bounded by `max-connections`, `max-client-api-streams`, and `connection-lifetime-seconds`, allowing `tacacsrs_ipc::ServiceClient` to reuse one connection across multiple unary RPCs:
 
-### Per-client request handling
-
-Each accepted IPC connection currently carries a single unary RPC exchange:
-
-1. Decode one protobuf accounting or authorization request.
+1. Decode one protobuf PAP authentication, authorization, or accounting request on an HTTP/2 stream.
 2. Map the typed operation through `services::client_api::upstream_bridge`.
 3. Select the upstream server for that request through `UpstreamManager`.
 4. Encode one protobuf reply envelope.
@@ -772,10 +753,6 @@ The protocol and IPC crates own separate contracts:
 - Generate the Rust gRPC/protobuf bindings at build time in the IPC crate.
 - Keep domain-to-protobuf conversions and their focused tests in the IPC crate.
 
-The agent consumes the protocol crate's domain operations without a production
-dependency on IPC. The checked-in `.proto` defines the local IPC wire contract.
-The build step generates Rust transport bindings from that contract.
+Core routing and supervision use the protocol crate's domain operations, while `ClientApiComponent` adapts them to the IPC crate's server handler. The checked-in `.proto` defines the local IPC wire contract, and the build step generates Rust transport bindings from that contract.
 
-There is also no compatibility promise for this IPC protocol today. When the
-contract changes, the `.proto`, generated transport bindings, and domain-type
-conversions must change together in the same patch.
+There is no compatibility promise for this IPC protocol today. When the contract changes, the `.proto`, generated transport bindings, and domain-type conversions must change together in the same patch.

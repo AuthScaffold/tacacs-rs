@@ -26,7 +26,10 @@ async fn wait_for_driver(connection: &MultiplexedConnection) {
 
 #[tokio::test]
 async fn clean_idle_peer_close_is_successful_retirement() {
-    let connection = Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, None));
+    let owner = crate::ServerCounters::default();
+    let counters = owner.for_connection(None, None);
+    let connection =
+        Arc::new(MultiplexedConnection::new_single_connect_confirmed(None, Some(counters)));
     let (client, peer) = tokio::io::duplex(256);
     let (reader, writer) = tokio::io::split(client);
     connection.run_with_halves(reader, writer);
@@ -37,6 +40,9 @@ async fn clean_idle_peer_close_is_successful_retirement() {
         .close_and_join(crate::RequestDeadline::after(Duration::from_secs(1)).unwrap())
         .await
         .unwrap();
+    let diagnostics = owner.snapshot().diagnostics;
+    assert_eq!(diagnostics.read_errors, 0);
+    assert_eq!(diagnostics.peer_disconnects, 0);
 }
 
 #[tokio::test]

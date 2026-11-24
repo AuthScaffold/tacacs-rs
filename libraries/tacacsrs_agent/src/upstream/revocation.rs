@@ -2,9 +2,51 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use tokio::sync::watch;
 
-use tacacsrs_networking::{PreparedEndpoint, RevocationNetwork, RevocationSettings, RevocationVerifier};
+use tacacsrs_networking::{
+    PreparedEndpoint, RevocationDecision, RevocationNetwork, RevocationRejection,
+    RevocationSettings, RevocationVerifier, VerifiedPath,
+};
+
+struct MissingRevocationVerifier {
+    settings: watch::Receiver<RevocationSettings>,
+}
+
+impl MissingRevocationVerifier {
+    fn decide_current(&self) -> RevocationDecision {
+        let enforcement = self.settings.borrow().enforcement;
+        if enforcement.requires_verifier() {
+            RevocationDecision::Reject(RevocationRejection::unverified(format!(
+                "Certificate revocation enforcement is {enforcement}, but this agent has no revocation verifier"
+            )))
+        } else {
+            RevocationDecision::Verified
+        }
+    }
+}
+
+#[async_trait]
+impl RevocationVerifier for MissingRevocationVerifier {
+    fn decide(&self, _: &VerifiedPath) -> RevocationDecision {
+        self.decide_current()
+    }
+
+    async fn obtain(
+        &self,
+        _: &VerifiedPath,
+        _: &RevocationNetwork,
+        _: Option<tokio::time::Instant>,
+    ) {
+    }
+}
+
+#[derive(Clone)]
+enum ConfiguredVerifier {
+    Host(Arc<dyn RevocationVerifier>),
+    Missing(Arc<MissingRevocationVerifier>),
+}
 
 /// Certificate revocation input for the upstream connector.
 ///
@@ -18,7 +60,7 @@ use tacacsrs_networking::{PreparedEndpoint, RevocationNetwork, RevocationSetting
 /// the active enforcement is not `disabled`.
 #[derive(Clone)]
 pub struct UpstreamRevocation {
-    verifier: Option<Arc<dyn RevocationVerifier>>,
+    verifier: ConfiguredVerifier,
     settings: Arc<watch::Sender<RevocationSettings>>,
     network: Arc<watch::Sender<RevocationNetwork>>,
 }
@@ -41,7 +83,7 @@ impl UpstreamRevocation {
         network: watch::Sender<RevocationNetwork>,
     ) -> Self {
         Self {
-            verifier: Some(verifier),
+            verifier: ConfiguredVerifier::Host(verifier),
             settings: Arc::new(settings),
             network: Arc::new(network),
         }
@@ -52,9 +94,12 @@ impl UpstreamRevocation {
     /// Certificate TLS connections succeed only while enforcement is `disabled`.
     #[must_use]
     pub fn without_verifier() -> Self {
+        let (settings, receiver) = watch::channel(RevocationSettings::default());
         Self {
-            verifier: None,
-            settings: Arc::new(watch::channel(RevocationSettings::default()).0),
+            verifier: ConfiguredVerifier::Missing(Arc::new(MissingRevocationVerifier {
+                settings: receiver,
+            })),
+            settings: Arc::new(settings),
             network: Arc::new(watch::channel(RevocationNetwork::default()).0),
         }
     }
@@ -95,15 +140,32 @@ impl UpstreamRevocation {
     /// Returns an error for a certificate TLS endpoint when enforcement is
     /// enabled and no verifier exists.
     pub(crate) fn attach(&self, endpoint: PreparedEndpoint) -> anyhow::Result<PreparedEndpoint> {
-        if let Some(verifier) = &self.verifier {
-            return Ok(endpoint.with_revocation_verifier(Arc::clone(verifier)));
+        match &self.verifier {
+            ConfiguredVerifier::Host(verifier) => {
+                Ok(endpoint.with_revocation_verifier(Arc::clone(verifier)))
+            }
+            ConfiguredVerifier::Missing(fallback) => {
+                let enforcement = self.settings.borrow().enforcement;
+                anyhow::ensure!(
+                    !enforcement.requires_verifier() || !endpoint.verifies_server_certificate(),
+                    "Certificate revocation enforcement is {enforcement}, but this agent has no revocation verifier"
+                );
+                if endpoint.verifies_server_certificate() {
+                    let verifier: Arc<dyn RevocationVerifier> = fallback.clone();
+                    Ok(endpoint.with_revocation_verifier(verifier))
+                } else {
+                    Ok(endpoint)
+                }
+            }
         }
-        let enforcement = self.settings.borrow().enforcement;
-        anyhow::ensure!(
-            !enforcement.requires_verifier() || !endpoint.verifies_server_certificate(),
-            "Certificate revocation enforcement is {enforcement}, but this agent has no revocation verifier"
-        );
-        Ok(endpoint)
+    }
+
+    #[cfg(test)]
+    fn missing_verifier(&self) -> Option<&Arc<MissingRevocationVerifier>> {
+        match &self.verifier {
+            ConfiguredVerifier::Host(_) => None,
+            ConfiguredVerifier::Missing(verifier) => Some(verifier),
+        }
     }
 }
 
@@ -117,7 +179,7 @@ impl std::fmt::Debug for UpstreamRevocation {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("UpstreamRevocation")
-            .field("verifier", &self.verifier.is_some())
+            .field("verifier", &matches!(self.verifier, ConfiguredVerifier::Host(_)))
             .field("enforcement", &self.settings.borrow().enforcement)
             .finish()
     }
@@ -176,17 +238,37 @@ mod tests {
     #[test]
     fn enabled_enforcement_without_a_verifier_rejects_only_certificate_tls() {
         let revocation = UpstreamRevocation::without_verifier();
-        assert!(revocation.attach(endpoint(true)).is_ok());
+        assert_eq!(
+            format!("{revocation:?}"),
+            "UpstreamRevocation { verifier: false, enforcement: Disabled }"
+        );
+        let cached_tls = revocation.attach(endpoint(true)).unwrap();
+        assert!(cached_tls.has_revocation_verifier());
+        assert!(!revocation
+            .attach(endpoint(false))
+            .unwrap()
+            .has_revocation_verifier());
+        let attached_fallback = Arc::clone(revocation.missing_verifier().unwrap());
+        assert_eq!(attached_fallback.decide_current(), RevocationDecision::Verified);
+
         for enforcement in [
             RevocationEnforcement::HardFail,
             RevocationEnforcement::SoftFail,
             RevocationEnforcement::WarnOnly,
         ] {
             assert!(revocation.publish(&enforced(enforcement)));
+            let RevocationDecision::Reject(rejection) = attached_fallback.decide_current() else {
+                panic!("expected cached fallback verifier to reject under {enforcement}");
+            };
+            assert!(!rejection.is_revoked());
+            assert!(rejection.reason().contains("no revocation verifier"));
             let error = revocation.attach(endpoint(true)).unwrap_err();
             assert!(error.to_string().contains("no revocation verifier"), "{error:#}");
             assert!(revocation.attach(endpoint(false)).is_ok());
         }
+
+        assert!(revocation.publish(&RevocationSettings::default()));
+        assert_eq!(attached_fallback.decide_current(), RevocationDecision::Verified);
     }
 
     #[test]

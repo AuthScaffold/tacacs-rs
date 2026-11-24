@@ -89,11 +89,9 @@ authorization, or authentication operation.
 
 ## Dedicated Fallback
 
-When single-connect is disabled, denied by the server, or already claimed by
-another in-flight negotiation, a fixed exchange uses a dedicated TCP/TLS
-stream. The same exchange descriptor and response validation apply. A
-successful capability probe can promote its completed dedicated stream into
-the shared runtime.
+When single-connect is enabled, the first session opens a negotiating `MultiplexedConnection` and sets `TAC_PLUS_SINGLE_CONNECT_FLAG` on its first packet while concurrent callers wait for the first validated reply. If the server echoes `TAC_PLUS_SINGLE_CONNECT_FLAG` in that reply, the client publishes that `MultiplexedConnection` into the shared cache immediately, and waiting callers multiplex onto the same stream without opening extra connections.
+
+When single-connect is disabled in configuration or omitted from the server's first reply, operations use dedicated TCP/TLS streams with the same exchange descriptor and response validation. After the server declines single-connect on the first reply, waiting and later callers open dedicated streams while the initial session finishes on the negotiating connection.
 
 ## Certificate Revocation
 

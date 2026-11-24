@@ -384,7 +384,26 @@ The check applies to CA-authenticated certificate TLS servers. Exact pinned end-
 
 The host must supply a revocation verifier. `tacacsrs-agentd` always supplies the CRL verifier of [`tacacsrs-revocation`](../libraries/tacacsrs_revocation/README.md). When `enforcement` is not `disabled` and the host supplies no verifier, the agent refuses new certificate TLS connections. `tacon` direct mode also supplies the CRL verifier. It shares one verifier across the connections of a run, fetches missing CRLs during the handshake, and does not prefetch. Set `cache-directory` to keep CRLs between `tacon` runs.
 
-## Provider Refresh
+## Runtime Policy
+
+The separate `tacacsrs:runtime-policy` container under `ietf-system:system` configures daemon-level timeouts, failover strategies, admission limits, credential refresh, and upstream connection preflight without modifying `ietf-system-tacacs-plus:tacacs-plus` server definitions.
+
+### Connect Preflight
+
+The `connect-preflight` leaf controls whether the runtime probes accounting-capable upstream servers when opening a new client connection:
+
+```json
+{
+  "tacacsrs:runtime-policy": {
+    "connect-preflight": "accounting-watchdog"
+  }
+}
+```
+
+- `disabled` (default) opens upstream transports on first use and negotiates `single-connection` capability on the first real reply.
+- `accounting-watchdog` sends an RFC 8907 accounting `WATCHDOG` probe when creating an accounting-capable upstream client; any valid accounting reply packet proves transport reachability and latches `single-connection` capability before user traffic runs, while servers that do not support accounting skip the probe.
+
+### Provider Refresh
 
 The agent supervisor periodically revalidates provider-backed credentials, even without credential notifications.
 The separate canonical runtime-policy resource controls the maximum scheduled interval:

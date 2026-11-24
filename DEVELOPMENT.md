@@ -94,7 +94,7 @@ cargo test --workspace
 
 ### Building with OpenSSL-backed TLS
 
-The `tacacsrs_networking` library uses dynamically linked OpenSSL for certificate-based TLS. The `psk` feature adds TLS 1.3 pre-shared key support.
+The `tacacsrs_networking` library uses dynamically linked OpenSSL for certificate-based TLS and TLS 1.3 pre-shared key (PSK) support.
 
 #### Linux
 
@@ -161,7 +161,7 @@ cargo build --package tacon
 ## Running Tests
 
 ```bash
-# Run all tests
+# Run all Rust unit, integration, and doc tests
 cargo test --workspace
 
 # Run tests with output
@@ -172,6 +172,9 @@ cargo test test_name
 
 # Run tests for a specific crate
 cargo test -p tacacsrs-protocol
+
+# Run Linux black-box end-to-end process tests (builds current debug binaries unless --bin-dir is given)
+python3 -m pytest -v tests/e2e
 ```
 
 ### Session Wrapper Smoke Tests
@@ -377,12 +380,12 @@ ARMhf, minimum-Rust, and delivery-automation checks remain separate jobs.
 |-----|-------------|
 | **Rustfmt** | Rust formatting validation |
 | **Clippy** | Linting and static analysis |
-| **Test** | Run unit, integration, and documentation tests for the complete workspace, with Linux-only packages excluded on Windows |
+| **Test** | Run unit, integration, and documentation tests for the complete workspace (plus Linux `pytest -v tests/e2e`), with Linux-only packages excluded on Windows |
 | **Default Features** | Type-check each Linux selection and Windows `tacon` independently with `cargo check` |
 | **ARMhf** | Build and execute tests with QEMU, then validate ABI and startup behavior |
 | **Documentation** | Builds documentation without warnings |
 | **Coverage** | Generate and upload code coverage |
-| **Unused Dependencies** | Checks workspace manifests with `cargo-machete` |
+| **Unused Dependencies** | Checks workspace and `.github/tools/api-classifier` manifests with `cargo machete` |
 | **Security Audit** | Audits the committed `Cargo.lock` after dependency changes |
 | **Protobuf Compatibility** | Verifies backward compatibility against `main` with `buf breaking` |
 | **YANG Verification** | Offline hash and version check plus generator unit tests for the pinned model (Linux) |
@@ -394,20 +397,14 @@ All jobs must pass before you merge the pull request.
 Unit and integration tests compile their required binaries.
 There is no separate product-build job.
 Default-feature checks retain configuration coverage without another binary build.
-Linux uses `cargo test --locked --workspace --all-features --release`.
-This command includes experimental workspace members, not only the supported-core default members.
-Windows also selects `--workspace`, but excludes the Linux-only packages:
+Linux runs `cargo test --locked --workspace --all-features --release` and `pytest -v tests/e2e`, plus `cargo machete --with-metadata --skip-target-dir . .github/tools/api-classifier`. The Linux test selection includes experimental workspace members, not only the supported-core default members. Windows also selects `--workspace`, and excludes the eleven Linux-only packages:
 
 - `session-wrapper`.
 - `tacacsrs-agent`, `tacacsrs-agentd`, and `tacacsrs-agent-health`.
 - `tacacsrs-agent-ipc-emulator` and `tacacsrs-agent-ipc-emulatord`.
-- `tacacsrs-bash-plugin`, `tacacsrs-ipc`, `tacacsrs-sonic`, and `tacacsrs-unix-socket`.
+- `tacacsrs-bash-plugin`, `tacacsrs-ipc`, `tacacsrs-kubesonic`, `tacacsrs-sonic`, and `tacacsrs-unix-socket`.
 
-The Windows selection includes `tacon` and all six portable libraries.
-This includes the credential-resolution and HTTP credential libraries, whose tests were absent from the previous explicit package selection.
-Linting, documentation, unused-dependency checks, and tests use the same platform selection.
-There is no separate job that repeats the tests for individual crate groups.
-Architecture guards enforce the dependency boundaries.
+The Windows selection includes `tacon` and all ten portable libraries (`tacacsrs-composition`, `tacacsrs-config`, `tacacsrs-credential-resolution`, `tacacsrs-lifecycle`, `tacacsrs-networking`, `tacacsrs-protocol`, `tacacsrs-provider`, `tacacsrs-revocation`, `tacacsrs-secrets`, and `tacacsrs-testkit`). Linting, documentation, and tests use the same platform selection, with no separate job repeating tests for individual crate groups, while architecture guards enforce dependency boundaries.
 
 PRs validate source without publishing release assets.
 CI reports are diagnostic outputs, not installation packages.

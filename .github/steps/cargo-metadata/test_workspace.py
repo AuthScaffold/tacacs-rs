@@ -51,6 +51,7 @@ def _pkg(
     *,
     kinds: list[str] | None = None,
     deps: list[dict] | None = None,
+    pkg_metadata: dict | None = None,
     root: str = "/ws",
     package_id: str | None = None,
 ) -> dict:
@@ -66,6 +67,7 @@ def _pkg(
         "version": version,
         "manifest_path": manifest_path,
         "source": None,
+        "metadata": pkg_metadata,
         "dependencies": deps or [],
         "targets": [
             {
@@ -170,6 +172,32 @@ class TestInventory:
 
         inv = inventory(metadata)
         assert inv["packages"][0]["default_member"] is True
+        assert inv["packages"][0]["internal_test_only"] is False
+
+    def test_internal_test_only_flag_from_package_metadata(self) -> None:
+        prod = _pkg("prod-lib", "0.1.0", "libraries/prod")
+        testkit = _pkg(
+            "testkit", "0.0.0-dev", "libraries/testkit",
+            pkg_metadata={"release": {"internal_test_only": True}},
+        )
+        inv = inventory(
+            _metadata(
+                [prod, testkit],
+                [prod["id"], testkit["id"]],
+                default_members=[prod["id"]],
+            )
+        )
+        by_name = {package["name"]: package for package in inv["packages"]}
+        assert by_name["prod-lib"]["internal_test_only"] is False
+        assert by_name["testkit"]["internal_test_only"] is True
+
+    def test_invalid_internal_test_only_metadata_raises(self) -> None:
+        bad = _pkg(
+            "testkit", "0.0.0-dev", "libraries/testkit",
+            pkg_metadata={"release": {"internal_test_only": "yes"}},
+        )
+        with pytest.raises(MetadataError, match="internal_test_only must be a boolean"):
+            inventory(_metadata([bad], [bad["id"]]))
 
     def test_dependency_identity_via_path(self) -> None:
         base = _pkg("base-lib", "0.1.0", "libraries/base")

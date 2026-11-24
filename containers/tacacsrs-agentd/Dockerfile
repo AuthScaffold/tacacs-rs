@@ -3,7 +3,7 @@
 # Container image for the central TACACS+ client agent (`tacacsrs-agentd`).
 #
 # This build has these stages:
-#   base    -> Rust toolchain plus the build dependencies for the `psk` feature
+#   base    -> Rust toolchain plus OpenSSL build dependencies for TLS and TLS 1.3 PSK
 #   test    -> agent daemon and health probe test suites (used by `make test`)
 #   build   -> daemon and health probe binaries compiled with BuildKit caches
 #   runtime -> image with only the binaries and their runtime dependencies

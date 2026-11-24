@@ -39,6 +39,7 @@ async fn main() -> anyhow::Result<()> {
         db_index: cli.redis_db,
         debounce: Duration::from_millis(cli.debounce_ms),
         credential_watch_root: None,
+        ..SonicConnection::default()
     };
     let datastore = SonicConfigDb::new(settings);
 
@@ -56,7 +57,6 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("SONiC ConfigDB initial snapshot was rejected");
     };
     print_snapshot("initial", &initial.config);
-    changes.next().await?;
 
     if cli.max_events == Some(0) {
         return Ok(());

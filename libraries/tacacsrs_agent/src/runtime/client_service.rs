@@ -274,6 +274,17 @@ impl TacacsClientService {
         self.runtime.runtime_policy.view()
     }
 
+    /// Registers a protected file path that no Unix listener socket may replace.
+    ///
+    /// Checks the active local services immediately and rejects any later
+    /// local-services candidate whose Unix socket resolves to `path`.
+    ///
+    /// # Errors
+    /// Returns an error if an active Unix listener already targets `path`.
+    pub fn protect_listener_path(&self, path: impl Into<std::path::PathBuf>) -> anyhow::Result<()> {
+        self.runtime.local_services.protect_path(path.into())
+    }
+
     /// Applies the overlays to the local services of a datastore change and
     /// prepares the result.
     pub(crate) fn prepare_local_services_candidate(

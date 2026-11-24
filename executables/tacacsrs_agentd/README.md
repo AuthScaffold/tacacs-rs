@@ -64,9 +64,7 @@ tacacsrs-agent-health \
 
 Outside KubeSONiC mode, use `--host-integration none` in containers. KubeSONiC defaults `TACACSD_PROCESS_HOST_INTEGRATION` to `none`. `auto` selects systemd only when `NOTIFY_SOCKET` is present. Explicit `systemd` requires the notification socket and helper, sends `READY=1` once after the enabled listeners bind, and sends `STOPPING=1` before listener drain. `READY=1` does not wait for configuration or upstream health. The systemd status text reports them.
 
-The daemon supervises SONiC ConfigDB startup and notification subscriptions.
-In SONiC mode, it loads the forwarder profile before binding listeners. It retries unavailable configuration with capped backoff.
-It applies valid snapshots without a restart and retains known-good configuration after invalid reloads or subscription outages.
+The daemon supervises SONiC ConfigDB startup and notification subscriptions. In SONiC mode, the Client API listener binds immediately at startup, while the TACACS+ proxy listener stays pending until ConfigDB supplies `TACPLUS_FORWARDER|global`. The daemon retries unavailable configuration with capped backoff, applies valid snapshots without a restart, and retains the last-known-good configuration after invalid reloads or subscription outages.
 
 The process registers SIGINT and SIGTERM once, before asynchronous bootstrap.
 Either signal cancels startup or requests listener drain through the signal-free agent API.
@@ -111,31 +109,13 @@ Without that instrumentation cfg, a `console` build reports that profiling is di
 
 ## Runtime Service Modes
 
-Use `--service-mode client-api`, `--service-mode tacacs-proxy`, or
-`--service-mode both` to choose which local runtime services the daemon hosts. If the
-flag is omitted, the daemon runs `client-api` by default and runs `both` when
-`--proxy-endpoint` is supplied. Proxy modes require `--proxy-endpoint`.
+In inline and YANG file modes, use `--service-mode client-api`, `--service-mode tacacs-proxy`, or `--service-mode both` to choose which local runtime services the daemon hosts. If you omit `--service-mode`, the daemon runs `client-api` by default and runs `both` when you supply `--proxy-endpoint`. Proxy modes require `--proxy-endpoint` or a `--local-services` file. SONiC mode rejects `--service-mode`, `--proxy-endpoint`, and `--proxy-credential-source` because SONiC ConfigDB controls both local services and the forwarder endpoint.
 
-When the raw TACACS+ proxy listens on a TCP endpoint, do not configure that same
-endpoint as an upstream TACACS+ server. Doing so sends client traffic back into
-the proxy itself and can create a packet storm. To guard against this, the
-daemon removes upstream entries whose address and port parse or resolve to the
-local TCP proxy endpoint. This includes loopback IPv4, loopback IPv6, and
-hostnames such as `localhost`.
+When the raw TACACS+ proxy listens on a TCP endpoint, do not configure that same endpoint as an upstream TACACS+ server. That configuration sends client traffic back into the proxy and can create a packet storm. To prevent this loop, the daemon removes non-TLS upstream entries whose address and port parse or resolve to the local TCP proxy endpoint, including loopback IPv4, loopback IPv6, and hostnames such as `localhost`. If a TLS upstream entry resolves to the local proxy endpoint, the daemon rejects the configuration candidate.
 
-If the daemon removes one or more local proxy endpoint rows this way, the raw
-proxy uses a shared secret for downstream TACACS+ obfuscation. It takes this
-secret from the highest-priority matching row, including secrets inherited from
-global configuration. If that highest-priority local proxy row has no shared
-secret, local clients must send unobfuscated TACACS+ packets to the proxy. This
-applies even when lower-priority local rows or real upstream servers have
-shared secrets.
+Downstream TACACS+ proxy obfuscation follows the configured `proxy-credential-source` policy in `prepare_proxy_policy`. In inline and YANG file CLI modes, the default credential source is `unobfuscated`, so local proxy clients must send unobfuscated TACACS+ packets unless you configure another credential source. Supplying `--proxy-shared-secret` with `--proxy-endpoint` selects `inline` mode and requires local proxy clients to obfuscate packets with that non-empty secret.
 
-Outside SONiC mode, if raw TACACS+ proxy clients send obfuscated packets to the
-proxy, use `--proxy-shared-secret` with `--proxy-endpoint`. If the flag is
-omitted, local proxy clients must send unobfuscated packets. If both are
-present, a filtered local proxy endpoint row takes precedence over this CLI
-fallback.
+Selecting `--proxy-credential-source local-proxy-row`, which SONiC mode uses by default when `TACPLUS_FORWARDER|global` is present, takes the downstream shared secret from the highest-priority upstream row that matches the numeric TCP proxy endpoint before self-loop removal, including secrets inherited from global configuration. If no matching local proxy row exists, or if that highest-priority matching row has no non-empty shared secret, the daemon rejects the configuration candidate rather than falling back to unobfuscated plaintext traffic. While a `local-proxy-row` proxy has no endpoint yet, downstream credentials remain unavailable and the proxy accepts no traffic.
 
 ## TLS Client Certificates and Keys
 
@@ -156,15 +136,9 @@ The daemon checks revocation only when it establishes a new connection. It never
 
 ## TLS 1.3 PSK
 
-When built with the `psk` feature, use `--psk-identity` and `--psk-key` with
-`--use-tls` to configure TLS 1.3 PSK upstream connections. The default
-key-exchange mode is PSK-DHE with the preferred group order
-`secp384r1,secp256r1`.
+Use `--psk-identity` and `--psk-key` with `--use-tls` to configure TLS 1.3 PSK upstream connections. The default key-exchange mode is PSK-DHE with the preferred group order `secp384r1,secp256r1`.
 
-Use `--psk-key-exchange-groups` to constrain the PSK-DHE groups offered in
-ClientHello. Supplying groups implies PSK-DHE mode. If a peer cannot negotiate
-PSK-DHE, use `--psk-key-exchange psk-only` for interoperability. PSK-only mode
-cannot be combined with `--psk-key-exchange-groups`.
+Use `--psk-key-exchange-groups` to constrain the PSK-DHE groups offered in ClientHello. Supplying groups implies PSK-DHE mode. If a peer cannot negotiate PSK-DHE, use `--psk-key-exchange psk-only` for interoperability. PSK-only mode cannot be combined with `--psk-key-exchange-groups`.
 
 ### Example
 

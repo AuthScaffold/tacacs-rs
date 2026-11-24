@@ -73,6 +73,8 @@ async fn operational_counters_cover_shared_sessions_and_connection_outcomes() {
     assert_eq!(snapshot.connection_closes, 1);
     assert_eq!(snapshot.connection_aborts, 0);
     assert_eq!(snapshot.connection_failures, 0);
+    assert_eq!(snapshot.diagnostics.read_errors, 0);
+    assert_eq!(snapshot.diagnostics.peer_disconnects, 0);
 
     let reserved_socket = tokio::net::TcpSocket::new_v4().unwrap();
     reserved_socket
@@ -2161,4 +2163,117 @@ async fn accounting_watchdog_preflight_accepts_error_reply_and_skips_non_account
     assert_eq!(auth_client.single_connection_state(), SingleConnectionState::Initial);
     assert_eq!(auth_counters.snapshot().diagnostics.watchdog_preflights, 0);
     assert_eq!(auth_counters.snapshot().connection_opens, 0);
+}
+
+#[tokio::test]
+async fn dropping_client_without_join_drops_shared_cache_and_closes_peer_stream() {
+    use tokio::io::AsyncReadExt;
+
+    use crate::{PacketWriteResult, PacketWriter};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let key = b"shared-secret-cycle-regression";
+    let server_key = SecretBytes::new(key.to_vec());
+
+    let peer_task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let reader = PacketReader::new(Some(server_key.clone()));
+        let writer = PacketWriter::new(Some(server_key));
+        let PacketReadResult::Success(request) = reader.read_packet(&mut stream).await else {
+            panic!("obfuscated single-connect request must decode");
+        };
+        assert!(request
+            .header()
+            .flags
+            .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG));
+        let reply = accounting_success_reply(&request, TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG);
+        assert!(matches!(
+            writer.write_packet(&mut stream, reply).await,
+            PacketWriteResult::Success
+        ));
+        let mut byte = [0; 1];
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), stream.read(&mut byte))
+                .await
+                .expect("peer stream must close when client drops")
+                .unwrap(),
+            0
+        );
+    });
+
+    let endpoint = PreparedEndpoint::new(
+        address.try_into().unwrap(),
+        crate::PreparedTransport::Tcp,
+        true,
+        Some(SecretBytes::new(key.to_vec())),
+        ConnectOptions::default(),
+    );
+    let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+    client
+        .execute(&test_accounting_exchange(accounting_watchdog_preflight_request()))
+        .await
+        .unwrap();
+    assert_eq!(client.single_connection_state(), SingleConnectionState::Supported);
+    assert!(client.shared_connection.current().await.is_some());
+
+    let weak_cache = std::sync::Arc::downgrade(&client.shared_connection);
+    assert!(weak_cache.upgrade().is_some());
+    drop(client);
+    assert!(weak_cache.upgrade().is_none());
+
+    peer_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn clean_idle_peer_close_on_shared_connection_records_zero_read_errors() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+
+    let server_task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let PacketReadResult::Success(request) =
+            PacketReader::new(None).read_packet(&mut stream).await
+        else {
+            panic!("request must decode");
+        };
+        let reply = accounting_success_reply(&request, TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG);
+        stream.write_all(&reply.to_bytes()).await.unwrap();
+        stream.shutdown().await.unwrap();
+    });
+
+    let mut endpoint = server_template();
+    endpoint.address = address.try_into().unwrap();
+    let counters = endpoint.counters();
+    let client = TacacsClient::connect_prepared(endpoint).await.unwrap();
+    client
+        .execute(&test_accounting_exchange(accounting_watchdog_preflight_request()))
+        .await
+        .unwrap();
+    server_task.await.unwrap();
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while counters.snapshot().diagnostics.connected > 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("idle peer EOF must retire the shared connection");
+
+    let snapshot = counters.snapshot();
+    assert_eq!(snapshot.connection_closes, 1);
+    assert_eq!(snapshot.connection_aborts, 0);
+    assert_eq!(snapshot.diagnostics.read_errors, 0);
+    assert_eq!(snapshot.diagnostics.write_errors, 0);
+    assert_eq!(snapshot.diagnostics.resets, 0);
+    assert_eq!(snapshot.diagnostics.peer_disconnects, 0);
+    assert_eq!(
+        snapshot.diagnostics.last_disconnect_reason,
+        Some(crate::DisconnectReason::Graceful)
+    );
+
+    client
+        .close_and_join(crate::RequestDeadline::after(Duration::from_secs(1)).unwrap())
+        .await
+        .unwrap();
 }

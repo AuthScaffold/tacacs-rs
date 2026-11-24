@@ -48,6 +48,7 @@ sort by identity.
       "manifest_path": "libraries/foo/Cargo.toml",
       "directory": "libraries/foo",
       "default_member": true,
+      "internal_test_only": false,
       "target_kinds": ["lib"],
       "dependencies": [
         {
@@ -68,6 +69,7 @@ sort by identity.
 Field notes:
 
 - `manifest_path` and `directory` are relative to `workspace_root`.
+- `internal_test_only` is `true` when `[package.metadata.release]` sets `internal_test_only = true` for a dev-only test fixture crate such as `tacacsrs-testkit`.
 - `target_kinds` is the sorted union of every target kind, so a dual
   `crate-type = ["cdylib", "rlib"]` library reports `["cdylib", "rlib"]`.
 - A dependency `kind` is `null` for a normal edge, `"build"` for a build edge,

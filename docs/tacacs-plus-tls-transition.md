@@ -115,10 +115,7 @@ sudo tacacsrs-agentd \
 
 ### TLS PSK-DHE
 
-TLS PSK support requires a build with the `psk` feature. PSK-DHE is the preferred
-PSK mode because it adds ephemeral key exchange. If no PSK key-exchange mode is
-specified, `tacacsrs-agentd` defaults to PSK-DHE with the preferred group order
-`secp384r1,secp256r1`.
+PSK-DHE is the preferred TLS 1.3 PSK mode because it adds ephemeral key exchange. If no PSK key-exchange mode is specified, `tacacsrs-agentd` defaults to PSK-DHE with the preferred group order `secp384r1,secp256r1`.
 
 ```bash
 # Load these values from the host's secret manager.

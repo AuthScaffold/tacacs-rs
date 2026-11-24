@@ -31,6 +31,7 @@ mod roles;
 mod tests;
 
 pub use roles::{ClientApiAccess, ListenerFactory, StartupCheck, TacacsProxyAccess};
+pub(crate) use roles::ListenerPathGuard;
 
 /// Declares the inputs, roles, and deferred values of the agent host.
 ///
@@ -63,6 +64,7 @@ pub fn declare(composition: &mut Composition) -> anyhow::Result<()> {
     composition.deferred::<RuntimeHealth>()?;
     composition.deferred::<ClientApiAccess>()?;
     composition.deferred::<TacacsProxyAccess>()?;
+    composition.deferred::<ListenerPathGuard>()?;
     composition.deferred::<UpstreamProbe>()?;
     composition.deferred::<LocalServicesView>()?;
     composition.deferred::<RuntimePolicyView>()?;
@@ -107,6 +109,7 @@ impl PreparedHost {
             handle: service.client_api_handle(),
         }))?;
         graph.supply(Arc::new(TacacsProxyAccess::new(Arc::clone(service))))?;
+        graph.supply(Arc::new(ListenerPathGuard::new(Arc::clone(service))))?;
         graph.supply(Arc::new(service.upstream_probe()))?;
         graph.supply(Arc::new(runtime.local_services()))?;
         graph.supply(Arc::new(runtime.runtime_policy()))?;

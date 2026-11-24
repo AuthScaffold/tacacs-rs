@@ -26,6 +26,7 @@ tacacsrs-provider = { path = "../tacacsrs_provider" }
 tacacsrs-secrets = { path = "../tacacsrs_secrets" }
 tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
 tokio-stream = "0.1"
+x509-cert = { version = "0.3.1", default-features = false, features = ["std"] }
 zeroize = "1.9.0"
 
 [dev-dependencies]

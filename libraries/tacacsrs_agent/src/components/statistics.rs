@@ -9,19 +9,20 @@ use anyhow::{Context, ensure};
 use dill::component;
 use tokio::io::AsyncWriteExt;
 
-use crate::{DiagnosticsHandle, LocalServicesView};
-use crate::host::StartupCheck;
 use tacacsrs_composition::{Component, Composition, Named};
-use tacacsrs_config::local_services::ListenerEndpoint;
 use tacacsrs_lifecycle::{HostedService, ShutdownSignal};
+
+use crate::DiagnosticsHandle;
+use crate::host::{ListenerPathGuard, StartupCheck};
 
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 
 /// Publishes operational statistics to a file.
 ///
 /// The component replaces the file atomically once each second. Startup stops
-/// when the file path is equal to a protected input file or a listener socket
-/// path.
+/// when the file path is equal to a protected input file or a bootstrap
+/// listener socket path, and live local-services reloads that target the file
+/// path are rejected.
 pub struct StatisticsComponent {
     path: PathBuf,
     protected_inputs: Vec<PathBuf>,
@@ -64,17 +65,16 @@ impl Component for StatisticsComponent {
     }
 }
 
-/// Stops startup when the statistics file is a listener socket path.
+/// Protects the statistics file from bootstrap and reloaded listener sockets.
 ///
-/// The host runs this check before any listener binds. The check uses the
-/// bootstrap local services.
+/// The host runs this check before any listener binds.
 #[component]
 #[dill::scope(dill::Singleton)]
 #[dill::interface(dyn StartupCheck)]
 struct ListenerProtection {
     #[component(explicit)]
     file: StatisticsFile,
-    local_services: Arc<LocalServicesView>,
+    guard: Arc<ListenerPathGuard>,
 }
 
 impl Named for ListenerProtection {
@@ -88,15 +88,7 @@ impl StartupCheck for ListenerProtection {
     }
 
     async fn check(&self) -> anyhow::Result<()> {
-        let active = self.local_services.current();
-        let prepared = active.prepared();
-        if let Some(path) = prepared.client_api() {
-            self.file.protect_listener(path).await?;
-        }
-        if let Some(ListenerEndpoint::Unix(path)) = prepared.tacacs_proxy() {
-            self.file.protect_listener(path).await?;
-        }
-        Ok(())
+        self.guard.protect(self.file.path())
     }
 }
 
@@ -196,16 +188,8 @@ impl StatisticsFile {
         Ok(())
     }
 
-    pub(crate) async fn protect_listener(&self, listener: &Path) -> anyhow::Result<()> {
-        if let (Some(parent), Some(name)) = (listener.parent(), listener.file_name()) {
-            if let Ok(parent) = tokio::fs::canonicalize(parent).await {
-                ensure!(
-                    parent.join(name) != self.path,
-                    "Statistics destination cannot replace a listener socket"
-                );
-            }
-        }
-        Ok(())
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
     }
 
     async fn run(

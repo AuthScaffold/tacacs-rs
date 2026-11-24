@@ -7,7 +7,7 @@ Wire-level fault injection, TLS/PSK state-machine edge cases, and high-concurren
 ## Running locally
 
 ```bash
-# Automatically builds debug binaries if needed and runs all E2E scenarios
+# Builds current debug binaries with Cargo and runs all E2E scenarios
 python3 -m pytest -v tests/e2e
 
 # Point at prebuilt release or cross-compiled binaries (used in CI and ARMhf QEMU)

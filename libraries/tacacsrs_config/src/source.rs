@@ -171,6 +171,12 @@ pub trait ConfigObservation: Send {
     /// # Errors
     /// Returns an error when observation fails and must be established again.
     async fn next(&mut self) -> anyhow::Result<Option<ConfigChangeEvent>>;
+
+    /// Records that a downstream consumer rejected the latest candidate.
+    ///
+    /// Implementations that suppress unchanged snapshots or schedule retry
+    /// reads use this signal to re-emit the snapshot on the next read.
+    fn record_rejection(&mut self) {}
 }
 
 /// Change-notification guarantees provided by a datastore instance.

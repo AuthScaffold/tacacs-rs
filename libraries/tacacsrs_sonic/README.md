@@ -35,23 +35,14 @@ The returned session owns a notification pump and its pending snapshot future.
 The pump coalesces invalidations through a bounded watch channel and never waits for a slow snapshot consumer.
 There is no separate reload worker. Cancelling `next()` retains the pending read and concurrent invalidations.
 
-Dropping the observation cancels the pump and drops the pending Redis operation.
-Loss of the Pub/Sub connection returns an observation error. The agent opens a new session before it reads a recovery baseline.
-Rejected mappings retain the previous accepted snapshot and its delta history.
-The first valid snapshot after a rejection emits a recovery change, even when its TACACS+ delta is empty.
-A change of the forwarder local services also emits a change, even when the TACACS+ delta is empty.
-The native tests verify idle cleanup, pending-read cleanup, cancellation, disconnect recovery, and removal of the final server.
+Dropping the observation cancels the pump and drops the pending Redis operation. Loss of the Pub/Sub connection returns an observation error, and the agent opens a new session before it reads a recovery baseline. Rejected snapshots or downstream candidate rejections retain the previous accepted snapshot, retry after `SonicConnection::retry_interval` (default 5 seconds), and reconcile periodically every `SonicConnection::reconcile_interval` (default 60 seconds). The first valid snapshot after a rejection emits a recovery change even when its TACACS+ delta is empty, and a change to the forwarder local services also emits a change when the TACACS+ delta is empty. The native tests verify idle cleanup, pending-read cleanup, cancellation, disconnect recovery, and removal of the final server.
 
 `ConfigDatastore` requires an explicit observation implementation. Its former `subscribe()` method and default observation adapter are removed.
 One-shot `load()` remains available for non-observing callers.
 
 ## Forwarder Ownership
 
-`SonicForwarderSettings::local_services` normalizes the validated forwarder row into generated `LocalServices`.
-`SonicConfigDb::with_listener_patch` adds the local services of the forwarder row to each change. Without a forwarder row, the proxy is enabled and has no endpoint.
-The SONiC profile enables both services and selects `local-proxy-row` credentials.
-Generated YANG defaults supply the client API path and socket permissions.
-The optional ConfigDB listener port still defaults to 49 as a SONiC input rule. The canonical resource contains the explicit endpoint.
+`SonicForwarderSettings::local_services` normalizes the validated forwarder row into generated `LocalServices`, and `SonicForwarderSettings::local_services_with` applies a host `LocalServicesPatch`. `SonicConfigDb::with_listener_patch` attaches the patched local services of the forwarder row to each change; without a forwarder row, the proxy remains enabled and waits without an endpoint. The SONiC profile enables both services, selects `local-proxy-row` credentials by default, and rejects inline proxy shared secrets. Generated YANG defaults supply the client API path and socket permissions unless the host patch overrides them. The optional ConfigDB listener port defaults to 49 as a SONiC input rule, while the canonical resource records the explicit endpoint.
 
 Mapping no longer deletes local compatibility rows or rejects TLS self-targets.
 Canonical snapshots retain those rows and their credentials. The daemon's shared runtime filter performs both decisions before publication.

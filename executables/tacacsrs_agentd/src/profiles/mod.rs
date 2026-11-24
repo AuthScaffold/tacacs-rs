@@ -273,6 +273,7 @@ mod tests {
     #[test]
     fn registered_selectors_remain_exclusive_and_visible_in_help() {
         use clap::CommandFactory;
+        Cli::command().debug_assert();
         let help = Cli::command().render_long_help().to_string();
         for flag in ["--server-addr", "--config", "--sonic", "--kubesonic"] {
             assert!(help.contains(flag), "Registered selector missing from help: {flag}");
@@ -298,6 +299,16 @@ mod tests {
                 "--use-tls",
                 "--shared-secret",
                 "secret",
+            ],
+            vec![
+                "--server-addr",
+                "127.0.0.1",
+                "--use-tls",
+                "--psk-identity",
+                "id",
+                "--psk-key",
+                "key",
+                "--insecure-disable-certificate-verification",
             ],
             vec!["--kubesonic", "--worker-threads", "2"],
             vec!["--kubesonic", "--host-integration", "none"],

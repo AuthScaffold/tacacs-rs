@@ -211,13 +211,16 @@ impl SonicForwarderSettings {
 
     /// Applies host listener settings to the local services of this row.
     ///
-    /// SONiC enables both local services. The patch can change the client API
-    /// path, the socket mode, and the credential source. A proxy endpoint in
-    /// the patch must be equal to the endpoint of this row.
+    /// SONiC enables both local services and rejects inline proxy secrets. The
+    /// patch can override the client API path, the Unix socket mode, listener
+    /// limits, or switch `proxy_credential_source` to `unobfuscated`. If the
+    /// patch specifies a proxy endpoint, it must match the endpoint of this
+    /// row.
     ///
     /// # Errors
-    /// Returns an error when the patch disables a service, the patch proxy
-    /// endpoint is different, or the result is invalid.
+    /// Returns an error when the patch disables a service, supplies an inline
+    /// proxy secret, specifies a conflicting proxy endpoint, or produces an
+    /// invalid configuration.
     pub fn local_services_with(
         self,
         patch: &tacacsrs_config::local_services::LocalServicesPatch,

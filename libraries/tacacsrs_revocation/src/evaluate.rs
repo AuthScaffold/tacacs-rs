@@ -283,41 +283,65 @@ impl Evaluation<'_> {
         } else {
             None
         };
-        let listed = match delta
-            .as_ref()
-            .map(|delta| delta.crl.get_by_cert(certificate))
-        {
-            Some(CrlStatus::Revoked(_)) => true,
-            Some(CrlStatus::RemoveFromCrl(_)) => false,
+        let delta_window = delta.as_ref().map(|delta| self.window(delta, &name));
+        match (
+            delta
+                .as_ref()
+                .map(|delta| delta.crl.get_by_cert(certificate)),
+            &delta_window,
+        ) {
+            (Some(CrlStatus::Revoked(_)), Some(Ok(_))) => {
+                return Status::Revoked {
+                    reason: format!("a CRL lists {name} as revoked"),
+                };
+            }
+            (Some(CrlStatus::RemoveFromCrl(_)), Some(Ok(_))) => {}
             _ => match base.crl.get_by_cert(certificate) {
-                CrlStatus::Revoked(_) => true,
-                CrlStatus::NotRevoked => false,
+                CrlStatus::Revoked(_) if base.this_update <= self.now + CLOCK_SKEW => {
+                    if requires_delta && !self.final_only && !matches!(delta_window, Some(Ok(_))) {
+                        let before_fetch = scan.need.fetch.len();
+                        let before_prepare = scan.need.prepare;
+                        self.want(&delta_points, &key_der, scan);
+                        if scan.need.fetch.len() > before_fetch
+                            || (!before_prepare && scan.need.prepare)
+                        {
+                            return Status::Missing {
+                                reason: format!("the delta CRL for {name} is missing"),
+                            };
+                        }
+                    }
+                    return Status::Revoked {
+                        reason: format!("a CRL lists {name} as revoked"),
+                    };
+                }
+                CrlStatus::Revoked(_) | CrlStatus::NotRevoked => {}
                 CrlStatus::RemoveFromCrl(_) => {
                     return Status::Missing {
                         reason: format!("the base CRL for {name} contains removeFromCRL"),
                     };
                 }
             },
-        };
-        if listed {
-            return Status::Revoked {
-                reason: format!("a CRL lists {name} as revoked"),
-            };
         }
         let mut until = match self.window(&base, &name) {
             Ok(until) => until,
-            Err(reason) => return Status::Missing { reason },
+            Err(reason) => {
+                self.want(&points, &key_der, scan);
+                return Status::Missing { reason };
+            }
         };
         if requires_delta {
-            let Some(delta) = delta else {
+            let Some(delta_window) = delta_window else {
                 self.want(&delta_points, &key_der, scan);
                 return Status::Missing {
                     reason: format!("the delta CRL for {name} is missing"),
                 };
             };
-            match self.window(&delta, &name) {
+            match delta_window {
                 Ok(delta_until) => until = until.min(delta_until),
-                Err(reason) => return Status::Missing { reason },
+                Err(reason) => {
+                    self.want(&delta_points, &key_der, scan);
+                    return Status::Missing { reason };
+                }
             }
         }
         if self.now < until {
@@ -362,7 +386,7 @@ impl Evaluation<'_> {
             scan.need.prepare = true;
             return;
         }
-        let mut fetchable = false;
+        let mut fetchable = Vec::new();
         for url in urls {
             match self.backoff.blocked_until(url.as_str(), self.instant) {
                 Some(until) => {
@@ -377,12 +401,14 @@ impl Evaluation<'_> {
                         .is_some_and(|stored| {
                             self.instant.saturating_duration_since(stored) < RECENT_FETCH
                         });
-                    fetchable |= !recent;
+                    if !recent {
+                        fetchable.push(url.clone());
+                    }
                 }
             }
         }
-        if fetchable && !scan.need.fetch.iter().any(|group| group == urls) {
-            scan.need.fetch.push(urls.to_vec());
+        if !fetchable.is_empty() && !scan.need.fetch.iter().any(|group| group == &fetchable) {
+            scan.need.fetch.push(fetchable);
         }
     }
 }

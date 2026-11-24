@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
 import signal
 import socket
 import stat
+import struct
 import subprocess
+import threading
 
 import pytest
 
@@ -17,10 +20,11 @@ from conftest import ProcessManager, wait_for_signal_handlers, wait_until
 
 def test_statistics_export_is_read_only_private_and_generation_bound(
     tmp_path: Path,
+    socket_dir: Path,
     binaries: Path,
     process_manager: ProcessManager,
 ) -> None:
-    endpoint = tmp_path / "agent.sock"
+    endpoint = socket_dir / "agent.sock"
     report = tmp_path / "statistics.json"
     agent = process_manager.spawn(
         "agent",
@@ -59,11 +63,11 @@ def test_statistics_export_is_read_only_private_and_generation_bound(
 
 
 def test_diagnostics_and_health_details_share_client_api_socket(
-    tmp_path: Path,
+    socket_dir: Path,
     binaries: Path,
     process_manager: ProcessManager,
 ) -> None:
-    endpoint = tmp_path / "agent.sock"
+    endpoint = socket_dir / "agent.sock"
     agent = process_manager.spawn(
         "agent",
         [
@@ -129,10 +133,11 @@ def test_diagnostics_and_health_details_share_client_api_socket(
 
 def test_statistics_export_failure_stops_supervised_daemon(
     tmp_path: Path,
+    socket_dir: Path,
     binaries: Path,
     process_manager: ProcessManager,
 ) -> None:
-    endpoint = tmp_path / "agent.sock"
+    endpoint = socket_dir / "agent.sock"
     report = tmp_path / "statistics.json"
     agent = process_manager.spawn(
         "agent",
@@ -163,6 +168,7 @@ def test_statistics_export_failure_stops_supervised_daemon(
 
 def test_statistics_export_cannot_replace_inputs_or_listener(
     tmp_path: Path,
+    socket_dir: Path,
     binaries: Path,
 ) -> None:
     agent_bin = str(binaries / "tacacsrs-agentd")
@@ -180,7 +186,7 @@ def test_statistics_export_cannot_replace_inputs_or_listener(
     assert "cannot overwrite" in overwrite.stderr
     assert config.read_bytes() == original
 
-    sock = tmp_path / "agent.sock"
+    sock = socket_dir / "agent.sock"
     replace_listener = subprocess.run(
         [
             agent_bin,
@@ -205,13 +211,13 @@ def test_statistics_export_cannot_replace_inputs_or_listener(
 
 
 @pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
-def test_host_signals_cancel_blocked_bootstrap_without_binding(
-    tmp_path: Path,
+def test_host_signals_stop_agent_waiting_on_stalled_configdb(
+    socket_dir: Path,
     binaries: Path,
     process_manager: ProcessManager,
     sig: signal.Signals,
 ) -> None:
-    endpoint = tmp_path / "agent.sock"
+    endpoint = socket_dir / "agent.sock"
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as fake_redis:
         fake_redis.bind(("127.0.0.1", 0))
         fake_redis.listen(4)
@@ -235,16 +241,21 @@ def test_host_signals_cancel_blocked_bootstrap_without_binding(
         with conn:
             conn.settimeout(15.0)
             assert len(conn.recv(1)) == 1
+            wait_until(
+                lambda: endpoint.exists() and agent.poll() is None,
+                "Client API socket bound while ConfigDB stalls",
+            )
             assert process_manager.terminate(agent, sig) == 0
             assert not endpoint.exists()
 
 
 def test_host_signal_drains_serving_agent_and_closes_idle_ipc_connection(
     tmp_path: Path,
+    socket_dir: Path,
     binaries: Path,
     process_manager: ProcessManager,
 ) -> None:
-    endpoint = tmp_path / "agent.sock"
+    endpoint = socket_dir / "agent.sock"
     policy = tmp_path / "policy.json"
     policy.write_text(
         json.dumps(
@@ -293,10 +304,11 @@ def test_host_signal_drains_serving_agent_and_closes_idle_ipc_connection(
 
 def test_shutdown_budget_terminates_stalled_systemd_helper(
     tmp_path: Path,
+    socket_dir: Path,
     binaries: Path,
     process_manager: ProcessManager,
 ) -> None:
-    endpoint = tmp_path / "agent.sock"
+    endpoint = socket_dir / "agent.sock"
     policy = tmp_path / "policy.json"
     helper = tmp_path / "systemd-notify"
     helper_pid_file = tmp_path / "helper.pid"
@@ -313,7 +325,7 @@ def test_shutdown_budget_terminates_stalled_systemd_helper(
     env = {
         **os.environ,
         "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
-        "NOTIFY_SOCKET": str(tmp_path / "notify.sock"),
+        "NOTIFY_SOCKET": str(socket_dir / "notify.sock"),
         "TACACSRS_HELPER_PID": str(helper_pid_file),
     }
     agent = process_manager.spawn(
@@ -358,4 +370,166 @@ def test_shutdown_budget_terminates_stalled_systemd_helper(
         return False
 
     wait_until(_helper_reaped, "stalled systemd helper termination", timeout=5.0, interval=0.02)
+    assert not endpoint.exists()
+
+
+def _recv_exact(conn: socket.socket, size: int) -> bytes:
+    buf = bytearray()
+    while len(buf) < size:
+        chunk = conn.recv(size - len(buf))
+        if not chunk:
+            raise EOFError(f"Expected {size} bytes, got {len(buf)} before EOF")
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+def _tacacs_xor_body(
+    session_id_bytes: bytes,
+    key: bytes,
+    version: int,
+    seq_no: int,
+    body: bytes,
+) -> bytes:
+    prefix = session_id_bytes + key + bytes([version, seq_no])
+    pad = bytearray()
+    digest = b""
+    while len(pad) < len(body):
+        digest = hashlib.md5(prefix + digest).digest()
+        pad.extend(digest)
+    return bytes(byte ^ mask for byte, mask in zip(body, pad))
+
+
+def test_tacon_executes_accounting_through_agentd_ipc(
+    socket_dir: Path,
+    binaries: Path,
+    process_manager: ProcessManager,
+) -> None:
+    endpoint = socket_dir / "agent.sock"
+    secret = b"test-secret"
+    received_bodies: list[bytes] = []
+    peer_errors: list[BaseException] = []
+    stop_peer = threading.Event()
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as upstream:
+        upstream.bind(("127.0.0.1", 0))
+        upstream.listen(4)
+        upstream.settimeout(0.2)
+        upstream_port = upstream.getsockname()[1]
+
+        def _serve_one_accounting() -> None:
+            try:
+                conn: socket.socket | None = None
+                while not stop_peer.is_set():
+                    try:
+                        conn, _ = upstream.accept()
+                        break
+                    except TimeoutError:
+                        continue
+                if conn is None:
+                    return
+                with conn:
+                    conn.settimeout(30.0)
+                    header = _recv_exact(conn, 12)
+                    version, tacacs_type, seq_no, flags = header[:4]
+                    session_id_bytes = header[4:8]
+                    body_len = int.from_bytes(header[8:12], "big")
+                    assert tacacs_type == 3, f"Expected TAC_PLUS_ACCT (3), got {tacacs_type}"
+                    assert seq_no == 1, f"Expected seq_no 1, got {seq_no}"
+                    assert (flags & 0x01) == 0, "Expected obfuscated TACACS+ body"
+                    raw_body = _recv_exact(conn, body_len)
+                    plain_request = _tacacs_xor_body(
+                        session_id_bytes, secret, version, seq_no, raw_body
+                    )
+                    received_bodies.append(plain_request)
+
+                    server_msg = b"accepted"
+                    plain_reply = struct.pack("!HHB", len(server_msg), 0, 1) + server_msg
+                    reply_flags = flags & 0x04
+                    reply_header = (
+                        bytes([version, tacacs_type, 2, reply_flags])
+                        + session_id_bytes
+                        + len(plain_reply).to_bytes(4, "big")
+                    )
+                    obfuscated_reply = _tacacs_xor_body(
+                        session_id_bytes, secret, version, 2, plain_reply
+                    )
+                    conn.sendall(reply_header + obfuscated_reply)
+                    stop_peer.wait(timeout=15.0)
+            except BaseException as exc:  # noqa: BLE001 - surface peer failure on the test thread
+                peer_errors.append(exc)
+
+        peer_thread = threading.Thread(target=_serve_one_accounting, daemon=True)
+        peer_thread.start()
+        try:
+            agent = process_manager.spawn(
+                "agent",
+                [
+                    str(binaries / "tacacsrs-agentd"),
+                    "--server-addr",
+                    f"127.0.0.1:{upstream_port}",
+                    "--shared-secret",
+                    secret.decode("ascii"),
+                    "--host-integration",
+                    "none",
+                    "--listen-endpoint",
+                    str(endpoint),
+                ],
+            )
+            health_bin = str(binaries / "tacacsrs-agent-health")
+            wait_until(
+                lambda: endpoint.exists()
+                and agent.poll() is None
+                and subprocess.run(
+                    [
+                        health_bin,
+                        "--endpoint",
+                        str(endpoint),
+                        "--check",
+                        "readiness",
+                        "--timeout-seconds",
+                        "2",
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                ).returncode
+                == 0,
+                "agent IPC readiness",
+            )
+
+            tacon_res = subprocess.run(
+                [
+                    str(binaries / "tacon"),
+                    "--service-endpoint",
+                    str(endpoint),
+                    "accounting",
+                    "start",
+                    "-u",
+                    "alice",
+                    "-p",
+                    "tty0",
+                    "-r",
+                    "192.0.2.10",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=30.0,
+            )
+            assert tacon_res.returncode == 0, (
+                f"tacon failed ({tacon_res.returncode}):\n"
+                f"stdout:\n{tacon_res.stdout}\nstderr:\n{tacon_res.stderr}"
+            )
+        finally:
+            stop_peer.set()
+            peer_thread.join(timeout=5.0)
+
+    assert not peer_errors, f"TACACS+ upstream peer failed: {peer_errors[0]!r}"
+    assert len(received_bodies) == 1
+    assert b"alice" in received_bodies[0]
+    assert b"tty0" in received_bodies[0]
+    assert b"192.0.2.10" in received_bodies[0]
+    assert b"cmd=start" in received_bodies[0]
+
+    assert process_manager.terminate(agent, signal.SIGTERM) == 0
     assert not endpoint.exists()

@@ -703,3 +703,229 @@ async fn production_filter_rejects_loopback() {
     assert_eq!(fixture.server.requests(INTERMEDIATE), 0);
     assert_eq!(verifier.counters().fetch_failures, 2);
 }
+
+#[tokio::test]
+async fn future_dated_delta_remove_from_crl_does_not_clear_base_revocation_in_warn_only() {
+    const CERTIFICATE_HOLD: &[u8] = &[0x0a, 0x01, 0x06];
+    const REMOVE_FROM_CRL: &[u8] = &[0x0a, 0x01, 0x08];
+
+    let fixture = Fixture::new().await;
+    let now = SystemTime::now();
+    let leaf = fixture.leaf(10);
+    let delta_url = fixture.server.url(DELTA);
+    fixture.serve_intermediate(&CrlOptions {
+        revoked: &[&leaf],
+        first_entry_extension: Some(("2.5.29.21", false, CERTIFICATE_HOLD)),
+        number: 1,
+        freshest: &[&delta_url],
+        ..CrlOptions::default()
+    });
+
+    // Control: a currently valid delta CRL with removeFromCRL clears the hold.
+    fixture.server.route(
+        DELTA,
+        Response::Body(crl(
+            &fixture.pki.intermediate,
+            &CrlOptions {
+                this_update: now - Duration::from_secs(1800),
+                next_update: now + Duration::from_secs(86_400),
+                revoked: &[&leaf],
+                first_entry_extension: Some(("2.5.29.21", false, REMOVE_FROM_CRL)),
+                number: 2,
+                delta_base: Some(1),
+                ..CrlOptions::default()
+            },
+        )),
+    );
+    let (valid_verifier, _sender) = start(fixture.settings(RevocationEnforcement::HardFail));
+    assert_eq!(
+        check(&valid_verifier, &fixture.pki.path(&leaf)).await,
+        RevocationDecision::Verified
+    );
+
+    // Regression: a not-yet-valid delta CRL with removeFromCRL must not clear the base revocation.
+    fixture.server.route(
+        DELTA,
+        Response::Body(crl(
+            &fixture.pki.intermediate,
+            &CrlOptions {
+                this_update: now + Duration::from_secs(3600),
+                next_update: now + Duration::from_secs(86_400),
+                revoked: &[&leaf],
+                first_entry_extension: Some(("2.5.29.21", false, REMOVE_FROM_CRL)),
+                number: 2,
+                delta_base: Some(1),
+                ..CrlOptions::default()
+            },
+        )),
+    );
+    let (warn_verifier, _sender) = start(fixture.settings(RevocationEnforcement::WarnOnly));
+    assert_revoked(&check(&warn_verifier, &fixture.pki.path(&leaf)).await, "depth 0");
+    assert_eq!(warn_verifier.counters().revoked_rejects, 1);
+    assert_eq!(warn_verifier.counters().warn_only_accepts, 0);
+}
+
+#[tokio::test]
+async fn promoted_revocation_evidence_immediately_overrides_cached_accepts() {
+    const SLOW_MIRROR: &str = "/slow-mirror.crl";
+    const FRESH_MIRROR: &str = "/fresh-mirror.crl";
+
+    // WarnOnly: obtain hits the caller deadline on a slow first mirror and caches a sticky Accept,
+    // then another path promotes a revoking CRL on the shared mirror and immediate decide rejects.
+    let fixture = Fixture::new().await;
+    fixture.server.route(SLOW_MIRROR, Response::Stall);
+    let warn_leaf = fixture.pki.leaf(
+        10,
+        &[
+            &fixture.server.url(SLOW_MIRROR),
+            &fixture.server.url(INTERMEDIATE),
+        ],
+    );
+    let warn_sibling = fixture.pki.leaf(11, &[&fixture.server.url(INTERMEDIATE)]);
+    fixture.serve_intermediate(&CrlOptions {
+        number: 2,
+        revoked: &[&warn_leaf],
+        ..CrlOptions::default()
+    });
+
+    let (warn_verifier, _sender) = start(fixture.settings(RevocationEnforcement::WarnOnly));
+    let warn_path = fixture.pki.path(&warn_leaf);
+    assert_eq!(warn_verifier.decide(&warn_path), RevocationDecision::NeedEvidence);
+    let short_deadline = tokio::time::Instant::now() + Duration::from_millis(150);
+    warn_verifier
+        .obtain(&warn_path, &RevocationNetwork::default(), Some(short_deadline))
+        .await;
+    assert!(matches!(warn_verifier.decide(&warn_path), RevocationDecision::Accept(_)));
+
+    assert_eq!(
+        check(&warn_verifier, &fixture.pki.path(&warn_sibling)).await,
+        RevocationDecision::Verified
+    );
+    assert_revoked(&warn_verifier.decide(&warn_path), "depth 0");
+
+    // SoftFail: obtain caches a sticky grace Accept from a stale CRL, then a fresh revoking CRL is
+    // promoted into the store and immediate decide rejects without waiting 10 seconds.
+    let soft_fixture = Fixture::new().await;
+    let now = SystemTime::now();
+    soft_fixture.server.route(SLOW_MIRROR, Response::Stall);
+    let soft_leaf = soft_fixture.pki.leaf(
+        20,
+        &[
+            &soft_fixture.server.url(SLOW_MIRROR),
+            &soft_fixture.server.url(INTERMEDIATE),
+            &soft_fixture.server.url(FRESH_MIRROR),
+        ],
+    );
+    let stale_seeder = soft_fixture
+        .pki
+        .leaf(21, &[&soft_fixture.server.url(INTERMEDIATE)]);
+    let fresh_seeder = soft_fixture
+        .pki
+        .leaf(22, &[&soft_fixture.server.url(FRESH_MIRROR)]);
+
+    soft_fixture.serve_intermediate(&CrlOptions {
+        this_update: now - Duration::from_secs(3 * 86_400),
+        next_update: now - Duration::from_secs(3600),
+        number: 1,
+        ..CrlOptions::default()
+    });
+    soft_fixture.server.route(
+        FRESH_MIRROR,
+        Response::Body(crl(
+            &soft_fixture.pki.intermediate,
+            &CrlOptions {
+                number: 2,
+                revoked: &[&soft_leaf],
+                ..CrlOptions::default()
+            },
+        )),
+    );
+
+    let mut soft_settings = soft_fixture.settings(RevocationEnforcement::SoftFail);
+    soft_settings.soft_fail_grace = Duration::from_secs(86_400);
+    let (soft_verifier, _sender) = start(soft_settings);
+
+    assert!(matches!(
+        check(&soft_verifier, &soft_fixture.pki.path(&stale_seeder)).await,
+        RevocationDecision::Accept(_)
+    ));
+
+    let soft_path = soft_fixture.pki.path(&soft_leaf);
+    assert_eq!(soft_verifier.decide(&soft_path), RevocationDecision::NeedEvidence);
+    let short_deadline = tokio::time::Instant::now() + Duration::from_millis(150);
+    soft_verifier
+        .obtain(&soft_path, &RevocationNetwork::default(), Some(short_deadline))
+        .await;
+    assert!(matches!(soft_verifier.decide(&soft_path), RevocationDecision::Accept(_)));
+
+    assert_eq!(
+        check(&soft_verifier, &soft_fixture.pki.path(&fresh_seeder)).await,
+        RevocationDecision::Verified
+    );
+    assert_revoked(&soft_verifier.decide(&soft_path), "depth 0");
+}
+
+#[tokio::test]
+async fn tries_the_next_mirror_when_the_first_serves_an_unrelated_or_wrong_scope_crl() {
+    const WRONG_KEY_MIRROR: &str = "/mirror-wrong-key.crl";
+    const WRONG_SCOPE_MIRROR: &str = "/mirror-wrong-scope.crl";
+
+    let fixture = Fixture::new().await;
+    fixture.serve_intermediate(&CrlOptions::default());
+
+    let unrelated = issue(
+        "Unrelated Intermediate",
+        key(),
+        None,
+        &CertificateOptions {
+            ca: true,
+            serial: 99,
+            ..CertificateOptions::default()
+        },
+    );
+    fixture
+        .server
+        .route(WRONG_KEY_MIRROR, Response::Body(crl(&unrelated, &CrlOptions::default())));
+
+    let wrong_scope_uri = fixture.server.url("/other-partition.crl");
+    let wrong_scope = tlv(0x30, &tlv(0xa0, &tlv(0xa0, &tlv(0x86, wrong_scope_uri.as_bytes()))));
+    fixture.server.route(
+        WRONG_SCOPE_MIRROR,
+        Response::Body(crl(
+            &fixture.pki.intermediate,
+            &CrlOptions {
+                issuing_distribution_point: Some(&wrong_scope),
+                ..CrlOptions::default()
+            },
+        )),
+    );
+
+    let leaf_wrong_key = fixture.pki.leaf(
+        10,
+        &[
+            &fixture.server.url(WRONG_KEY_MIRROR),
+            &fixture.server.url(INTERMEDIATE),
+        ],
+    );
+    let (verifier, _sender) = start(fixture.settings(RevocationEnforcement::HardFail));
+    assert_eq!(
+        check(&verifier, &fixture.pki.path(&leaf_wrong_key)).await,
+        RevocationDecision::Verified
+    );
+    assert_eq!(fixture.server.requests(WRONG_KEY_MIRROR), 1);
+    assert_eq!(fixture.server.requests(INTERMEDIATE), 1);
+
+    let leaf_wrong_scope = fixture.pki.leaf(
+        11,
+        &[
+            &fixture.server.url(WRONG_SCOPE_MIRROR),
+            &fixture.server.url(INTERMEDIATE),
+        ],
+    );
+    let (scope_verifier, _sender) = start(fixture.settings(RevocationEnforcement::HardFail));
+    assert_eq!(
+        check(&scope_verifier, &fixture.pki.path(&leaf_wrong_scope)).await,
+        RevocationDecision::Verified
+    );
+    assert_eq!(fixture.server.requests(WRONG_SCOPE_MIRROR), 1);
+}

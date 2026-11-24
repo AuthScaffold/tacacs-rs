@@ -167,6 +167,26 @@ impl SignalObservation {
         self.pump.abort_handle()
     }
 
+    /// Marks the latest emitted snapshot as rejected by a downstream consumer.
+    ///
+    /// The next successful read emits [`ConfigChangeEvent::Changed`] even when
+    /// the snapshot is unchanged, and schedules
+    /// [`ObservationSchedule::retry_interval`] when no read or earlier timer
+    /// is armed.
+    pub fn record_rejection(&mut self) {
+        self.rejected = true;
+        if self.read.is_none() {
+            if let Some(interval) = self.schedule.retry_interval {
+                if let Some(retry_at) = Instant::now().checked_add(interval) {
+                    self.due = Some(match self.due {
+                        Some(due) => due.min(retry_at),
+                        None => retry_at,
+                    });
+                }
+            }
+        }
+    }
+
     fn next_deadline(&self) -> Option<Instant> {
         match (self.quiet, self.due) {
             (Some(quiet), Some(due)) => Some(quiet.min(due)),
@@ -284,6 +304,10 @@ impl ConfigObservation for SignalObservation {
             }
         }
     }
+
+    fn record_rejection(&mut self) {
+        Self::record_rejection(self);
+    }
 }
 
 #[cfg(test)]
@@ -363,5 +387,68 @@ mod tests {
         assert_eq!(retry_start.elapsed(), Duration::from_secs(5));
         assert!(recovered.delta.is_empty());
         notifier.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn downstream_rejection_re_emits_unchanged_snapshot_on_retry_and_reconcile() {
+        let (_tx, rx) = mpsc::channel(1);
+        let mut observation = SignalObservation::spawn(
+            ReceiverStream::new(rx),
+            ObservationSchedule {
+                debounce: Duration::from_millis(250),
+                max_delay: None,
+                reconcile_interval: Some(Duration::from_secs(60)),
+                retry_interval: Some(Duration::from_secs(5)),
+            },
+            "test stream disconnected",
+            || Box::pin(async { Ok(ObservedSnapshot::config_only(server_config(49))) }),
+        );
+
+        assert!(matches!(observation.next().await.unwrap(), Some(ConfigChangeEvent::Changed(_))));
+
+        // Without a rejection, reconcile_interval suppresses identical snapshots.
+        assert!(tokio::time::timeout(Duration::from_secs(65), observation.next())
+            .await
+            .is_err());
+
+        // Recording a downstream rejection arms retry_interval and forces re-emission.
+        ConfigObservation::record_rejection(&mut observation);
+        let retry_start = Instant::now();
+        let Some(ConfigChangeEvent::Changed(recovered)) = observation.next().await.unwrap() else {
+            panic!("expected recovery change after downstream rejection");
+        };
+        assert_eq!(retry_start.elapsed(), Duration::from_secs(5));
+        assert!(recovered.delta.is_empty());
+
+        // Subsequent unchanged reconciliations resume normal suppression.
+        assert!(tokio::time::timeout(Duration::from_secs(65), observation.next())
+            .await
+            .is_err());
+
+        // A schedule without retry_interval still re-emits on reconcile_interval.
+        let (_tx2, rx2) = mpsc::channel(1);
+        let mut reconcile_only = SignalObservation::spawn(
+            ReceiverStream::new(rx2),
+            ObservationSchedule {
+                debounce: Duration::from_millis(250),
+                max_delay: None,
+                reconcile_interval: Some(Duration::from_secs(60)),
+                retry_interval: None,
+            },
+            "test stream disconnected",
+            || Box::pin(async { Ok(ObservedSnapshot::config_only(server_config(49))) }),
+        );
+        assert!(matches!(
+            reconcile_only.next().await.unwrap(),
+            Some(ConfigChangeEvent::Changed(_))
+        ));
+        ConfigObservation::record_rejection(&mut reconcile_only);
+        let reconcile_start = Instant::now();
+        let Some(ConfigChangeEvent::Changed(reconciled)) = reconcile_only.next().await.unwrap()
+        else {
+            panic!("expected reconcile recovery change");
+        };
+        assert_eq!(reconcile_start.elapsed(), Duration::from_secs(60));
+        assert!(reconciled.delta.is_empty());
     }
 }

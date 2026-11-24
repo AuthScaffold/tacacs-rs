@@ -156,6 +156,7 @@ def inventory(metadata: dict) -> dict:
                 "manifest_path": relative_manifest,
                 "directory": relative_directory,
                 "default_member": member_id in default_ids,
+                "internal_test_only": _is_internal_test_only(package),
                 "target_kinds": target_kinds,
                 "dependencies": dependencies,
             }
@@ -163,6 +164,22 @@ def inventory(metadata: dict) -> dict:
 
     members.sort(key=lambda package: (package["name"], package["id"]))
     return {"workspace_root": str(root), "packages": members}
+
+
+def _is_internal_test_only(package: dict) -> bool:
+    """Return ``True`` when ``[package.metadata.release]`` marks an internal test crate."""
+    pkg_metadata = package.get("metadata")
+    if not isinstance(pkg_metadata, dict):
+        return False
+    release_meta = pkg_metadata.get("release")
+    if not isinstance(release_meta, dict):
+        return False
+    flag = release_meta.get("internal_test_only", False)
+    if not isinstance(flag, bool):
+        raise MetadataError(
+            f"package {package['name']!r} metadata.release.internal_test_only must be a boolean"
+        )
+    return flag
 
 
 def _dependency_entry(

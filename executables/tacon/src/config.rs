@@ -26,6 +26,17 @@ pub(crate) fn tacacs_plus_from_cli(cli: &Cli) -> anyhow::Result<TacacsPlus> {
         .as_deref()
         .context("A TACACS+ server address is required for direct mode")?;
 
+    if cli.use_tls
+        && cli.shared_secret.is_some()
+        && !cli
+            .validation_relaxation
+            .contains(&crate::cli::ValidationRelaxation::AllowTlsWithSharedSecret)
+    {
+        anyhow::bail!(
+            "--use-tls cannot be combined with --shared-secret by default; omit --shared-secret for RFC 9887 TLS or pass --validation-relaxation allow-tls-with-shared-secret"
+        );
+    }
+
     let mut server = CliServerInput::new("cli", server_addr).with_single_connection(true);
     if let Some(tls_server_name) = cli.tls_server_name.as_ref() {
         server = server.with_tls_server_name(tls_server_name.clone());
@@ -127,6 +138,9 @@ pub(crate) fn resolve_tacacs_plus_config(cli: &Cli) -> anyhow::Result<TacacsPlus
 pub(crate) fn render_yang_config(cli: &Cli) -> anyhow::Result<String> {
     if cli.service_endpoint.is_some() {
         anyhow::bail!("dump-yang-config requires direct configuration via --config or direct server flags, not --service-endpoint");
+    }
+    if cli.dedicated {
+        anyhow::bail!("dump-yang-config cannot be combined with --dedicated");
     }
 
     let root = YangConfigRoot {
@@ -527,6 +541,22 @@ mod tests {
     }
 
     #[test]
+    fn render_yang_config_rejects_dedicated_mode() {
+        let cli = Cli::parse_from([
+            "tacon",
+            "--server-addr",
+            "192.0.2.10:49",
+            "--dedicated",
+            "dump-yang-config",
+        ]);
+
+        let error = render_yang_config(&cli).expect_err("dedicated mode was accepted");
+        assert!(error
+            .to_string()
+            .contains("dump-yang-config cannot be combined with --dedicated"));
+    }
+
+    #[test]
     fn tacacs_plus_from_cli_with_relaxation_allows_tls_and_shared_secret() {
         let cli = Cli::parse_from([
             "tacon",
@@ -564,15 +594,13 @@ mod tests {
 
     #[test]
     fn tacacs_plus_from_cli_without_relaxation_does_not_include_shared_secret_for_tls() {
-        // Without the relaxation, --use-tls ignores --shared-secret (TLS wins).
-        // This verifies that the default strict path continues to build a TLS-only server.
         let cli = Cli::parse_from([
             "tacon",
             "--server-addr",
             "192.0.2.10:49",
             "--use-tls",
             "--shared-secret",
-            "ignored-secret",
+            "rejected-secret",
             "accounting",
             "--user",
             "alice",
@@ -583,14 +611,11 @@ mod tests {
             "show",
         ]);
 
-        let root = tacacs_plus_from_cli(&cli)
-            .expect("failed to build a TLS-only server without the relaxation");
-
-        assert!(root.server[0].server_authentication.is_some(), "TLS is not set");
-        assert!(
-            root.server[0].shared_secret.is_none(),
-            "the shared secret is set without the relaxation",
-        );
+        let error = tacacs_plus_from_cli(&cli)
+            .expect_err("TLS with --shared-secret was accepted without the relaxation");
+        let message = error.to_string();
+        assert!(message.contains("--shared-secret"));
+        assert!(message.contains("--validation-relaxation allow-tls-with-shared-secret"));
     }
 
     fn tls13_epsk_groups(cli: &Cli) -> Vec<PskDheKeSupportedGroup> {

@@ -20,15 +20,21 @@ from conftest import (
 class KubeSonicHarness:
     """Orchestrates tacacsrs-agentd --kubesonic, Redis DB 4, and health probes."""
 
-    def __init__(self, root: Path, binaries: Path, manager: ProcessManager) -> None:
+    def __init__(
+        self,
+        root: Path,
+        socket_dir: Path,
+        binaries: Path,
+        manager: ProcessManager,
+    ) -> None:
         self.root = root
         self.binaries = binaries
         self.manager = manager
-        self.redis = RedisInstance(root, manager)
+        self.redis = RedisInstance(socket_dir, manager)
         self.pki = CertificateBundle(root)
-        self.api_socket = root / "api.sock"
+        self.api_socket = socket_dir / "api.sock"
         self.statistics = root / "statistics.json"
-        self.proxy_port = reserve_loopback_port()
+        self.proxy_port: int | None = None
         self.agent: subprocess.Popen[bytes] | None = None
         self.base_env = {
             key: value for key, value in os.environ.items() if not key.startswith("TACACSD_")
@@ -41,7 +47,7 @@ class KubeSonicHarness:
                 "TACACSD_TLS_CA_FILE": str(self.pki.ca_pem),
                 "TACACSD_TLS_CA_DIRECTORY": str(self.pki.trust_dir),
                 "TACACSD_SERVICES_CLIENT_API_ENDPOINT": str(self.api_socket),
-                "TACACSD_SERVICES_TACACS_PROXY_ENDPOINT": f"127.0.0.1:{self.proxy_port}",
+                "TACACSD_SERVICES_TACACS_PROXY_ENDPOINT": "127.0.0.1:0",
                 "TACACSD_PROCESS_STATISTICS_FILE": str(self.statistics),
                 "TACACSD_POLICY_SHUTDOWN_TIMEOUT_SECONDS": "5",
                 "TACACSD_LOOPBACK_RETRY_INTERVAL_SECONDS": "1",
@@ -51,6 +57,13 @@ class KubeSonicHarness:
 
     def start_agent(self, name: str = "agent", **overrides: str) -> subprocess.Popen[bytes]:
         env = {**self.base_env, **overrides}
+        if (
+            env.get("TACACSD_LOOPBACK_REGISTRATION_ENABLED", "").lower()
+            in ("1", "true", "yes", "on")
+            and "TACACSD_SERVICES_TACACS_PROXY_ENDPOINT" not in overrides
+        ):
+            self.proxy_port = reserve_loopback_port()
+            env["TACACSD_SERVICES_TACACS_PROXY_ENDPOINT"] = f"127.0.0.1:{self.proxy_port}"
         proc = self.manager.spawn(name, [str(self.binaries / "tacacsrs-agentd"), "--kubesonic"], env=env)
         self.agent = proc
         wait_until(
@@ -117,10 +130,11 @@ class KubeSonicHarness:
 
 def test_kubesonic_live_updates_certificate_rotation_and_retain_policy(
     tmp_path: Path,
+    socket_dir: Path,
     binaries: Path,
     process_manager: ProcessManager,
 ) -> None:
-    harness = KubeSonicHarness(tmp_path, binaries, process_manager)
+    harness = KubeSonicHarness(tmp_path, socket_dir, binaries, process_manager)
     harness.start_agent("agent-retain")
 
     wait_until(lambda: harness.check_health("liveness"), "liveness while Redis is unavailable")
@@ -184,10 +198,11 @@ def test_kubesonic_live_updates_certificate_rotation_and_retain_policy(
 
 def test_kubesonic_clear_policy_withdraws_and_restores_readiness(
     tmp_path: Path,
+    socket_dir: Path,
     binaries: Path,
     process_manager: ProcessManager,
 ) -> None:
-    harness = KubeSonicHarness(tmp_path, binaries, process_manager)
+    harness = KubeSonicHarness(tmp_path, socket_dir, binaries, process_manager)
     harness.redis.start()
     key = "TACPLUS_SERVER|192.0.2.10"
     harness.redis.cli("HSET", key, "tcp_port", 449)
@@ -206,15 +221,17 @@ def test_kubesonic_clear_policy_withdraws_and_restores_readiness(
 
 def test_kubesonic_loopback_registration_repairs_deletion_and_preserves_external_owner(
     tmp_path: Path,
+    socket_dir: Path,
     binaries: Path,
     process_manager: ProcessManager,
 ) -> None:
-    harness = KubeSonicHarness(tmp_path, binaries, process_manager)
+    harness = KubeSonicHarness(tmp_path, socket_dir, binaries, process_manager)
     harness.redis.start()
     harness.redis.cli("HSET", "TACPLUS_SERVER|192.0.2.10", "tcp_port", 449)
     loopback = "TACPLUS_SERVER|127.0.0.1"
 
     harness.start_agent("agent-loopback", TACACSD_LOOPBACK_REGISTRATION_ENABLED="true")
+    assert harness.proxy_port is not None
     wait_until(
         lambda: harness.redis.cli("HGET", loopback, "tcp_port") == str(harness.proxy_port),
         "ready loopback registration at configured port",

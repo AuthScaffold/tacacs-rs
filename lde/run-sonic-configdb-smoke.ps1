@@ -236,8 +236,6 @@ try {
         'priority', '1',
         'tcp_port', '49',
         'timeout', '10',
-        'domain_name', 'tacacs-a.example.test',
-        'sni_enabled', 'true',
         'single_connection', 'true'
     ) | Out-Null
 
@@ -288,8 +286,8 @@ try {
 
     Assert-Contains $stdout 'initial_server_count: 1'
     Assert-Contains $stdout 'server: sonic-server-192.0.2.10'
-    Assert-Contains $stdout 'domain_name: tacacs-a.example.test'
-    Assert-Contains $stdout 'sni_enabled: true'
+    Assert-Contains $stdout 'domain_name: -'
+    Assert-Contains $stdout 'sni_enabled: -'
     Assert-Contains $stdout 'single_connection: true'
     Assert-Contains $stdout 'shared_secret_configured: false'
     Assert-Contains $stdout 'change_event: 1'

@@ -41,6 +41,7 @@ impl ConfigSupervisor {
                             }
                         } else {
                             self.materialization_coordinator.reject_observation(&self.health).await;
+                            self.record_observation_rejection().await;
                         }
                         attempt = 0;
                     }
@@ -59,15 +60,24 @@ impl ConfigSupervisor {
                         }
                     }
                 },
-                _ = async {
+                result = async {
                     candidate
                         .as_mut()
                         .expect("the candidate branch requires pending work")
                         .await
                 }, if candidate.is_some() => {
                     drop(candidate.take());
+                    if result.is_err() {
+                        self.record_observation_rejection().await;
+                    }
                 }
             };
+        }
+    }
+
+    async fn record_observation_rejection(&self) {
+        if let Some(observation) = self.observation.lock().await.as_mut() {
+            observation.record_rejection();
         }
     }
 

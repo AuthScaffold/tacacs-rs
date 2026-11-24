@@ -123,7 +123,7 @@ pub(crate) struct CommonArgs {
     #[arg(long)]
     pub(crate) listen_endpoint: Option<String>,
 
-    /// Optional local TACACS+ proxy endpoint. `SONiC` mode loads this from `ConfigDB`.
+    /// Optional local TACACS+ proxy endpoint for inline or file profiles.
     #[arg(long)]
     pub(crate) proxy_endpoint: Option<String>,
 
@@ -132,11 +132,11 @@ pub(crate) struct CommonArgs {
         value_parser = clap::builder::NonEmptyStringValueParser::new().map(tacacsrs_secrets::SecretString::new))]
     pub(crate) proxy_shared_secret: Option<tacacsrs_secrets::SecretString>,
 
-    /// Downstream credential source. `SONiC` defaults to `local-proxy-row`.
+    /// Downstream credential source for inline or file profiles.
     #[arg(long, value_parser = proxy_credential_source_parser())]
     pub(crate) proxy_credential_source: Option<ProxyCredentialSource>,
 
-    /// Runtime service mode. `SONiC` mode requires both services.
+    /// Runtime service mode for inline or file profiles.
     #[arg(long, value_enum)]
     pub(crate) service_mode: Option<ServiceMode>,
 
@@ -164,7 +164,16 @@ pub(crate) struct CommonArgs {
 
     /// CAUTION: Disable upstream TLS certificate verification.
     /// This option permits server impersonation.
-    #[arg(long, requires_all = ["server_addresses", "use_tls"])]
+    #[arg(
+        long,
+        requires_all = ["server_addresses", "use_tls"],
+        conflicts_with_all = [
+            "psk_identity",
+            "psk_key",
+            "psk_key_exchange",
+            "psk_key_exchange_groups",
+        ]
+    )]
     pub(crate) insecure_disable_certificate_verification: bool,
 
     /// Timeout, in seconds, for establishing a new upstream TACACS+ connection.

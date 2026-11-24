@@ -161,6 +161,12 @@ def recover(workspace: Path, source: str):
         outputs(*recovered[0])
 
 
+def is_managed_package(package: dict) -> bool:
+    if package.get("internal_test_only", False):
+        return False
+    return bool(set(package["target_kinds"]) & {"lib", "rlib", "cdylib"}) or package["name"] in CALVER_PACKAGES
+
+
 @contextmanager
 def hydrated_source(workspace: Path, plan):
     with tempfile.TemporaryDirectory(prefix="tacacs-source-release-") as directory:
@@ -168,11 +174,7 @@ def hydrated_source(workspace: Path, plan):
         git(workspace, "worktree", "add", "--detach", str(checkout), plan["source"])
         try:
             packages = inventory(load_metadata(checkout, no_deps=True, locked=False))["packages"]
-            managed = {
-                package["name"] for package in packages
-                if set(package["target_kinds"]) & {"lib", "rlib", "cdylib"}
-                or package["name"] in CALVER_PACKAGES
-            }
+            managed = {package["name"] for package in packages if is_managed_package(package)}
             if set(plan["versions"]) != managed:
                 raise ReleaseError("Version map does not cover exactly the managed workspace crates")
             hydrate(checkout, plan["versions"])

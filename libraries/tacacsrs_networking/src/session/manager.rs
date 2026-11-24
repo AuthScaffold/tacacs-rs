@@ -405,14 +405,6 @@ impl SessionManager {
                 target: "tacacsrs_networking::session::manager::set_single_connection_state",
                 "Set single-connection state to {new_state:?}"
             );
-        } else {
-            let current = *state;
-            drop(state);
-
-            log::debug!(
-                target: "tacacsrs_networking::session::manager::set_single_connection_state",
-                "Ignored single-connection update {server_supports_single_connection} because the state is {current:?}",
-            );
         }
     }
 
@@ -857,6 +849,15 @@ mod tests {
     #[tokio::test]
     async fn test_single_connection_state_starts_initial() {
         let session_manager = SessionManager::new();
+        assert_eq!(session_manager.single_connection_state(), SingleConnectionState::Initial);
+    }
+
+    #[tokio::test]
+    async fn test_initial_state_ignores_single_connection_updates() {
+        let session_manager = SessionManager::new();
+        session_manager.set_single_connection_state(true);
+        assert_eq!(session_manager.single_connection_state(), SingleConnectionState::Initial);
+        session_manager.set_single_connection_state(false);
         assert_eq!(session_manager.single_connection_state(), SingleConnectionState::Initial);
     }
 

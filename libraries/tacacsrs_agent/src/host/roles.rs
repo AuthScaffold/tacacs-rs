@@ -56,6 +56,22 @@ impl TacacsProxyAccess {
     }
 }
 
+/// Registers protected output files on the prepared service.
+#[derive(Clone)]
+pub(crate) struct ListenerPathGuard {
+    service: Arc<TacacsClientService>,
+}
+
+impl ListenerPathGuard {
+    pub(crate) fn new(service: Arc<TacacsClientService>) -> Self {
+        Self { service }
+    }
+
+    pub(crate) fn protect(&self, path: impl Into<std::path::PathBuf>) -> anyhow::Result<()> {
+        self.service.protect_listener_path(path)
+    }
+}
+
 /// Checks a prepared host before any listener binds or service starts.
 ///
 /// A check can read deferred values. A failed check stops startup.

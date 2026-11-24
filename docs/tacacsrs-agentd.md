@@ -46,12 +46,18 @@ tacon --service-endpoint /run/tacacs/tacacs.sock \
 
 ## Command-Line Options
 
-### Upstream Servers (required)
+### Configuration Source (one required)
+
+Exactly one configuration source selector (`--server-addr`, `--config`, `--sonic`, or `--kubesonic`) is required.
 
 | Flag | Description |
 |------|-------------|
-| `--server-addr <ADDR>` | TACACS+ server address (repeatable, ordered by preference). First entry is the preferred server. |
+| `--server-addr <ADDR>` | TACACS+ server address (repeatable, ordered by preference). The first entry is the preferred server. |
 | `--config <FILE>` | Load upstream server definitions from a YANG JSON configuration file |
+| `--sonic` | Load TACACS+ upstream servers and local forwarder configuration from SONiC ConfigDB |
+| `--sonic-redis-url <URL>` | Override the SONiC ConfigDB Redis URL (requires `--sonic`; default `unix:///var/run/redis/redis.sock?db=4`) |
+| `--sonic-redis-db <INDEX>` | Override the SONiC ConfigDB database index (requires `--sonic`; default `4`) |
+| `--kubesonic` | Load KubeSONiC ConfigDB server rows and `TACACSD_` environment inputs (exclusive; cannot be combined with other CLI flags) |
 
 ### IPC Listener
 
@@ -198,9 +204,7 @@ Cached clients retain the same live guard across reconnects and configuration re
 
 Downstream TACACS+ obfuscation is independent of the selected upstream transport. In SONiC mode, the daemon filters rows that target its loopback proxy.
 
-SONiC mode selects `local-proxy-row` by default. The selected row's mapped `passkey` supplies downstream material.
-For intentional plaintext downstream traffic, select `--proxy-credential-source unobfuscated` explicitly.
-Outside SONiC mode, `--proxy-shared-secret` selects inline policy unless an explicit source selector conflicts with it.
+SONiC mode always uses `local-proxy-row` from ConfigDB and rejects `--proxy-credential-source` and `--proxy-shared-secret` on the command line; the matching loopback row's mapped `passkey` supplies downstream material. Outside SONiC mode, downstream proxy traffic defaults to `unobfuscated`, `--proxy-shared-secret` selects `inline` policy unless an explicit `--proxy-credential-source` conflicts with it, and `--proxy-credential-source unobfuscated` keeps plaintext downstream traffic explicit.
 
 This replaces the previous implicit local-row override and missing-secret fallback.
 A missing row, missing secret, or empty secret rejects the candidate generation in row-derived mode.
@@ -214,17 +218,20 @@ TACACS+ has no general in-band request to drain a single-connect connection. Cle
 
 ### Upstream Encryption
 
+Inline upstream flags (`-k`/`--shared-secret`, `--use-tls`, `--client-certificate`, `--client-key`, `--insecure-disable-certificate-verification`, `--connect-timeout-seconds`, `--dedicated`, `--psk-identity`, `--psk-key`, `--psk-key-exchange`, and `--psk-key-exchange-groups`) apply only with `--server-addr` and are rejected with `--config`, `--sonic`, and `--kubesonic`. `--use-tls` conflicts with `-k`/`--shared-secret`, `--client-certificate` and `--client-key` require `--use-tls` and each other, and `--insecure-disable-certificate-verification` requires `--use-tls` and conflicts with `--psk-*`.
+
 | Flag | Description |
 |------|-------------|
-| `-k, --shared-secret <KEY>` | Shared secret for TACACS+ packet obfuscation |
-| `--use-tls` | Enable TLS 1.3 for upstream connections |
-| `--client-certificate <FILE>` | PEM- or DER-encoded client TLS certificate (requires `--client-key`) |
-| `--client-key <FILE>` | PEM- or DER-encoded client TLS private key (requires `--client-certificate`) |
-| `--insecure-disable-certificate-verification` | Skip TLS cert verification |
-| `--psk-identity <ID>` | TLS 1.3 pre-shared key identity *(requires `psk` feature)* |
-| `--psk-key <KEY>` | TLS 1.3 pre-shared key *(requires `psk` feature)* |
-| `--psk-key-exchange <MODE>` | Select `psk-dhe` or explicit `psk-only` interoperability mode *(requires `psk` feature)* |
-| `--psk-key-exchange-groups <GROUP[,GROUP...]>` | Comma-separated PSK-DHE supported groups in preferred order, for example `secp384r1,secp256r1` *(requires `psk` feature)* |
+| `-k, --shared-secret <KEY>` | Shared secret for TACACS+ packet obfuscation (requires `--server-addr`; conflicts with `--use-tls`) |
+| `--use-tls` | Enable TLS 1.3 for upstream connections (requires `--server-addr`; conflicts with `--shared-secret`) |
+| `--client-certificate <FILE>` | PEM client certificate chain or single DER certificate (requires `--server-addr`, `--use-tls`, and `--client-key`) |
+| `--client-key <FILE>` | PEM- or DER-encoded client TLS private key (requires `--server-addr`, `--use-tls`, and `--client-certificate`) |
+| `--insecure-disable-certificate-verification` | Skip upstream TLS certificate verification (requires `--server-addr` and `--use-tls`; conflicts with `--psk-*`) |
+| `--psk-identity <ID>` | TLS 1.3 pre-shared key identity (requires `--server-addr`, `--use-tls`, and `--psk-key`) |
+| `--psk-key <KEY>` | Standard base64-encoded TLS 1.3 pre-shared key (requires `--server-addr`, `--use-tls`, and `--psk-identity`) |
+| `--psk-key-exchange <MODE>` | Select `psk-dhe` or explicit `psk-only` interoperability mode |
+| `--psk-key-exchange-groups <GROUP[,GROUP...]>` | Comma-separated PSK-DHE supported groups in preferred order, for example `secp384r1,secp256r1` |
+| `--dedicated` | Open a dedicated upstream connection per request instead of negotiating TACACS+ single-connection mode (requires `--server-addr`) |
 
 ### TLS Client Certificates and Keys
 
@@ -276,7 +283,7 @@ The check applies only to CA-authenticated certificate TLS servers. Exact pinned
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--connect-timeout-seconds <SECS>` | `5` | Timeout for upstream TACACS+ connections. It bounds the TCP connect and the TLS or PSK handshake together. |
+| `--connect-timeout-seconds <SECS>` | `5` | Timeout for upstream TACACS+ connections when `--server-addr` is used. It bounds the TCP connect and the TLS or PSK handshake together. |
 | `--runtime-policy <FILE>` | none | Optional live JSON policy for failover and request limits |
 | `--upstream-watchdog-interval-seconds <SECS>` | none (disabled) | Interval between upstream watchdog probes. See [Host Integration](#host-integration). |
 
@@ -541,7 +548,7 @@ Pending systemd helper processes are terminated when their owner is dropped.
 Future cancellation cannot preempt arbitrary blocking code; deployments still need an external process supervisor for that case.
 An embedded host can use `TacacsClientService::serve_until` to request this sequence without process signals or process exit.
 
-The Client API endpoint also serves the standard `grpc.health.v1.Health` protocol. No custom health protobuf or additional network listener is used.
+Alongside standard `grpc.health.v1.Health`, the Client API Unix domain socket serves the read-only `AgentHealth.Details` RPC (from `tacacsrs_agent_health.proto`) and `Diagnostics.Statistics` RPC (from `tacacsrs_agent.proto`) with no additional network listener.
 
 | Service name | Meaning |
 |---|---|
@@ -583,7 +590,7 @@ A final valid accounting reply counts as connectivity success, regardless of its
 
 ## IPC Protocol
 
-The daemon communicates with clients through gRPC over Unix domain sockets (Linux) or loopback TCP (other platforms). The protobuf file defines the protocol:
+The daemon runs on Linux and communicates with local clients through gRPC over an absolute Unix domain socket path (`client-api-endpoint`). The protobuf schema defines these client RPCs:
 
 **Available RPCs:**
 
@@ -693,16 +700,6 @@ tacacsrs-agentd \
     --service-mode tacacs-proxy \
     --proxy-endpoint /run/tacacs/tacacs-proxy.sock \
     --socket-mode 660 \
-    --shared-secret "shared_secret"
-```
-
-On non-Linux development hosts, use a loopback TCP proxy endpoint:
-
-```bash
-tacacsrs-agentd \
-    --server-addr 192.0.2.20:49 \
-    --listen-endpoint 127.0.0.1:9049 \
-    --proxy-endpoint 127.0.0.1:9050 \
     --shared-secret "shared_secret"
 ```
 

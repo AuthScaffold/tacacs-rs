@@ -28,12 +28,18 @@ def repository(tmp_path, monkeypatch):
     for directory in (remote, checkout):
         release.git(directory, "config", "user.name", "Release Test")
         release.git(directory, "config", "user.email", "test@example.invalid")
-    (checkout / "Cargo.toml").write_text('[workspace]\nresolver="2"\nmembers=["base","tacon","experimental"]\n')
-    for name, target in (("base", "lib"), ("tacon", "main"), ("experimental", "main")):
+    (checkout / "Cargo.toml").write_text(
+        '[workspace]\nresolver="2"\nmembers=["base","tacon","experimental","testkit"]\n'
+        'default-members=["base","tacon"]\n'
+    )
+    for name, target in (("base", "lib"), ("tacon", "main"), ("experimental", "main"), ("testkit", "lib")):
         crate = checkout / name
         (crate / "src").mkdir(parents=True)
         package = "base-lib" if name == "base" else name
-        (crate / "Cargo.toml").write_text(f'[package]\nname="{package}"\nversion="0.0.0-dev"\nedition="2021"\n')
+        extra = 'publish=false\n[package.metadata.release]\ninternal_test_only=true\n' if name == "testkit" else ""
+        (crate / "Cargo.toml").write_text(
+            f'[package]\nname="{package}"\nversion="0.0.0-dev"\nedition="2021"\n{extra}'
+        )
         (crate / "src" / f"{target}.rs").write_text("pub fn demo() {}\n" if target == "lib" else "fn main() {}\n")
     release.run(["cargo", "generate-lockfile", "--offline"], checkout)
     release.git(checkout, "add", ".")
@@ -178,7 +184,8 @@ def test_atomic_publication_recovery_and_release_page_retry(repository, api):
     assert "| `base-lib` | `0.1.0` |" in body
     assert "| `experimental` | `0.0.0-dev` |" in body
     assert "| `tacon` | `2026.1021.0` |" in body
-    assert body.index("`base-lib`") < body.index("`experimental`") < body.index("`tacon`")
+    assert "| `testkit` | `0.0.0-dev` |" in body
+    assert body.index("`base-lib`") < body.index("`experimental`") < body.index("`tacon`") < body.index("`testkit`")
     assert sha in body and plan["source"] in body
     release.publish_page(checkout, recovered, sha)
     assert len(api["creates"]) == 1
@@ -209,7 +216,7 @@ def test_automatic_source_archives_use_the_hydrated_tag(repository, api, monkeyp
         ["git", "archive", f"--format={archive_format}", tag],
         cwd=remote, capture_output=True, check=True,
     ).stdout
-    paths = ["base/Cargo.toml", "tacon/Cargo.toml", "experimental/Cargo.toml", "Cargo.lock"]
+    paths = ["base/Cargo.toml", "tacon/Cargo.toml", "experimental/Cargo.toml", "testkit/Cargo.toml", "Cargo.lock"]
     if archive_format == "zip":
         with zipfile.ZipFile(io.BytesIO(archive)) as contents:
             files = {path: contents.read(path) for path in paths}
@@ -224,9 +231,11 @@ def test_automatic_source_archives_use_the_hydrated_tag(repository, api, monkeyp
     for path, name in (("base/Cargo.toml", "base-lib"), ("tacon/Cargo.toml", "tacon")):
         assert tomllib.loads(files[path].decode())["package"]["version"] == plan["versions"][name]
     assert tomllib.loads(files["experimental/Cargo.toml"].decode())["package"]["version"] == "0.0.0-dev"
+    assert tomllib.loads(files["testkit/Cargo.toml"].decode())["package"]["version"] == "0.0.0-dev"
     lock = tomllib.loads(files["Cargo.lock"].decode())
     local_versions = {package["name"]: package["version"] for package in lock["package"] if "source" not in package}
     assert {name: local_versions[name] for name in plan["versions"]} == plan["versions"]
+    assert local_versions["testkit"] == "0.0.0-dev"
 
 
 def test_page_failure_recovers_without_allocating_or_moving_refs(repository, api):
@@ -350,6 +359,14 @@ def test_incomplete_version_map_is_rejected(repository, api):
     checkout, _, plan = repository
     del plan["versions"]["base-lib"]
     plan["new_tags"] = [plan["calver_tag"]]
+    with pytest.raises(release.ReleaseError, match="exactly the managed"):
+        release.prepare(checkout, plan, "")
+
+
+def test_internal_testkit_in_version_map_is_rejected(repository, api):
+    checkout, _, plan = repository
+    plan["versions"]["testkit"] = "0.1.0"
+    plan["new_tags"].append("testkit-v0.1.0")
     with pytest.raises(release.ReleaseError, match="exactly the managed"):
         release.prepare(checkout, plan, "")
 

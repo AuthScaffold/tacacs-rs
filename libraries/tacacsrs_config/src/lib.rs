@@ -14,7 +14,7 @@
 //!   validation for round trips and reports.
 //! - [`enumerate_servers`] inlines shared credential bundles onto each server.
 //! - A credential resolver resolves central references at the provider boundary,
-//!   for example the `SONiC` or HTTP adapter crates.
+//!   for example the `SONiC` or `KubeSONiC` provider crates.
 //! - [`prepare`] materializes a closed plan and projects native endpoints.
 //!
 //! # Module map

@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 import contextlib
 import hashlib
 import os
 from pathlib import Path
+import shutil
 import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Callable
 
@@ -33,7 +36,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]):
     outcome = yield
     report = outcome.get_result()
-    if report.when == "call" and report.failed:
+    if report.failed and report.when in ("call", "teardown"):
         tmp_path: Path | None = item.funcargs.get("tmp_path")
         if tmp_path and tmp_path.is_dir():
             sections: list[str] = []
@@ -124,24 +127,34 @@ def binaries(request: pytest.FixtureRequest) -> Path:
 
     target_root = Path(os.environ.get("CARGO_TARGET_DIR", REPO_ROOT / "target")).resolve()
     debug_dir = target_root / "debug"
-    if any(not (debug_dir / name).is_file() for name in REQUIRED_BINARIES):
-        subprocess.run(
-            [
-                "cargo",
-                "build",
-                "--locked",
-                "--bins",
-                "-p",
-                "tacacsrs-agentd",
-                "-p",
-                "tacacsrs-agent-health",
-                "-p",
-                "tacon",
-            ],
-            cwd=REPO_ROOT,
-            check=True,
-        )
+    subprocess.run(
+        [
+            "cargo",
+            "build",
+            "--locked",
+            "--bins",
+            "-p",
+            "tacacsrs-agentd",
+            "-p",
+            "tacacsrs-agent-health",
+            "-p",
+            "tacon",
+        ],
+        cwd=REPO_ROOT,
+        check=True,
+    )
     return debug_dir
+
+
+@pytest.fixture()
+def socket_dir() -> Iterator[Path]:
+    """Short directory for Unix domain sockets to stay within the 107-byte sun_path limit."""
+    base = "/tmp" if Path("/tmp").is_dir() else None
+    directory = Path(tempfile.mkdtemp(prefix="trs-", dir=base))
+    try:
+        yield directory
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 class ProcessManager:
@@ -196,8 +209,8 @@ def process_manager(tmp_path: Path):
 class RedisInstance:
     """Isolated Unix-socket Redis server with ConfigDB keyspace notifications enabled."""
 
-    def __init__(self, root: Path, manager: ProcessManager) -> None:
-        self.socket = root / "redis.sock"
+    def __init__(self, socket_dir: Path, manager: ProcessManager) -> None:
+        self.socket = socket_dir / "redis.sock"
         self._manager = manager
         self.process: subprocess.Popen[bytes] | None = None
 

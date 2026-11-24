@@ -165,9 +165,6 @@ impl AsyncRead for ManagedReader {
             .poll(context, |stream, context| Pin::new(stream).poll_read(context, buffer));
         match &result {
             Poll::Ready(Ok(())) if has_capacity && buffer.filled().len() == before => {
-                if let Some(counters) = &self.0.counters {
-                    counters.io_error(&io::Error::from(io::ErrorKind::UnexpectedEof), false);
-                }
                 self.0.graceful.store(true, Ordering::Release);
             }
             Poll::Ready(Err(error)) => {
@@ -311,6 +308,12 @@ mod tests {
             0
         );
         assert_eq!(bounded_native_io(reader.read(&mut byte)).await.unwrap(), 0);
+        assert_eq!(owner.snapshot().diagnostics.read_errors, 0);
+        control
+            .counters
+            .as_ref()
+            .unwrap()
+            .io_error(&io::Error::from(io::ErrorKind::UnexpectedEof), false);
         control
             .counters
             .as_ref()
@@ -481,19 +484,22 @@ mod tests {
             .unwrap();
         let (transport, control) =
             TransportControl::wrap(transport, Arc::new(TransportActivity::default()));
+        let packet_reader = crate::PacketReader::new(None).with_counters(transport.counters());
         let (mut reader, writer) = transport.split();
-        let mut byte = [0; 1];
-        let length = {
-            let read = reader.read(&mut byte);
+        let read_result = {
+            let read = packet_reader.read_packet(&mut reader);
             tokio::pin!(read);
             assert!(futures::poll!(&mut read).is_pending());
             close_sender.send(()).unwrap();
             tokio::time::timeout(std::time::Duration::from_secs(1), &mut read)
                 .await
                 .unwrap()
-                .unwrap()
         };
-        assert_eq!(length, 0);
+        assert!(matches!(
+            read_result,
+            crate::PacketReadResult::HeaderReadError(error)
+                if error.kind() == io::ErrorKind::UnexpectedEof
+        ));
         let diagnostics = owner.snapshot().diagnostics;
         assert_eq!(diagnostics.read_errors, 1);
         assert_eq!(diagnostics.tls_read_errors, 1);

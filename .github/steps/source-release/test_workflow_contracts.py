@@ -5,6 +5,7 @@ import json
 import os
 import shlex
 import subprocess
+import tomllib
 
 import pytest
 import yaml
@@ -350,17 +351,31 @@ def test_pull_request_validation_targets_main_without_stack_allowlists():
     assert branches == ["main"]
 
 
+def test_testkit_is_marked_internal_test_only_while_revocation_remains_released():
+    testkit = tomllib.loads((ROOT / "libraries/tacacsrs_testkit/Cargo.toml").read_text())
+    assert testkit["package"]["publish"] is False
+    assert testkit["package"]["metadata"]["release"]["internal_test_only"] is True
+
+    revocation = tomllib.loads((ROOT / "libraries/tacacsrs_revocation/Cargo.toml").read_text())
+    assert revocation["package"]["publish"] is False
+    assert not revocation["package"].get("metadata", {}).get("release", {}).get("internal_test_only", False)
+
+
 def test_armhf_helper_builds_and_executes_the_affected_packages():
     helper = (ROOT / ".github/steps/armhf/verify.sh").read_text()
+    assert "find Cargo.toml Cargo.lock .cargo libraries executables tests/e2e lde .github/steps/armhf" in helper
     assert "cargo build --locked --release --bins" in helper
     assert "cargo test --locked" in helper
     assert "--no-run" not in helper
     for package in ("tacacsrs-agentd", "tacacsrs-agent-health", "tacon",
-                    "tacacsrs-networking", "tacacsrs-config", "tacacsrs-agent",
-                    "tacacsrs-sonic", "tacacsrs-ipc", "tacacsrs-agent-ipc-emulator"):
+                    "tacacsrs-networking", "tacacsrs-revocation", "tacacsrs-config", "tacacsrs-agent",
+                    "tacacsrs-lifecycle", "tacacsrs-composition",
+                    "tacacsrs-sonic", "tacacsrs-kubesonic", "tacacsrs-provider",
+                    "tacacsrs-ipc", "tacacsrs-agent-ipc-emulator", "tacacsrs-testkit"):
         assert f"-p {package} " in helper
     for check in ("ELF32", "Machine: +ARM", "hard-float ABI", '"${binary}" --help'):
         assert check in helper
+    assert "python3 -m pytest -p no:cacheprovider -v tests/e2e --bin-dir /evidence" in helper
     dockerfile = (ROOT / ".github/steps/armhf/Dockerfile").read_text()
     assert "CARGO_BUILD_TARGET=armv7-unknown-linux-gnueabihf" in dockerfile
     assert "PROTOC=/usr/bin/protoc" in dockerfile

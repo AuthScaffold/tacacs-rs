@@ -95,10 +95,7 @@ There is no separate cache-warming or product-build job.
 
 Unit and integration tests compile their required binaries.
 Independent `cargo check` commands retain default-feature coverage without another full product build.
-The Linux test step selects the complete workspace with all features, including experimental members.
-It runs unit, integration, and documentation tests.
-Windows also selects the workspace, but excludes the ten Linux-only packages.
-It tests `tacon`, configuration, credential resolution, HTTP credentials, networking, protocol, and secrets.
+The Linux validation job selects the complete workspace with all features, including experimental members, and runs unit, integration, documentation, and black-box end-to-end (`pytest -v tests/e2e`) tests. Windows also selects the workspace, excludes the eleven Linux-only packages, and tests `tacon` together with all ten portable libraries (`tacacsrs-composition`, `tacacsrs-config`, `tacacsrs-credential-resolution`, `tacacsrs-lifecycle`, `tacacsrs-networking`, `tacacsrs-protocol`, `tacacsrs-provider`, `tacacsrs-revocation`, `tacacsrs-secrets`, and `tacacsrs-testkit`).
 The platform selection also applies to linting, documentation, and unused-dependency checks.
 There is no separate job that repeats these tests for individual crate groups.
 Architecture validation continues to enforce the dependency boundaries.

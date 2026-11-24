@@ -2392,6 +2392,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-stream",
+ "x509-cert",
  "zeroize",
 ]
 

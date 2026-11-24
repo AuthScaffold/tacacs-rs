@@ -44,6 +44,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --docu
 # Build and test
 cargo build --workspace
 cargo test --workspace --all-features
+pytest tests/e2e
 
 # Targeted loops
 cargo test -p tacacsrs-protocol
@@ -126,7 +127,7 @@ session-wrapper -> tacacsrs-ipc
   descriptions, and unchanged-command interpretation. Body codecs live in `body`.
   TACACS+ MD5 XOR obfuscation is not encryption.
 - `tacacsrs-networking` owns prepared endpoints, transports, client selection,
-  connection drivers, sessions, single-connect promotion, routed catalogs, and retry.
+  connection drivers, sessions, first-reply single-connect negotiation, routed catalogs, and retry.
   Its `revocation` module defines the `RevocationVerifier` contract that the
   TLS handshake calls after OpenSSL verifies the server certificate path.
 - `tacacsrs-ipc` owns generated `proto` bindings, conversion, the domain handler,
@@ -192,7 +193,9 @@ Manifests on `main` use `0.0.0-dev`. CI computes real versions from git tags.
 The `.github/steps/inject-versions` action hydrates the manifests and
 `Cargo.lock` before CI validates the generated source commit.
 
-- Libraries receive semver versions and tags of the form `<crate>-vX.Y.Z`.
+- Managed libraries receive semver versions and tags of the form `<crate>-vX.Y.Z`
+  (internal test-only libraries such as `tacacsrs-testkit` stay at `0.0.0-dev`
+  without release tags or executable release triggers).
   The compute step can run `cargo-semver-checks` and cascades dependency-aware
   version bumps.
 - The managed executables share CalVer versions of the form `YYYY.MMDD.BUILD`.
@@ -250,9 +253,10 @@ The `.github/steps/inject-versions` action hydrates the manifests and
   `&[u8]`, `&Path`) over cloning or taking ownership. When it improves
   ergonomics without infecting stored types, consider `impl AsRef<str>`,
   `impl AsRef<Path>`, or `impl AsRef<[u8]>` for flexible function inputs.
-- Reuse existing abstractions: `Transport`, `BoxedTransport`,
-  `FixedExchange`, `ClientConversation`, `ConfigDatastore`,
-  `ServiceError`, `IpcEndpoint`, and the mock transport/controller patterns.
+- Reuse existing abstractions: `PreparedEndpoint`, `TacacsClient`,
+  `RoutedClient`, `FixedExchange`, `ClientConversation`, `ConfigDatastore`,
+  `ServiceError`, `IpcEndpoint`, and within `tacacsrs-networking`, `Transport`
+  and the mock transport/coordinator patterns.
 - Prefer essential behavior on the owning type. Use traits for extension or
   abstraction seams, not to hide core functionality.
 - Use builders for complex construction with many optional combinations. Prefer
@@ -334,7 +338,7 @@ supports the preferred shape.
   modules when reuse is needed.
 - Prefer observable behavior tests over implementation-detail tests.
 - Use `MockTransport` and `MockTransportCoordinator` for networking tests.
-- Use `tacacsrs_agent::service::test_support` for agent failover and service
+- Use `tacacsrs_agent::test_support` for agent failover and service
   tests, `tacacsrs_testkit` for shared PKI, TLS/PSK peers, and scripted upstream
   wire fault injection, and `tests/e2e/` (`pytest`) for black-box multi-process,
   signal, Redis, and CLI workflows.

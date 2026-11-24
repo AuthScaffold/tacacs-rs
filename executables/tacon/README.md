@@ -44,8 +44,8 @@ tacon --server-addr <HOST:PORT> [OPTIONS] <COMMAND>
 | `--tls-server-name <NAME>` | Override the TLS server name used for SNI and certificate verification |
 | `--client-certificate <FILE>` | Path to a PEM- or DER-encoded client certificate for TLS authentication |
 | `--client-key <FILE>` | Path to a PEM- or DER-encoded client private key for TLS authentication |
-| `--psk-identity <IDENTITY>` | TLS 1.3 PSK identity sent during the handshake (requires the `psk` feature) |
-| `--psk-key <KEY>` | TLS 1.3 pre-shared key material (requires the `psk` feature) |
+| `--psk-identity <IDENTITY>` | TLS 1.3 PSK identity sent during the handshake |
+| `--psk-key <KEY>` | TLS 1.3 pre-shared key material (standard base64) |
 | `--psk-key-exchange <psk-dhe\|psk-only>` | Select PSK-DHE or explicit PSK-only interoperability mode |
 | `--psk-key-exchange-groups <GROUPS>` | Comma-separated PSK-DHE supported groups in preferred order |
 | `-v, --verbose` | Increase verbosity (`-v` warn, `-vv` info, `-vvv` debug, `-vvvv` trace) |
@@ -62,14 +62,9 @@ When `--use-tls` is set, `--client-certificate` and `--client-key` let `tacon` p
 
 ### TLS 1.3 PSK
 
-When built with the `psk` feature, `--psk-identity` and `--psk-key` select TLS
-1.3 PSK authentication. The default key-exchange mode is PSK-DHE with the
-preferred group order `secp384r1,secp256r1`.
+When `--use-tls` is set, `--psk-identity` and `--psk-key` select TLS 1.3 PSK authentication. The default key-exchange mode is PSK-DHE with the preferred group order `secp384r1,secp256r1`.
 
-Use `--psk-key-exchange-groups` to constrain the PSK-DHE groups offered in
-ClientHello. Supplying groups implies PSK-DHE mode. If an interoperability peer
-cannot negotiate PSK-DHE, use `--psk-key-exchange psk-only`. PSK-only mode
-cannot be combined with `--psk-key-exchange-groups`.
+Use `--psk-key-exchange-groups` to constrain the PSK-DHE groups offered in ClientHello. Supplying groups implies PSK-DHE mode. If an interoperability peer cannot negotiate PSK-DHE, use `--psk-key-exchange psk-only`. PSK-only mode cannot be combined with `--psk-key-exchange-groups`.
 
 ### Commands
 

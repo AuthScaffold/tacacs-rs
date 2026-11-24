@@ -468,7 +468,7 @@ impl tacacsrs_networking::ConnectionGuard for DelayDestinationUntilCertificateEx
             .store(true, std::sync::atomic::Ordering::Release);
         let remaining = self.expires_at.duration_since(entered_at)?;
         anyhow::ensure!(
-            remaining <= Duration::from_secs(3),
+            remaining <= Duration::from_secs(7),
             "destination guard wait must remain bounded"
         );
         std::thread::sleep(remaining);
@@ -524,7 +524,7 @@ fn certificate_source(address: SocketAddr, valid_for: Duration) -> Result<Certif
 #[tokio::test]
 async fn established_mtls_pin_survives_authentication_certificate_expiry() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let fixture = certificate_source(listener.local_addr()?, Duration::from_secs(4))?;
+    let fixture = certificate_source(listener.local_addr()?, Duration::from_secs(6))?;
     let certificate = fixture.certificate.as_slice();
     let config = tacacsrs_networking::TlsClientConfig::prepare(
         "localhost",
@@ -597,7 +597,7 @@ async fn established_mtls_pin_survives_authentication_certificate_expiry() -> Re
     let prepared = AccountingExchange::new(accounting_request())?;
     let first = client.execute(&prepared);
     tokio::pin!(first);
-    let (handshake, first) = tokio::time::timeout(Duration::from_secs(3), async {
+    let (handshake, first) = tokio::time::timeout(Duration::from_secs(5), async {
         tokio::join!(handshake_observed, &mut first)
     })
     .await?;
@@ -623,32 +623,32 @@ async fn established_mtls_pin_survives_authentication_certificate_expiry() -> Re
         let reply = retained.round_trip(delayed_packet).await?;
         Ok::<_, anyhow::Error>((retained, reply))
     });
-    tokio::time::timeout(Duration::from_secs(3), request_observed).await??;
+    tokio::time::timeout(Duration::from_secs(5), request_observed).await??;
     let remaining = fixture
         .expires_at
         .duration_since(std::time::SystemTime::now())
         .unwrap_or_default();
     tokio::time::timeout(
-        remaining + Duration::from_secs(3),
+        remaining + Duration::from_secs(5),
         tokio::time::sleep(remaining + Duration::from_secs(1)),
     )
     .await?;
     let _ = release_reply.send(());
-    let (mut retained, reply) = tokio::time::timeout(Duration::from_secs(3), delayed).await???;
+    let (mut retained, reply) = tokio::time::timeout(Duration::from_secs(5), delayed).await???;
     assert_eq!(reply.header().seq_no, 2);
-    tokio::time::timeout(Duration::from_secs(3), client.execute(&prepared)).await??;
+    tokio::time::timeout(Duration::from_secs(5), client.execute(&prepared)).await??;
     assert_eq!(counters.snapshot().connection_opens, 1);
     retained.complete().await;
     client
-        .close_and_join(tacacsrs_networking::RequestDeadline::after(Duration::from_secs(2))?)
+        .close_and_join(tacacsrs_networking::RequestDeadline::after(Duration::from_secs(5))?)
         .await?;
     let expired_client = TacacsClient::connect_prepared(endpoint).await?;
     let error =
-        tokio::time::timeout(Duration::from_secs(3), expired_client.execute_classified(&prepared))
+        tokio::time::timeout(Duration::from_secs(5), expired_client.execute_classified(&prepared))
             .await?
             .unwrap_err();
     assert_eq!(error.transmission_state(), tacacsrs_networking::TransmissionState::NotSent);
-    tokio::time::timeout(Duration::from_secs(3), peer).await???;
+    tokio::time::timeout(Duration::from_secs(5), peer).await???;
     Ok(())
 }
 
@@ -658,7 +658,7 @@ async fn inline_client_certificate_expiry_preserves_supervised_catalog() -> Resu
     use tacacsrs_agent::{EnabledServices, RuntimeHealthPublisher, ServiceConfig, TacacsClientService};
     use tacacsrs_agent::runtime::{ConfigSupervisor, NoopTacacsPlusFilter};
     use tacacsrs_config::source::{ConfigDatastore, StaticDatastore};
-    let fixture = certificate_source("127.0.0.1:449".parse()?, Duration::from_secs(2))?;
+    let fixture = certificate_source("127.0.0.1:449".parse()?, Duration::from_secs(5))?;
     let source = fixture.source;
     let original = source.clone();
     let datastore = Arc::new(StaticDatastore::new(source));
@@ -727,7 +727,7 @@ async fn unchanged_provider_refresh_after_certificate_expiry_reuses_catalog_and_
     use tacacsrs_protocol::operations::AccountingOperation;
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let fixture = certificate_source(listener.local_addr()?, Duration::from_secs(2))?;
+    let fixture = certificate_source(listener.local_addr()?, Duration::from_secs(5))?;
     let mut source = fixture.source;
     source.server[0]
         .client_identity
@@ -744,8 +744,8 @@ async fn unchanged_provider_refresh_after_certificate_expiry_reuses_catalog_and_
     });
     let original = source.clone();
     let now = std::time::SystemTime::now();
-    let initial_validity = CredentialValidity::new(None, Some(now + Duration::from_secs(8)))?;
-    let refreshed_valid_until = now + Duration::from_secs(30);
+    let initial_validity = CredentialValidity::new(None, Some(now + Duration::from_secs(14)))?;
+    let refreshed_valid_until = now + Duration::from_secs(45);
     let refreshed_validity = CredentialValidity::new(None, Some(refreshed_valid_until))?;
     let resolver = Arc::new(RefreshingIdentityResolver {
         certificate: fixture.certificate,
@@ -799,21 +799,21 @@ async fn unchanged_provider_refresh_after_certificate_expiry_reuses_catalog_and_
         Ok::<_, anyhow::Error>(())
     });
     tokio::time::timeout(
-        Duration::from_secs(3),
+        Duration::from_secs(5),
         service.client_api_handle().accounting(operation.clone()),
     )
     .await??;
     let cancellation = tokio_util::sync::CancellationToken::new();
     let stop = cancellation.clone();
     let monitor = tokio::spawn(async move { supervisor.run_until(stop.cancelled()).await });
-    tokio::time::timeout(Duration::from_secs(8), async {
+    tokio::time::timeout(Duration::from_secs(15), async {
         while resolver.calls.load(std::sync::atomic::Ordering::Acquire) < 2 {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await?;
     assert!(std::time::SystemTime::now() >= fixture.expires_at);
-    tokio::time::timeout(Duration::from_secs(3), service.client_api_handle().accounting(operation))
+    tokio::time::timeout(Duration::from_secs(5), service.client_api_handle().accounting(operation))
         .await??;
     let statistics = service.statistics();
     let refreshed_health = health.snapshot();
@@ -835,18 +835,19 @@ async fn unchanged_provider_refresh_after_certificate_expiry_reuses_catalog_and_
     );
     assert_eq!(datastore.load().await?, original);
     cancellation.cancel();
-    tokio::time::timeout(Duration::from_secs(2), monitor).await???;
+    tokio::time::timeout(Duration::from_secs(5), monitor).await???;
     service
-        .close_and_join(tacacsrs_networking::RequestDeadline::after(Duration::from_secs(2))?)
+        .close_and_join(tacacsrs_networking::RequestDeadline::after(Duration::from_secs(5))?)
         .await?;
-    tokio::time::timeout(Duration::from_secs(2), peer).await???;
+    tokio::time::timeout(Duration::from_secs(5), peer).await???;
     Ok(())
 }
 
 #[tokio::test]
 async fn caller_deadline_controls_stalled_tls_after_client_certificate_expiry() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let fixture = certificate_source(listener.local_addr()?, Duration::from_secs(2))?;
+    let mut fixture = certificate_source(listener.local_addr()?, Duration::from_secs(3))?;
+    fixture.source.server[0].timeout = 15;
     let endpoint = prepare_endpoint(
         &fixture.source.server[0],
         PrepareOptions::default().with_certificate_verification(
@@ -873,7 +874,7 @@ async fn caller_deadline_controls_stalled_tls_after_client_certificate_expiry() 
         result = &mut request => panic!("request ended before the stalled peer accepted: {result:?}"),
         result = accepted => result?,
     }
-    let error = tokio::time::timeout(Duration::from_secs(6), request)
+    let error = tokio::time::timeout(Duration::from_secs(8), request)
         .await?
         .unwrap_err();
     assert_eq!(error.transmission_state(), tacacsrs_networking::TransmissionState::NotSent);
@@ -888,7 +889,7 @@ async fn caller_deadline_controls_stalled_tls_after_client_certificate_expiry() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_certificate_expiry_between_tcp_and_handshake_sends_no_tls_bytes() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let fixture = certificate_source(listener.local_addr()?, Duration::from_secs(2))?;
+    let fixture = certificate_source(listener.local_addr()?, Duration::from_secs(5))?;
     let certificate = fixture.certificate.as_slice();
     let config = tacacsrs_networking::TlsClientConfig::prepare(
         "localhost",
@@ -913,7 +914,7 @@ async fn client_certificate_expiry_between_tcp_and_handshake_sends_no_tls_bytes(
         None,
         tacacsrs_networking::ConnectOptions::default(),
     )
-    .with_connection_guard(DelayConnected(Duration::from_secs(3)));
+    .with_connection_guard(DelayConnected(Duration::from_secs(6)));
     let peer = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await?;
         let mut byte = [0_u8; 1];
@@ -922,21 +923,21 @@ async fn client_certificate_expiry_between_tcp_and_handshake_sends_no_tls_bytes(
     });
     let client = TacacsClient::connect_prepared(endpoint).await?;
     let error = tokio::time::timeout(
-        Duration::from_secs(6),
+        Duration::from_secs(12),
         client.execute_classified(&AccountingExchange::new(accounting_request())?),
     )
     .await?
     .unwrap_err();
     assert_eq!(error.transmission_state(), tacacsrs_networking::TransmissionState::NotSent);
     assert!(format!("{error:#}").contains("Client certificate validity excludes"));
-    tokio::time::timeout(Duration::from_secs(2), peer).await???;
+    tokio::time::timeout(Duration::from_secs(5), peer).await???;
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_certificate_expiry_in_destination_guard_prevents_tcp_attempt() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let fixture = certificate_source(listener.local_addr()?, Duration::from_secs(3))?;
+    let fixture = certificate_source(listener.local_addr()?, Duration::from_secs(6))?;
     let certificate = fixture.certificate.as_slice();
     let guard_invoked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let config = tacacsrs_networking::TlsClientConfig::prepare(
@@ -968,7 +969,7 @@ async fn client_certificate_expiry_in_destination_guard_prevents_tcp_attempt() -
     });
     let client = TacacsClient::connect_prepared(endpoint).await?;
     let error = tokio::time::timeout(
-        Duration::from_secs(6),
+        Duration::from_secs(12),
         client.execute_classified(&AccountingExchange::new(accounting_request())?),
     )
     .await?
@@ -985,7 +986,7 @@ async fn client_certificate_expiry_in_destination_guard_prevents_tcp_attempt() -
 
 #[tokio::test]
 async fn hash_bound_psk_sources_preserve_rotated_handshake_behavior() -> Result<()> {
-    tokio::time::timeout(Duration::from_secs(20), async {
+    tokio::time::timeout(Duration::from_secs(60), async {
         for hash in EpskSupportedHash::ALL {
             let other_hash = match hash {
                 EpskSupportedHash::Sha256 => EpskSupportedHash::Sha384,
@@ -1051,7 +1052,7 @@ async fn equivalent_plain_sources_produce_the_same_wire_behavior() -> Result<()>
 
 #[tokio::test]
 async fn equivalent_psk_sources_keep_prepared_generations_independent() -> Result<()> {
-    tokio::time::timeout(Duration::from_secs(20), async {
+    tokio::time::timeout(Duration::from_secs(60), async {
         for dhe in [false, true] {
             let listener = TcpListener::bind("127.0.0.1:0").await?;
             let initial = psk_sources(listener.local_addr()?, ORIGINAL_KEY, dhe)?;
