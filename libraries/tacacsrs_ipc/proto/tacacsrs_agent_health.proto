@@ -1,0 +1,193 @@
+// Local IPC contract for detailed agent runtime health.
+//
+// The standard gRPC health service (grpc.health.v1) gives one status for each
+// probe name. This service gives the facts behind those statuses. Operators
+// and supervisors use it to find why the agent is not ready.
+//
+// The agent serves this service on the same Unix domain socket as the
+// TacacsAgent and Diagnostics services. The service is read-only. It never
+// sends upstream TACACS+ traffic, and the reply contains no credentials,
+// server addresses, or request payloads.
+//
+// ## Versioning
+//
+// This file uses the same v1 package as tacacsrs_agent.proto. New enum values
+// and new fields can appear. Clients must accept unknown enum values.
+
+syntax = "proto3";
+
+package tacacsrs.agent.v1;
+
+// Read-only runtime health facts.
+service AgentHealth {
+  // Returns one consistent snapshot of the runtime health and the result of
+  // each registered component health check.
+  rpc Details(HealthDetailsRequest) returns (HealthDetailsReply);
+}
+
+message HealthDetailsRequest {}
+
+// The process lifecycle state.
+enum RuntimeLifecycle {
+  RUNTIME_LIFECYCLE_UNSPECIFIED = 0;
+  RUNTIME_LIFECYCLE_STARTING = 1;
+  RUNTIME_LIFECYCLE_SERVING = 2;
+  RUNTIME_LIFECYCLE_DRAINING = 3;
+  RUNTIME_LIFECYCLE_STOPPED = 4;
+  RUNTIME_LIFECYCLE_FAILED = 5;
+}
+
+// The state of the configuration datastore.
+enum DatastoreState {
+  DATASTORE_STATE_UNSPECIFIED = 0;
+  DATASTORE_STATE_LOADING = 1;
+  DATASTORE_STATE_CURRENT = 2;
+  DATASTORE_STATE_STALE = 3;
+  DATASTORE_STATE_UNAVAILABLE = 4;
+}
+
+// A local service that the agent can host.
+enum RuntimeService {
+  RUNTIME_SERVICE_UNSPECIFIED = 0;
+  RUNTIME_SERVICE_CLIENT_API = 1;
+  RUNTIME_SERVICE_TACACS_PROXY = 2;
+}
+
+// The state of one local listener.
+enum ListenerState {
+  LISTENER_STATE_UNSPECIFIED = 0;
+  LISTENER_STATE_DISABLED = 1;
+  LISTENER_STATE_PENDING = 2;
+  LISTENER_STATE_BINDING = 3;
+  LISTENER_STATE_BOUND = 4;
+  LISTENER_STATE_STOPPED = 5;
+}
+
+// The aggregate state of the upstream TACACS+ servers.
+enum UpstreamAvailability {
+  UPSTREAM_AVAILABILITY_UNSPECIFIED = 0;
+  UPSTREAM_AVAILABILITY_UNKNOWN = 1;
+  UPSTREAM_AVAILABILITY_AVAILABLE = 2;
+  UPSTREAM_AVAILABILITY_UNAVAILABLE = 3;
+}
+
+// A reason for a live process to operate in a degraded state.
+enum DegradationReason {
+  DEGRADATION_REASON_UNSPECIFIED = 0;
+  // A valid empty source retains the last published server list.
+  DEGRADATION_REASON_RETAINED_AFTER_CLEAR = 1;
+  // The runtime cannot reach the datastore.
+  DEGRADATION_REASON_DATASTORE_UNAVAILABLE = 2;
+  // The runtime uses an older known-good datastore snapshot.
+  DEGRADATION_REASON_DATASTORE_STALE = 3;
+  // The source exceeded its stale budget. The runtime withdrew its upstreams.
+  DEGRADATION_REASON_SOURCE_EXPIRED = 4;
+  // Applied credentials wait for a successful refresh.
+  DEGRADATION_REASON_CREDENTIALS_STALE = 5;
+  // Credentials exceeded their grace budget. The runtime withdrew the upstreams.
+  DEGRADATION_REASON_CREDENTIALS_EXPIRED = 6;
+  // Continuous datastore notifications are not connected.
+  DEGRADATION_REASON_CHANGE_NOTIFICATIONS_UNAVAILABLE = 7;
+  // Continuous credential-provider notifications are not connected.
+  DEGRADATION_REASON_CREDENTIAL_NOTIFICATIONS_UNAVAILABLE = 8;
+  // The runtime rejected a candidate configuration and kept an older snapshot.
+  DEGRADATION_REASON_CANDIDATE_CONFIGURATION_REJECTED = 9;
+  // The runtime rejected a candidate policy and kept an older policy.
+  DEGRADATION_REASON_CANDIDATE_POLICY_REJECTED = 10;
+  // The initial configuration of a datastore without notifications is invalid.
+  // This reason is final. A host can stop the process.
+  DEGRADATION_REASON_SOURCE_CONFIGURATION_INVALID = 11;
+  // Credential resolution failed for a candidate configuration.
+  DEGRADATION_REASON_CREDENTIAL_RESOLUTION_FAILED = 12;
+  // Reserved for compatibility. The agent applies listener changes at runtime
+  // and does not send this value.
+  DEGRADATION_REASON_RESTART_REQUIRED = 13;
+  // Each eligible server failed an authoritative connection attempt.
+  DEGRADATION_REASON_UPSTREAMS_UNAVAILABLE = 14;
+  // The latest watchdog probe got no accounting reply from an eligible server.
+  DEGRADATION_REASON_UPSTREAM_WATCHDOG_FAILED = 15;
+  // The enabled watchdog has no result for the current server set.
+  DEGRADATION_REASON_UPSTREAM_WATCHDOG_PENDING = 16;
+  // A runtime invariant or an internal component failed.
+  DEGRADATION_REASON_INTERNAL_FAILURE = 17;
+}
+
+// The result of one component health check.
+enum ComponentHealthStatus {
+  COMPONENT_HEALTH_STATUS_UNSPECIFIED = 0;
+  COMPONENT_HEALTH_STATUS_HEALTHY = 1;
+  COMPONENT_HEALTH_STATUS_DEGRADED = 2;
+  COMPONENT_HEALTH_STATUS_UNHEALTHY = 3;
+}
+
+// The result of one health check that a component registered.
+//
+// The agent runs each registered check for each request. Each check has a
+// time limit of two seconds. When a check returns an error, the description
+// is a fixed text, and the text of the error does not appear.
+message ComponentHealth {
+  // The name of the health group of the check.
+  string group = 1;
+  // The name of the check. The name is unique in its group.
+  string name = 2;
+  ComponentHealthStatus status = 3;
+  optional string description = 4;
+  // The time that the check used, in microseconds.
+  uint64 duration_micros = 5;
+}
+
+// The state of one local listener.
+message ListenerHealth {
+  RuntimeService service = 1;
+  // True when the runtime configuration enables this service.
+  bool enabled = 2;
+  ListenerState state = 3;
+}
+
+// The state of the optional upstream accounting watchdog.
+message WatchdogHealth {
+  // True when the watchdog is enabled.
+  bool armed = 1;
+  // Changes when the runtime publishes a materially new server set.
+  uint64 server_set_epoch = 2;
+}
+
+// Runtime-local diagnostic counters. The values reset when the process starts.
+message HealthRevisions {
+  optional uint64 runtime_generation = 1;
+  optional uint64 applied_policy = 2;
+  optional uint64 materialized_source = 3;
+  optional uint64 materialized_credentials = 4;
+  optional uint64 source_recovery = 5;
+}
+
+// The validity window of the applied credentials, in seconds since the Unix epoch.
+message CredentialValidityWindow {
+  optional int64 valid_from_unix_seconds = 1;
+  optional int64 valid_until_unix_seconds = 2;
+}
+
+message HealthDetailsReply {
+  RuntimeLifecycle lifecycle = 1;
+  // The values that the standard gRPC health service publishes.
+  bool startup = 2;
+  bool liveness = 3;
+  bool readiness = 4;
+  // True when each enabled listener is bound.
+  bool listening = 5;
+  // True after the runtime applies its first configuration.
+  bool applied_configuration = 6;
+  DatastoreState datastore = 7;
+  bool notifications_connected = 8;
+  repeated ListenerHealth listeners = 9;
+  uint64 eligible_server_count = 10;
+  UpstreamAvailability upstream_availability = 11;
+  WatchdogHealth watchdog = 12;
+  // Sorted and without duplicates. Empty when the runtime is not degraded.
+  repeated DegradationReason degradation_reasons = 13;
+  HealthRevisions revisions = 14;
+  // Absent when no credentials are applied.
+  optional CredentialValidityWindow credential_validity = 15;
+  // One entry for each registered check, in registration order.
+  repeated ComponentHealth components = 16;
+}

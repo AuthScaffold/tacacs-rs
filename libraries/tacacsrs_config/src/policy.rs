@@ -184,10 +184,20 @@ mod tests {
         assert_eq!(policy.source_stale_timeout_seconds, 300);
         assert_eq!(policy.credential_stale_timeout_seconds, 300);
         assert_eq!(policy.credential_refresh_interval_seconds, 60);
+        assert_eq!(policy.connect_preflight, crate::tacacsrs::ConnectPreflight::Disabled);
         assert!(policy.authentication.is_none());
         assert_eq!(crate::tacacsrs::Authentication::default().max_body_length, 4096);
         assert_eq!(crate::tacacsrs::Authorization::default().max_body_length, 16384);
         assert_eq!(crate::tacacsrs::Authentication::default().request_timeout_seconds, 30);
+
+        let watchdog_policy = parse_runtime_policy(
+            br#"{"tacacsrs:runtime-policy":{"connect-preflight":"accounting-watchdog"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            watchdog_policy.connect_preflight,
+            crate::tacacsrs::ConnectPreflight::AccountingWatchdog
+        );
     }
 
     #[test]
@@ -217,6 +227,7 @@ mod tests {
             r#"{"tacacsrs:runtime-policy":{"accounting":{"max-body-length":65537}}}"#,
             r#"{"tacacsrs:runtime-policy":{"authorization":{"max-concurrent-requests":0}}}"#,
             r#"{"tacacsrs:runtime-policy":{"authentication":{"request-timeout-seconds":0}}}"#,
+            r#"{"tacacsrs:runtime-policy":{"connect-preflight":"invalid"}}"#,
         ] {
             assert!(parse_runtime_policy(input.as_bytes()).is_err(), "accepted {input}");
         }

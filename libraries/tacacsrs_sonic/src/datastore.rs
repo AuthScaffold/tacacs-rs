@@ -5,14 +5,13 @@ use std::time::Duration;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use futures_util::{future::BoxFuture, FutureExt, StreamExt};
-use tokio::sync::watch;
-use tokio::task::JoinHandle;
-use tokio::time::Instant;
+use futures_util::{FutureExt, StreamExt};
+use tacacsrs_config::local_services::LocalServicesPatch;
+use tacacsrs_config::tacacsrs::LocalServices;
 use tacacsrs_config::{TacacsPlus, ValidationOptions, ValidationRelaxation};
 use tacacsrs_config::source::{
-    ChangeNotificationMode, ConfigChange, ConfigChangeEvent, ConfigDatastore, ConfigDelta,
-    ConfigObservation, DatastoreRuntimePolicy, InitialLoadPolicy,
+    ChangeNotificationMode, ConfigChangeEvent, ConfigDatastore, ConfigObservation,
+    ObservationSchedule, ObservedSnapshot, SignalObservation, SourceBehavior,
 };
 
 use crate::{
@@ -31,29 +30,33 @@ use crate::{
 /// restarts `database.service`.
 pub struct SonicConfigDb {
     settings: SonicConnection,
-    bound_forwarder: Option<SonicForwarderSettings>,
+    listener_patch: Option<LocalServicesPatch>,
 }
 
 impl SonicConfigDb {
     /// Creates a datastore with the supplied connection configuration.
+    ///
+    /// The datastore does not own the local services. Each change keeps the
+    /// local services of the runtime.
     #[must_use]
     pub fn new(settings: SonicConnection) -> Self {
         Self {
             settings,
-            bound_forwarder: None,
+            listener_patch: None,
         }
     }
 
-    /// Creates a datastore that compares new forwarder snapshots with the
-    /// configuration used to bind service listeners.
+    /// Creates a datastore that owns the local services.
+    ///
+    /// Each change contains the local services of the forwarder row, with
+    /// `patch` applied. Without a forwarder row, the proxy is enabled and
+    /// waits for its endpoint. If the patch sets a proxy endpoint, the
+    /// datastore rejects a forwarder row with a different endpoint.
     #[must_use]
-    pub fn with_bound_forwarder(
-        settings: SonicConnection,
-        bound_forwarder: SonicForwarderSettings,
-    ) -> Self {
+    pub fn with_listener_patch(settings: SonicConnection, patch: LocalServicesPatch) -> Self {
         Self {
             settings,
-            bound_forwarder: Some(bound_forwarder),
+            listener_patch: Some(patch),
         }
     }
 
@@ -67,14 +70,13 @@ impl SonicConfigDb {
 #[async_trait]
 impl ConfigDatastore for SonicConfigDb {
     async fn observe(&self) -> anyhow::Result<Box<dyn ConfigObservation>> {
-        Ok(Box::new(SonicObservation::open(self.settings.clone(), self.bound_forwarder).await?))
+        Ok(Box::new(
+            SonicObservation::open(self.settings.clone(), self.listener_patch.clone()).await?,
+        ))
     }
 
-    fn runtime_policy(&self) -> DatastoreRuntimePolicy {
-        DatastoreRuntimePolicy::new(
-            InitialLoadPolicy::RetryUntilAvailable,
-            ChangeNotificationMode::Continuous,
-        )
+    fn behavior(&self) -> SourceBehavior {
+        SourceBehavior::new(ChangeNotificationMode::Continuous)
     }
 
     fn validation_options(&self) -> ValidationOptions {
@@ -100,23 +102,36 @@ impl ConfigDatastore for SonicConfigDb {
     }
 }
 
+/// Returns the local services of `forwarder` with `patch` applied.
+///
+/// Without a forwarder row, the proxy is enabled and has no endpoint.
+fn forwarder_local_services(
+    patch: &LocalServicesPatch,
+    forwarder: Option<SonicForwarderSettings>,
+) -> anyhow::Result<LocalServices> {
+    match forwarder {
+        Some(row) => row.local_services_with(patch),
+        None => Ok(crate::mapping::deferred_local_services(patch)?.0),
+    }
+}
+
+const fn observation_schedule(settings: &SonicConnection) -> ObservationSchedule {
+    ObservationSchedule {
+        debounce: settings.debounce,
+        max_delay: None,
+        reconcile_interval: Some(settings.reconcile_interval),
+        retry_interval: Some(settings.retry_interval),
+    }
+}
+
 struct SonicObservation {
-    settings: SonicConnection,
-    bound_forwarder: Option<SonicForwarderSettings>,
-    signals: watch::Receiver<()>,
-    pump: JoinHandle<()>,
-    previous: Option<Arc<TacacsPlus>>,
-    candidate_rejected: bool,
-    restart: Option<bool>,
-    pending: bool,
-    debounce_until: Option<Instant>,
-    reload: Option<BoxFuture<'static, anyhow::Result<ReloadedCandidate>>>,
+    inner: SignalObservation,
 }
 
 impl SonicObservation {
     async fn open(
         settings: SonicConnection,
-        bound_forwarder: Option<SonicForwarderSettings>,
+        listener_patch: Option<LocalServicesPatch>,
     ) -> anyhow::Result<Self> {
         let client = redis::Client::open(settings.url.as_str())
             .context("invalid ConfigDB connection string")?;
@@ -128,122 +143,62 @@ impl SonicObservation {
             .psubscribe(settings.keyspace_pattern())
             .await
             .context("subscribe to ConfigDB changes")?;
-        let (events, signals) = watch::channel(());
-        let pump = tokio::spawn(async move {
-            let mut messages = pubsub.on_message();
-            loop {
-                tokio::select! {
-                    biased;
-                    () = events.closed() => break,
-                    message = messages.next() => {
-                        if message.is_none() { break; }
-                        events.send_replace(());
-                    }
+        let schedule = observation_schedule(&settings);
+        let notifications = pubsub.into_on_message().map(|_| ());
+        let inner = SignalObservation::spawn(
+            notifications,
+            schedule,
+            "ConfigDB observation disconnected",
+            move || {
+                let settings = settings.clone();
+                let listener_patch = listener_patch.clone();
+                async move {
+                    load_observed_snapshot(&settings, listener_patch.as_ref())
+                        .await
+                        .map_err(|_| {
+                            log::warn!(
+                                "Rejected ConfigDB candidate. Keeping the previous configuration"
+                            );
+                        })
                 }
-            }
-        });
-        Ok(Self {
-            settings,
-            bound_forwarder,
-            signals,
-            pump,
-            previous: None,
-            candidate_rejected: false,
-            restart: None,
-            pending: true,
-            debounce_until: None,
-            reload: None,
-        })
-    }
-
-    async fn read_candidate(&mut self) -> anyhow::Result<ReloadedCandidate> {
-        if self.reload.is_none() {
-            if let Some(deadline) = self.debounce_until {
-                tokio::time::sleep_until(deadline).await;
-            }
-            self.signals.borrow_and_update();
-            let settings = self.settings.clone();
-            self.reload = Some(async move { reload_with_retry(&settings).await }.boxed());
-        }
-        let mut connection = self.signals.clone();
-        let closed = async move { while connection.changed().await.is_ok() {} };
-        let candidate = tokio::select! {
-            biased;
-            () = closed => anyhow::bail!("ConfigDB observation disconnected"),
-            candidate = self.reload.as_mut().context("ConfigDB reload is missing")? => candidate,
-        };
-        self.reload = None;
-        self.pending = false;
-        self.debounce_until = None;
-        candidate
-    }
-}
-
-impl Drop for SonicObservation {
-    fn drop(&mut self) {
-        self.pump.abort();
+                .boxed()
+            },
+        );
+        Ok(Self { inner })
     }
 }
 
 #[async_trait]
 impl ConfigObservation for SonicObservation {
     async fn next(&mut self) -> anyhow::Result<Option<ConfigChangeEvent>> {
-        self.signals
-            .has_changed()
-            .context("ConfigDB observation disconnected")?;
-        if let Some(required) = self.restart.take() {
-            return Ok(Some(ConfigChangeEvent::RestartRequired { required }));
-        }
-        if !self.pending {
-            self.signals
-                .changed()
-                .await
-                .context("ConfigDB observation disconnected")?;
-            self.pending = true;
-            self.debounce_until = Some(
-                Instant::now()
-                    .checked_add(self.settings.debounce)
-                    .context("ConfigDB debounce exceeds the clock range")?,
-            );
-        }
-        let candidate = self.read_candidate().await;
-        self.signals
-            .has_changed()
-            .context("ConfigDB observation disconnected")?;
-        let Ok(candidate) = candidate else {
-            self.candidate_rejected = true;
-            log::warn!("Rejected ConfigDB candidate. Keeping the previous configuration");
-            return Ok(Some(ConfigChangeEvent::CandidateRejected));
-        };
-        let required = self
-            .bound_forwarder
-            .is_some_and(|bound| candidate.forwarder != Some(bound));
-        let snapshot = Arc::new(candidate.config);
-        let change = config_change(
-            self.previous.as_deref(),
-            snapshot.clone(),
-            std::mem::take(&mut self.candidate_rejected),
-        );
-        self.previous = Some(snapshot);
-        if let Some(change) = change {
-            self.restart = Some(required);
-            Ok(Some(ConfigChangeEvent::Changed(change)))
-        } else {
-            Ok(Some(ConfigChangeEvent::RestartRequired { required }))
-        }
+        self.inner.next().await
+    }
+
+    fn record_rejection(&mut self) {
+        self.inner.record_rejection();
     }
 }
 
-fn config_change(
-    previous: Option<&TacacsPlus>,
-    snapshot: Arc<TacacsPlus>,
-    recovered_rejection: bool,
-) -> Option<ConfigChange> {
-    let is_baseline = previous.is_none();
-    let delta = ConfigDelta::diff(previous, &snapshot);
-    (is_baseline || recovered_rejection || !delta.is_empty()).then_some(ConfigChange {
-        config: snapshot,
-        delta,
+async fn load_observed_snapshot(
+    settings: &SonicConnection,
+    listener_patch: Option<&LocalServicesPatch>,
+) -> anyhow::Result<ObservedSnapshot> {
+    let candidate = reload_with_retry(settings).await?;
+    candidate_to_observed(candidate, listener_patch)
+}
+
+fn candidate_to_observed(
+    candidate: ReloadedCandidate,
+    listener_patch: Option<&LocalServicesPatch>,
+) -> anyhow::Result<ObservedSnapshot> {
+    let local_services = listener_patch
+        .map(|patch| forwarder_local_services(patch, candidate.forwarder))
+        .transpose()?
+        .map(Arc::new);
+    Ok(ObservedSnapshot {
+        config: Arc::new(candidate.config),
+        local_services,
+        runtime_policy: None,
     })
 }
 
@@ -285,21 +240,11 @@ mod tests {
     use std::time::Duration;
 
     use redis::AsyncCommands;
+    use tacacsrs_config::source::ConfigChange;
     use tokio::time::timeout;
 
     use super::*;
     use crate::sonic_server_name;
-
-    #[test]
-    fn config_change_emits_baseline_and_recovery_but_suppresses_ordinary_unchanged_snapshot() {
-        let snapshot = Arc::new(TacacsPlus::empty());
-
-        assert!(config_change(None, Arc::clone(&snapshot), false).is_some());
-        assert!(config_change(Some(&snapshot), Arc::clone(&snapshot), false).is_none());
-        let recovery =
-            config_change(Some(&snapshot), Arc::clone(&snapshot), true).expect("recovery change");
-        assert!(recovery.delta.is_empty());
-    }
 
     async fn next_event(
         events: &mut Box<dyn ConfigObservation>,
@@ -383,23 +328,66 @@ mod tests {
         };
         assert!(recovered.delta.is_empty());
         assert_eq!(recovered.config.server.len(), 2);
-        assert!(matches!(
-            next_event(events, "recovery restart").await,
-            ConfigChangeEvent::RestartRequired { required: false }
-        ));
+    }
+
+    fn forwarder(port: u16) -> SonicForwarderSettings {
+        SonicForwarderSettings::from_hash(&crate::SonicHash::from([
+            ("local_listen_address".to_owned(), "127.0.0.1".to_owned()),
+            ("local_listen_port".to_owned(), port.to_string()),
+        ]))
+        .unwrap()
+        .unwrap()
+    }
+
+    fn proxy_endpoint(local_services: &LocalServices) -> Option<&str> {
+        local_services.tacacs_proxy_endpoint.as_deref()
+    }
+
+    #[test]
+    fn forwarder_row_gives_the_proxy_endpoint_and_a_missing_row_waits() {
+        let patch = LocalServicesPatch::default();
+
+        let waiting = forwarder_local_services(&patch, None).unwrap();
+        assert!(waiting.tacacs_proxy_enabled);
+        assert_eq!(proxy_endpoint(&waiting), None);
+
+        let bound = forwarder_local_services(&patch, Some(forwarder(50))).unwrap();
+        assert_eq!(proxy_endpoint(&bound), Some("127.0.0.1:50"));
+    }
+
+    #[test]
+    fn a_patch_endpoint_rejects_a_conflicting_forwarder_row() {
+        let patch = LocalServicesPatch {
+            tacacs_proxy_endpoint: Some("127.0.0.1:49".to_owned()),
+            ..Default::default()
+        };
+
+        assert!(forwarder_local_services(&patch, Some(forwarder(50))).is_err());
+        let accepted = forwarder_local_services(&patch, Some(forwarder(49))).unwrap();
+        assert_eq!(proxy_endpoint(&accepted), Some("127.0.0.1:49"));
     }
 
     #[test]
     fn runtime_policy_retries_and_maintains_continuous_notifications() {
-        let datastore = SonicConfigDb::new(SonicConnection::default());
+        let settings = SonicConnection::default();
+        let schedule = observation_schedule(&settings);
+        assert_eq!(schedule.debounce, Duration::from_millis(250));
+        assert_eq!(schedule.retry_interval, Some(Duration::from_secs(5)));
+        assert_eq!(schedule.reconcile_interval, Some(Duration::from_secs(60)));
 
-        assert_eq!(
-            datastore.runtime_policy(),
-            DatastoreRuntimePolicy::new(
-                InitialLoadPolicy::RetryUntilAvailable,
-                ChangeNotificationMode::Continuous,
-            )
-        );
+        let datastore = SonicConfigDb::new(settings);
+
+        assert_eq!(datastore.behavior(), SourceBehavior::new(ChangeNotificationMode::Continuous));
+    }
+
+    fn test_settings(url: String, debounce: Duration) -> SonicConnection {
+        SonicConnection {
+            url,
+            db_index: 15,
+            debounce,
+            credential_watch_root: None,
+            ..SonicConnection::default()
+        }
     }
 
     #[tokio::test]
@@ -407,12 +395,7 @@ mod tests {
         let Ok(url) = std::env::var("TACACSRS_SONIC_TEST_REDIS_URL") else {
             return;
         };
-        let settings = SonicConnection {
-            url,
-            db_index: 15,
-            debounce: Duration::ZERO,
-            credential_watch_root: None,
-        };
+        let settings = test_settings(url, Duration::ZERO);
         let mut connection = settings.connect().await.unwrap();
         seed_redis(&mut connection).await;
         let mut observation = SonicObservation::open(settings, None).await.unwrap();
@@ -465,20 +448,15 @@ mod tests {
         let Ok(url) = std::env::var("TACACSRS_SONIC_TEST_REDIS_URL") else {
             return;
         };
-        let settings = SonicConnection {
-            url,
-            db_index: 15,
-            debounce: Duration::ZERO,
-            credential_watch_root: None,
-        };
+        let settings = test_settings(url, Duration::ZERO);
         let mut connection = settings.connect().await.unwrap();
         seed_redis(&mut connection).await;
         let mut observation = SonicObservation::open(settings.clone(), None)
             .await
             .unwrap();
-        let baseline = try_reload(&settings).await.unwrap();
+        let baseline = candidate_to_observed(try_reload(&settings).await.unwrap(), None).unwrap();
         let (release, pending) = tokio::sync::oneshot::channel::<()>();
-        observation.reload = Some(
+        observation.inner.replace_pending_read(
             async move {
                 pending.await.unwrap();
                 Ok(baseline)
@@ -496,7 +474,7 @@ mod tests {
         }
         set_field(&mut connection, "TACPLUS_SERVER|192.0.2.10", "timeout", "9").await;
         timeout(Duration::from_secs(1), async {
-            while !observation.signals.has_changed().unwrap() {
+            while !observation.inner.has_pending_signal().unwrap() {
                 tokio::task::yield_now().await;
             }
         })
@@ -516,7 +494,6 @@ mod tests {
                 .timeout,
             9
         );
-        observation.next().await.unwrap();
         let Some(ConfigChangeEvent::Changed(latest)) = observation.next().await.unwrap() else {
             panic!("replacement expected");
         };
@@ -530,7 +507,7 @@ mod tests {
                 .timeout,
             9
         );
-        let pump = observation.pump.abort_handle();
+        let pump = observation.inner.pump_abort_handle();
         drop(observation);
         timeout(Duration::from_secs(1), async {
             while !pump.is_finished() {
@@ -546,18 +523,15 @@ mod tests {
         let Ok(url) = std::env::var("TACACSRS_SONIC_TEST_REDIS_URL") else {
             return;
         };
-        let settings = SonicConnection {
-            url,
-            db_index: 15,
-            debounce: Duration::ZERO,
-            credential_watch_root: None,
-        };
+        let settings = test_settings(url, Duration::ZERO);
         let mut connection = settings.connect().await.unwrap();
         seed_redis(&mut connection).await;
         let mut observation = SonicObservation::open(settings.clone(), None)
             .await
             .unwrap();
-        observation.reload = Some(std::future::pending().boxed());
+        observation
+            .inner
+            .replace_pending_read(std::future::pending().boxed());
         let _: i64 = redis::cmd("CLIENT")
             .arg("KILL")
             .arg("TYPE")
@@ -592,18 +566,12 @@ mod tests {
         let Ok(url) = std::env::var("TACACSRS_SONIC_TEST_REDIS_URL") else {
             return;
         };
-        let settings = SonicConnection {
-            url,
-            db_index: 15,
-            debounce: Duration::ZERO,
-            credential_watch_root: None,
-        };
+        let settings = test_settings(url, Duration::ZERO);
         let mut connection = settings.connect().await.unwrap();
         seed_redis(&mut connection).await;
         let datastore = SonicConfigDb::new(settings);
         let mut events = datastore.observe().await.unwrap();
         next_event(&mut events, "baseline").await;
-        next_event(&mut events, "baseline restart").await;
         drop(events);
         timeout(Duration::from_secs(1), async {
             loop {
@@ -624,25 +592,68 @@ mod tests {
         .expect("dropping an idle subscription must close its Redis connection");
     }
 
+    fn changed(event: ConfigChangeEvent) -> ConfigChange {
+        let ConfigChangeEvent::Changed(change) = event else {
+            panic!("changed event expected");
+        };
+        change
+    }
+
+    fn changed_proxy_endpoint(change: &ConfigChange) -> Option<&str> {
+        proxy_endpoint(
+            change
+                .local_services
+                .as_deref()
+                .expect("local services expected"),
+        )
+    }
+
     #[tokio::test]
-    async fn redis_forwarder_changes_report_restart_without_blocking_server_reload() {
+    async fn redis_missing_forwarder_waits_for_the_proxy_endpoint_until_the_row_arrives() {
         let Ok(url) = std::env::var("TACACSRS_SONIC_TEST_REDIS_URL") else {
             return;
         };
-        let settings = SonicConnection {
-            url,
-            db_index: 15,
-            debounce: Duration::from_millis(20),
-            credential_watch_root: None,
+        let settings = test_settings(url, Duration::from_millis(20));
+        let mut connection = settings.connect().await.expect("connect test Redis");
+        seed_redis(&mut connection).await;
+        connection
+            .del::<_, ()>("TACPLUS_FORWARDER|global")
+            .await
+            .expect("delete forwarder");
+
+        let datastore = SonicConfigDb::with_listener_patch(settings, LocalServicesPatch::default());
+        let mut events = datastore.observe().await.expect("subscribe");
+        let baseline = changed(next_event(&mut events, "missing forwarder").await);
+        assert_eq!(baseline.config.server.len(), 2);
+        let waiting = baseline.local_services.as_deref().expect("local services");
+        assert!(waiting.tacacs_proxy_enabled);
+        assert_eq!(proxy_endpoint(waiting), None);
+
+        connection
+            .hset_multiple::<_, _, _, ()>(
+                "TACPLUS_FORWARDER|global",
+                &[
+                    ("local_listen_address", "127.0.0.1"),
+                    ("local_listen_port", "4949"),
+                ],
+            )
+            .await
+            .expect("add forwarder");
+        let bound = changed(next_event(&mut events, "forwarder arrives").await);
+        assert!(bound.delta.is_empty());
+        assert_eq!(changed_proxy_endpoint(&bound), Some("127.0.0.1:4949"));
+    }
+
+    #[tokio::test]
+    async fn redis_forwarder_changes_move_the_proxy_with_server_reload() {
+        let Ok(url) = std::env::var("TACACSRS_SONIC_TEST_REDIS_URL") else {
+            return;
         };
+        let settings = test_settings(url, Duration::from_millis(20));
         let mut connection = settings.connect().await.expect("connect test Redis");
         seed_redis(&mut connection).await;
 
-        let bound = settings
-            .load_forwarder_settings()
-            .await
-            .expect("load bound forwarder");
-        let datastore = SonicConfigDb::with_bound_forwarder(settings, bound);
+        let datastore = SonicConfigDb::with_listener_patch(settings, LocalServicesPatch::default());
         let initial = datastore.load().await.expect("initial complete snapshot");
         assert_eq!(initial.server.len(), 2);
         assert!(initial.server.iter().any(|server| {
@@ -654,49 +665,36 @@ mod tests {
         }));
         let mut events = datastore.observe().await.expect("subscribe");
 
-        // subscribe() establishes the subscription before it emits the baseline.
-        assert!(matches!(
-            next_event(&mut events, "initial baseline change").await,
-            ConfigChangeEvent::Changed(_)
-        ));
-        assert!(matches!(
-            next_event(&mut events, "initial baseline restart").await,
-            ConfigChangeEvent::RestartRequired { required: false }
-        ));
+        // observe() establishes the subscription before it emits the baseline.
+        let baseline = changed(next_event(&mut events, "initial baseline change").await);
+        assert_eq!(changed_proxy_endpoint(&baseline), Some("127.0.0.1:49"));
 
         set_field(&mut connection, "TACPLUS_FORWARDER|global", "local_listen_port", "50").await;
         set_field(&mut connection, "TACPLUS_SERVER|192.0.2.10", "timeout", "6").await;
         set_field(&mut connection, "TACPLUS_SERVER_TLS|192.0.2.20", "timeout", "7").await;
-        let changed = next_event(&mut events, "changed event").await;
-        let ConfigChangeEvent::Changed(changed) = changed else {
-            panic!("expected changed event");
-        };
-        assert_eq!(changed.config.server.len(), 2);
-        assert_eq!(changed.config.server[0].address, "192.0.2.20");
-        assert_eq!(changed.config.server[0].timeout, 7);
-        assert_eq!(changed.config.server[1].name, sonic_server_name("192.0.2.10"));
-        assert_eq!(changed.config.server[1].timeout, 6);
-        assert!(changed
+        let changed_event = changed(next_event(&mut events, "changed event").await);
+        assert_eq!(changed_proxy_endpoint(&changed_event), Some("127.0.0.1:50"));
+        assert_eq!(changed_event.config.server.len(), 2);
+        assert_eq!(changed_event.config.server[0].address, "192.0.2.20");
+        assert_eq!(changed_event.config.server[0].timeout, 7);
+        assert_eq!(changed_event.config.server[1].name, sonic_server_name("192.0.2.10"));
+        assert_eq!(changed_event.config.server[1].timeout, 6);
+        assert!(changed_event
             .delta
             .modified_servers
             .contains(&sonic_server_name("192.0.2.10")));
-        assert!(changed
+        assert!(changed_event
             .delta
             .modified_servers
             .contains(&sonic_server_name("192.0.2.20")));
-        assert!(matches!(
-            next_event(&mut events, "restart event").await,
-            ConfigChangeEvent::RestartRequired { required: true }
-        ));
 
         connection
             .del::<_, ()>("TACPLUS_FORWARDER|global")
             .await
             .expect("delete forwarder");
-        assert!(matches!(
-            next_event(&mut events, "deletion restart").await,
-            ConfigChangeEvent::RestartRequired { required: true }
-        ));
+        let removed = changed(next_event(&mut events, "forwarder deletion").await);
+        assert!(removed.delta.is_empty());
+        assert_eq!(changed_proxy_endpoint(&removed), None);
 
         connection
             .hset_multiple::<_, _, _, ()>(
@@ -708,10 +706,8 @@ mod tests {
             )
             .await
             .expect("restore forwarder");
-        assert!(matches!(
-            next_event(&mut events, "clear restart").await,
-            ConfigChangeEvent::RestartRequired { required: false }
-        ));
+        let restored = changed(next_event(&mut events, "forwarder restore").await);
+        assert_eq!(changed_proxy_endpoint(&restored), Some("127.0.0.1:49"));
 
         assert_rejected_forwarder_recovery(&mut connection, &mut events).await;
 
@@ -719,11 +715,7 @@ mod tests {
             .del::<_, ()>(&["TACPLUS_SERVER|192.0.2.10", "TACPLUS_SERVER_TLS|192.0.2.20"])
             .await
             .unwrap();
-        let ConfigChangeEvent::Changed(empty) =
-            next_event(&mut events, "remove final servers").await
-        else {
-            panic!("empty snapshot expected");
-        };
+        let empty = changed(next_event(&mut events, "remove final servers").await);
         assert_eq!(empty.config.server.len(), 0);
         assert_eq!(empty.delta.removed_servers.len(), 2);
     }

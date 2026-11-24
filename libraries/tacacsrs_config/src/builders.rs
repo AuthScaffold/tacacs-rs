@@ -30,6 +30,7 @@ impl TacacsPlus {
             client_credentials: Vec::new(),
             server_credentials: Vec::new(),
             server: Vec::new(),
+            certificate_revocation: None,
         }
     }
 }
@@ -343,9 +344,6 @@ impl TacacsPlusServerBuilder {
         self.server.shared_secret = None;
         self.server.client_identity = None;
         self.server.server_authentication = Some(TlsClientServerAuthentication {
-            require_crls: None,
-            require_ocsp: None,
-            require_stapled_ocsp: None,
             credentials_reference: None,
             ca_certs: None,
             ee_certs: None,

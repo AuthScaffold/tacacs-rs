@@ -9,7 +9,7 @@
 //! This keeps `PolicyService` out of every call site and stops a service from
 //! reading state that belongs to another service.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::config::PolicyService;
 
@@ -33,6 +33,7 @@ pub(crate) struct RequestRouting<
 > {
     manager: Arc<UpstreamManager<Connector>>,
     lease: RoutingLease<Connector>,
+    attempted_servers: Mutex<Vec<usize>>,
 }
 
 impl<Connector: EndpointConnector> Clone for OperationRouter<Connector> {
@@ -72,7 +73,23 @@ impl<Connector: EndpointConnector> RequestRouting<Connector> {
     }
 
     pub(crate) async fn bind(&self) -> anyhow::Result<BoundServer<Connector>> {
-        self.manager.bind_request(&self.lease).await
+        let excluded = self
+            .attempted_servers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let bound = self
+            .manager
+            .bind_request_excluding(&self.lease, &excluded)
+            .await?;
+        let mut attempted = self
+            .attempted_servers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !attempted.contains(&bound.index) {
+            attempted.push(bound.index);
+        }
+        Ok(bound)
     }
 
     pub(crate) async fn admit(
@@ -100,6 +117,7 @@ impl<Connector: EndpointConnector> OperationRouter<Connector> {
         RequestRouting {
             manager: Arc::clone(&self.manager),
             lease: self.manager.capture_request(self.service, operation),
+            attempted_servers: Mutex::new(Vec::new()),
         }
     }
 }

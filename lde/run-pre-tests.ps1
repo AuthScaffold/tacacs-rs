@@ -3,11 +3,10 @@
     Runs the reusable CI pipeline `pre-tests` job locally.
 
 .DESCRIPTION
-    Uses the `pre-tests` job from .github/workflows/reusable-pipeline.yml for the
+    Uses the validation steps from .github/workflows/reusable-pipeline.yml for the
     selected matrix entry. The script uses rustup to install Rust components.
-    It makes sure that formatting is correct. It runs cargo-udeps and Clippy.
-    It builds the documentation.
-    It can also run advisory Clippy nursery lints and Linux GNU metadata validation.
+    It makes sure that formatting is correct. It runs cargo-machete and Clippy.
+    It builds the documentation and runs Linux GNU metadata validation.
 
     By default, the script runs the matrix entry for the current OS.
     On Windows, it runs the Windows MSVC entry.
@@ -30,14 +29,8 @@
 .PARAMETER IncludeFmt
     Includes the rustfmt validation. Matches the workflow_call include-fmt input.
 
-.PARAMETER IncludeClippyNursery
-    Includes advisory Clippy nursery lints.
-
-.PARAMETER IncludeOutdated
-    Includes cargo-outdated in the metadata validation.
-
 .PARAMETER IncludeProtoCompat
-    Includes the advisory buf compatibility validation for protobuf in the metadata validation.
+    Includes the buf compatibility validation for protobuf in the metadata validation.
 
 .PARAMETER SkipAuditIfNoDepChanges
     Skips cargo-audit if Cargo.toml and Cargo.lock did not change.
@@ -50,7 +43,7 @@
     The Git reference for `buf breaking --against`. The default matches CI: main.
 
 .PARAMETER InstallMissingCargoTools
-    Installs missing cargo-udeps, cargo-audit, and cargo-outdated tools.
+    Installs missing cargo-machete and cargo-audit tools.
     The script runs `cargo install --locked`. The default is true.
 
 .PARAMETER SkipSystemDependencyChecks
@@ -72,7 +65,7 @@
     .\lde\run-pre-tests.ps1 -Task Clippy
 
 .EXAMPLE
-    .\lde\run-pre-tests.ps1 -Task Udeps,Docs
+    .\lde\run-pre-tests.ps1 -Task UnusedDeps,Docs
 
 #>
 [CmdletBinding()]
@@ -80,7 +73,7 @@ param(
     [ValidateSet('Local', 'WindowsMsvc', 'LinuxGnu', 'All')]
     [string]$Matrix = 'Local',
 
-    [ValidateSet('All', 'FixFormatting', 'CheckFormatting', 'Udeps', 'Clippy', 'ClippyNursery', 'Docs', 'Audit', 'Outdated', 'ProtoCompat', 'Metadata')]
+    [ValidateSet('All', 'FixFormatting', 'CheckFormatting', 'UnusedDeps', 'Clippy', 'Docs', 'Audit', 'ProtoCompat', 'Metadata')]
     [string[]]$Task = @('All'),
 
     [switch]$FixFormatting,
@@ -89,10 +82,6 @@ param(
     [switch]$ApplyFixes,
 
     [bool]$IncludeFmt = $true,
-
-    [bool]$IncludeClippyNursery = $true,
-
-    [bool]$IncludeOutdated = $true,
 
     [bool]$IncludeProtoCompat = $true,
 
@@ -151,7 +140,7 @@ function Test-TaskSelected {
         return $true
     }
 
-    if ($Task -contains 'Metadata' -and $Name -in @('Audit', 'Outdated', 'ProtoCompat')) {
+    if ($Task -contains 'Metadata' -and $Name -in @('Audit', 'ProtoCompat')) {
         return $true
     }
 
@@ -180,7 +169,7 @@ function Test-MetadataTaskExplicitlySelected {
         return $false
     }
 
-    foreach ($metadataTask in @('Audit', 'Outdated', 'ProtoCompat', 'Metadata')) {
+    foreach ($metadataTask in @('Audit', 'ProtoCompat', 'Metadata')) {
         if ($Task -contains $metadataTask) {
             return $true
         }
@@ -319,11 +308,18 @@ function Get-MatrixConfigs {
             InstallOpenSsl = $true
             MetadataChecks = $false
             PackageArgs = @(
-                '--package', 'tacon',
-                '--package', 'tacacsrs-config',
-                '--package', 'tacacsrs-protocol',
-                '--package', 'tacacsrs-networking',
-                '--package', 'tacacsrs-secrets'
+                '--workspace',
+                '--exclude', 'session-wrapper',
+                '--exclude', 'tacacsrs-agent',
+                '--exclude', 'tacacsrs-agent-health',
+                '--exclude', 'tacacsrs-agent-ipc-emulator',
+                '--exclude', 'tacacsrs-agent-ipc-emulatord',
+                '--exclude', 'tacacsrs-agentd',
+                '--exclude', 'tacacsrs-bash-plugin',
+                '--exclude', 'tacacsrs-ipc',
+                '--exclude', 'tacacsrs-sonic',
+                '--exclude', 'tacacsrs-kubesonic',
+                '--exclude', 'tacacsrs-unix-socket'
             )
         }
     )
@@ -555,8 +551,8 @@ function Invoke-PreTestsForConfig {
         Set-WindowsOpenSslEnvironment
     }
 
-    $needsNightly = (Test-TaskSelected -Name 'FixFormatting') -or (Test-TaskSelected -Name 'CheckFormatting') -or (Test-TaskSelected -Name 'Udeps')
-    $needsStable = (Test-TaskSelected -Name 'Clippy') -or (Test-TaskSelected -Name 'ClippyNursery') -or (Test-TaskSelected -Name 'Docs')
+    $needsNightly = (Test-TaskSelected -Name 'FixFormatting') -or (Test-TaskSelected -Name 'CheckFormatting')
+    $needsStable = (Test-TaskSelected -Name 'UnusedDeps') -or (Test-TaskSelected -Name 'Clippy') -or (Test-TaskSelected -Name 'Docs')
 
     if ($needsNightly) {
         Write-Host "`n--- Setup nightly Rust ---" -ForegroundColor Yellow
@@ -578,16 +574,15 @@ function Invoke-PreTestsForConfig {
         Invoke-CheckedCommand -FilePath 'cargo' -Arguments @('+nightly', 'fmt', '--all', '--', '--check')
     }
 
-    if (Test-TaskSelected -Name 'Udeps') {
-        Write-Host "`n--- Find unused dependencies ---" -ForegroundColor Yellow
-        Assert-CargoTool -CargoSubcommand 'udeps' -CrateName 'cargo-udeps' -Toolchain 'nightly'
-        $udepsCommand = @('+nightly', 'udeps') + $Config.PackageArgs + @('--all-targets', '--target', $Config.Target) + $Config.FeatureArgs
-        Invoke-CheckedCommand -FilePath 'cargo' -Arguments $udepsCommand
-    }
-
     if ($needsStable) {
         Write-Host "`n--- Setup stable Rust ---" -ForegroundColor Yellow
         Install-RustToolchain -Toolchain 'stable' -Components @('clippy') -Targets @($Config.Target)
+    }
+
+    if (Test-TaskSelected -Name 'UnusedDeps') {
+        Write-Host "`n--- Find unused dependencies ---" -ForegroundColor Yellow
+        Assert-CargoTool -CargoSubcommand 'machete' -CrateName 'cargo-machete'
+        Invoke-CheckedCommand -FilePath 'cargo' -Arguments @('machete', '--with-metadata', '--skip-target-dir', '.', '.github/tools/api-classifier')
     }
 
     if (Test-TaskSelected -Name 'Clippy') {
@@ -599,19 +594,6 @@ function Invoke-PreTestsForConfig {
         Write-Host "`n--- Run Clippy ---" -ForegroundColor Yellow
         $clippyCommand = @('+stable', 'clippy') + $Config.PackageArgs + @('--all-targets', '--target', $Config.Target) + $Config.FeatureArgs + @('--', '-D', 'warnings')
         Invoke-CheckedCommand -FilePath 'cargo' -Arguments $clippyCommand
-    }
-
-    if (Test-OptionalTaskSelected -Name 'ClippyNursery' -Include $IncludeClippyNursery) {
-        # Automatic fixes for Clippy nursery lints can change intentional `drop`
-        # and `const` code. Keep these fixes disabled.
-        # if (Test-AutoFixSelected -Name 'ClippyNursery') {
-        #     Write-Host "`n--- Fix Clippy nursery suggestions ---" -ForegroundColor Yellow
-        #     Invoke-ClippyFix -Config $Config -LintArgs @('-W', 'clippy::nursery')
-        # }
-
-        Write-Host "`n--- Clippy nursery lints (advisory) ---" -ForegroundColor Yellow
-        $nurseryCommand = @('+stable', 'clippy') + $Config.PackageArgs + @('--all-targets', '--target', $Config.Target) + $Config.FeatureArgs + @('--', '-W', 'clippy::nursery')
-        Invoke-CheckedCommand -FilePath 'cargo' -Arguments $nurseryCommand -Advisory
     }
 
     if (Test-TaskSelected -Name 'Docs') {
@@ -630,25 +612,18 @@ function Invoke-PreTestsForConfig {
 
             if ($runAudit) {
                 Assert-CargoTool -CargoSubcommand 'audit' -CrateName 'cargo-audit'
-                Invoke-CheckedCommand -FilePath 'cargo' -Arguments @('generate-lockfile')
-                Invoke-CheckedCommand -FilePath 'cargo' -Arguments @('audit')
+                Invoke-CheckedCommand -FilePath 'cargo' -Arguments @('audit', '--file', 'Cargo.lock')
             }
             else {
                 Write-Host 'The audit did not run because no dependencies changed.' -ForegroundColor DarkGray
             }
         }
 
-        if (Test-OptionalTaskSelected -Name 'Outdated' -Include $IncludeOutdated) {
-            Write-Host "`n--- Find outdated dependencies ---" -ForegroundColor Yellow
-            Assert-CargoTool -CargoSubcommand 'outdated' -CrateName 'cargo-outdated'
-            Invoke-CheckedCommand -FilePath 'cargo' -Arguments @('outdated', '--workspace', '--exit-code', '1')
-        }
-
         if (Test-OptionalTaskSelected -Name 'ProtoCompat' -Include $IncludeProtoCompat) {
-            Write-Host "`n--- Protobuf compatibility (advisory) ---" -ForegroundColor Yellow
+            Write-Host "`n--- Protobuf compatibility ---" -ForegroundColor Yellow
             Assert-CommandExists -Name 'buf' -InstallHint 'Before you run protobuf compatibility validation, install buf from https://buf.build/docs/installation.'
             Confirm-ProtoCompatRef -RefName $ProtoCompatRef
-            Invoke-CheckedCommand -FilePath 'buf' -Arguments @('breaking', '--against', ".git#branch=$ProtoCompatRef") -Advisory
+            Invoke-CheckedCommand -FilePath 'buf' -Arguments @('breaking', '--against', ".git#branch=$ProtoCompatRef")
         }
     }
 }

@@ -34,6 +34,7 @@ use tokio::sync::RwLock;
 
 use crate::RequestDeadline;
 use crate::connection::MultiplexedConnection;
+use crate::connection::failure::record_failure;
 
 /// Owns the cached shared connection and retires it when the last owner drops.
 ///
@@ -63,6 +64,12 @@ impl SharedConnectionCache {
     /// Permanently blocks publication after the client closes.
     pub(crate) fn mark_closed(&self) {
         self.closed.store(true, Ordering::Release);
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        if let Ok(mut slot) = self.slot.try_write() {
+            if let Some(connection) = slot.take() {
+                self.retain_retiring(connection);
+            }
+        }
     }
 
     /// Returns the published shared connection without serializing callers.
@@ -70,6 +77,9 @@ impl SharedConnectionCache {
     /// This is the hot path for shared-session creation; it only takes the read
     /// side of the slot lock.
     pub(crate) async fn current(&self) -> Option<Arc<MultiplexedConnection>> {
+        if self.closed.load(Ordering::Acquire) {
+            return None;
+        }
         self.slot.read().await.clone()
     }
 
@@ -104,6 +114,24 @@ impl SharedConnectionCache {
             rejected();
             if let Some(connection) = slot.take() {
                 self.retain_retiring(connection);
+            }
+        }
+    }
+
+    /// Evicts a poisoned connection without keeping it in graceful retirement.
+    pub(crate) async fn evict_if_same(
+        &self,
+        connection: &Arc<MultiplexedConnection>,
+        rejected: impl FnOnce() + Send,
+    ) {
+        let mut slot = self.slot.write().await;
+        if slot
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, connection))
+        {
+            rejected();
+            if let Some(connection) = slot.take() {
+                connection.disable_new_sessions();
             }
         }
     }
@@ -149,9 +177,7 @@ impl SharedConnectionCache {
         let mut failure = None;
         for connection in retiring {
             if let Err(error) = connection.close_and_join(deadline).await {
-                if failure.is_none() {
-                    failure = Some(error);
-                }
+                record_failure(&mut failure, error);
             }
         }
         self.retiring

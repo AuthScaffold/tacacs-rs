@@ -8,6 +8,7 @@
 use futures_util::future::BoxFuture;
 use std::sync::Arc;
 use crate::runtime::candidate_preparation::{CandidateAdmission, Preparation};
+use crate::runtime::CandidateSections;
 
 use super::{
     CancellationToken, ChangeNotificationMode, ConfigChangeEvent, ConfigSupervisor,
@@ -18,7 +19,7 @@ use super::{
 impl ConfigSupervisor {
     /// Maintains a continuous notification source after initial load.
     pub(super) async fn run_notifications(&self, cancellation: &CancellationToken) {
-        if self.datastore.runtime_policy().change_notifications == ChangeNotificationMode::None {
+        if self.datastore.behavior().change_notifications == ChangeNotificationMode::None {
             cancellation.cancelled().await;
             return;
         }
@@ -33,11 +34,14 @@ impl ConfigSupervisor {
                     Ok(ConfigChangeEvent::Changed(change)) => {
                         let admission = CandidateAdmission::new(self.service.candidate_limits());
                         drop(candidate.take());
-                        if let Ok(admission) = admission {
-                            let revision = self.materialization_coordinator.admit_source_at(Arc::clone(&change.config), admission).await;
-                            candidate = Some(Box::pin(self.prepare_observation(change.config, revision, admission)));
+                        let local = self.candidate_sections(&change);
+                        if let (Ok(admission), Some(local)) = (admission, local) {
+                            if let Some((source, revision)) = self.admit_observation(change.config, admission, &local).await {
+                                candidate = Some(Box::pin(self.prepare_observation(source, revision, admission, local)));
+                            }
                         } else {
                             self.materialization_coordinator.reject_observation(&self.health).await;
+                            self.record_observation_rejection().await;
                         }
                         attempt = 0;
                     }
@@ -47,9 +51,6 @@ impl ConfigSupervisor {
                             .reject_observation(&self.health)
                             .await;
                     }
-                    Ok(ConfigChangeEvent::RestartRequired { required }) => self
-                        .health
-                        .set_degraded(DegradationReason::RestartRequired, required),
                     Err(()) => {
                         drop(candidate.take());
                         self.observation.lock().await.take();
@@ -59,35 +60,41 @@ impl ConfigSupervisor {
                         }
                     }
                 },
-                _ = async {
+                result = async {
                     candidate
                         .as_mut()
                         .expect("the candidate branch requires pending work")
                         .await
                 }, if candidate.is_some() => {
                     drop(candidate.take());
+                    if result.is_err() {
+                        self.record_observation_rejection().await;
+                    }
                 }
             };
         }
     }
 
-    pub(super) async fn load_and_apply(&self) -> Result<PublicationOutcome, ()> {
-        loop {
-            match self.next_observation_event().await? {
-                ConfigChangeEvent::Changed(change) => {
-                    return self.apply_observation(change.config).await
-                }
-                ConfigChangeEvent::CandidateRejected => {
-                    self.materialization_coordinator
-                        .reject_observation(&self.health)
-                        .await;
-                    return Err(());
-                }
-                ConfigChangeEvent::RestartRequired { required } => self
-                    .health
-                    .set_degraded(DegradationReason::RestartRequired, required),
-            }
+    async fn record_observation_rejection(&self) {
+        if let Some(observation) = self.observation.lock().await.as_mut() {
+            observation.record_rejection();
         }
+    }
+
+    pub(super) async fn load_and_apply(&self) -> Result<PublicationOutcome, ()> {
+        let ConfigChangeEvent::Changed(change) = self.next_observation_event().await? else {
+            self.materialization_coordinator
+                .reject_observation(&self.health)
+                .await;
+            return Err(());
+        };
+        let Some(local) = self.candidate_sections(&change) else {
+            self.materialization_coordinator
+                .reject_observation(&self.health)
+                .await;
+            return Err(());
+        };
+        self.apply_observation(change.config, local).await
     }
 
     async fn next_observation_event(&self) -> Result<ConfigChangeEvent, ()> {
@@ -98,7 +105,7 @@ impl ConfigSupervisor {
                 self.materialization_coordinator
                     .source_unavailable(
                         &self.health,
-                        self.datastore.runtime_policy().change_notifications
+                        self.datastore.behavior().change_notifications
                             == ChangeNotificationMode::Continuous,
                     )
                     .await;
@@ -106,8 +113,7 @@ impl ConfigSupervisor {
                 return Err(());
             };
             *current = Some(opened);
-            if self.datastore.runtime_policy().change_notifications
-                == ChangeNotificationMode::Continuous
+            if self.datastore.behavior().change_notifications == ChangeNotificationMode::Continuous
             {
                 self.health.set_continuous_notifications_connected(true);
                 self.health
@@ -124,7 +130,7 @@ impl ConfigSupervisor {
             self.materialization_coordinator
                 .source_unavailable(
                     &self.health,
-                    self.datastore.runtime_policy().change_notifications
+                    self.datastore.behavior().change_notifications
                         == ChangeNotificationMode::Continuous,
                 )
                 .await;
@@ -138,20 +144,104 @@ impl ConfigSupervisor {
         &self,
         candidate: TacacsPlus,
     ) -> Result<PublicationOutcome, ()> {
-        self.apply_observation(Arc::new(candidate)).await
+        let sections = CandidateSections::local_services(self.service.active_local_services());
+        self.apply_observation(Arc::new(candidate), Arc::new(sections))
+            .await
+    }
+
+    /// Prepares the local services, the runtime policy, and the certificate
+    /// revocation settings of a datastore change.
+    ///
+    /// A change without a section keeps the active value of that section.
+    /// Returns `None` when a section is not valid.
+    fn candidate_sections(
+        &self,
+        change: &tacacsrs_config::source::ConfigChange,
+    ) -> Option<Arc<CandidateSections>> {
+        let local_services = match change.local_services.as_deref() {
+            None => self.service.active_local_services(),
+            Some(source) => match self.service.prepare_local_services_candidate(source) {
+                Ok(local) => local,
+                Err(error) => {
+                    log::warn!(
+                        "Datastore '{}' local services were rejected: {error:#}",
+                        self.datastore.label(),
+                    );
+                    return None;
+                }
+            },
+        };
+        let runtime_policy = match change.runtime_policy.as_deref() {
+            None => None,
+            Some(source) => match crate::RuntimePolicy::try_from(source) {
+                Ok(policy) => Some(crate::runtime::SourcePolicy {
+                    revision: self.service.admit_policy().ok()?,
+                    policy: Arc::new(policy),
+                }),
+                Err(error) => {
+                    log::warn!(
+                        "Datastore '{}' runtime policy was rejected: {error:#}",
+                        self.datastore.label(),
+                    );
+                    return None;
+                }
+            },
+        };
+        let revocation = match tacacsrs_config::revocation_settings(&change.config) {
+            Ok(settings) => settings,
+            Err(error) => {
+                log::warn!(
+                    "Datastore '{}' certificate revocation settings were rejected: {error:#}",
+                    self.datastore.label(),
+                );
+                return None;
+            }
+        };
+        Some(Arc::new(CandidateSections {
+            local_services,
+            runtime_policy,
+            revocation: Some(revocation),
+        }))
     }
 
     async fn apply_observation(
         &self,
         candidate: Arc<TacacsPlus>,
+        local: Arc<CandidateSections>,
     ) -> Result<PublicationOutcome, ()> {
         let admission = CandidateAdmission::new(self.service.candidate_limits()).map_err(|_| ())?;
-        let revision = self
-            .materialization_coordinator
-            .admit_source_at(Arc::clone(&candidate), admission)
-            .await;
-        self.prepare_observation(candidate, revision, admission)
+        let (candidate, revision) = self
+            .admit_observation(candidate, admission, &local)
             .await
+            .ok_or(())?;
+        self.prepare_observation(candidate, revision, admission, local)
+            .await
+    }
+
+    /// Admits a candidate source.
+    ///
+    /// When no source is available for publication, the local services
+    /// publish without servers.
+    async fn admit_observation(
+        &self,
+        source: Arc<TacacsPlus>,
+        admission: CandidateAdmission,
+        local: &Arc<CandidateSections>,
+    ) -> Option<(Arc<TacacsPlus>, crate::SourceRevision)> {
+        let policy = self.datastore.behavior().empty_servers;
+        let retained = source.server.is_empty()
+            && policy == tacacsrs_config::source::EmptyServerPolicy::Retain;
+        let selected = self
+            .materialization_coordinator
+            .admit_observation_at(source, admission, policy)
+            .await;
+        if selected.is_none() {
+            log::warn!("Datastore has no upstreams or previously published source; waiting for configuration");
+            self.service.publish_sections(local).await;
+        }
+        self.health
+            .set_degraded(DegradationReason::RetainedAfterClear, retained && selected.is_some());
+        selected
     }
 
     async fn prepare_observation(
@@ -159,6 +249,7 @@ impl ConfigSupervisor {
         candidate: Arc<TacacsPlus>,
         revision: crate::SourceRevision,
         admission: CandidateAdmission,
+        local: Arc<CandidateSections>,
     ) -> Result<PublicationOutcome, ()> {
         let coordinator = &self.materialization_coordinator;
         let accepted = async {
@@ -169,18 +260,21 @@ impl ConfigSupervisor {
                 "candidate preparation was superseded"
             );
             let known_copies = tacacsrs_config::prepare::source_payload_bytes(&candidate)?
-                .checked_add(self.config_filter.known_payload_copies(&candidate)?)
+                .checked_add(
+                    self.config_filter
+                        .known_payload_copies(&candidate, local.local_services.settings())?,
+                )
                 .ok_or_else(|| anyhow::anyhow!("candidate payload size overflow"))?;
             preparation.with_ledger(|ledger| ledger.retain_extra(known_copies))?;
             let filtered = coordinator
-                .run_source(revision, admission, self.config_filter.filter((*candidate).clone()))
+                .run_source(
+                    revision,
+                    admission,
+                    self.config_filter
+                        .filter((*candidate).clone(), local.local_services.settings()),
+                )
                 .await??;
-            let proxy_bytes = u64::try_from(
-                filtered
-                    .proxy_downstream_obfuscation
-                    .shared_secret()?
-                    .map_or(0, |secret| secret.expose_secret().len()),
-            )?;
+            let proxy_bytes = u64::try_from(filtered.proxy_downstream_obfuscation.secret_len())?;
             let bytes = tacacsrs_config::prepare::source_payload_bytes(&filtered.tacacs_plus)?
                 .checked_add(proxy_bytes)
                 .ok_or_else(|| anyhow::anyhow!("candidate payload size overflow"))?;
@@ -190,21 +284,25 @@ impl ConfigSupervisor {
                     revision,
                     filtered.tacacs_plus,
                     filtered.proxy_downstream_obfuscation,
+                    Some(Arc::clone(&local)),
                 ))
                 .await?;
             Ok::<_, anyhow::Error>((attempt, preparation))
         }
         .await;
-        let Ok((attempt, preparation)) = accepted else {
-            log::warn!(
-                "Datastore '{}' configuration candidate was rejected during filtering or projection acceptance",
-                self.datastore.label(),
-            );
-            return if coordinator.reject_source(revision, &self.health).await {
-                Err(())
-            } else {
-                Ok(PublicationOutcome::Superseded)
-            };
+        let (attempt, preparation) = match accepted {
+            Ok(accepted) => accepted,
+            Err(error) => {
+                log::warn!(
+                    "Datastore '{}' configuration candidate was rejected during filtering or projection acceptance: {error:#}",
+                    self.datastore.label(),
+                );
+                return if coordinator.reject_source(revision, &self.health).await {
+                    Err(())
+                } else {
+                    Ok(PublicationOutcome::Superseded)
+                };
+            }
         };
         let Some(attempt) = attempt else {
             return Ok(PublicationOutcome::Superseded);

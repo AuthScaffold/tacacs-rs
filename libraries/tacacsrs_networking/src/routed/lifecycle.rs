@@ -6,6 +6,7 @@ use anyhow::{Context, ensure};
 use tokio::sync::oneshot;
 
 use crate::{PreparedEndpoint, RequestDeadline};
+use crate::connection::failure::{combine_results, record_failure};
 use crate::connection::task::DriverTask;
 
 use super::{Endpoint, EndpointConnector, OperationKind};
@@ -193,7 +194,8 @@ impl<Connector: EndpointConnector> EndpointLifecycle<Connector> {
             })));
     }
 
-    pub(super) fn retire_failed(&self, connection: Arc<Connector::Connection>) {
+    /// Stops new sessions on a detached connection and lets established sessions finish.
+    pub(super) fn retire_detached(&self, connection: Arc<Connector::Connection>) {
         let mut state = self
             .state
             .lock()
@@ -280,7 +282,7 @@ impl<Connector: EndpointConnector> EndpointLifecycle<Connector> {
         let mut failure = None;
         for task in setups {
             if let Err(error) = task.join_until(deadline).await {
-                failure.get_or_insert(error);
+                record_failure(&mut failure, error);
             }
         }
         let (cleanups, connections) = {
@@ -292,12 +294,12 @@ impl<Connector: EndpointConnector> EndpointLifecycle<Connector> {
         };
         for task in cleanups {
             if let Err(error) = task.join_until(deadline).await {
-                failure.get_or_insert(error);
+                record_failure(&mut failure, error);
             }
         }
         for connection in connections {
             if let Err(error) = self.connector.close_and_join(&connection, deadline).await {
-                failure.get_or_insert(error);
+                record_failure(&mut failure, error);
             }
         }
         let mut state = self
@@ -346,7 +348,7 @@ impl<Connector: EndpointConnector> EndpointLifecycle<Connector> {
         if let Some(task) = retirement {
             task.abort();
             let joined = task.join_until(deadline).await;
-            return result.and(joined);
+            return combine_results(result, joined);
         }
         result
     }
@@ -500,7 +502,7 @@ impl<Connector: EndpointConnector> RoutingRuntime<Connector> {
         let mut failure = None;
         for endpoint in endpoints {
             if let Err(error) = endpoint.close_and_join(deadline).await {
-                failure.get_or_insert(error);
+                record_failure(&mut failure, error);
             }
         }
         failure.map_or(Ok(()), Err)
@@ -618,8 +620,10 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(2), async {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let lifecycle =
-                Arc::new(EndpointLifecycle::new(Arc::new(super::super::NativeConnector), "test"));
+            let lifecycle = Arc::new(EndpointLifecycle::new(
+                Arc::new(super::super::NativeConnector::new()),
+                "test",
+            ));
             let endpoint = PreparedEndpoint::new(
                 listener.local_addr().unwrap().try_into().unwrap(),
                 crate::PreparedTransport::Tcp,

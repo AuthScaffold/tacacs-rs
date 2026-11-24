@@ -1,0 +1,43 @@
+name: Run Linux E2E Tests
+description: Install Redis and pytest if missing and run the black-box Linux E2E suite against compiled binaries
+
+inputs:
+  target:
+    description: 'Rust target triple for compiled binaries'
+    required: true
+  build-release:
+    description: 'Whether binaries were built in release mode'
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Install Linux E2E prerequisites
+      shell: bash
+      run: |
+        set -euo pipefail
+        PACKAGES=()
+        for pkg in redis-server redis-tools python3-pytest; do
+          if ! dpkg -s "$pkg" &>/dev/null; then
+            PACKAGES+=("$pkg")
+          fi
+        done
+        if [ ${#PACKAGES[@]} -gt 0 ]; then
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends "${PACKAGES[@]}"
+        fi
+
+    - name: Run pytest E2E suite
+      shell: bash
+      env:
+        TARGET_TRIPLE: ${{ inputs.target }}
+        BUILD_RELEASE: ${{ inputs.build-release }}
+      run: |
+        set -euo pipefail
+        PROFILE_DIR="debug"
+        if [ "$BUILD_RELEASE" = "true" ]; then
+          PROFILE_DIR="release"
+        fi
+        BIN_DIR="${CARGO_TARGET_DIR:-target}/${TARGET_TRIPLE}/${PROFILE_DIR}"
+        PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider -v tests/e2e --bin-dir "$BIN_DIR"

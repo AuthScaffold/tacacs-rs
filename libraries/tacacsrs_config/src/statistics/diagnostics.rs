@@ -96,6 +96,9 @@ pub struct ServerDiagnostics {
     pub routing_instance: Option<String>,
     pub configured_single_connect: bool,
     pub connection_timeout_seconds: u16,
+    /// Lowercase hex SHA-256 digest of the prepared DER client certificate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_certificate_sha256: Option<String>,
     pub state: &'static str,
     pub routing: Vec<RoutingStatus>,
     #[serde(serialize_with = "counter64")]
@@ -132,6 +135,12 @@ pub struct ServerDiagnostics {
     #[serde(serialize_with = "counter64")]
     pub tls_revoked_certificates: u64,
     #[serde(serialize_with = "counter64")]
+    pub revocation_evidence_waits: u64,
+    #[serde(serialize_with = "counter64")]
+    pub revocation_unverified_accepts: u64,
+    #[serde(serialize_with = "counter64")]
+    pub revocation_pinned_skips: u64,
+    #[serde(serialize_with = "counter64")]
     pub tls_untrusted_ca: u64,
     #[serde(serialize_with = "counter64")]
     pub tls_expired_certificates: u64,
@@ -157,8 +166,6 @@ pub struct ServerDiagnostics {
     pub malformed_disconnects: u64,
     #[serde(serialize_with = "counter64")]
     pub no_response_disconnects: u64,
-    #[serde(serialize_with = "counter64")]
-    pub credential_expiry_disconnects: u64,
     #[serde(serialize_with = "counter64")]
     pub other_disconnects: u64,
     #[serde(serialize_with = "counter64")]
@@ -193,6 +200,7 @@ impl ServerDiagnostics {
             routing_instance: server.vrf_instance.clone(),
             configured_single_connect: server.single_connection,
             connection_timeout_seconds: server.timeout,
+            client_certificate_sha256: None,
             state: if value.connected > 0 {
                 "connected"
             } else if value.connecting > 0 {
@@ -223,6 +231,9 @@ impl ServerDiagnostics {
             tls_write_errors: value.tls_write_errors,
             tls_certificate_errors: value.tls_certificate_errors,
             tls_revoked_certificates: value.tls_revoked_certificates,
+            revocation_evidence_waits: value.revocation_evidence_waits,
+            revocation_unverified_accepts: value.revocation_unverified_accepts,
+            revocation_pinned_skips: value.revocation_pinned_skips,
             tls_untrusted_ca: value.tls_untrusted_ca,
             tls_expired_certificates: value.tls_expired_certificates,
             tls_protocol_mismatches: value.tls_protocol_mismatches,
@@ -235,7 +246,6 @@ impl ServerDiagnostics {
             peer_disconnects: value.peer_disconnects,
             malformed_disconnects: value.malformed_disconnects,
             no_response_disconnects: value.no_response_disconnects,
-            credential_expiry_disconnects: value.credential_expiry_disconnects,
             other_disconnects: value.other_disconnects,
             packets_since_reset_sent: value.packets_since_reset_sent,
             packets_since_reset_received: value.packets_since_reset_received,
@@ -253,5 +263,12 @@ impl ServerDiagnostics {
                 "fips-state",
             ],
         }
+    }
+
+    /// Records the fingerprint of the client certificate that the endpoint presents.
+    #[must_use]
+    pub fn with_client_certificate_sha256(mut self, fingerprint: Option<String>) -> Self {
+        self.client_certificate_sha256 = fingerprint;
+        self
     }
 }

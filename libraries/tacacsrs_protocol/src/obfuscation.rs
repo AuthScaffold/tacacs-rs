@@ -84,7 +84,12 @@ mod tests {
     #[test]
     fn test_convert_matches_reference() {
         let obfuscation_key = b"tac_plus_key";
-        for body_length in [0, 1, 15, 16, 17, 62, 4096, 65536] {
+        #[cfg(miri)]
+        let body_lengths = [0, 1, 15, 16, 17, 62, 256];
+        #[cfg(not(miri))]
+        let body_lengths = [0, 1, 15, 16, 17, 62, 4096, 65536];
+
+        for body_length in body_lengths {
             let header = header(body_length);
             let data: Vec<_> = (0_u8..=u8::MAX).cycle().take(body_length).collect();
 

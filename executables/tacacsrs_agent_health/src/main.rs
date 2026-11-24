@@ -12,13 +12,27 @@ use tonic_health::pb::health_check_response::ServingStatus;
 const EXIT_NOT_SERVING: u8 = 1;
 const EXIT_INVOCATION_ERROR: u8 = 2;
 const EXIT_CHECK_ERROR: u8 = 3;
+const DEFAULT_PROBE_TIMEOUT_SECONDS: u64 = 2;
+const DEFAULT_QUERY_TIMEOUT_SECONDS: u64 = 5;
 
+mod details;
 mod statistics;
 
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Report read-only agent, connection, and server statistics.
     Statistics(statistics::StatisticsArgs),
+    /// Report the detailed runtime health behind the health probes.
+    Details(details::DetailsArgs),
+}
+
+impl Command {
+    const fn name(&self) -> &'static str {
+        match self {
+            Self::Statistics(_) => "statistics",
+            Self::Details(_) => "details",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -56,9 +70,9 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
-    /// Maximum duration of the health check.
-    #[arg(long, global = true, default_value_t = 2, value_parser = clap::value_parser!(u64).range(1..))]
-    timeout_seconds: u64,
+    /// Maximum duration in seconds (default: 2 for --check, 5 for subcommands).
+    #[arg(long, global = true, value_parser = clap::value_parser!(u64).range(1..))]
+    timeout_seconds: Option<u64>,
 }
 
 #[tokio::main]
@@ -83,27 +97,32 @@ async fn main() -> ExitCode {
         return ExitCode::from(EXIT_INVOCATION_ERROR);
     };
 
-    if let Some(Command::Statistics(arguments)) = cli.command {
+    if let Some(command) = cli.command {
         if cli.check.is_some() {
-            eprintln!("--check cannot be combined with statistics");
+            eprintln!("--check cannot be combined with {}", command.name());
             return ExitCode::from(EXIT_INVOCATION_ERROR);
         }
-        return match tokio::time::timeout(
-            Duration::from_secs(cli.timeout_seconds),
-            statistics::query(endpoint, &arguments),
-        )
-        .await
-        {
+        let timeout =
+            Duration::from_secs(cli.timeout_seconds.unwrap_or(DEFAULT_QUERY_TIMEOUT_SECONDS));
+        let result = match &command {
+            Command::Statistics(arguments) => {
+                tokio::time::timeout(timeout, statistics::query(endpoint, arguments)).await
+            }
+            Command::Details(arguments) => {
+                tokio::time::timeout(timeout, details::query(&endpoint, arguments)).await
+            }
+        };
+        return match result {
             Ok(Ok(output)) => {
                 println!("{output}");
                 ExitCode::SUCCESS
             }
             Ok(Err(error)) => {
-                eprintln!("Statistics query failed: {error}");
+                eprintln!("The {} query failed: {error}", command.name());
                 ExitCode::from(EXIT_CHECK_ERROR)
             }
             Err(_) => {
-                eprintln!("Statistics query timed out");
+                eprintln!("The {} query timed out", command.name());
                 ExitCode::from(EXIT_CHECK_ERROR)
             }
         };
@@ -111,11 +130,9 @@ async fn main() -> ExitCode {
     let Some(check) = cli.check else {
         return ExitCode::from(EXIT_INVOCATION_ERROR);
     };
-    match tokio::time::timeout(
-        Duration::from_secs(cli.timeout_seconds),
-        check_health(&endpoint, check),
-    )
-    .await
+    let probe_timeout = cli.timeout_seconds.unwrap_or(DEFAULT_PROBE_TIMEOUT_SECONDS);
+    match tokio::time::timeout(Duration::from_secs(probe_timeout), check_health(&endpoint, check))
+        .await
     {
         Ok(Ok(ServingStatus::Serving)) => ExitCode::SUCCESS,
         Ok(Ok(ServingStatus::NotServing | ServingStatus::Unknown)) => {
@@ -161,7 +178,7 @@ mod tests {
 
         assert_eq!(cli.endpoint, "127.0.0.1:9049");
         assert_eq!(cli.check.unwrap().service_name(), READINESS_HEALTH_SERVICE);
-        assert_eq!(cli.timeout_seconds, 2);
+        assert_eq!(cli.timeout_seconds, Some(2));
     }
 
     #[test]

@@ -1,0 +1,30 @@
+[package]
+name = "tacacsrs-revocation"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "CRL revocation verifier for TACACS+ TLS connections."
+
+[dependencies]
+tacacsrs-networking = { path = "../tacacsrs_networking" }
+anyhow = "1.0.102"
+async-trait = "0.1.89"
+der = { version = "0.8.3", default-features = false, features = ["alloc", "derive", "oid", "std"] }
+http-body-util = "0.1.5"
+hyper = { version = "1.11", features = ["client", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
+log = "0.4.30"
+openssl = "0.10.80"
+tokio = { version = "1.52.3", features = ["macros", "net", "rt", "sync", "time"] }
+x509-cert = { version = "0.3.1", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+tempfile = "3.27"
+tokio-openssl = "0.6.5"
+tokio = { version = "1.52.3", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+
+[lints]
+workspace = true

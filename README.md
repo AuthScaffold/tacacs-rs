@@ -25,7 +25,7 @@ tacacsrs-agentd \
   --server-addr tacacs1.example.com:449 \
   --service-mode tacacs-proxy \
   --proxy-endpoint 127.0.0.1:9049 \
-  --shared-secret "$TACACS_SHARED_SECRET" \
+  --proxy-shared-secret "$TACACS_SHARED_SECRET" \
   --use-tls
 ```
 
@@ -42,6 +42,7 @@ For the host cutover procedure, read the [Plain TACACS+ to TACACS+ over TLS Tran
 |-----------|-------------|
 | **tacacsrs-protocol** | Pure wire types, logical operations, exchange descriptions, and conversation validation |
 | **tacacsrs-agent** | Configuration supervision, routed operations, health, shutdown, and raw TACACS+ proxy |
+| **tacacsrs-provider** | Canonical source bundles, credential capabilities, and provider-owned companion contracts |
 | **tacacsrs-ipc** | Protobuf contract, reusable channel SDK, and bounded gRPC server adapter |
 | **tacon** | TACACS+ test application for AAA operations and transport modes |
 | **tacacsrs-agentd** | Daemon that hosts `tacacsrs-agent`, maintains upstream connections, and manages failover |
@@ -52,10 +53,10 @@ For the host cutover procedure, read the [Plain TACACS+ to TACACS+ over TLS Tran
 
 ## Supported Core
 
-The workspace `default-members` defines the supported core. Plain `cargo build` and `cargo test` select these 14 packages.
+The workspace `default-members` defines the supported core. Plain `cargo build` and `cargo test` select these packages.
 The internal `tacacsrs-unix-socket` package owns shared listener binding and cleanup without depending on TACACS+ or IPC.
 New releases contain versioned source, not compiled binaries or container images.
-Windows supports `tacon` direct mode. Linux GNU supports the complete core.
+Windows supports `tacon` direct mode. Linux GNU and 64-bit `time_t` Linux `musl` support the complete core.
 
 The session wrapper, Rego emulator library, and emulator daemon are experimental.
 They remain available for explicit builds and tests, but are not part of the supported core:
@@ -95,6 +96,8 @@ tacacsrs-config ───────► tacacsrs-credential-resolution
 
 `tacacsrs-protocol` owns the shared operation model for direct and IPC consumers. It has no networking, TLS, YANG, or protobuf dependency.
 
+`tacacsrs-provider` depends on configuration and credential contracts. SONiC and KubeSONiC produce its source bundles. The agent consumes those bundles and owns application initialization, supervision, health, and shared-deadline shutdown. Provider companions receive readiness and cancellation without depending on the agent.
+
 `tacacsrs-config` is the entry point for RFC 7951 YANG JSON parsing. It owns the generated `ietf-system-tacacs-plus` Rust types and validates YANG constraints.
 
 The crate expands local credential bundles. It preserves external central references as opaque values.
@@ -121,7 +124,7 @@ The crate expands local credential bundles. It preserves external central refere
 
 ## Rust Toolchain
 
-This project has a minimum supported Rust version (MSRV) of **1.88**. The `rust-version` field in `Cargo.toml` defines this version.
+This project has a minimum supported Rust version (MSRV) of **1.91**. The `rust-version` field in `Cargo.toml` defines this version.
 
 The workspace crates are internal and are not published to crates.io.
 
@@ -129,11 +132,11 @@ The workspace crates are internal and are not published to crates.io.
 
 | Environment | Supported scope |
 | ----------- | --------------- |
-| Linux GNU | Supported core, with experimental packages available explicitly |
+| Linux GNU and Linux `musl` (64-bit `time_t`) | Supported core, with experimental packages available explicitly on Linux GNU |
 | Windows MSVC | `tacon` direct mode and its dependency crates |
 | Linux GNU x86-64 | Experimental `session-wrapper` |
 
-The workspace does not support musl or macOS. Use the development container for complete workspace development on Windows.
+Linux GNU and 64-bit `time_t` Linux `musl` targets (such as 32-bit ARMhf on musl 1.2 or later with `--cfg=libc_unstable_musl_v1_2`, alongside the executed ARMhf target) are supported; macOS is not supported. Use the development container for complete workspace development on Windows.
 
 ## Quick Start
 

@@ -3,10 +3,9 @@
 use anyhow::Context;
 
 use tacacsrs_config::TacacsPlusServer;
-use tacacsrs_config::prepare::PrepareOptions;
 
 use crate::backend::Backend;
-use crate::connection::establish_dedicated_connection;
+use crate::connection::{DirectOptions, establish_dedicated_connection};
 
 use super::super::types::{BatchRequest, RequestResult};
 
@@ -20,7 +19,7 @@ use super::super::types::{BatchRequest, RequestResult};
 /// Returns an error if the dedicated connection cannot be established.
 pub(super) async fn establish_dedicated_backend(
     server: &TacacsPlusServer,
-    options: PrepareOptions,
+    options: &DirectOptions,
 ) -> anyhow::Result<Backend> {
     let connection = establish_dedicated_connection(server, options)
         .await

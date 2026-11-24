@@ -74,7 +74,7 @@ Authoritative package evidence:
 
 Adoption adds one Python runtime dependency and no transitive Python runtime dependencies.
 The existing release tooling minimum remains Python 3.11.
-The Rust product MSRV remains 1.88.
+The Rust product MSRV is 1.91.
 No Rust manifest or lockfile changes result from this adoption.
 
 The existing Rust tool is the isolated API classifier.

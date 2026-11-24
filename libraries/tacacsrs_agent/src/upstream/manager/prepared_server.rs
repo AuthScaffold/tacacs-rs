@@ -9,8 +9,8 @@ use tacacsrs_networking::routed::{Endpoint, OperationKind};
 pub(super) struct PreparedServer {
     pub(super) server: Arc<TacacsPlusServer>,
     pub(super) endpoint: Endpoint,
-    pub(super) evidence_lifetime: crate::runtime::CredentialLifetime,
     pub(super) counters: tacacsrs_networking::ServerCounters,
+    pub(super) client_certificate_sha256: Option<String>,
 }
 
 impl PreparedServer {
@@ -20,22 +20,7 @@ impl PreparedServer {
     ) -> anyhow::Result<Self> {
         let prepared = tacacsrs_config::prepare::prepare_endpoint(&server, options)?;
         let counters = prepared.counters();
-        let mut evidence_lifetime = match prepared.revocation_evidence_validity() {
-            Some(validity) => crate::runtime::CredentialLifetime::new(
-                tacacsrs_credential_resolution::CredentialValidity::new(
-                    Some(validity.valid_from()),
-                    Some(validity.valid_until()),
-                )?,
-            )?,
-            None => crate::runtime::CredentialLifetime::unbounded(),
-        };
-        if let Some(deadline) = prepared.revocation_evidence_deadline() {
-            evidence_lifetime.deadline = Some(
-                evidence_lifetime
-                    .deadline
-                    .map_or(deadline, |previous| previous.min(deadline)),
-            );
-        }
+        let client_certificate_sha256 = prepared.client_certificate_sha256();
         let operations = [
             (OperationKind::Authentication, TacacsPlusServerType::AUTHENTICATION),
             (OperationKind::Authorization, TacacsPlusServerType::AUTHORIZATION),
@@ -49,8 +34,8 @@ impl PreparedServer {
         Ok(Self {
             server,
             endpoint,
-            evidence_lifetime,
             counters,
+            client_certificate_sha256,
         })
     }
 

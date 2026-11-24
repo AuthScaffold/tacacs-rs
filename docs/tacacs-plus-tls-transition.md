@@ -90,7 +90,7 @@ sudo tacacsrs-agentd \
     --server-addr tacacs2.example.com:449 \
     --service-mode tacacs-proxy \
     --proxy-endpoint 127.0.0.1:9049 \
-    --shared-secret "$TACACS_SHARED_SECRET" \
+    --proxy-shared-secret "$TACACS_SHARED_SECRET" \
     --use-tls \
     -vv
 ```
@@ -106,7 +106,7 @@ sudo tacacsrs-agentd \
     --server-addr tacacs2.example.com:449 \
     --service-mode tacacs-proxy \
     --proxy-endpoint 127.0.0.1:9049 \
-    --shared-secret "$TACACS_SHARED_SECRET" \
+    --proxy-shared-secret "$TACACS_SHARED_SECRET" \
     --use-tls \
     --client-certificate /etc/tacacs/client.crt.pem \
     --client-key /etc/tacacs/client.key.pem \
@@ -115,10 +115,7 @@ sudo tacacsrs-agentd \
 
 ### TLS PSK-DHE
 
-TLS PSK support requires a build with the `psk` feature. PSK-DHE is the preferred
-PSK mode because it adds ephemeral key exchange. If no PSK key-exchange mode is
-specified, `tacacsrs-agentd` defaults to PSK-DHE with the preferred group order
-`secp384r1,secp256r1`.
+PSK-DHE is the preferred TLS 1.3 PSK mode because it adds ephemeral key exchange. If no PSK key-exchange mode is specified, `tacacsrs-agentd` defaults to PSK-DHE with the preferred group order `secp384r1,secp256r1`.
 
 ```bash
 # Load these values from the host's secret manager.
@@ -130,7 +127,7 @@ sudo tacacsrs-agentd \
     --server-addr tacacs2.example.com:449 \
     --service-mode tacacs-proxy \
     --proxy-endpoint 127.0.0.1:9049 \
-    --shared-secret "$TACACS_SHARED_SECRET" \
+    --proxy-shared-secret "$TACACS_SHARED_SECRET" \
     --use-tls \
     --psk-identity host01@example.com \
     --psk-key "$TACACS_TLS_PSK" \
@@ -152,7 +149,7 @@ sudo tacacsrs-agentd \
     --server-addr legacy-tacacs.example.com:449 \
     --service-mode tacacs-proxy \
     --proxy-endpoint 127.0.0.1:9049 \
-    --shared-secret "$TACACS_SHARED_SECRET" \
+    --proxy-shared-secret "$TACACS_SHARED_SECRET" \
     --use-tls \
     --psk-identity host01@example.com \
     --psk-key "$TACACS_TLS_PSK" \

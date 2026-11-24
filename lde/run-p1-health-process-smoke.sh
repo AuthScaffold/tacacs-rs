@@ -40,9 +40,7 @@ NOTIFY_SOCKET=/tmp/nonexistent-notify "$agent" \
     --sonic \
     --sonic-redis-url "redis://127.0.0.1:${redis_port}" \
     --sonic-redis-db 4 \
-    --service-mode both \
     --listen-endpoint "$socket_path" \
-    --proxy-endpoint "127.0.0.1:${proxy_port}" \
     --host-integration none \
     -vv >/dev/null 2>&1 &
 agent_pid=$!
@@ -88,6 +86,10 @@ done
     CONFIG SET notify-keyspace-events KEA >/dev/null
 "$container_runtime" exec "$redis_name" redis-cli -n 4 \
     HSET 'TACPLUS|global' timeout 5 auth_type pap >/dev/null
+"$container_runtime" exec "$redis_name" redis-cli -n 4 \
+    HSET 'TACPLUS_FORWARDER|global' local_listen_address 127.0.0.1 local_listen_port "${proxy_port}" >/dev/null
+"$container_runtime" exec "$redis_name" redis-cli -n 4 \
+    HSET 'TACPLUS_SERVER|127.0.0.1' priority 64 tcp_port "${proxy_port}" passkey placeholder >/dev/null
 "$container_runtime" exec "$redis_name" redis-cli -n 4 \
     HSET 'TACPLUS_SERVER|192.0.2.10' priority 64 tcp_port 49 timeout 5 >/dev/null
 

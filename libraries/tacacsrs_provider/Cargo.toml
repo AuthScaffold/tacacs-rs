@@ -1,0 +1,18 @@
+[package]
+name = "tacacsrs-provider"
+description = "Source contracts for the TACACS+ agent."
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tacacsrs-config = { path = "../tacacsrs_config" }
+tacacsrs-credential-resolution = { path = "../tacacsrs_credential_resolution" }
+
+[dev-dependencies]
+async-trait = "0.1"
+
+[lints]
+workspace = true

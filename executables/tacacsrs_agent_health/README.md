@@ -13,6 +13,27 @@ tacacsrs-agent-health \
 Exit status is `0` when the selected service is serving, `1` when it is not
 serving, `2` for invalid invocation, and `3` for connection or timeout errors.
 
+## Detailed Health
+
+The `details` command reads the facts behind the health probes through the same
+local socket. Use it to find why the agent is not ready. The command does not
+connect to an upstream server or change health state.
+
+```bash
+tacacsrs-agent-health details
+tacacsrs-agent-health details --format json --endpoint /run/tacacs/tacacs.sock
+```
+
+The output gives the lifecycle, the startup, liveness, and readiness results,
+the datastore and listener states, the upstream availability, the upstream
+watchdog state, the degradation reasons, and the runtime revisions. It also
+lists each component health check, with its group, name, status, and
+description. Enum values
+use short names, for example `upstream-watchdog-failed`. A value that this build
+does not know shows as `unknown-<number>`. Successful queries exit with `0`,
+invalid invocations with `2`, and query failures or timeouts with `3`. Do not
+combine `details` with `--check`.
+
 ## Operational Diagnostics
 
 The `statistics` command reads the agent's current operational snapshot through
@@ -61,6 +82,16 @@ uint64 values use decimal JSON strings to preserve their full range.
 - TLS categories use native numeric error and verification codes, not diagnostic
     string matching. Unclassified TLS failures increment `tls-other-errors`.
     Certificate subcategories overlap the aggregate certificate failure counter.
+- `revocation-evidence-waits` counts TLS handshakes that paused while the CRL
+    verifier obtained evidence. `revocation-unverified-accepts` counts
+    connections accepted without fresh CRL evidence under `soft-fail` or
+    `warn-only`. `revocation-pinned-skips` counts connections to exactly pinned
+    peers that skipped the CRL check. A listed certificate increments
+    `tls-revoked-certificates`.
+- `client-certificate-sha256` reports the lowercase hexadecimal SHA-256 digest
+    of the prepared DER leaf client certificate. The JSON leaf is absent for
+    TCP, TLS-PSK, and TLS without a client certificate, and text output shows
+    `unknown` when the leaf is absent.
 - Runtime generation identifies the captured server set. Counter epoch and
     discontinuity time identify counter lifetime. Unchanged endpoints retain their
     counters across reloads; replacements begin new epochs. Each server's sample
@@ -73,13 +104,7 @@ Oversized results fail explicitly; use the server filter. Metadata limits apply
 before copying, and byte limits apply during serialization. Public provider
 errors use fixed messages rather than arbitrary exception text.
 
-The current runtime has no idle-disconnect policy or periodic watchdog timer.
-Those capabilities and packet counters since an idle/watchdog timer event are
-listed as unsupported. Existing optional accounting-watchdog preflights have
-attempt, success, failure, and since-reset counters; diagnostics do not enable them.
-FIPS mode is not inferred from cipher names and is
-reported as unknown. Missing observations never appear as invented zero counters.
-Cleartext connections explicitly report `tls-enabled: false`.
+Per-server connection diagnostics have no idle-disconnect policy or per-connection watchdog timer, so those capabilities and packet counters since an idle or watchdog timer event are listed as unsupported. Daemon-level periodic upstream watchdog probes (`--upstream-watchdog-interval-seconds`) appear in `tacacsrs-agent-health details` instead, while optional per-connection accounting-watchdog preflights report attempt, success, failure, and since-reset counters in `statistics` without diagnostics enabling them. FIPS mode is not inferred from cipher names and is reported as unknown. Missing observations never appear as invented zero counters, and cleartext connections explicitly report `tls-enabled: false`.
 
 This report contains no passwords, shared secrets, PSK identities or values,
 private keys, commands, or packet payloads. Server names and addresses are
@@ -96,11 +121,11 @@ operator metadata. Text output escapes control characters in returned strings.
 | Alive / connected / on hold | Explicit transport state and operation-specific routing circuit state |
 | Single-connect, family, last attempt | Configured policy, first reply, observed peer address, setup timestamp |
 | Authentication/authorization failure streaks | Validated terminal replies in local completion order |
-| TLS version, cipher and successful handshakes | Native established streams before transport erasure |
+| TLS version, cipher, client certificate SHA-256, and successful handshakes | Prepared DER client certificate digest and native established streams before transport erasure |
 | TLS errors, revoked certificates and untrusted issuers | Structured native verification results and error codes |
 | Reset reasons and packets since reset | First observed connection close cause and endpoint event counters |
 | Accounting-watchdog preflights | Existing configured preflight attempts, successes, failures, and since-reset count |
-| Idle policy, periodic watchdog timer and FIPS mode | Explicitly unsupported or unknown; diagnostics create no traffic |
+| Idle policy, per-connection watchdog timer, and FIPS mode | Explicitly unsupported or unknown in `statistics`; daemon-level periodic probes appear in `details`, and diagnostics create no traffic |
 
 The corresponding invariants are tested in networking statistics, managed
 transport and native certificate fixtures, agent snapshot tests, IPC bounds

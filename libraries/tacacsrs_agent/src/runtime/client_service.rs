@@ -57,14 +57,13 @@
 //! 4. Current and historical upstream resources close and join using that deadline.
 //! 5. Owned Unix socket paths are removed before stopped state is published.
 
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::{RuntimeHealthPublisher, RuntimeListenerService};
 use crate::config::{RuntimePolicy, ServiceConfig};
 #[cfg(test)]
 use crate::config::PreparedProxyPolicy;
-use crate::services::client_api::{ClientApiHandle, UpstreamBridge};
+use crate::services::client_api::{ClientApiHandle, UpstreamBridge, UpstreamProbe};
 use crate::upstream::NetworkUpstreamConnector;
 
 mod engine;
@@ -75,7 +74,7 @@ use engine::ServiceRuntime;
 /// A host maps these transport-neutral values into its own listener options,
 /// for example the IPC listener options. The agent runtime does not own the IPC
 /// transport or protobuf schema.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct ListenerSettings {
     /// Unix socket file permission bits.
     pub socket_mode: u32,
@@ -85,6 +84,17 @@ pub struct ListenerSettings {
     pub max_client_api_streams: u32,
     /// Maximum lifetime of one accepted connection.
     pub connection_lifetime: std::time::Duration,
+}
+
+impl From<&tacacsrs_config::local_services::PreparedLocalServices> for ListenerSettings {
+    fn from(prepared: &tacacsrs_config::local_services::PreparedLocalServices) -> Self {
+        Self {
+            socket_mode: prepared.unix_socket_mode(),
+            max_connections: prepared.max_connections(),
+            max_client_api_streams: prepared.max_client_api_streams(),
+            connection_lifetime: prepared.connection_lifetime(),
+        }
+    }
 }
 
 /// Long-lived local TACACS+ client service.
@@ -130,9 +140,24 @@ impl DiagnosticsHandle {
             .ok_or_else(|| anyhow::anyhow!("The agent runtime is no longer available"))?
             .diagnostics_json(server, limit)
     }
+
+    /// Captures the same server counters as [`TacacsClientService::statistics`].
+    ///
+    /// # Errors
+    /// Returns an error when the agent runtime no longer exists.
+    pub fn statistics(&self) -> anyhow::Result<tacacsrs_config::OperationalStatistics> {
+        Ok(self
+            .manager
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("The agent runtime is no longer available"))?
+            .statistics())
+    }
 }
 
 impl TacacsClientService {
+    pub(crate) fn shutdown_deadlines(&self) -> anyhow::Result<super::shutdown::ShutdownDeadlines> {
+        self.runtime.manager.shutdown_deadlines()
+    }
     /// Returns a read-only handle to the current published generation.
     #[must_use]
     pub fn diagnostics_handle(&self) -> DiagnosticsHandle {
@@ -192,15 +217,105 @@ impl TacacsClientService {
     /// # Errors
     /// Returns an error for invalid listener controls or inconsistent health services.
     pub fn new(config: ServiceConfig, health: RuntimeHealthPublisher) -> anyhow::Result<Self> {
+        Self::with_revocation(config, health, crate::UpstreamRevocation::default())
+    }
+
+    /// Builds a native service with host-supplied revocation controls.
+    ///
+    /// The service publishes the revocation settings of each accepted change
+    /// through `revocation`, and attaches its verifier to new certificate TLS
+    /// connections.
+    ///
+    /// # Errors
+    /// Returns an error for invalid listener controls.
+    pub fn with_revocation(
+        config: ServiceConfig,
+        health: RuntimeHealthPublisher,
+        revocation: crate::UpstreamRevocation,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
             runtime: ServiceRuntime::from_config(
                 config,
                 health,
                 Vec::new(),
                 false,
-                NetworkUpstreamConnector::new,
+                revocation,
+                |guard, revocation, policy| {
+                    NetworkUpstreamConnector::new(guard, revocation).with_runtime_policy(policy)
+                },
             )?,
         })
+    }
+
+    /// Builds the raw TACACS+ proxy listener.
+    ///
+    /// The listener follows the active local services. A host passes the
+    /// listener to [`Self::serve_until`] with its other listeners.
+    #[must_use]
+    pub fn tacacs_proxy_listener(&self) -> Box<dyn RuntimeListenerService> {
+        self.runtime.tacacs_proxy_listener()
+    }
+
+    /// Returns a view of the active local services.
+    ///
+    /// A host listener uses the view to bind, move, or stop its endpoint when
+    /// a datastore change publishes new local services.
+    #[must_use]
+    pub fn local_services(&self) -> super::LocalServicesView {
+        self.runtime.local_services.view()
+    }
+
+    /// Returns a view of the accepted runtime policy.
+    ///
+    /// The view changes after a datastore change or a policy file change
+    /// applies a new runtime policy.
+    #[must_use]
+    pub fn runtime_policy(&self) -> super::RuntimePolicyView {
+        self.runtime.runtime_policy.view()
+    }
+
+    /// Registers a protected file path that no Unix listener socket may replace.
+    ///
+    /// Checks the active local services immediately and rejects any later
+    /// local-services candidate whose Unix socket resolves to `path`.
+    ///
+    /// # Errors
+    /// Returns an error if an active Unix listener already targets `path`.
+    pub fn protect_listener_path(&self, path: impl Into<std::path::PathBuf>) -> anyhow::Result<()> {
+        self.runtime.local_services.protect_path(path.into())
+    }
+
+    /// Applies the overlays to the local services of a datastore change and
+    /// prepares the result.
+    pub(crate) fn prepare_local_services_candidate(
+        &self,
+        source: &tacacsrs_config::tacacsrs::LocalServices,
+    ) -> anyhow::Result<Arc<super::ActiveLocalServices>> {
+        self.runtime.local_services.prepare_candidate(source)
+    }
+
+    /// Returns the active local services.
+    pub(crate) fn active_local_services(&self) -> Arc<super::ActiveLocalServices> {
+        self.runtime.local_services.current()
+    }
+
+    /// Admits a new runtime policy revision.
+    ///
+    /// A policy with this revision supersedes every policy admitted earlier.
+    ///
+    /// # Errors
+    /// Returns an error if the runtime has closed.
+    pub(crate) fn admit_policy(&self) -> anyhow::Result<super::PolicyRevision> {
+        self.runtime.manager.admit_policy()
+    }
+
+    /// Publishes the configuration sections of an accepted datastore change
+    /// that has no servers to publish.
+    ///
+    /// The runtime policy applies first. Then the listeners see the new local
+    /// services. A newer policy from another source supersedes this policy.
+    pub(crate) async fn publish_sections(&self, sections: &super::CandidateSections) {
+        self.runtime.publish_sections(sections).await;
     }
 
     /// Applies an observed canonical policy or records a source rejection.
@@ -236,13 +351,20 @@ impl TacacsClientService {
     }
 
     /// Applies materialized servers and coordinator bookkeeping in one commit.
+    ///
+    /// The sections publish immediately after the server commit, before
+    /// upstream retirement can yield. If the caller drops the future after the
+    /// commit, the servers and the sections are both active.
     pub(crate) async fn publish_materialized_servers(
         &self,
         candidate: crate::upstream::manager::PublicationCandidate<
             impl FnOnce() -> Option<super::MaterializationCommit> + Send,
         >,
+        sections: Option<&super::CandidateSections>,
     ) -> anyhow::Result<()> {
-        self.runtime.publish_materialized_servers(candidate).await
+        self.runtime
+            .publish_materialized_servers(candidate, sections)
+            .await
     }
 
     /// Withdraws expired upstreams without closing the recoverable runtime.
@@ -314,25 +436,13 @@ impl TacacsClientService {
         ClientApiHandle::new(UpstreamBridge::new(Arc::clone(&self.runtime.manager)))
     }
 
-    /// Returns the prepared client API Unix socket path, if client API is enabled.
+    /// Returns a cloneable handle that sends upstream WATCHDOG probes.
     ///
-    /// A host composes its client API listener on this path. The agent runtime
-    /// does not own the IPC transport.
+    /// A host calls the probe on a schedule to learn upstream health before
+    /// the first client request. Each probe result updates runtime health.
     #[must_use]
-    pub fn client_api_socket_path(&self) -> Option<PathBuf> {
-        self.runtime.listeners.client_api().map(Path::to_path_buf)
-    }
-
-    /// Returns the prepared listener settings for a host-composed client API listener.
-    #[must_use]
-    pub fn client_api_listener_settings(&self) -> ListenerSettings {
-        let prepared = &self.runtime.listeners;
-        ListenerSettings {
-            socket_mode: prepared.unix_socket_mode(),
-            max_connections: prepared.max_connections(),
-            max_client_api_streams: prepared.max_client_api_streams(),
-            connection_lifetime: prepared.connection_lifetime(),
-        }
+    pub fn upstream_probe(&self) -> UpstreamProbe {
+        UpstreamProbe::new(self.client_api_handle(), self.runtime.health.clone())
     }
 
     /// Serves until an embedding host requests shutdown, without installing signals.

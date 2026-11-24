@@ -7,7 +7,9 @@
 //! transport or the protobuf schema.
 
 mod handle;
+pub(crate) mod probe;
 mod upstream_bridge;
 
 pub use handle::ClientApiHandle;
+pub use probe::{UpstreamProbe, UpstreamProbeOutcome};
 pub(crate) use upstream_bridge::UpstreamBridge;

@@ -28,19 +28,18 @@ RUN apt-get update \
         zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN rustup toolchain install 1.88.0 --profile minimal --component clippy --component llvm-tools-preview \
-    && rustup toolchain install 1.91.0 --profile minimal --component clippy \
+RUN rustup toolchain install 1.91.0 --profile minimal --component clippy --component llvm-tools-preview \
     && rustup toolchain install nightly-2025-11-23 --profile minimal \
     && rustup toolchain install nightly --profile minimal --component rustfmt --component clippy --component miri --component rust-src \
     && rustup toolchain install stable --profile minimal \
-    && rustup default 1.88.0
+    && rustup default 1.91.0
 
 RUN python3 -m venv /opt/tacacs-python \
     && /opt/tacacs-python/bin/python -m pip install --no-cache-dir \
         pyang==2.7.1 pytest==8.4.2 PyYAML==6.0.3 tomlkit==0.15.2
 
 RUN cargo +stable install --locked --root /opt/tacacs-tools \
-        cargo-audit cargo-fuzz cargo-llvm-cov cargo-outdated cargo-udeps mdbook
+        cargo-audit cargo-fuzz cargo-llvm-cov cargo-machete mdbook
 
 COPY --from=bufbuild/buf:1.47.2 /usr/local/bin/buf /usr/local/bin/buf
 

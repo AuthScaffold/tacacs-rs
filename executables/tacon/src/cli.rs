@@ -5,7 +5,7 @@ use tacacsrs_config::PskDheKeSupportedGroup;
 /// Validation relaxation that loosens a specific YANG constraint.
 ///
 /// Relaxations are opt-in. Default (strict) validation never applies them.
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
 pub enum ValidationRelaxation {
     /// Allow TLS and `shared-secret` to coexist on the same server.
     ///
@@ -87,34 +87,44 @@ pub struct Cli {
     pub service_endpoint: Option<String>,
 
     /// Shared secret for TACACS+ message obfuscation
-    #[arg(short = 'k', long, conflicts_with = "service_endpoint")]
+    #[arg(short = 'k', long, requires = "server_addr", conflicts_with = "service_endpoint")]
     pub shared_secret: Option<String>,
 
     /// Use TLS for the connection
-    #[arg(long, conflicts_with = "service_endpoint")]
+    #[arg(long, requires = "server_addr", conflicts_with = "service_endpoint")]
     pub use_tls: bool,
 
     /// TLS server name used for SNI and certificate verification in direct mode
-    #[arg(long, value_name = "NAME", requires = "use_tls", conflicts_with = "service_endpoint")]
+    #[arg(long, value_name = "NAME", requires_all = ["server_addr", "use_tls"], conflicts_with = "service_endpoint")]
     pub tls_server_name: Option<String>,
 
     /// Path to a PEM client certificate chain or one DER certificate.
     /// Put the leaf first, followed by intermediates in issuer order. Omit the root.
-    #[arg(long, value_name = "FILE", requires = "client_key", conflicts_with = "service_endpoint")]
+    #[arg(long, value_name = "FILE", requires_all = ["server_addr", "use_tls", "client_key"], conflicts_with = "service_endpoint")]
     pub client_certificate: Option<String>,
 
     /// Path to a PEM- or DER-encoded client private key file for TLS authentication
     #[arg(
         long,
         value_name = "FILE",
-        requires = "client_certificate",
+        requires_all = ["server_addr", "use_tls", "client_certificate"],
         conflicts_with = "service_endpoint"
     )]
     pub client_key: Option<String>,
 
     /// CAUTION: Disable TLS certificate verification for direct server connections.
     /// This option permits man-in-the-middle attacks.
-    #[arg(long, requires = "certificate_verification_target", conflicts_with = "service_endpoint")]
+    #[arg(
+        long,
+        requires = "certificate_verification_target",
+        conflicts_with_all = [
+            "service_endpoint",
+            "psk_identity",
+            "psk_key",
+            "psk_key_exchange",
+            "psk_key_exchange_groups",
+        ]
+    )]
     pub insecure_disable_certificate_verification: bool,
 
     /// PSK identity string sent to the server during the TLS 1.3 handshake
@@ -583,6 +593,25 @@ mod tests {
             "--rem-addr",
             "192.168.1.100",
             "test_cmd",
+        ]);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_insecure_certificate_verification_conflicts_with_psk() {
+        let result = Cli::try_parse_from([
+            "tacon",
+            "--server-addr",
+            "localhost:49",
+            "--use-tls",
+            "--psk-identity",
+            "client",
+            "--psk-key",
+            "c2VjcmV0",
+            "--insecure-disable-certificate-verification",
+            "batch",
+            "batch.txt",
         ]);
 
         assert!(result.is_err());

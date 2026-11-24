@@ -3,7 +3,7 @@
 # Container image for the central TACACS+ client agent (`tacacsrs-agentd`).
 #
 # This build has these stages:
-#   base    -> Rust toolchain plus the build dependencies for the `psk` feature
+#   base    -> Rust toolchain plus OpenSSL build dependencies for TLS and TLS 1.3 PSK
 #   test    -> agent daemon and health probe test suites (used by `make test`)
 #   build   -> daemon and health probe binaries compiled with BuildKit caches
 #   runtime -> image with only the binaries and their runtime dependencies
@@ -15,11 +15,11 @@
 # different toolchain or a hardened runtime image without a file change:
 #
 #   docker buildx build \
-#       --build-arg BUILDER_IMAGE=<registry>/rust:1.90 \
+#       --build-arg BUILDER_IMAGE=<registry>/rust:1.91 \
 #       --build-arg RUNTIME_IMAGE=<registry>/debian:bookworm-slim \
 #       --file Dockerfile ../..
 
-ARG BUILDER_IMAGE=docker.io/library/rust:1.90-bookworm
+ARG BUILDER_IMAGE=docker.io/library/rust:1.91-bookworm
 ARG RUNTIME_IMAGE=docker.io/library/debian:bookworm-slim
 
 # -----------------------------------------------------------------------------

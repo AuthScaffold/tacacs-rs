@@ -1,7 +1,7 @@
 [package]
 name = "tacacsrs-sonic"
 description = "Maps SONiC ConfigDB TACPLUS and TACPLUS_SERVER data to the ietf-system-tacacs-plus YANG model."
-version = "0.2.1"
+version = "0.3.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -15,8 +15,10 @@ log = "0.4"
 notify = "8.2.0"
 redis = { version = "1.2", default-features = false, features = ["aio", "tokio-comp"] }
 rustix = { version = "1.1.4", features = ["fs"] }
+tacacsrs-composition = { path = "../tacacsrs_composition" }
 tacacsrs-config = { path = "../tacacsrs_config" }
 tacacsrs-credential-resolution = { path = "../tacacsrs_credential_resolution" }
+tacacsrs-provider = { path = "../tacacsrs_provider" }
 tokio = { version = "1.52.3", features = ["sync", "macros", "rt", "time"] }
 tokio-stream = { version = "0.1" }
 zeroize = "1.9.0"
@@ -26,9 +28,6 @@ clap = { version = "4.6.1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3.27.0"
 tokio = { version = "1.52.3", features = ["full"] }
-
-[package.metadata.cargo-udeps.ignore]
-development = ["tempfile"]
 
 [lints]
 workspace = true

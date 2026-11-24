@@ -33,10 +33,9 @@
 //! requests immediate cleanup; retained conversations do not extend its transport
 //! lifetime.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use tokio::sync::Mutex;
-
+use crate::connection::failure::combine_results;
 use crate::endpoint::PreparedEndpoint;
 use crate::single_connect::{NegotiationState, SharedConnectionCache, SingleConnectionState};
 
@@ -49,16 +48,16 @@ mod selection;
 mod tests;
 
 use lifecycle::ClientLifecycle;
+use selection::ConnectAttempt;
 
 /// A configured TACACS+ client that selects a dedicated or shared connection.
 ///
 /// When the server configuration enables single-connection mode, the first
-/// operation uses the configured preflight or a dedicated session to ask
-/// the server for single-connection support. If the server echoes the
-/// single-connect flag, the client upgrades and caches that connection for future
-/// sessions. If single-connection mode is disabled in configuration or
-/// unsupported by the server, future operations continue to use dedicated
-/// connections.
+/// operation opens a negotiating multiplexed connection and waits for the first
+/// reply to confirm single-connection support. If the server echoes the
+/// single-connect flag, waiting and future sessions multiplex onto that
+/// connection. If single-connection mode is disabled in configuration or
+/// unsupported by the server, operations use dedicated connections.
 ///
 /// [`Self::close`] permanently rejects new work. [`Self::close_and_join`]
 /// drains existing sessions until its deadline, then forces transport closure
@@ -69,12 +68,8 @@ pub struct TacacsClient {
     lifecycle: Arc<ClientLifecycle>,
     shared_connection: Arc<SharedConnectionCache>,
     single_connection_state: Arc<NegotiationState>,
-    /// Serializes recovery when the cached shared connection is not available.
-    ///
-    /// The normal shared-session path does not take this lock. It only protects
-    /// the slow path so concurrent callers do not all open probe
-    /// connections after the same shared connection disconnects.
-    shared_recovery_lock: Mutex<()>,
+    /// Coalesces concurrent transport establishment attempts before negotiation begins.
+    pending_connect: Mutex<Option<Arc<ConnectAttempt>>>,
 }
 
 impl Drop for TacacsClient {
@@ -99,7 +94,7 @@ impl TacacsClient {
                     SingleConnectionState::NotSupported
                 },
             )),
-            shared_recovery_lock: Mutex::new(()),
+            pending_connect: Mutex::new(None),
         }
     }
 
@@ -135,18 +130,26 @@ impl TacacsClient {
     pub fn close(&self) {
         self.lifecycle.close();
         self.shared_connection.mark_closed();
+        self.single_connection_state.wake_waiters();
+        if let Some(attempt) = self
+            .pending_connect
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .cloned()
+        {
+            attempt.wake_waiters();
+        }
     }
 
-    /// Closes the client, drains sessions, and joins setup, driver, and evidence-expiry tasks.
+    /// Closes the client, drains sessions, and joins setup and driver tasks.
     ///
     /// At `deadline`, remaining transports close even if callers retain idle
     /// conversations or do not poll their I/O futures. Cancelled joins can be retried;
     /// the client remains closed. Final client drop also requests immediate cleanup.
-    /// Revocation evidence expiry can close a transport before this shutdown deadline.
     ///
     /// # Errors
     /// Returns a setup or driver task failure after completing other cleanup.
-    /// This can include an I/O error from a driver stopped by evidence expiry.
     pub async fn close_and_join(&self, deadline: crate::RequestDeadline) -> anyhow::Result<()> {
         self.close();
         self.stop_accepting_new_sessions().await;
@@ -155,8 +158,7 @@ impl TacacsClient {
         let driver_result = self.retire_shared_until(deadline).await;
         self.lifecycle.force_close_transports();
         self.lifecycle.wait_for_transports().await;
-        let expiry_result = self.lifecycle.join_evidence_expiries(deadline).await;
-        setup_result.and(driver_result).and(expiry_result)
+        combine_results(setup_result, driver_result)
     }
 
     /// Retires and joins the currently cached and previously retired shared drivers.

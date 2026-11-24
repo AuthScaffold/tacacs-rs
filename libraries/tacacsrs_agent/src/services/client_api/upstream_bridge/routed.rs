@@ -33,7 +33,7 @@ pub(super) trait RoutedOperation: Send + Sync + 'static {
     const NAME: &'static str;
     /// Operation name with display capitalization for log messages.
     const DISPLAY_NAME: &'static str;
-    /// TACACS+ operation used for routing and connection isolation.
+    /// TACACS+ operation used for routing and circuit isolation.
     const OPERATION: OperationKind;
     /// Sends the operation through the selected server connection.
     async fn send<Connection: UpstreamConnection + ?Sized>(
@@ -123,10 +123,12 @@ where
         let attempt_deadline = deadline.capped(bound_server.timeout_duration());
         let response = attempt_deadline
             .run(async {
-                let mut observation = bound_server.observe_failure();
+                let mut observation = bound_server.observe_failure(attempt_deadline);
                 let response = Operation::send(&*bound_server.connection, self.exchange, attempt_deadline).await;
                 if response.is_ok() || matches!(&response, Err(error) if error.kind() == AttemptFailureKind::InvalidRequest) {
                     observation.disarm();
+                } else {
+                    observation.fail();
                 }
                 response
             })
@@ -135,7 +137,7 @@ where
             .and_then(std::convert::identity);
         match response {
             Ok(response) if Operation::is_server_error(&response) => {
-                bound_server.note_failure().await;
+                bound_server.note_server_failure().await;
                 Attempt::Rejected(response)
             }
             Ok(response) => {
@@ -169,7 +171,6 @@ where
                         .with_server(bound_server.connection.server_address()),
                     attempt_index,
                 );
-                bound_server.note_failure().await;
                 Attempt::Failed {
                     error: service_error,
                     disposition,
@@ -195,6 +196,17 @@ where
     where
         Operation: RoutedOperation,
     {
+        self.execute_preparing::<Operation>(move || Operation::prepare(&request))
+            .await
+    }
+
+    pub(super) async fn execute_preparing<Operation>(
+        &self,
+        prepare: impl FnOnce() -> Result<Operation::Exchange, UpstreamRequestError> + Send,
+    ) -> Result<Operation::Response, ServiceError>
+    where
+        Operation: RoutedOperation,
+    {
         let routing = self.router.capture_request(Operation::OPERATION);
         let check_deadline = || {
             routing.deadline().check().map_err(|error| {
@@ -210,8 +222,7 @@ where
             })
         };
         check_deadline()?;
-        let prepared = Operation::prepare(&request);
-        drop(request);
+        let prepared = prepare();
         check_deadline()?;
         let exchange = prepared.map_err(UpstreamRequestError::into_service_error)?;
         let body_length = exchange.request_body().as_bytes().len();

@@ -44,8 +44,6 @@ fn client_payload(
 fn authentication_payload(
     authority: Option<&ServerAuthenticationCaCerts>,
     peer: Option<&ServerAuthenticationCaCerts>,
-    crls: Option<&crate::tacacsrs::RequireCrls>,
-    ocsp: Option<&crate::tacacsrs::RequireOcsp>,
 ) -> anyhow::Result<u64> {
     let mut total = 0;
     for bag in [authority, peer].into_iter().flatten() {
@@ -54,14 +52,6 @@ fn authentication_payload(
                 add(&mut total, certificate.cert_data.len())?;
             }
         }
-    }
-    if let Some(lists) = crls.and_then(|policy| policy.crl.as_ref()) {
-        for list in lists {
-            add(&mut total, list.len())?;
-        }
-    }
-    if let Some(response) = ocsp.and_then(|policy| policy.response.as_ref()) {
-        add(&mut total, response.len())?;
     }
     Ok(total)
 }
@@ -87,15 +77,7 @@ pub fn server_payload_bytes(server: &TacacsPlusServer) -> anyhow::Result<u64> {
         sum(&mut total, client_payload(client.certificate.as_ref(), client.tls13_epsk.as_ref())?)?;
     }
     if let Some(auth) = &server.server_authentication {
-        sum(
-            &mut total,
-            authentication_payload(
-                auth.ca_certs.as_ref(),
-                auth.ee_certs.as_ref(),
-                auth.require_crls.as_ref(),
-                auth.require_ocsp.as_ref(),
-            )?,
-        )?;
+        sum(&mut total, authentication_payload(auth.ca_certs.as_ref(), auth.ee_certs.as_ref())?)?;
     }
     Ok(total)
 }
@@ -132,12 +114,7 @@ pub fn enumerated_payload_bytes(
             .context("candidate server bundle is missing")?;
         sum(
             &mut total,
-            authentication_payload(
-                bundle.ca_certs.as_ref(),
-                bundle.ee_certs.as_ref(),
-                bundle.require_crls.as_ref(),
-                bundle.require_ocsp.as_ref(),
-            )?,
+            authentication_payload(bundle.ca_certs.as_ref(), bundle.ee_certs.as_ref())?,
         )?;
     }
     Ok(total)
@@ -157,12 +134,7 @@ pub fn source_payload_bytes(source: &TacacsPlus) -> anyhow::Result<u64> {
     for bundle in &source.server_credentials {
         sum(
             &mut total,
-            authentication_payload(
-                bundle.ca_certs.as_ref(),
-                bundle.ee_certs.as_ref(),
-                bundle.require_crls.as_ref(),
-                bundle.require_ocsp.as_ref(),
-            )?,
+            authentication_payload(bundle.ca_certs.as_ref(), bundle.ee_certs.as_ref())?,
         )?;
     }
     Ok(total)
@@ -342,17 +314,9 @@ mod tests {
                 }),
             });
         }
-        auth.require_crls = Some(crate::tacacsrs::RequireCrls {
-            crl: Some(vec![vec![8; 23]]),
-            ..Default::default()
-        });
-        auth.require_ocsp = Some(crate::tacacsrs::RequireOcsp {
-            response: Some(vec![9; 29]),
-            ..Default::default()
-        });
         server.server_authentication = Some(auth);
         server.shared_secret = Some(tacacsrs_secrets::SecretString::new("x".repeat(31)));
-        assert_eq!(server_payload_bytes(&server).unwrap(), 195);
+        assert_eq!(server_payload_bytes(&server).unwrap(), 143);
     }
 
     #[test]

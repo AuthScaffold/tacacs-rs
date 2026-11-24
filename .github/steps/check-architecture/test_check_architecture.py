@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
+import tomllib
 
 import pytest
 
@@ -27,6 +28,28 @@ from check_architecture import (
 )
 
 RULES_PATH = Path(__file__).resolve().parent / "rules.json"
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _load_workspace_manifests() -> tuple[list[str], list[str]]:
+    """Read workspace members and default-members directly from Cargo.toml files."""
+    workspace_toml = tomllib.loads((REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+    workspace = workspace_toml["workspace"]
+
+    def package_name(member_dir: str) -> str:
+        manifest = tomllib.loads(
+            (REPO_ROOT / member_dir / "Cargo.toml").read_text(encoding="utf-8")
+        )
+        return manifest["package"]["name"]
+
+    members = [package_name(member_dir) for member_dir in workspace["members"]]
+    default_members = [
+        package_name(member_dir) for member_dir in workspace["default-members"]
+    ]
+    return members, default_members
+
+
+WORKSPACE_MEMBERS, CORE_DEFAULT_MEMBERS = _load_workspace_manifests()
 
 
 def test_unknown_resolved_dependency_kind_is_rejected():
@@ -38,24 +61,6 @@ def test_unknown_resolved_dependency_kind_is_rejected():
 @pytest.mark.parametrize("metadata", [{}, {"resolve": None}, {"resolve": {"nodes": []}}])
 def test_incomplete_metadata_cannot_pass(metadata):
     assert validate_all(metadata, {"allowed_workspace_edges": {}})
-
-# The 14 supported-core default members, as in the root Cargo.toml.
-CORE_DEFAULT_MEMBERS = [
-    "tacacsrs-protocol",
-    "tacacsrs-secrets",
-    "tacacsrs-networking",
-    "tacacsrs-ipc",
-    "tacacsrs-unix-socket",
-    "tacacsrs-agent",
-    "tacacsrs-config",
-    "tacacsrs-credential-resolution",
-    "tacacsrs-credential-http",
-    "tacacsrs-sonic",
-    "tacacsrs-bash-plugin",
-    "tacon",
-    "tacacsrs-agentd",
-    "tacacsrs-agent-health",
-]
 
 
 # ---------------------------------------------------------------------------
@@ -189,8 +194,9 @@ def test_golden_metadata_passes(golden_metadata, rules):
     assert validate_all(golden_metadata, rules) == []
 
 
-def test_rules_cover_seventeen_packages(rules):
-    assert len(rules["allowed_workspace_edges"]) == 17
+def test_rules_cover_workspace_members(rules):
+    assert set(rules["allowed_workspace_edges"]) == set(WORKSPACE_MEMBERS)
+    assert set(CORE_DEFAULT_MEMBERS) <= set(WORKSPACE_MEMBERS)
 
 
 # ---------------------------------------------------------------------------
@@ -252,9 +258,9 @@ def test_dev_and_build_edges_are_ignored(golden_edges, rules):
 
 def test_production_edges_exclude_dev_and_build(golden_edges):
     edges = copy.deepcopy(golden_edges)
-    edges["tacacsrs-agent"].append(dep("tacacsrs-ipc", kind="dev"))
+    edges["tacacsrs-agent"].append(dep("tacacsrs-sonic", kind="dev"))
     metadata = build_metadata(edges, default_members=CORE_DEFAULT_MEMBERS)
-    assert "tacacsrs-ipc" not in production_workspace_edges(metadata)["tacacsrs-agent"]
+    assert "tacacsrs-sonic" not in production_workspace_edges(metadata)["tacacsrs-agent"]
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +296,21 @@ def test_linux_only_edge_is_allowed_when_present(golden_edges, rules):
         ("tacacsrs-credential-resolution", "openssl", "provider-neutral-credentials"),
         ("tacacsrs-networking", "tonic", "schema-free-networking"),
         ("tacacsrs-config", "clap", "configuration-adapter"),
-        ("tacacsrs-agent", "tonic", "ipc-independent-agent"),
+        ("tacacsrs-provider", "redis", "provider-interface"),
+        ("tacacsrs-provider", "clap", "provider-interface"),
+        ("tacacsrs-provider", "tonic", "provider-interface"),
+        ("tacacsrs-provider", "tacacsrs-lifecycle", "provider-interface"),
+        ("tacacsrs-lifecycle", "dill", "lifecycle-leaf"),
+        ("tacacsrs-networking", "dill", "daemon-composition-root"),
+        ("tacacsrs-config", "dill", "daemon-composition-root"),
+        ("tacacsrs-ipc", "tacacsrs-composition", "composition-contracts"),
+        ("tacacsrs-agent", "tacacsrs-sonic", "provider-neutral-agent"),
+        ("tacacsrs-agent", "clap", "provider-neutral-agent"),
+        ("tacacsrs-kubesonic", "tacacsrs-agent", "source-components-without-host"),
+        ("tacon", "dill", "daemon-composition-root"),
+        ("tacacsrs-config", "health-checks", "health-free-core"),
+        ("tacacsrs-networking", "health-checks", "health-free-core"),
+        ("tacacsrs-ipc", "health-checks", "health-free-core"),
         ("tacacsrs-ipc", "redis", "runtime-independent-ipc"),
         ("tacacsrs-unix-socket", "openssl", "unix-socket-leaf"),
         ("tacon", "regorus", "supported-core"),

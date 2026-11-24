@@ -60,6 +60,27 @@ pub fn tacacs_plus_from_cli_input(input: &CliDatastoreInput) -> anyhow::Result<T
     }
 }
 
+/// Builds the command-line server values that cannot change at runtime.
+///
+/// This function reads no file, because a watched file can change later. For
+/// a YANG file source, it returns `None`. For inline servers, it returns the
+/// server set with the client certificate files left out. Each server keeps
+/// its address, port, transport, and shared secret.
+///
+/// # Errors
+/// Returns an error when an inline server address, security combination, or
+/// pre-shared key is invalid.
+pub fn immutable_cli_tacacs_plus(input: &CliDatastoreInput) -> anyhow::Result<Option<TacacsPlus>> {
+    let CliConfigSource::Inline { servers, security } = &input.source else {
+        return Ok(None);
+    };
+    let mut security = security.clone();
+    if matches!(security.mode, CliSecurityMode::TlsClientCertificate { .. }) {
+        security.mode = CliSecurityMode::TlsServerAuthentication;
+    }
+    inline_tacacs_plus_from_cli_input(servers, &security, &input.validation_options).map(Some)
+}
+
 fn inline_tacacs_plus_from_cli_input(
     servers: &[CliServerInput],
     security: &CliSecurity,
@@ -214,6 +235,37 @@ mod tests {
                 "accepted {address}"
             );
         }
+    }
+
+    #[test]
+    fn immutable_check_rejects_bad_addresses_without_reading_certificate_files() {
+        use crate::TacacsPlusServerExt;
+
+        let input = |address: &str| {
+            CliDatastoreInput::new(
+                CliConfigSource::Inline {
+                    servers: vec![CliServerInput::new("test", address)],
+                    security: CliSecurity {
+                        mode: CliSecurityMode::TlsClientCertificate {
+                            identity: CertKeyIdentity::new(
+                                "/missing/client.crt",
+                                "/missing/client.key",
+                            ),
+                        },
+                        shared_secret: None,
+                    },
+                },
+                "inline",
+            )
+        };
+
+        assert!(immutable_cli_tacacs_plus(&input("192.0.2.20"))
+            .unwrap()
+            .unwrap()
+            .server[0]
+            .is_tls());
+        assert!(tacacs_plus_from_cli_input(&input("192.0.2.20")).is_err());
+        assert!(immutable_cli_tacacs_plus(&input("not a host:port:x")).is_err());
     }
 
     #[test]

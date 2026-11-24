@@ -45,6 +45,7 @@ impl PacketWriter {
 
     /// Returns the configured packet obfuscation key, if one is present.
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn obfuscation_key(&self) -> Option<&SecretBytes> {
         self.obfuscation_key.as_ref()
     }
@@ -52,7 +53,6 @@ impl PacketWriter {
     /// Applies configured TACACS+ body obfuscation in place.
     #[must_use]
     pub fn prepare_packet(&self, mut packet: Packet) -> Packet {
-        let session_id = packet.header().session_id;
         let is_packet_deobfuscated = packet
             .header()
             .flags
@@ -60,10 +60,12 @@ impl PacketWriter {
 
         if let Some(key) = &self.obfuscation_key {
             if is_packet_deobfuscated {
+                let correlation =
+                    tacacsrs_protocol::header::wire_correlation(packet.header().session_id);
                 packet = packet.to_obfuscated(key.expose_secret());
                 log::trace!(
                     target: "tacacsrs_networking::codec::writer::prepare_packet",
-                    "Obfuscated packet for session id {session_id}"
+                    "Obfuscated packet for correlation {correlation}"
                 );
             }
         }

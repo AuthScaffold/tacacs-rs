@@ -162,8 +162,9 @@ classes. The bridge subscribes to `__keyspace@4__:TACPLUS*`.
 
 ### 2. Configure the local forwarder
 
-The daemon reads its proxy listener from `TACPLUS_FORWARDER|global` before it
-binds any service listener:
+The daemon reads its proxy listener from `TACPLUS_FORWARDER|global`. The
+Client API binds at once. The proxy listener binds after the daemon reads a
+valid row. A later change to the row moves the proxy at runtime:
 
 ```bash
 redis-cli -n 4 HSET 'TACPLUS_FORWARDER|global' \
@@ -325,8 +326,9 @@ When a TACPLUS-prefixed key changes in CONFIG_DB, the runtime:
 2. Tries to read and validate all four supported tables up to three times.
 3. If validation fails, emits `CandidateRejected` and keeps the active server set.
 4. If the server configuration changed, emits `Changed`.
-5. Filters proxy self-loops and atomically applies a valid changed server set.
-6. Emits `RestartRequired` when the forwarder row differs from the bound listener.
+5. Maps the forwarder row to the `tacacsrs:local-services` resource of the change. Without a forwarder row, the proxy is enabled and has no endpoint. An invalid forwarder row rejects the candidate.
+6. Filters proxy self-loops against the new local services, and atomically applies a valid changed server set.
+7. Publishes the new local services after the server set. The proxy listener binds the new endpoint before it stops the old endpoint. If the two endpoints use the same port, the listener stops the old endpoint first.
 
 Loop validation checks every DNS answer when the upstream port matches the proxy port.
 Lookup failure, empty answers, unspecified destinations, and timeout reject the candidate while the previous runtime generation remains active.
@@ -338,12 +340,20 @@ The guard checks each resolved destination before TCP connect and the resulting 
 It uses actual listener ports, refreshed interface addresses, and connected socket addresses. DNS changes after publication cannot bypass the connection check.
 Unbound or closed TCP proxies block new upstream connections. Listener shutdown and task cancellation retire the guard registration.
 
-A forwarder-only change does not replace the server set. After a rejected
-reload, the datastore waits for the next ConfigDB notification.
+A forwarder-only change does not replace the server set. It changes only the
+local services. After a rejected reload, the datastore waits for the next
+ConfigDB notification.
 
-Before listener creation, the daemon waits for Redis and a valid
-`TACPLUS_FORWARDER|global` row. It retries with capped backoff and does not bind
-either listener during this bootstrap phase.
+If the new endpoint cannot bind, the old endpoint continues to serve. The
+listener tries the bind again after 1 s, and doubles the delay up to 30 s.
+
+The daemon does not wait for Redis at startup. The Client API and the health
+service bind at once. While Redis is unavailable, the datastore reports
+`unavailable` and the proxy listener reports `pending`. The configuration
+supervisor retries with capped backoff. While the `TACPLUS_FORWARDER|global`
+row is missing, the server set applies and the proxy listener reports
+`pending`. After the first valid row, the proxy binds to its endpoint. A later
+change to the row moves the proxy.
 
 After listener startup, invalid server candidates leave the previous known-good
 configuration active and mark runtime health stale or degraded. A valid

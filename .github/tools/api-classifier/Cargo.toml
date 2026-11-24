@@ -19,7 +19,7 @@ name = "api-classifier"
 path = "src/main.rs"
 
 [dependencies]
-cargo-semver-checks = "=0.47.0"
+cargo-semver-checks = "=0.49.0"
 public-api = "=0.52.0"
 rustdoc-json = "=0.9.10"
 anyhow = "1"

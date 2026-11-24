@@ -1,68 +1,49 @@
-//! Deferred dedicated-to-shared promotion during single-connection negotiation.
+//! First-reply publication for single-connection negotiation.
 //!
-//! [`SingleConnectPromotion`] is the response callback a dedicated session
-//! carries while it probes for single-connection support. It records the first
-//! reply synchronously, then defers the connection hand-off until the session
-//! completes.
+//! [`FirstReplyPublication`] settles a negotiating [`MultiplexedConnection`] as
+//! soon as its first validated server reply arrives.
 //!
-//! # First-reply latch
+//! - When `TAC_PLUS_SINGLE_CONNECT_FLAG` is set, the connection is published
+//!   immediately into [`SharedConnectionCache`] under the captured generation
+//!   fence and all gated callers wake to multiplex onto it, even while the
+//!   initial session continues a multi-round authentication conversation.
+//! - When `TAC_PLUS_SINGLE_CONNECT_FLAG` is absent, [`NegotiationState`] moves
+//!   to terminal [`SingleConnectionState::NotSupported`] and gated callers wake
+//!   immediately to open dedicated connections while the initial session finishes
+//!   and closes its connection on completion.
+//! - If the connection or initial session ends before a valid first reply
+//!   arrives, dropping [`FirstReplyPublication`] resets [`NegotiationState`] to
+//!   [`SingleConnectionState::Initial`] and wakes the next waiter to probe.
 //!
-//! RFC 8907 makes the `TAC_PLUS_SINGLE_CONNECT_FLAG` meaningful only on the
-//! first reply of a connection. [`observe_server_response`] latches that first
-//! reply with an atomic compare-and-exchange from the pending state, so later
-//! replies on the same dedicated session cannot change the outcome.
-//!
-//! ```text
-//! send request with single-connect flag
-//!     |
-//!     v
-//! [Pending] --- first reply has flag ----> [Supported] (later replies ignored)
-//!     |
-//!     +--------- first reply lacks flag --> [Unsupported] (later replies ignored)
-//! ```
-//!
-//! # Deferred promotion and the cache fence
-//!
-//! The dedicated session owns the reader and writer halves until it completes,
-//! so promotion is deferred to [`promote_if_confirmed`]. A confirmed connection
-//! is handed to [`SharedConnectionCache::publish_if_current`] with the epoch
-//! captured at construction. The cache upgrades and stores it only while the
-//! epoch still matches and the client has not closed, so a retirement or close
-//! that happened during the probe wins over the late promotion.
-//!
-//! [`observe_server_response`]: SingleConnectPromotion::observe_server_response
-//! [`promote_if_confirmed`]: SingleConnectPromotion::promote_if_confirmed
+//! [`SingleConnectionState::Initial`]: crate::single_connect::SingleConnectionState::Initial
+//! [`SingleConnectionState::NotSupported`]: crate::single_connect::SingleConnectionState::NotSupported
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
 
-use tacacsrs_protocol::enumerations::TacacsFlags;
-use tacacsrs_protocol::packet::{Packet, PacketTrait};
-
-use crate::connection::BoxedDedicatedConnection;
-use crate::single_connect::NegotiationState;
+use crate::connection::MultiplexedConnection;
 use crate::single_connect::cache::SharedConnectionCache;
+use crate::single_connect::{NegotiationState, SingleConnectFlag};
 
-const SINGLE_CONNECT_RESPONSE_PENDING: u8 = 0;
-const SINGLE_CONNECT_RESPONSE_UNSUPPORTED: u8 = 1;
-const SINGLE_CONNECT_RESPONSE_SUPPORTED: u8 = 2;
-
-/// Deferred promotion from a dedicated connection to a cached shared connection.
-///
-/// This is the callback carried by a dedicated session during TACACS+
-/// single-connection negotiation. It records the server response synchronously
-/// when a packet arrives. It does not convert the connection at that point. The
-/// dedicated session owns the reader and writer halves until completion.
-pub(crate) struct SingleConnectPromotion {
+/// One-shot capability publication owned by a negotiating [`MultiplexedConnection`].
+pub(crate) struct FirstReplyPublication {
     shared_connection: Arc<SharedConnectionCache>,
     cache_generation: u64,
     state: Arc<NegotiationState>,
     epoch: u64,
-    response: AtomicU8,
 }
 
-impl SingleConnectPromotion {
-    /// Captures the cache epoch so a later promotion can detect a retirement.
+impl std::fmt::Debug for FirstReplyPublication {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FirstReplyPublication")
+            .field("cache_generation", &self.cache_generation)
+            .field("epoch", &self.epoch)
+            .finish_non_exhaustive()
+    }
+}
+
+impl FirstReplyPublication {
+    /// Captures the cache epoch so a later retirement or close blocks publication.
     pub(crate) fn begin(
         shared_connection: Arc<SharedConnectionCache>,
         state: Arc<NegotiationState>,
@@ -73,69 +54,56 @@ impl SingleConnectPromotion {
             shared_connection,
             state,
             epoch,
-            response: AtomicU8::new(SINGLE_CONNECT_RESPONSE_PENDING),
         })
     }
 
-    /// Latches the first reply's single-connect flag and ignores later replies.
-    ///
-    /// The compare-and-exchange only succeeds from the pending state, so the
-    /// first reply alone decides single-connection support.
-    pub(crate) fn observe_server_response(&self, packet: &Packet) {
-        let response = if packet
-            .header()
-            .flags
-            .contains(TacacsFlags::TAC_PLUS_SINGLE_CONNECT_FLAG)
-        {
-            SINGLE_CONNECT_RESPONSE_SUPPORTED
+    /// Settles capability from the first validated reply on `connection`.
+    pub(crate) async fn settle(
+        self,
+        connection: &Arc<MultiplexedConnection>,
+        flag: SingleConnectFlag,
+        counters: Option<&crate::ServerCounters>,
+    ) {
+        let supported = flag == SingleConnectFlag::Set;
+        if let Some(counters) = counters {
+            counters.single_connect(supported);
+        }
+
+        if supported {
+            let candidate = Arc::clone(connection);
+            let mut published = false;
+            self.shared_connection
+                .publish_if_current(self.cache_generation, || {
+                    let mut stored = None;
+                    self.state.settle(self.epoch, true, || {
+                        published = true;
+                        stored = Some(candidate);
+                    });
+                    stored
+                })
+                .await;
+            if !published {
+                connection.disable_new_sessions();
+                self.state.abandon(self.epoch);
+            }
         } else {
-            SINGLE_CONNECT_RESPONSE_UNSUPPORTED
-        };
-
-        let _ = self.response.compare_exchange(
-            SINGLE_CONNECT_RESPONSE_PENDING,
-            response,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
-    }
-
-    /// Promotes the completed connection to the shared cache when confirmed.
-    ///
-    /// The upgrade is deferred to the cache fence so a close or newer epoch that
-    /// occurred during the probe cannot be overwritten. Unsupported and
-    /// never-answered probes shut the dedicated connection down instead.
-    pub(crate) async fn promote_if_confirmed(&self, mut connection: BoxedDedicatedConnection) {
-        match self.response.load(Ordering::Acquire) {
-            SINGLE_CONNECT_RESPONSE_SUPPORTED => {
-                self.shared_connection
-                    .publish_if_current(self.cache_generation, move || {
-                        let mut candidate = None;
-                        self.state.settle(self.epoch, true, || {
-                            candidate = Some(connection.upgrade());
-                        });
-                        candidate
-                    })
-                    .await;
+            let mut settled = false;
+            self.shared_connection
+                .publish_if_current(self.cache_generation, || {
+                    self.state.settle(self.epoch, false, || {
+                        settled = true;
+                    });
+                    None
+                })
+                .await;
+            if !settled {
+                self.state.abandon(self.epoch);
             }
-            SINGLE_CONNECT_RESPONSE_UNSUPPORTED => {
-                self.shared_connection
-                    .publish_if_current(self.cache_generation, || {
-                        self.state.settle(self.epoch, false, || {});
-                        None
-                    })
-                    .await;
-                connection.shutdown().await;
-            }
-            SINGLE_CONNECT_RESPONSE_PENDING => {
-                connection.shutdown().await;
-            }
-            _ => unreachable!("invalid single-connect response state"),
         }
     }
 }
 
-impl Drop for SingleConnectPromotion {
+impl Drop for FirstReplyPublication {
     fn drop(&mut self) {
         self.state.abandon(self.epoch);
     }

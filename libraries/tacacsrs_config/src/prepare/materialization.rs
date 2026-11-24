@@ -339,21 +339,6 @@ fn install_credential(
     let server_name = server.name.clone();
     match (usage, credential) {
         (
-            CentralCredentialUsage::ServerOcspResponse,
-            ResolvedCredential::OcspResponse(material),
-        ) => server
-            .server_authentication
-            .as_mut()
-            .and_then(|auth| auth.require_ocsp.as_mut())
-            .map(|policy| {
-                policy.response = Some(material.response.into_bytes());
-                policy.evidence_reference = None;
-            }),
-        (
-            CentralCredentialUsage::ServerCertificateRevocationLists,
-            ResolvedCredential::CertificateRevocationLists(material),
-        ) => install_revocation_lists(server, material),
-        (
             CentralCredentialUsage::ClientCertificateWithKey,
             ResolvedCredential::CertificateWithKey(material),
         ) => install_certificate_with_key(server, material),
@@ -392,26 +377,6 @@ fn install_credential(
             Some(usage.field_path()),
         )
     })
-}
-
-fn install_revocation_lists(
-    server: &mut TacacsPlusServer,
-    material: tacacsrs_credential_resolution::CertificateRevocationListsMaterial,
-) -> Option<()> {
-    let policy = server
-        .server_authentication
-        .as_mut()?
-        .require_crls
-        .as_mut()?;
-    policy.crl = Some(
-        material
-            .lists
-            .into_iter()
-            .map(PublicBytes::into_bytes)
-            .collect(),
-    );
-    policy.evidence_reference = None;
-    Some(())
 }
 
 fn install_certificate_with_key(
@@ -494,6 +459,7 @@ fn validate_candidates(
         client_credentials: Vec::new(),
         server_credentials: Vec::new(),
         server: servers,
+        certificate_revocation: None,
     };
     validation::validate_config_with_options(&config, validation_options)
         .map_err(|_| MaterializationError::new(MaterializationErrorKind::Validation, None, None))?;

@@ -1,0 +1,37 @@
+[package]
+name = "tacacsrs-kubesonic"
+description = "KubeSONiC configuration and mounted credentials for the TACACS+ agent."
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+dill = { version = "0.17.2", default-features = false }
+futures-util = { version = "0.3", default-features = false }
+libc = "0.2"
+log = "0.4"
+notify = "8.2.0"
+redis = { version = "1.7", default-features = false, features = ["aio", "tokio-comp"] }
+rustls-pki-types = "1.14.1"
+serde_json = "1"
+tacacsrs-composition = { path = "../tacacsrs_composition" }
+tacacsrs-config = { path = "../tacacsrs_config" }
+tacacsrs-credential-resolution = { path = "../tacacsrs_credential_resolution" }
+tacacsrs-lifecycle = { path = "../tacacsrs_lifecycle" }
+tacacsrs-provider = { path = "../tacacsrs_provider" }
+tacacsrs-secrets = { path = "../tacacsrs_secrets" }
+tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
+tokio-stream = "0.1"
+x509-cert = { version = "0.3.1", default-features = false, features = ["std"] }
+zeroize = "1.9.0"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1.52.3", features = ["test-util"] }
+
+[lints]
+workspace = true

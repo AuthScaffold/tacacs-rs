@@ -18,9 +18,10 @@
 //!
 //! # Connection reuse
 //!
-//! Each operation has an adaptive client. It caches a shared TCP/TLS connection
-//! when both peers negotiate single-connection mode. Otherwise, each session
-//! opens a dedicated connection. Prepared endpoint identities control cache
+//! Each endpoint has one adaptive client shared by all operations. It caches
+//! a TCP/TLS connection when both peers negotiate single-connection mode.
+//! Otherwise, each session opens a dedicated connection. Circuits and active
+//! routes remain per operation. Prepared endpoint identities control cache
 //! reuse across published catalogs.
 
 mod admission;
@@ -29,6 +30,7 @@ mod connection;
 pub(crate) mod manager;
 mod network;
 mod proxy_transport;
+mod revocation;
 mod router;
 
 pub(crate) use connection::UpstreamConnection;
@@ -38,5 +40,6 @@ pub(crate) use attempt::{AttemptFailureKind, UpstreamRequestError};
 pub(crate) use admission::{AdmissionError, AdmissionPermit};
 pub(crate) use network::NetworkUpstreamConnector;
 pub(crate) use proxy_transport::ProxyTransportSettings;
+pub use revocation::UpstreamRevocation;
 pub(crate) use router::{OperationRouter, RequestRouting};
 pub use tacacsrs_networking::routed::OperationKind;

@@ -5,28 +5,36 @@ import json
 import os
 import shlex
 import subprocess
+import tomllib
 
 import pytest
 import yaml
 
 
 ROOT = Path(__file__).resolve().parents[3]
-WINDOWS_EXCLUDED_PACKAGES = (
+LINUX_ONLY_BOUNDARY_PACKAGES = frozenset({
     "session-wrapper",
-    "tacacsrs-agent",
-    "tacacsrs-agent-health",
-    "tacacsrs-agent-ipc-emulator",
-    "tacacsrs-agent-ipc-emulatord",
-    "tacacsrs-agentd",
-    "tacacsrs-bash-plugin",
     "tacacsrs-ipc",
+    "tacacsrs-kubesonic",
     "tacacsrs-sonic",
     "tacacsrs-unix-socket",
-)
+})
 
 
 def workflow(name):
     return yaml.load((ROOT / ".github/workflows" / name).read_text(), Loader=yaml.BaseLoader)
+
+
+def windows_excluded_packages() -> tuple[str, ...]:
+    configs = workflow("reusable-pipeline.yml")["jobs"]["validation"]["strategy"]["matrix"]["config"]
+    windows_config = next(config for config in configs if config["os"] == "windows-latest")
+    args = shlex.split(windows_config["package_args"])
+    assert args[0] == "--workspace"
+    assert len(args) > 1 and len(args) % 2 == 1
+    assert all(args[index] == "--exclude" for index in range(1, len(args), 2))
+    excluded = tuple(args[2::2])
+    assert len(excluded) == len(set(excluded))
+    return excluded
 
 
 def test_latest_main_push_cancels_older_release_runs():
@@ -152,14 +160,13 @@ def test_platform_checks_share_one_hydrated_validation_job():
         ("windows-latest", "x86_64-pc-windows-msvc", "tacon"),
     ]
     assert configs[0]["package_args"] == "--workspace"
-    assert shlex.split(configs[1]["package_args"]) == [
-        "--workspace", *(arg for name in WINDOWS_EXCLUDED_PACKAGES for arg in ("--exclude", name)),
-    ]
+    assert windows_excluded_packages()
     steps = validation["steps"]
     uses = [step.get("uses", "") for step in steps]
     hydrate = uses.index("./.github/steps/inject-versions")
     for action in ("check-format", "check-unused-deps", "resolve-cargo-metadata",
-                   "run-clippy", "build-docs", "run-tests", "run-coverage", "run-miri", "run-fuzz-smoke"):
+                   "run-clippy", "build-docs", "run-tests", "run-e2e-tests",
+                   "run-coverage", "run-miri", "run-fuzz-smoke"):
         assert hydrate < uses.index(f"./.github/steps/{action}")
     assert sum(use == "./.github/steps/run-tests" for use in uses) == 1
     for step in steps:
@@ -200,7 +207,7 @@ def test_platform_test_runner_selects_the_workspace_with_only_platform_exclusion
     output = tmp_path / "arguments"
     env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "TEST_ARGUMENTS": str(output)}
     subprocess.run(["bash", "-e", "-c", script], env=env, check=True, capture_output=True)
-    exclusions = WINDOWS_EXCLUDED_PACKAGES if runner == "windows-latest" else ()
+    exclusions = windows_excluded_packages() if runner == "windows-latest" else ()
     target = "x86_64-pc-windows-msvc" if runner == "windows-latest" else "x86_64-unknown-linux-gnu"
     assert output.read_text().splitlines() == [
         "test", "--locked", "--workspace",
@@ -212,14 +219,18 @@ def test_platform_test_runner_selects_the_workspace_with_only_platform_exclusion
 
 def test_platform_selections_cover_expected_workspace_members():
     metadata = subprocess.run(
-        ["cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"],
+        [
+            "cargo", "metadata", "--format-version", "1",
+            "--filter-platform", "x86_64-pc-windows-msvc",
+            "--all-features", "--locked",
+        ],
         cwd=ROOT, check=True, capture_output=True, text=True,
     )
     metadata = json.loads(metadata.stdout)
-    members = {
-        package["name"] for package in metadata["packages"]
-        if package["id"] in metadata["workspace_members"]
-    }
+    workspace_ids = set(metadata["workspace_members"])
+    packages_by_id = {package["id"]: package for package in metadata["packages"]}
+    members = {packages_by_id[pkg_id]["name"] for pkg_id in workspace_ids}
+
     configs = workflow("reusable-pipeline.yml")["jobs"]["validation"]["strategy"]["matrix"]["config"]
     selected = {}
     for config in configs:
@@ -229,17 +240,45 @@ def test_platform_selections_cover_expected_workspace_members():
         excluded = set(args[2::2])
         assert excluded <= members
         selected[config["os"]] = members - excluded
+
     assert selected["ubuntu-latest"] == members
-    assert selected["windows-latest"] == {
-        "tacon",
-        "tacacsrs-config",
-        "tacacsrs-credential-http",
-        "tacacsrs-credential-resolution",
-        "tacacsrs-networking",
-        "tacacsrs-protocol",
-        "tacacsrs-secrets",
-    }
-    assert selected["ubuntu-latest"] - selected["windows-latest"] == set(WINDOWS_EXCLUDED_PACKAGES)
+    windows_selected = selected["windows-latest"]
+    assert "tacon" in windows_selected
+    assert windows_selected.isdisjoint(LINUX_ONLY_BOUNDARY_PACKAGES)
+
+    # Every selected Windows package must keep its Windows workspace dependencies selected.
+    for node in metadata["resolve"]["nodes"]:
+        if node["id"] not in workspace_ids:
+            continue
+        source_name = packages_by_id[node["id"]]["name"]
+        if source_name not in windows_selected:
+            continue
+        for dep in node.get("deps", []):
+            if dep["pkg"] not in workspace_ids:
+                continue
+            target_name = packages_by_id[dep["pkg"]]["name"]
+            assert target_name in windows_selected, (
+                f"Windows package '{source_name}' depends on excluded workspace package '{target_name}'"
+            )
+
+
+def test_validation_actions_fail_closed_and_audit_committed_lockfile():
+    supported = set(workflow("reusable-pipeline.yml")["on"]["workflow_call"]["inputs"])
+    assert "include-outdated" not in supported
+    assert "include-clippy-nursery" not in supported
+    assert not (ROOT / ".github/steps/check-outdated").exists()
+
+    audit_text = (ROOT / ".github/steps/security-audit/action.yml").read_text()
+    assert "generate-lockfile" not in audit_text
+    assert "cargo audit --file Cargo.lock" in audit_text
+
+    unused_text = (ROOT / ".github/steps/check-unused-deps/action.yml").read_text()
+    assert "cargo-machete" in unused_text
+    assert "cargo machete" in unused_text
+
+    for step_dir in ("run-clippy", "run-miri", "proto-compat"):
+        action_text = (ROOT / ".github/steps" / step_dir / "action.yml").read_text()
+        assert "::warning::" not in action_text
 
 
 def test_workflow_callers_use_only_supported_inputs():
@@ -312,17 +351,31 @@ def test_pull_request_validation_targets_main_without_stack_allowlists():
     assert branches == ["main"]
 
 
+def test_testkit_is_marked_internal_test_only_while_revocation_remains_released():
+    testkit = tomllib.loads((ROOT / "libraries/tacacsrs_testkit/Cargo.toml").read_text())
+    assert testkit["package"]["publish"] is False
+    assert testkit["package"]["metadata"]["release"]["internal_test_only"] is True
+
+    revocation = tomllib.loads((ROOT / "libraries/tacacsrs_revocation/Cargo.toml").read_text())
+    assert revocation["package"]["publish"] is False
+    assert not revocation["package"].get("metadata", {}).get("release", {}).get("internal_test_only", False)
+
+
 def test_armhf_helper_builds_and_executes_the_affected_packages():
     helper = (ROOT / ".github/steps/armhf/verify.sh").read_text()
+    assert "find Cargo.toml Cargo.lock .cargo libraries executables tests/e2e lde .github/steps/armhf" in helper
     assert "cargo build --locked --release --bins" in helper
     assert "cargo test --locked" in helper
     assert "--no-run" not in helper
     for package in ("tacacsrs-agentd", "tacacsrs-agent-health", "tacon",
-                    "tacacsrs-networking", "tacacsrs-config", "tacacsrs-agent",
-                    "tacacsrs-sonic", "tacacsrs-ipc", "tacacsrs-agent-ipc-emulator"):
+                    "tacacsrs-networking", "tacacsrs-revocation", "tacacsrs-config", "tacacsrs-agent",
+                    "tacacsrs-lifecycle", "tacacsrs-composition",
+                    "tacacsrs-sonic", "tacacsrs-kubesonic", "tacacsrs-provider",
+                    "tacacsrs-ipc", "tacacsrs-agent-ipc-emulator", "tacacsrs-testkit"):
         assert f"-p {package} " in helper
     for check in ("ELF32", "Machine: +ARM", "hard-float ABI", '"${binary}" --help'):
         assert check in helper
+    assert "python3 -m pytest -p no:cacheprovider -v tests/e2e --bin-dir /evidence" in helper
     dockerfile = (ROOT / ".github/steps/armhf/Dockerfile").read_text()
     assert "CARGO_BUILD_TARGET=armv7-unknown-linux-gnueabihf" in dockerfile
     assert "PROTOC=/usr/bin/protoc" in dockerfile
@@ -331,6 +384,7 @@ def test_armhf_helper_builds_and_executes_the_affected_packages():
     assert "test_protoc.py" in helper
     context = (ROOT / ".dockerignore").read_text()
     for included in ("libraries/*/tests/**", "executables/*/tests/**",
+                     "tests/e2e/**",
                      "lde/containers/config/certificates/**",
                      "libraries/tacacsrs_agent_ipc_emulator/examples/policy.rego",
                      "libraries/tacacsrs_agent_ipc_emulator/examples/policy_data.json"):

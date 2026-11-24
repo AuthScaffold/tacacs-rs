@@ -97,6 +97,14 @@ impl<Connector: EndpointConnector + 'static> RuntimeListenerService
 where
     Connector::Connection: UpstreamConnection,
 {
+    fn name(&self) -> &'static str {
+        "test client API"
+    }
+
+    fn service(&self) -> Option<RuntimeService> {
+        Some(RuntimeService::ClientApi)
+    }
+
     async fn serve(
         self: Box<Self>,
         shutdown: ShutdownReceiver,
@@ -122,7 +130,7 @@ where
         }));
         let bound_health = health.clone();
         let on_bound = move || {
-            let _ = bound_health.set_listener(RuntimeService::ClientApi, ListenerState::Bound);
+            bound_health.set_listener(RuntimeService::ClientApi, ListenerState::Bound);
         };
         let result =
             server::serve_unix(&path, options, handler, receiver, shutdown.flag(), on_bound).await;
@@ -171,6 +179,14 @@ impl BlockingClientApiListener {
 
 #[async_trait]
 impl RuntimeListenerService for BlockingClientApiListener {
+    fn name(&self) -> &'static str {
+        "blocking client API"
+    }
+
+    fn service(&self) -> Option<RuntimeService> {
+        Some(RuntimeService::ClientApi)
+    }
+
     async fn serve(
         self: Box<Self>,
         shutdown: ShutdownReceiver,

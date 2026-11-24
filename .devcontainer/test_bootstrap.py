@@ -168,12 +168,12 @@ class ContainerConfigurationTests(unittest.TestCase):
 
     def test_image_provides_recent_validation_tools(self):
         dockerfile = (self.directory / "Dockerfile").read_text(encoding="utf-8")
-        for toolchain in ("1.88.0", "1.91.0", "nightly-2025-11-23"):
+        for toolchain in ("1.91.0", "nightly-2025-11-23"):
             self.assertIn(f"rustup toolchain install {toolchain} --profile minimal", dockerfile)
         nightly = next(line for line in dockerfile.splitlines() if "install nightly --" in line)
         for component in ("rustfmt", "clippy", "miri", "rust-src"):
             self.assertIn(f"--component {component}", nightly)
-        self.assertIn("rustup default 1.88.0", dockerfile)
+        self.assertIn("rustup default 1.91.0", dockerfile)
         self.assertIn("python3 -m venv /opt/tacacs-python", dockerfile)
         for dependency in ("pyang==2.7.1", "pytest==8.4.2", "PyYAML==6.0.3"):
             self.assertIn(dependency, dockerfile)

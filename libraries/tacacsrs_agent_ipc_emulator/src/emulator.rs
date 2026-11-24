@@ -245,7 +245,7 @@ mod tests {
 
     #[tokio::test]
     async fn completed_startup_policy_compiles_once() {
-        let directory = tempfile::tempdir_in(".").unwrap();
+        let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("policy.rego");
         let data = directory.path().join("data.json");
         std::fs::write(&source, POLICY).unwrap();
@@ -263,7 +263,7 @@ mod tests {
 
     #[tokio::test]
     async fn file_startup_compiles_once() {
-        let directory = tempfile::tempdir_in(".").unwrap();
+        let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("policy.rego");
         std::fs::write(&source, POLICY).unwrap();
         let tcp_count = startup_compilations(IpcEmulator::from_file(&source)).await;
