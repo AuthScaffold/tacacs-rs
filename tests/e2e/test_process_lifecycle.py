@@ -422,7 +422,7 @@ def test_tacon_executes_accounting_through_agentd_ipc(
     tls_ctx.load_cert_chain(certfile=str(server_cert), keyfile=str(server_key))
 
     received_bodies: list[bytes] = []
-    peer_errors: list[BaseException] = []
+    peer_errors: list[Exception] = []
     stop_peer = threading.Event()
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as upstream:
@@ -468,7 +468,7 @@ def test_tacon_executes_accounting_through_agentd_ipc(
                             )
                             tls_conn.sendall(reply_header + plain_reply)
                         stop_peer.wait(timeout=15.0)
-            except BaseException as exc:  # noqa: BLE001 - surface peer failure on the test thread
+            except Exception as exc:
                 peer_errors.append(exc)
 
         peer_thread = threading.Thread(target=_serve_accounting, daemon=True)
