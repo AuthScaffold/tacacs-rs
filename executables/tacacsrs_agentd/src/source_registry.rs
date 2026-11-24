@@ -8,7 +8,14 @@ macro_rules! registered_sources {
             sonic => ("sonic", |command: clap::Command| command
                 .arg(clap::Arg::new("sonic").long("sonic").action(clap::ArgAction::SetTrue)
                     .help("Get TACACS+ and local forwarder configuration from SONiC ConfigDB")
-                    .conflicts_with_all(["local_services", "proxy_shared_secret"]))
+                    .conflicts_with_all([
+                        "inline-upstream",
+                        "local_services",
+                        "proxy_endpoint",
+                        "proxy_shared_secret",
+                        "proxy_credential_source",
+                        "service_mode",
+                    ]))
                 .arg(clap::Arg::new("sonic_redis_url").long("sonic-redis-url")
                     .value_name("URL").requires("sonic")
                     .help("Override the SONiC ConfigDB Redis URL (default: unix:///var/run/redis/redis.sock?db=4)"))

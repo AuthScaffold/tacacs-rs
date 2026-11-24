@@ -62,19 +62,33 @@ fn proxy_credential_source_parser(
 
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Args)]
-#[command(group(ArgGroup::new("ipc-endpoint").args(["listen_endpoint"]))) ]
+#[command(
+    group(ArgGroup::new("ipc-endpoint").args(["listen_endpoint"])),
+    group(
+        ArgGroup::new("inline-upstream")
+            .multiple(true)
+            .args([
+                "shared_secret",
+                "use_tls",
+                "client_certificate",
+                "client_key",
+                "insecure_disable_certificate_verification",
+                "connect_timeout_seconds",
+                "dedicated",
+                "psk_identity",
+                "psk_key",
+                "psk_key_exchange",
+                "psk_key_exchange_groups",
+            ])
+    )
+)]
 pub(crate) struct CommonArgs {
     /// Host process-manager integration mode.
     #[arg(long, value_enum, default_value_t)]
     pub(crate) host_integration: HostIntegrationMode,
 
     /// Path to a YANG JSON configuration file (ietf-system-tacacs-plus).
-    #[arg(long, value_name = "FILE", conflicts_with_all = [
-        "server_addresses", "shared_secret", "use_tls",
-        "client_certificate", "client_key",
-        "insecure_disable_certificate_verification",
-        "dedicated",
-    ])]
+    #[arg(long, value_name = "FILE", conflicts_with = "inline-upstream")]
     pub(crate) config: Option<PathBuf>,
 
     /// Optional live YANG JSON file containing a tacacsrs:runtime-policy resource.
@@ -92,7 +106,12 @@ pub(crate) struct CommonArgs {
 
     /// Startup YANG JSON file containing a tacacsrs:local-services resource.
     #[arg(long, value_name = "FILE", conflicts_with_all = [
-        "listen_endpoint", "proxy_endpoint", "service_mode", "socket_mode", "proxy_credential_source",
+        "listen_endpoint",
+        "proxy_endpoint",
+        "proxy_shared_secret",
+        "service_mode",
+        "socket_mode",
+        "proxy_credential_source",
     ])]
     pub(crate) local_services: Option<PathBuf>,
 
@@ -126,30 +145,30 @@ pub(crate) struct CommonArgs {
     pub(crate) socket_mode: Option<String>,
 
     /// Shared secret for TACACS+ message obfuscation.
-    #[arg(short = 'k', long,
+    #[arg(short = 'k', long, requires = "server_addresses",
         value_parser = clap::builder::StringValueParser::new().map(tacacsrs_secrets::SecretString::new))]
     pub(crate) shared_secret: Option<tacacsrs_secrets::SecretString>,
 
     /// Use TLS for upstream TACACS+ server connections.
-    #[arg(long)]
+    #[arg(long, requires = "server_addresses", conflicts_with = "shared_secret")]
     pub(crate) use_tls: bool,
 
     /// Path to a PEM client certificate chain or one DER certificate.
     /// Put the leaf first, followed by intermediates in issuer order. Omit the root.
-    #[arg(long, value_name = "FILE", requires = "client_key")]
+    #[arg(long, value_name = "FILE", requires_all = ["server_addresses", "use_tls", "client_key"])]
     pub(crate) client_certificate: Option<String>,
 
     /// Path to a PEM- or DER-encoded client private key file for TLS authentication.
-    #[arg(long, value_name = "FILE", requires = "client_certificate")]
+    #[arg(long, value_name = "FILE", requires_all = ["server_addresses", "use_tls", "client_certificate"])]
     pub(crate) client_key: Option<String>,
 
     /// CAUTION: Disable upstream TLS certificate verification.
     /// This option permits server impersonation.
-    #[arg(long, requires = "use_tls")]
+    #[arg(long, requires_all = ["server_addresses", "use_tls"])]
     pub(crate) insecure_disable_certificate_verification: bool,
 
     /// Timeout, in seconds, for establishing a new upstream TACACS+ connection.
-    #[arg(long, default_value_t = 5)]
+    #[arg(long, default_value_t = 5, requires = "server_addresses")]
     pub(crate) connect_timeout_seconds: u64,
 
     /// Use a dedicated upstream connection per request instead of TACACS+ single-connection mode.
@@ -167,15 +186,15 @@ pub(crate) struct CommonArgs {
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub(crate) verbose: u8,
 
-    #[arg(long, value_name = "IDENTITY", requires_all = ["use_tls", "psk_key"], conflicts_with_all = ["client_certificate", "client_key"])]
+    #[arg(long, value_name = "IDENTITY", requires_all = ["server_addresses", "use_tls", "psk_key"], conflicts_with_all = ["client_certificate", "client_key"])]
     pub(crate) psk_identity: Option<String>,
 
-    #[arg(long, value_name = "KEY", requires_all = ["use_tls", "psk_identity"], conflicts_with_all = ["client_certificate", "client_key"],
+    #[arg(long, value_name = "KEY", requires_all = ["server_addresses", "use_tls", "psk_identity"], conflicts_with_all = ["client_certificate", "client_key"],
         value_parser = clap::builder::StringValueParser::new().map(tacacsrs_secrets::SecretString::new))]
     pub(crate) psk_key: Option<tacacsrs_secrets::SecretString>,
 
     /// TLS 1.3 PSK key-exchange mode.
-    #[arg(long, value_enum, requires_all = ["use_tls", "psk_identity", "psk_key"], conflicts_with_all = ["client_certificate", "client_key"])]
+    #[arg(long, value_enum, requires_all = ["server_addresses", "use_tls", "psk_identity", "psk_key"], conflicts_with_all = ["client_certificate", "client_key"])]
     pub(crate) psk_key_exchange: Option<PskKeyExchange>,
 
     /// Comma-separated TLS 1.3 PSK-DHE groups in preferred order.
@@ -185,7 +204,7 @@ pub(crate) struct CommonArgs {
         value_name = "GROUP[,GROUP...]",
         value_parser = psk_dhe_ke_supported_group_parser(),
         help = "Comma-separated TLS 1.3 PSK-DHE groups in preferred order",
-        requires_all = ["use_tls", "psk_identity", "psk_key"],
+        requires_all = ["server_addresses", "use_tls", "psk_identity", "psk_key"],
         conflicts_with_all = ["client_certificate", "client_key"]
     )]
     pub(crate) psk_key_exchange_groups: Vec<PskDheKeSupportedGroup>,

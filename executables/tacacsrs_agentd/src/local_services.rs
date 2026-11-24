@@ -207,14 +207,6 @@ mod tests {
         assert!(source.tacacs_proxy_enabled);
         assert_eq!(source.tacacs_proxy_endpoint.as_deref(), Some("127.0.0.1:49"));
         assert_eq!(source.proxy_credential_source, ProxyCredentialSource::LocalProxyRow);
-        let plain = Cli::parse_from([
-            "agentd",
-            "--sonic",
-            "--proxy-credential-source",
-            "unobfuscated",
-        ]);
-        let source = sonic(&plain, forwarder).unwrap();
-        assert_eq!(source.proxy_credential_source, ProxyCredentialSource::Unobfuscated);
     }
 
     #[test]
@@ -267,10 +259,11 @@ mod tests {
         for flags in [
             vec!["--proxy-endpoint", "127.0.0.2:49"],
             vec!["--service-mode", "client-api"],
-            vec!["--socket-mode", "1000"],
+            vec!["--proxy-credential-source", "unobfuscated"],
         ] {
-            let cli = Cli::parse_from(["agentd", "--sonic"].into_iter().chain(flags));
-            assert!(sonic(&cli, forwarder).is_err());
+            assert!(Cli::try_parse_from(["agentd", "--sonic"].into_iter().chain(flags)).is_err());
         }
+        let invalid_mode = Cli::parse_from(["agentd", "--sonic", "--socket-mode", "1000"]);
+        assert!(sonic(&invalid_mode, forwarder).is_err());
     }
 }

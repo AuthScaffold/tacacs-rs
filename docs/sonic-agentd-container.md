@@ -48,7 +48,6 @@ docker run --rm --network host \
     -p 127.0.0.1:49:49 \
     tacacsrs/tacacsrs-agentd:dev \
     --sonic \
-    --service-mode both \
     --host-integration none \
     -vv
 ```
@@ -60,8 +59,7 @@ The flags mean:
 | `--network host` | Share the SONiC host network namespace. Outbound TACACS+ connections use the host route table instead of Docker bridge NAT. |
 | `-v /var/run/redis/redis.sock:/var/run/redis/redis.sock` | Let the agent read SONiC CONFIG_DB through the Redis Unix domain socket. |
 | `-p 127.0.0.1:49:49` | Harmless with host networking, but ignored by Docker because there is no separate container network namespace to publish from. |
-| `--sonic` | Load TACACS+ server configuration from SONiC CONFIG_DB, database `4`. |
-| `--service-mode both` | Run both the local client API and the raw TACACS+ proxy service. |
+| `--sonic` | Load TACACS+ server and local forwarder configuration from SONiC CONFIG_DB, database `4`. |
 | `--host-integration none` | Disable systemd notification inside the container. |
 | `TACPLUS_FORWARDER|global` | Supplies the loopback proxy endpoint. The proxy binds after the daemon reads this row. |
 | `-v /run/tacacs:/run/tacacs` | Expose the Client API UDS and standard gRPC health service to host consumers and exec probes. |
@@ -76,7 +74,6 @@ docker run --rm --network host \
     -v /run/tacacs:/run/tacacs \
     tacacsrs/tacacsrs-agentd:dev \
     --sonic \
-    --service-mode both \
     --host-integration none \
     -vv
 ```

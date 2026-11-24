@@ -225,8 +225,6 @@ def test_host_signals_cancel_blocked_bootstrap_without_binding(
                 "--sonic",
                 "--sonic-redis-url",
                 f"redis://127.0.0.1:{redis_port}",
-                "--service-mode",
-                "both",
                 "--host-integration",
                 "none",
                 "--listen-endpoint",

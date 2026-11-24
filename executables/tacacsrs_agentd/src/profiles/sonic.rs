@@ -29,23 +29,53 @@ pub(crate) fn parse(cli: Cli) -> anyhow::Result<SelectedProfile> {
 mod tests {
     use clap::Parser;
 
-    use super::parse;
     use crate::cli::Cli;
 
     #[test]
-    fn service_mode_conflict_fails_before_configdb_access() {
-        let cli = Cli::parse_from([
+    fn sonic_rejects_inline_upstream_and_forwarder_cli_flags_at_parse_time() {
+        for flags in [
+            vec!["--use-tls"],
+            vec!["--shared-secret", "secret"],
+            vec![
+                "--use-tls",
+                "--client-certificate",
+                "client.pem",
+                "--client-key",
+                "client.key",
+            ],
+            vec![
+                "--use-tls",
+                "--psk-identity",
+                "client",
+                "--psk-key",
+                "secret",
+            ],
+            vec!["--connect-timeout-seconds", "10"],
+            vec!["--dedicated"],
+            vec!["--service-mode", "client-api"],
+            vec!["--service-mode", "both"],
+            vec!["--proxy-endpoint", "127.0.0.1:49"],
+            vec!["--proxy-credential-source", "unobfuscated"],
+            vec!["--local-services", "listeners.json"],
+        ] {
+            assert!(
+                Cli::try_parse_from(["agentd", "--sonic"].into_iter().chain(flags.clone()))
+                    .is_err(),
+                "SONiC profile accepted unsupported CLI flags: {flags:?}",
+            );
+        }
+        assert!(Cli::try_parse_from([
             "agentd",
             "--sonic",
             "--sonic-redis-url",
             "redis://127.0.0.1:1",
-            "--service-mode",
-            "client-api",
-        ]);
-        let error = parse(cli).err().unwrap();
-        assert!(
-            format!("{error:#}").contains("requires both local services"),
-            "{error:#}"
-        );
+            "--sonic-redis-db",
+            "4",
+            "--listen-endpoint",
+            "/tmp/tacacs.sock",
+            "--socket-mode",
+            "660",
+        ])
+        .is_ok());
     }
 }

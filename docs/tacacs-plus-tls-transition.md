@@ -90,7 +90,7 @@ sudo tacacsrs-agentd \
     --server-addr tacacs2.example.com:449 \
     --service-mode tacacs-proxy \
     --proxy-endpoint 127.0.0.1:9049 \
-    --shared-secret "$TACACS_SHARED_SECRET" \
+    --proxy-shared-secret "$TACACS_SHARED_SECRET" \
     --use-tls \
     -vv
 ```
@@ -106,7 +106,7 @@ sudo tacacsrs-agentd \
     --server-addr tacacs2.example.com:449 \
     --service-mode tacacs-proxy \
     --proxy-endpoint 127.0.0.1:9049 \
-    --shared-secret "$TACACS_SHARED_SECRET" \
+    --proxy-shared-secret "$TACACS_SHARED_SECRET" \
     --use-tls \
     --client-certificate /etc/tacacs/client.crt.pem \
     --client-key /etc/tacacs/client.key.pem \
@@ -130,7 +130,7 @@ sudo tacacsrs-agentd \
     --server-addr tacacs2.example.com:449 \
     --service-mode tacacs-proxy \
     --proxy-endpoint 127.0.0.1:9049 \
-    --shared-secret "$TACACS_SHARED_SECRET" \
+    --proxy-shared-secret "$TACACS_SHARED_SECRET" \
     --use-tls \
     --psk-identity host01@example.com \
     --psk-key "$TACACS_TLS_PSK" \
@@ -152,7 +152,7 @@ sudo tacacsrs-agentd \
     --server-addr legacy-tacacs.example.com:449 \
     --service-mode tacacs-proxy \
     --proxy-endpoint 127.0.0.1:9049 \
-    --shared-secret "$TACACS_SHARED_SECRET" \
+    --proxy-shared-secret "$TACACS_SHARED_SECRET" \
     --use-tls \
     --psk-identity host01@example.com \
     --psk-key "$TACACS_TLS_PSK" \

@@ -179,10 +179,6 @@ impl Daemon {
             .args(["--proxy-endpoint", "127.0.0.1:0"])
             .args(["--proxy-shared-secret", DOWNSTREAM_KEY])
             .args(["--host-integration", "none"])
-            .args([
-                "--connect-timeout-seconds",
-                &options.connect_timeout_seconds.to_string(),
-            ])
             .arg("--listen-endpoint")
             .arg(directory.0.join("agent.sock"))
             .arg("--runtime-policy")
@@ -200,7 +196,11 @@ impl Daemon {
         } else {
             command
                 .args(["--server-addr", &upstream.to_string()])
-                .args(["--shared-secret", upstream::upstream_key()]);
+                .args(["--shared-secret", upstream::upstream_key()])
+                .args([
+                    "--connect-timeout-seconds",
+                    &options.connect_timeout_seconds.to_string(),
+                ]);
             for backup in &options.backup_servers {
                 command.args(["--server-addr", &backup.to_string()]);
             }
