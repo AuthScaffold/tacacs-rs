@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from pathlib import Path
 import signal
 import socket
+import ssl
 import stat
 import struct
 import subprocess
@@ -383,29 +383,44 @@ def _recv_exact(conn: socket.socket, size: int) -> bytes:
     return bytes(buf)
 
 
-def _tacacs_xor_body(
-    session_id_bytes: bytes,
-    key: bytes,
-    version: int,
-    seq_no: int,
-    body: bytes,
-) -> bytes:
-    prefix = session_id_bytes + key + bytes([version, seq_no])
-    pad = bytearray()
-    digest = b""
-    while len(pad) < len(body):
-        digest = hashlib.md5(prefix + digest).digest()
-        pad.extend(digest)
-    return bytes(byte ^ mask for byte, mask in zip(body, pad))
-
-
 def test_tacon_executes_accounting_through_agentd_ipc(
+    tmp_path: Path,
     socket_dir: Path,
     binaries: Path,
     process_manager: ProcessManager,
 ) -> None:
     endpoint = socket_dir / "agent.sock"
-    secret = b"test-secret"
+    server_cert = tmp_path / "upstream.pem"
+    server_key = tmp_path / "upstream.key"
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "ec",
+            "-pkeyopt",
+            "ec_paramgen_curve:prime256v1",
+            "-nodes",
+            "-days",
+            "1",
+            "-subj",
+            "/CN=localhost",
+            "-addext",
+            "subjectAltName=IP:127.0.0.1",
+            "-keyout",
+            str(server_key),
+            "-out",
+            str(server_cert),
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    tls_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls_ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+    tls_ctx.load_cert_chain(certfile=str(server_cert), keyfile=str(server_key))
+
     received_bodies: list[bytes] = []
     peer_errors: list[BaseException] = []
     stop_peer = threading.Event()
@@ -416,7 +431,7 @@ def test_tacon_executes_accounting_through_agentd_ipc(
         upstream.settimeout(0.2)
         upstream_port = upstream.getsockname()[1]
 
-        def _serve_one_accounting() -> None:
+        def _serve_accounting() -> None:
             try:
                 conn: socket.socket | None = None
                 while not stop_peer.is_set():
@@ -429,36 +444,34 @@ def test_tacon_executes_accounting_through_agentd_ipc(
                     return
                 with conn:
                     conn.settimeout(30.0)
-                    header = _recv_exact(conn, 12)
-                    version, tacacs_type, seq_no, flags = header[:4]
-                    session_id_bytes = header[4:8]
-                    body_len = int.from_bytes(header[8:12], "big")
-                    assert tacacs_type == 3, f"Expected TAC_PLUS_ACCT (3), got {tacacs_type}"
-                    assert seq_no == 1, f"Expected seq_no 1, got {seq_no}"
-                    assert (flags & 0x01) == 0, "Expected obfuscated TACACS+ body"
-                    raw_body = _recv_exact(conn, body_len)
-                    plain_request = _tacacs_xor_body(
-                        session_id_bytes, secret, version, seq_no, raw_body
-                    )
-                    received_bodies.append(plain_request)
+                    with tls_ctx.wrap_socket(conn, server_side=True) as tls_conn:
+                        for idx in range(2):
+                            header = _recv_exact(tls_conn, 12)
+                            version, tacacs_type, seq_no, flags = header[:4]
+                            correlation_bytes = header[4:8]
+                            body_len = int.from_bytes(header[8:12], "big")
+                            assert tacacs_type == 3, f"Expected TAC_PLUS_ACCT (3), got {tacacs_type}"
+                            assert seq_no == 1, f"Expected seq_no 1, got {seq_no}"
+                            assert (flags & 0x01) == 0x01, "Expected RFC 9887 unobfuscated packet over TLS"
+                            if idx == 0:
+                                assert (flags & 0x04) == 0x04, "Expected single-connect flag on first packet"
+                            plain_request = _recv_exact(tls_conn, body_len)
+                            received_bodies.append(plain_request)
 
-                    server_msg = b"accepted"
-                    plain_reply = struct.pack("!HHB", len(server_msg), 0, 1) + server_msg
-                    reply_flags = flags & 0x04
-                    reply_header = (
-                        bytes([version, tacacs_type, 2, reply_flags])
-                        + session_id_bytes
-                        + len(plain_reply).to_bytes(4, "big")
-                    )
-                    obfuscated_reply = _tacacs_xor_body(
-                        session_id_bytes, secret, version, 2, plain_reply
-                    )
-                    conn.sendall(reply_header + obfuscated_reply)
-                    stop_peer.wait(timeout=15.0)
+                            server_msg = b"accepted"
+                            plain_reply = struct.pack("!HHB", len(server_msg), 0, 1) + server_msg
+                            reply_flags = 0x01 | (0x04 if idx == 0 else 0x00)
+                            reply_header = (
+                                bytes([version, tacacs_type, 2, reply_flags])
+                                + correlation_bytes
+                                + len(plain_reply).to_bytes(4, "big")
+                            )
+                            tls_conn.sendall(reply_header + plain_reply)
+                        stop_peer.wait(timeout=15.0)
             except BaseException as exc:  # noqa: BLE001 - surface peer failure on the test thread
                 peer_errors.append(exc)
 
-        peer_thread = threading.Thread(target=_serve_one_accounting, daemon=True)
+        peer_thread = threading.Thread(target=_serve_accounting, daemon=True)
         peer_thread.start()
         try:
             agent = process_manager.spawn(
@@ -467,8 +480,8 @@ def test_tacon_executes_accounting_through_agentd_ipc(
                     str(binaries / "tacacsrs-agentd"),
                     "--server-addr",
                     f"127.0.0.1:{upstream_port}",
-                    "--shared-secret",
-                    secret.decode("ascii"),
+                    "--use-tls",
+                    "--insecure-disable-certificate-verification",
                     "--host-integration",
                     "none",
                     "--listen-endpoint",
@@ -497,36 +510,38 @@ def test_tacon_executes_accounting_through_agentd_ipc(
                 "agent IPC readiness",
             )
 
-            tacon_res = subprocess.run(
-                [
-                    str(binaries / "tacon"),
-                    "--service-endpoint",
-                    str(endpoint),
-                    "accounting",
-                    "start",
-                    "-u",
-                    "alice",
-                    "-p",
-                    "tty0",
-                    "-r",
-                    "192.0.2.10",
-                ],
-                text=True,
-                capture_output=True,
-                check=False,
-                timeout=30.0,
-            )
-            assert tacon_res.returncode == 0, (
-                f"tacon failed ({tacon_res.returncode}):\n"
-                f"stdout:\n{tacon_res.stdout}\nstderr:\n{tacon_res.stderr}"
-            )
+            for user in ("alice", "bob"):
+                tacon_res = subprocess.run(
+                    [
+                        str(binaries / "tacon"),
+                        "--service-endpoint",
+                        str(endpoint),
+                        "accounting",
+                        "start",
+                        "-u",
+                        user,
+                        "-p",
+                        "tty0",
+                        "-r",
+                        "192.0.2.10",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    timeout=30.0,
+                )
+                assert tacon_res.returncode == 0, (
+                    f"tacon failed ({tacon_res.returncode}):\n"
+                    f"stdout:\n{tacon_res.stdout}\nstderr:\n{tacon_res.stderr}"
+                )
         finally:
             stop_peer.set()
             peer_thread.join(timeout=5.0)
 
     assert not peer_errors, f"TACACS+ upstream peer failed: {peer_errors[0]!r}"
-    assert len(received_bodies) == 1
+    assert len(received_bodies) == 2
     assert b"alice" in received_bodies[0]
+    assert b"bob" in received_bodies[1]
     assert b"tty0" in received_bodies[0]
     assert b"192.0.2.10" in received_bodies[0]
     assert b"cmd=start" in received_bodies[0]
