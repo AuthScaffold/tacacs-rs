@@ -47,12 +47,14 @@ pub(super) trait ProxyConversationProvider: Send + Sync + 'static {
         request: &Self::Request,
         reservation: Self::Reservation,
     ) -> Result<Option<AdmissionPermit>, AdmissionError>;
-    fn validate_body_length(
+    async fn admit_continuation(
         &self,
         request: &Self::Request,
         body_length: usize,
-    ) -> Result<(), AdmissionError>;
+    ) -> Result<Option<AdmissionPermit>, AdmissionError>;
     fn failover_plan(&self, request: &Self::Request) -> FailoverPlan;
+    fn max_packet_body_length(&self) -> std::num::NonZeroU32;
+    fn max_sessions_per_connection(&self) -> usize;
 }
 
 pub(super) struct UpstreamConversationProvider<
@@ -134,16 +136,24 @@ where
         request.admit_reserved(reservation).await.map(Some)
     }
 
-    fn validate_body_length(
+    async fn admit_continuation(
         &self,
         request: &Self::Request,
         body_length: usize,
-    ) -> Result<(), AdmissionError> {
-        request.validate_body_length(body_length)
+    ) -> Result<Option<AdmissionPermit>, AdmissionError> {
+        request.admit(body_length).await.map(Some)
     }
 
     fn failover_plan(&self, request: &Self::Request) -> FailoverPlan {
         request.failover_plan()
+    }
+
+    fn max_packet_body_length(&self) -> std::num::NonZeroU32 {
+        self.router.max_packet_body_length()
+    }
+
+    fn max_sessions_per_connection(&self) -> usize {
+        self.router.max_proxy_sessions_per_connection()
     }
 }
 

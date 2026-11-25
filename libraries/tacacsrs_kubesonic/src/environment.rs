@@ -189,6 +189,9 @@ const POLICY_NUMBERS: &[&str] = &[
     "credential-stale-timeout-seconds",
     "credential-refresh-interval-seconds",
     "failover-recovery-interval-seconds",
+    "max-upstream-packets-per-second",
+    "max-packet-body-length",
+    "max-proxy-sessions-per-connection",
 ];
 const POLICY_ENUMS: &[&str] = &[
     "client-api-failover-strategy",
@@ -199,6 +202,7 @@ const OPERATION_LIMITS: &[&str] = &[
     "request-timeout-seconds",
     "max-body-length",
     "max-concurrent-requests",
+    "max-packets-per-second",
 ];
 const CANDIDATE_LIMITS: &[&str] = &[
     "timeout-seconds",
@@ -527,7 +531,12 @@ mod tests {
     fn overrides_match_canonical_policy() {
         let input = parse(&[
             ("POLICY_SHUTDOWN_TIMEOUT_SECONDS", "20"),
+            ("POLICY_MAX_UPSTREAM_PACKETS_PER_SECOND", "240"),
+            ("POLICY_MAX_PACKET_BODY_LENGTH", "131072"),
+            ("POLICY_MAX_PROXY_SESSIONS_PER_CONNECTION", "96"),
             ("POLICY_AUTHENTICATION_MAX_CONCURRENT_REQUESTS", "7"),
+            ("POLICY_AUTHENTICATION_MAX_PACKETS_PER_SECOND", "16"),
+            ("POLICY_AUTHORIZATION_MAX_BODY_LENGTH", "131072"),
             ("POLICY_TACACS_PROXY_FAILOVER_STRATEGY", "ordered-safe-retry"),
             ("POLICY_CONNECT_PREFLIGHT", "accounting-watchdog"),
             ("SERVICES_UNIX_SOCKET_MODE", "0600"),
@@ -536,7 +545,7 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(input.process.upstream_watchdog_interval, Some(Duration::from_secs(30)));
-        let expected = parse_runtime_policy(br#"{"tacacsrs:runtime-policy":{"shutdown-timeout-seconds":20,"authentication":{"max-concurrent-requests":7},"tacacs-proxy-failover-strategy":"ordered-safe-retry","connect-preflight":"accounting-watchdog"}}"#).unwrap();
+        let expected = parse_runtime_policy(br#"{"tacacsrs:runtime-policy":{"shutdown-timeout-seconds":20,"max-upstream-packets-per-second":240,"max-packet-body-length":131072,"max-proxy-sessions-per-connection":96,"authentication":{"max-concurrent-requests":7,"max-packets-per-second":16},"authorization":{"max-body-length":131072},"tacacs-proxy-failover-strategy":"ordered-safe-retry","connect-preflight":"accounting-watchdog"}}"#).unwrap();
         assert_eq!(input.runtime_policy, expected);
         assert_eq!(input.local_services.unix_socket_mode, 0o600);
         assert_eq!(input.source.retry_initial, Duration::from_millis(125));

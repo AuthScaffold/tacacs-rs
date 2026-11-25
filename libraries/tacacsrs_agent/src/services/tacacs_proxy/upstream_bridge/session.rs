@@ -217,13 +217,14 @@ async fn run_captured_proxy_session<Provider: ProxyConversationProvider>(
     channel.pending = Some(PendingRequest::new(&first_request));
     let operation = OperationKind::try_from(first_request.packet.header().tacacs_type)
         .expect("each TACACS+ packet type maps to an operation");
-    let _admission_permit = match provider.admit(&routing, reservation).await {
+    let admission_permit = match provider.admit(&routing, reservation).await {
         Ok(permit) => permit,
         Err(error) => {
             log::warn!(
                 "Rejected a local proxy {} request before upstream routing: {error}",
                 operation.name()
             );
+            channel.pending = None;
             let reply = local_error_reply(first_request.packet.header(), &error.to_string())
                 .map_err(ProxyConnectionError::Downstream)?;
             send_proxy_reply(
@@ -300,17 +301,21 @@ async fn run_captured_proxy_session<Provider: ProxyConversationProvider>(
     match action {
         ReplyAction::Complete => {
             conversation.complete().await;
+            drop(admission_permit);
             Ok(())
         }
         ReplyAction::Unsupported(status) => {
             conversation.note_server_failure().await;
             conversation.complete().await;
+            drop(admission_permit);
             log::warn!(
                 "Closing the TACACS+ proxy session because reply status {status} is not supported"
             );
             Ok(())
         }
         ReplyAction::Continue => {
+            // Release upstream admission while waiting on downstream client input.
+            drop(admission_permit);
             let result = run_pinned_proxy_session(
                 downstream_session_id,
                 &routing,
@@ -348,22 +353,31 @@ where
             reply_obfuscation,
             advertise_single_connect,
         } = request;
-        if let Err(error) = provider.validate_body_length(routing, request_packet.body().len()) {
-            channel.pending = None;
-            let reply = local_error_reply(request_packet.header(), &error.to_string())
-                .map_err(ProxyConnectionError::Downstream)?;
-            send_proxy_reply(
-                &channel.replies,
-                reply_obfuscation,
-                advertise_single_connect,
-                reply,
-                downstream_session_id,
-                false,
-                provider.deadline(routing),
-            )
-            .await?;
-            return Ok(());
-        }
+        let continuation_permit = match provider
+            .admit_continuation(routing, request_packet.body().len())
+            .await
+        {
+            Ok(permit) => permit,
+            Err(error) => {
+                log::warn!(
+                    "Rejected a continuing proxy request before upstream transmission: {error}"
+                );
+                channel.pending = None;
+                let reply = local_error_reply(request_packet.header(), &error.to_string())
+                    .map_err(ProxyConnectionError::Downstream)?;
+                send_proxy_reply(
+                    &channel.replies,
+                    reply_obfuscation,
+                    advertise_single_connect,
+                    reply,
+                    downstream_session_id,
+                    false,
+                    provider.deadline(routing),
+                )
+                .await?;
+                return Ok(());
+            }
+        };
         let request_header = request_packet.header().clone();
         let upstream_packet = rewrite_session_id(request_packet, upstream_session_id);
         let upstream_reply = match conversation.round_trip(upstream_packet).await {
@@ -405,6 +419,7 @@ where
             provider.deadline(routing),
         )
         .await?;
+        drop(continuation_permit);
 
         match action {
             ReplyAction::Continue => {}

@@ -420,6 +420,18 @@ impl<Connector: EndpointConnector> UpstreamManager<Connector> {
         ProxyTransportSettings::new(read_timeout, runtime.proxy_downstream_obfuscation.clone())
     }
 
+    pub(crate) fn max_packet_body_length(&self) -> std::num::NonZeroU32 {
+        self.current_runtime()
+            .runtime_policy
+            .max_packet_body_length()
+    }
+
+    pub(crate) fn max_proxy_sessions_per_connection(&self) -> usize {
+        self.current_runtime()
+            .runtime_policy
+            .max_proxy_sessions_per_connection()
+    }
+
     /// Atomically replaces the runtime policy for new requests.
     #[cfg(test)]
     pub(crate) fn reload_runtime_policy(&self, runtime_policy: RuntimePolicy) -> bool {

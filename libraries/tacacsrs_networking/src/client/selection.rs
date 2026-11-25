@@ -316,6 +316,7 @@ impl TacacsClient {
         let counters = transport.counters();
         let connection = Arc::new(MultiplexedConnection::new_negotiating(
             self.endpoint.obfuscation_key.clone(),
+            self.endpoint.packet_body_limit(),
             counters,
             publication,
             Arc::downgrade(&self.shared_connection),
@@ -423,7 +424,11 @@ impl TacacsClient {
             .obfuscation_key
             .as_ref()
             .map(tacacsrs_secrets::SecretBytes::expose_secret);
-        DedicatedSession::new(transport, obfuscation_key)
+        DedicatedSession::new_with_limit(
+            transport,
+            obfuscation_key,
+            self.endpoint.packet_body_limit(),
+        )
     }
 }
 

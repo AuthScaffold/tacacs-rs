@@ -82,6 +82,7 @@ impl MultiplexedConnection {
         Self::with_manager(
             Arc::new(SessionManager::new()),
             obfuscation_key.map(|key| SecretBytes::new(key.to_vec())),
+            crate::PacketBodyLimit::default(),
             None,
             false,
             None,
@@ -92,6 +93,7 @@ impl MultiplexedConnection {
     #[must_use]
     pub(crate) fn new_negotiating(
         obfuscation_key: Option<SecretBytes>,
+        max_body_length: crate::PacketBodyLimit,
         counters: Option<crate::ServerCounters>,
         publication: crate::single_connect::FirstReplyPublication,
         shared_connection: Weak<crate::single_connect::SharedConnectionCache>,
@@ -100,6 +102,7 @@ impl MultiplexedConnection {
         Self::with_manager(
             Arc::new(SessionManager::with_publication(publication)),
             obfuscation_key,
+            max_body_length,
             counters,
             true,
             Some((shared_connection, negotiation_state)),
@@ -116,6 +119,7 @@ impl MultiplexedConnection {
         Self::with_manager(
             Arc::new(SessionManager::with_state(SingleConnectionState::Supported)),
             obfuscation_key,
+            crate::PacketBodyLimit::default(),
             counters,
             false,
             None,
@@ -125,6 +129,7 @@ impl MultiplexedConnection {
     fn with_manager(
         session_manager: Arc<SessionManager>,
         obfuscation_key: Option<SecretBytes>,
+        max_body_length: crate::PacketBodyLimit,
         counters: Option<crate::ServerCounters>,
         negotiate_single_connect: bool,
         cache_eviction: Option<(
@@ -136,6 +141,7 @@ impl MultiplexedConnection {
             runtime: Arc::new(ConnectionRuntime {
                 session_manager: Arc::clone(&session_manager),
                 packet_reader: PacketReader::new(obfuscation_key.clone())
+                    .with_max_body_length(max_body_length)
                     .with_counters(counters.clone()),
                 packet_writer: PacketWriter::new(obfuscation_key).with_counters(counters),
                 negotiate_single_connect,

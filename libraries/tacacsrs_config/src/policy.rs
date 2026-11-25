@@ -7,7 +7,6 @@ use std::collections::BTreeSet;
 
 use anyhow::{Context, ensure};
 use serde::Deserialize;
-use tacacsrs_protocol::constants::TACACS_MAX_BODY_LENGTH;
 
 use crate::tacacsrs::RuntimePolicy;
 
@@ -76,36 +75,61 @@ pub fn validate_runtime_policy(policy: &RuntimePolicy) -> anyhow::Result<()> {
         policy.failover_recovery_interval_seconds > 0,
         "runtime-policy/failover-recovery-interval-seconds must be greater than zero"
     );
+    ensure!(
+        policy.max_upstream_packets_per_second > 0,
+        "runtime-policy/max-upstream-packets-per-second must be greater than zero"
+    );
+    ensure!(
+        policy.max_packet_body_length > 0,
+        "runtime-policy/max-packet-body-length must be greater than zero"
+    );
+    ensure!(
+        isize::try_from(policy.max_packet_body_length).is_ok(),
+        "runtime-policy/max-packet-body-length exceeds the platform allocation limit"
+    );
+    ensure!(
+        policy.max_proxy_sessions_per_connection > 0,
+        "runtime-policy/max-proxy-sessions-per-connection must be greater than zero"
+    );
     let authentication = policy.authentication.clone().unwrap_or_default();
     let authorization = policy.authorization.clone().unwrap_or_default();
     let accounting = policy.accounting.clone().unwrap_or_default();
-    for (operation, body, concurrency, timeout) in [
+    for (operation, body, concurrency, rate, timeout) in [
         (
             "authentication",
             authentication.max_body_length,
             authentication.max_concurrent_requests,
+            authentication.max_packets_per_second,
             authentication.request_timeout_seconds,
         ),
         (
             "authorization",
             authorization.max_body_length,
             authorization.max_concurrent_requests,
+            authorization.max_packets_per_second,
             authorization.request_timeout_seconds,
         ),
         (
             "accounting",
             accounting.max_body_length,
             accounting.max_concurrent_requests,
+            accounting.max_packets_per_second,
             accounting.request_timeout_seconds,
         ),
     ] {
+        ensure!(body > 0, "runtime-policy/{operation}/max-body-length must be greater than zero");
         ensure!(
-            (1..=TACACS_MAX_BODY_LENGTH).contains(&body),
-            "runtime-policy/{operation}/max-body-length must be in 1..={TACACS_MAX_BODY_LENGTH}"
+            body <= policy.max_packet_body_length,
+            "runtime-policy/{operation}/max-body-length ({body}) must not exceed runtime-policy/max-packet-body-length ({})",
+            policy.max_packet_body_length
         );
         ensure!(
             concurrency > 0,
             "runtime-policy/{operation}/max-concurrent-requests must be greater than zero"
+        );
+        ensure!(
+            rate > 0,
+            "runtime-policy/{operation}/max-packets-per-second must be greater than zero"
         );
         ensure!(
             timeout > 0,
@@ -185,9 +209,15 @@ mod tests {
         assert_eq!(policy.credential_stale_timeout_seconds, 300);
         assert_eq!(policy.credential_refresh_interval_seconds, 60);
         assert_eq!(policy.connect_preflight, crate::tacacsrs::ConnectPreflight::Disabled);
+        assert_eq!(policy.max_upstream_packets_per_second, 512);
+        assert_eq!(policy.max_packet_body_length, 65536);
+        assert_eq!(policy.max_proxy_sessions_per_connection, 64);
         assert!(policy.authentication.is_none());
         assert_eq!(crate::tacacsrs::Authentication::default().max_body_length, 4096);
+        assert_eq!(crate::tacacsrs::Authentication::default().max_packets_per_second, 128);
         assert_eq!(crate::tacacsrs::Authorization::default().max_body_length, 16384);
+        assert_eq!(crate::tacacsrs::Authorization::default().max_packets_per_second, 256);
+        assert_eq!(crate::tacacsrs::Accounting::default().max_packets_per_second, 512);
         assert_eq!(crate::tacacsrs::Authentication::default().request_timeout_seconds, 30);
 
         let watchdog_policy = parse_runtime_policy(
@@ -204,12 +234,16 @@ mod tests {
     fn partial_containers_use_their_own_yang_defaults() {
         let policy = parse_runtime_policy(
             br#"{"tacacsrs:runtime-policy":{
-            "authentication":{"max-concurrent-requests":8}, "accounting":{}
+            "max-packet-body-length":131072,
+            "max-proxy-sessions-per-connection":96,
+            "authentication":{"max-concurrent-requests":8}, "accounting":{"max-body-length":131072}
         }}"#,
         )
         .unwrap();
+        assert_eq!(policy.max_packet_body_length, 131072);
+        assert_eq!(policy.max_proxy_sessions_per_connection, 96);
         assert_eq!(policy.authentication.unwrap().max_body_length, 4096);
-        assert_eq!(policy.accounting.unwrap().max_body_length, 16384);
+        assert_eq!(policy.accounting.unwrap().max_body_length, 131072);
     }
 
     #[test]
@@ -224,8 +258,14 @@ mod tests {
             r#"{"tacacsrs:runtime-policy":{"shutdown-timeout-seconds":0}}"#,
             r#"{"tacacsrs:runtime-policy":{"source-stale-timeout-seconds":0}}"#,
             r#"{"tacacsrs:runtime-policy":{"credential-stale-timeout-seconds":0}}"#,
+            r#"{"tacacsrs:runtime-policy":{"max-packet-body-length":0}}"#,
+            r#"{"tacacsrs:runtime-policy":{"max-packet-body-length":8192}}"#,
+            r#"{"tacacsrs:runtime-policy":{"max-proxy-sessions-per-connection":0}}"#,
+            r#"{"tacacsrs:runtime-policy":{"accounting":{"max-body-length":0}}}"#,
             r#"{"tacacsrs:runtime-policy":{"accounting":{"max-body-length":65537}}}"#,
             r#"{"tacacsrs:runtime-policy":{"authorization":{"max-concurrent-requests":0}}}"#,
+            r#"{"tacacsrs:runtime-policy":{"authentication":{"max-packets-per-second":0}}}"#,
+            r#"{"tacacsrs:runtime-policy":{"max-upstream-packets-per-second":0}}"#,
             r#"{"tacacsrs:runtime-policy":{"authentication":{"request-timeout-seconds":0}}}"#,
             r#"{"tacacsrs:runtime-policy":{"connect-preflight":"invalid"}}"#,
         ] {

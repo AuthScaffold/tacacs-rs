@@ -7,5 +7,5 @@
 mod reader;
 mod writer;
 
-pub use reader::{PacketReadResult, PacketReader};
+pub use reader::{PacketBodyLimit, PacketReadResult, PacketReader};
 pub use writer::{PacketWriteResult, PacketWriter};
