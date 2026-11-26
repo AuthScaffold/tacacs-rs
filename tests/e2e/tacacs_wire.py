@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
@@ -294,10 +295,8 @@ class ScriptedTlsUpstream:
                         if tls_conn.pending() == 0:
                             readable, _, _ = select.select([tls_conn, wake_r], [], [], 0.1)
                             if wake_r in readable:
-                                try:
+                                with contextlib.suppress(OSError):
                                     wake_r.recv(256)
-                                except OSError:
-                                    pass
                             if tls_conn not in readable and tls_conn.pending() == 0:
                                 continue
 
@@ -319,10 +318,8 @@ class ScriptedTlsUpstream:
                             try:
                                 body = self._responder(req)
                                 outbound.put((req, echo_sc, body))
-                                try:
+                                with contextlib.suppress(OSError):
                                     wake_w.send(b"\x01")
-                                except OSError:
-                                    pass
                             except Exception as exc:  # noqa: BLE001
                                 if not self._stop.is_set():
                                     with self._lock:

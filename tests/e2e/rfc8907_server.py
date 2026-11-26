@@ -11,6 +11,7 @@ PAP/CHAP/MS-CHAP authentication (Section 5.4.2), attribute-value authorization
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 import hashlib
 import hmac
@@ -567,10 +568,8 @@ class Rfc8907Server:
                                 minor_version=pkt.version & 0x0F,
                             )
                         if terminal and not negotiated_single_connect:
-                            try:
+                            with contextlib.suppress(OSError):
                                 stream.shutdown(socket.SHUT_WR)
-                            except OSError:
-                                pass
                             break
         except Exception as exc:  # noqa: BLE001
             if not self._stop.is_set():
