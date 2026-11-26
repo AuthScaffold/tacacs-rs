@@ -5,7 +5,12 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import socket
+import ssl
 import subprocess
+import threading
+
+import pytest
 
 from conftest import (
     CertificateBundle,
@@ -217,6 +222,119 @@ def test_kubesonic_clear_policy_withdraws_and_restores_readiness(
     harness.redis.cli("HSET", key, "tcp_port", 449)
     wait_until(lambda: harness.check_health("readiness"), "clear-mode recovery")
     harness.stop_agent()
+
+
+@pytest.mark.parametrize("server_name", [None, "wrong.example", "upstream.example"])
+def test_kubesonic_tls_server_name_verifies_dns_identity_and_sends_sni(
+    tmp_path: Path,
+    socket_dir: Path,
+    binaries: Path,
+    process_manager: ProcessManager,
+    server_name: str | None,
+) -> None:
+    harness = KubeSonicHarness(tmp_path, socket_dir, binaries, process_manager)
+    server_key = tmp_path / "upstream.key"
+    server_csr = tmp_path / "upstream.csr"
+    server_cert = tmp_path / "upstream.pem"
+    CertificateBundle._openssl(
+        "req", "-new", "-newkey", "ec",
+        "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
+        "-subj", "/CN=upstream.example",
+        "-addext", "subjectAltName=DNS:upstream.example",
+        "-addext", "extendedKeyUsage=serverAuth",
+        "-keyout", str(server_key), "-out", str(server_csr),
+    )
+    CertificateBundle._openssl(
+        "x509", "-req", "-in", str(server_csr),
+        "-CA", str(harness.pki.ca_pem), "-CAkey", str(harness.pki.ca_key),
+        "-set_serial", "10", "-days", "1", "-copy_extensions", "copy",
+        "-out", str(server_cert),
+    )
+    tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls_context.minimum_version = ssl.TLSVersion.TLSv1_3
+    tls_context.load_cert_chain(str(server_cert), str(server_key))
+    tls_context.load_verify_locations(cafile=str(harness.pki.ca_pem))
+    tls_context.verify_mode = ssl.CERT_REQUIRED
+    received_names: list[str | None] = []
+    tls_context.set_servername_callback(
+        lambda _socket, name, _context: received_names.append(name)
+    )
+    received_bodies: list[bytes] = []
+    peer_errors: list[Exception] = []
+
+    # Select a non-loopback local address without sending a packet.
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
+        route.connect(("192.0.2.1", 9))
+        address = route.getsockname()[0]
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as upstream:
+        upstream.bind((address, 0))
+        upstream.listen(4)
+        upstream.settimeout(10.0)
+        harness.redis.start()
+        harness.redis.cli(
+            "HSET", f"TACPLUS_SERVER|{address}", "tcp_port", upstream.getsockname()[1]
+        )
+
+        def serve_accounting() -> None:
+            try:
+                conn, _ = upstream.accept()
+                with conn:
+                    conn.settimeout(5.0)
+                    with tls_context.wrap_socket(conn, server_side=True) as tls_conn:
+                        with tls_conn.makefile("rb") as reader:
+                            header = reader.read(12)
+                            assert len(header) == 12
+                            assert header[1:3] == bytes([3, 1])
+                            assert header[3] & 0x01, "TLS request must be unobfuscated"
+                            body_length = int.from_bytes(header[8:12], "big")
+                            body = reader.read(body_length)
+                            assert len(body) == body_length
+                            received_bodies.append(body)
+                            reply = b"\x00\x00\x00\x00\x01"
+                            tls_conn.sendall(
+                                bytes([header[0], 3, 2, header[3]])
+                                + header[4:8]
+                                + len(reply).to_bytes(4, "big")
+                                + reply
+                            )
+            except Exception as error:
+                peer_errors.append(error)
+
+        peer = threading.Thread(target=serve_accounting, daemon=True)
+        peer.start()
+        try:
+            overrides = {"TACACSD_POLICY_ACCOUNTING_REQUEST_TIMEOUT_SECONDS": "3"}
+            if server_name is not None:
+                overrides["TACACSD_TLS_SERVER_NAME"] = server_name
+            harness.start_agent(**overrides)
+            wait_until(lambda: harness.check_health("readiness"), "TLS upstream publication")
+            result = subprocess.run(
+                [
+                    str(binaries / "tacon"), "--service-endpoint", str(harness.api_socket),
+                    "accounting", "start", "--user", "alice", "--port", "tty0",
+                    "--rem-addr", "192.0.2.10",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=10.0,
+            )
+        finally:
+            peer.join(timeout=10.0)
+        assert not peer.is_alive(), "TLS peer did not finish"
+        assert received_names == [server_name]
+        if server_name == "upstream.example":
+            assert result.returncode == 0, result.stderr
+            assert not peer_errors, peer_errors
+            assert len(received_bodies) == 1
+            assert b"alice" in received_bodies[0]
+        else:
+            assert result.returncode != 0, result.stdout
+            assert not received_bodies
+            assert len(peer_errors) == 1, peer_errors
+            assert isinstance(peer_errors[0], ssl.SSLError), peer_errors
+        harness.stop_agent()
 
 
 def test_kubesonic_loopback_registration_repairs_deletion_and_preserves_external_owner(
