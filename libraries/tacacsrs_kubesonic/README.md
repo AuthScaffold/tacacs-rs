@@ -36,6 +36,7 @@ Names use uppercase words and underscores. Booleans accept only `true` and `fals
 | `TACACSD_CONFIGDB_EMPTY_SERVER_POLICY` | `retain` | `retain` or `clear`. |
 | `TACACSD_UPSTREAM_CONNECT_TIMEOUT_SECONDS` | `5` | Per-server timeout, `1..=65535`. |
 | `TACACSD_UPSTREAM_SINGLE_CONNECTION` | `true` | Persistent single-connection mode. |
+| `TACACSD_TLS_SERVER_NAME` | Absent | Shared DNS name for server certificate verification and Server Name Indication (SNI). |
 | `TACACSD_CONFIGDB_WATCH_DEBOUNCE_MILLISECONDS` | `500` | Notification quiet period. |
 | `TACACSD_CONFIGDB_WATCH_MAX_DELAY_MILLISECONDS` | `2000` | Maximum burst delay. |
 | `TACACSD_CONFIGDB_WATCH_RETRY_INTERVAL_SECONDS` | `5` | Rejected-read retry interval. |
@@ -44,6 +45,19 @@ Names use uppercase words and underscores. Booleans accept only `true` and `fals
 | `TACACSD_CONFIG_RETRY_MAX_MILLISECONDS` | `30000` | Maximum native observation recovery delay. |
 
 Durations must be positive and fit the platform clock. The initial retry cannot exceed its maximum. The debounce cannot exceed the maximum burst delay. One atomic Redis snapshot accepts at most 4096 rows.
+
+If upstream certificates identify the service by a DNS name while ConfigDB supplies IP addresses, set `TACACSD_TLS_SERVER_NAME` to the service's DNS name. The profile copies this name into canonical `domain-name` and enables SNI for every discovered upstream. Connection addresses, ports, and priority order remain controlled by ConfigDB. Each upstream must present a certificate whose DNS subject alternative name covers the supplied name. The setting requires a DNS name without a port or wildcard, and changing it requires a process restart. When the setting is absent, the profile verifies each server's address and sends no SNI.
+
+For a client certificate and private key stored in one mounted PEM file, configure the profile as follows. ConfigDB still supplies the upstream addresses and ports.
+
+```bash
+export TACACSD_TLS_CLIENT_CERTIFICATE=/run/certificates/kubelet/pki/kubelet-client-current.pem
+export TACACSD_TLS_CA_FILE=/etc/sonic/credentials/service-ca-bundle.pem
+export TACACSD_TLS_SERVER_NAME=tacacs.example.com
+tacacsrs-agentd --kubesonic
+```
+
+The key path defaults to the certificate path. `TACACSD_TLS_CA_FILE` accepts a PEM bundle with multiple CA certificates. The profile also loads its configured CA directory; see [mounted credentials](#mounted-credentials) for trust-source and reload rules.
 
 ### Mounted credentials
 
@@ -195,3 +209,9 @@ cargo test -p tacacsrs-kubesonic --test redis -- --include-ignored
 ```
 
 The tests create their own Unix-socket Redis processes. They do not use host ConfigDB.
+
+To test the daemon's environment inputs, live updates, and TLS server-name verification with mounted credentials, run the [end-to-end suite](../../tests/e2e/README.md):
+
+```bash
+python3 -m pytest -v tests/e2e/test_kubesonic.py
+```
