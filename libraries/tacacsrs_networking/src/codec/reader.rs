@@ -206,15 +206,14 @@ impl PacketReader {
             };
         };
 
-        // Read the body without panicking on allocator or address-space exhaustion.
-        let mut body_buffer = Vec::new();
-        if let Err(error) = body_buffer.try_reserve_exact(body_length) {
-            return PacketReadResult::PacketCreateError {
-                session_id,
-                error: anyhow::Error::new(error).context("failed to allocate TACACS+ packet body"),
-            };
-        }
-        body_buffer.resize(body_length, 0);
+        // Allocate the body buffer without panicking on allocator or
+        // address-space exhaustion. Allocation runs before `read_exact` drains
+        // the body from `reader`, so any failure must surface as `BodyReadError`
+        // to close the desynchronized connection rather than continuing.
+        let mut body_buffer = match Self::allocate_body_buffer(session_id, body_length) {
+            Ok(buffer) => buffer,
+            Err(result) => return result,
+        };
         if let Err(e) = reader.read_exact(&mut body_buffer).await {
             return PacketReadResult::BodyReadError {
                 session_id,
@@ -261,6 +260,24 @@ impl PacketReader {
             }
         }
         PacketReadResult::Success(packet)
+    }
+
+    fn allocate_body_buffer(
+        session_id: u32,
+        body_length: usize,
+    ) -> Result<Vec<u8>, PacketReadResult> {
+        let mut body_buffer = Vec::new();
+        if let Err(error) = body_buffer.try_reserve_exact(body_length) {
+            return Err(PacketReadResult::BodyReadError {
+                session_id,
+                error: std::io::Error::new(
+                    std::io::ErrorKind::OutOfMemory,
+                    anyhow::Error::new(error).context("failed to allocate TACACS+ packet body"),
+                ),
+            });
+        }
+        body_buffer.resize(body_length, 0);
+        Ok(body_buffer)
     }
 }
 
@@ -444,6 +461,21 @@ mod tests {
                 assert_eq!(packet.body().len(), large_length as usize);
             }
             other => panic!("expected raised dynamic limit to accept frame, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_body_allocation_failure_returns_body_read_error_to_close_connection() {
+        // `usize::MAX` triggers `TryReserveError` (`CapacityOverflow`) without
+        // invoking the OS allocator. Because body bytes remain unread in the
+        // stream, the failure must be reported as `BodyReadError` rather than
+        // `PacketCreateError` so multiplexed connections terminate cleanly.
+        match PacketReader::allocate_body_buffer(0x0102_0304, usize::MAX) {
+            Err(PacketReadResult::BodyReadError { session_id, error }) => {
+                assert_eq!(session_id, 0x0102_0304);
+                assert_eq!(error.kind(), std::io::ErrorKind::OutOfMemory);
+            }
+            other => panic!("expected BodyReadError(OutOfMemory), got {other:?}"),
         }
     }
 }
