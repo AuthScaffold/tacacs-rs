@@ -1,12 +1,13 @@
 //! TACACS+ packet I/O helpers for the raw proxy.
 
 use std::future::Future;
+use std::num::NonZeroU32;
 use std::pin::pin;
 use std::task::{Context as TaskContext, Poll, Waker};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
-use tacacsrs_protocol::constants::{TACACS_HEADER_LENGTH, TACACS_MAX_BODY_LENGTH};
+use tacacsrs_protocol::constants::TACACS_HEADER_LENGTH;
 use tacacsrs_protocol::enumerations::TacacsFlags;
 use tacacsrs_protocol::header::Header;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
@@ -34,6 +35,10 @@ pub(super) struct DownstreamPacket {
 /// `select!`. Every partially read byte is stored in this struct rather than in
 /// the returned future, so a losing `select!` branch cannot discard bytes and
 /// desynchronise the TACACS+ frame boundary.
+///
+/// Framing violations, truncated packets, and read timeouts return
+/// [`ProxyConnectionError::Downstream`], which closes only this client
+/// connection without stopping other client connections or the proxy listener.
 pub(super) struct DownstreamReader<Stream> {
     stream: BufReader<Stream>,
     obfuscation_key: Option<SecretBytes>,
@@ -56,7 +61,8 @@ where
         obfuscation_key: Option<SecretBytes>,
     ) -> Self {
         Self {
-            // Buffering lets one syscall deliver a whole small TACACS+ packet.
+            // Buffering lets one syscall deliver a whole small TACACS+ packet;
+            // larger packet bodies bypass the internal buffer directly.
             stream: BufReader::new(stream),
             obfuscation_key,
             timeout,
@@ -72,7 +78,8 @@ where
     /// Reads the next complete downstream packet.
     ///
     /// Returns `None` when the client closes the connection between packets.
-    /// A close inside a packet is an error.
+    /// A close inside a packet returns [`ProxyConnectionError::Downstream`] so
+    /// the caller closes only this client connection.
     ///
     /// The read deadline covers one whole packet, so a client cannot hold the
     /// connection open by sending a frame one byte at a time.
@@ -85,10 +92,11 @@ where
     pub(super) async fn next_packet(
         &mut self,
         sessions_in_flight: bool,
+        max_body_length: impl Fn() -> NonZeroU32,
     ) -> Result<Option<DownstreamPacket>, ProxyConnectionError> {
         // Buffered bytes often already hold a whole packet. Completing here
         // avoids arming and disarming a timer for every request.
-        if let Some(result) = self.poll_read_frame_once() {
+        if let Some(result) = self.poll_read_frame_once(&max_body_length) {
             self.deadline = None;
             return result.map_err(ProxyConnectionError::Downstream);
         }
@@ -102,7 +110,7 @@ where
                 .await
                 .context("Failed to read TACACS+ proxy header")
                 .map_err(ProxyConnectionError::Downstream)?;
-            if let Some(result) = self.poll_read_frame_once() {
+            if let Some(result) = self.poll_read_frame_once(&max_body_length) {
                 return result.map_err(ProxyConnectionError::Downstream);
             }
         }
@@ -112,7 +120,7 @@ where
             .get_or_insert_with(|| Instant::now() + self.timeout);
         let timeout = self.timeout;
 
-        match tokio::time::timeout_at(deadline, self.read_frame()).await {
+        match tokio::time::timeout_at(deadline, self.read_frame(&max_body_length)).await {
             Ok(Ok(packet)) => {
                 self.deadline = None;
                 Ok(packet)
@@ -127,15 +135,26 @@ where
     /// Polls one read attempt without registering a real waker.
     ///
     /// Partial progress stays in `self`, so discarding the future is safe.
-    fn poll_read_frame_once(&mut self) -> Option<anyhow::Result<Option<DownstreamPacket>>> {
+    fn poll_read_frame_once(
+        &mut self,
+        max_body_length: &impl Fn() -> NonZeroU32,
+    ) -> Option<anyhow::Result<Option<DownstreamPacket>>> {
         let mut context = TaskContext::from_waker(Waker::noop());
-        match pin!(self.read_frame()).poll(&mut context) {
+        match pin!(self.read_frame(max_body_length)).poll(&mut context) {
             Poll::Ready(result) => Some(result),
             Poll::Pending => None,
         }
     }
 
-    async fn read_frame(&mut self) -> anyhow::Result<Option<DownstreamPacket>> {
+    /// Reads one complete TACACS+ header and body from this client stream.
+    ///
+    /// Errors returned here are wrapped into [`ProxyConnectionError::Downstream`]
+    /// by [`next_packet`](Self::next_packet) and terminate only this client
+    /// connection.
+    async fn read_frame(
+        &mut self,
+        max_body_length: &impl Fn() -> NonZeroU32,
+    ) -> anyhow::Result<Option<DownstreamPacket>> {
         while self.header_filled < TACACS_HEADER_LENGTH {
             let Self {
                 stream,
@@ -159,15 +178,22 @@ where
         if self.header.is_none() {
             let header = Header::from_bytes(&self.header_bytes)
                 .context("Failed to parse TACACS+ proxy header")?;
-            if header.length > TACACS_MAX_BODY_LENGTH {
+            let max_bytes = max_body_length().get();
+            if header.length > max_bytes {
                 bail!(
-                    "TACACS+ proxy packet for session {:#x} declares body length {}, which exceeds the maximum of {}",
+                    "TACACS+ proxy packet for session {:#x} declares body length {}, which exceeds the configured maximum of {}",
                     header.session_id,
                     header.length,
-                    TACACS_MAX_BODY_LENGTH,
+                    max_bytes,
                 );
             }
-            self.body = vec![0_u8; header.length as usize];
+            let body_length = usize::try_from(header.length)
+                .context("TACACS+ proxy packet body length exceeds platform usize")?;
+            let mut body = Vec::new();
+            body.try_reserve_exact(body_length)
+                .context("Failed to allocate TACACS+ proxy packet body")?;
+            body.resize(body_length, 0);
+            self.body = body;
             self.body_filled = 0;
             self.header = Some(header);
         }

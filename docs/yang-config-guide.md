@@ -388,6 +388,28 @@ The host must supply a revocation verifier. `tacacsrs-agentd` always supplies th
 
 The separate `tacacsrs:runtime-policy` container under `ietf-system:system` configures daemon-level timeouts, failover strategies, admission limits, credential refresh, and upstream connection preflight without modifying `ietf-system-tacacs-plus:tacacs-plus` server definitions.
 
+### Request Admission and Rate Limits
+
+`runtime-policy` bounds concurrent upstream work and steady upstream packet rates across the Client API and raw TACACS+ proxy:
+
+```json
+{
+  "tacacsrs:runtime-policy": {
+    "max-upstream-packets-per-second": 512,
+    "max-packet-body-length": 65536,
+    "max-proxy-sessions-per-connection": 64,
+    "authentication": {
+      "max-body-length": 4096,
+      "max-in-flight-requests": 64,
+      "max-packets-per-second": 128,
+      "request-timeout-seconds": 30
+    }
+  }
+}
+```
+
+Each operation container (`authentication`, `authorization`, `accounting`) sets `request-timeout-seconds` (default 30), `max-body-length` (default 4096 for authentication and 16384 for authorization and accounting), `max-in-flight-requests` (default 64), and `max-packets-per-second` (defaults: 128 for authentication, 256 for authorization, 512 for accounting). `max-in-flight-requests` bounds requests actively awaiting an upstream server reply rather than idle downstream prompts: multi-packet proxy sessions release their in-flight slot while waiting on client `CONTINUE` input and re-acquire a slot for the next upstream round trip. Each operation's `max-body-length` must not exceed top-level `max-packet-body-length` (default 65536), which bounds frame buffer allocation on downstream proxy requests and upstream server replies. Top-level `max-proxy-sessions-per-connection` (default 64) bounds concurrent active sessions on a single-connect proxy connection, and `max-upstream-packets-per-second` (default 512) bounds combined upstream packet throughput across all three operations. Every rate limiter provides a one-second burst window and paces excess arrivals in FIFO order up to the active server timeout and request deadline.
+
 ### Connect Preflight
 
 The `connect-preflight` leaf controls whether the runtime probes accounting-capable upstream servers when opening a new client connection:

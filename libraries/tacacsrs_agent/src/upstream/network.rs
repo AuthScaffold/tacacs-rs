@@ -75,7 +75,15 @@ impl tacacsrs_networking::routed::EndpointConnector for NetworkUpstreamConnector
     ) -> anyhow::Result<Arc<Self::Connection>> {
         let address = endpoint.address().to_string();
         let endpoint = match &self.runtime_policy {
-            Some(policy) => endpoint.with_preflight(policy.current().connect_preflight()),
+            Some(policy) => {
+                let current = policy.current();
+                let view = policy.clone();
+                endpoint
+                    .with_preflight(current.connect_preflight())
+                    .with_packet_body_limit(tacacsrs_networking::PacketBodyLimit::dynamic(
+                        move || view.current().max_packet_body_length(),
+                    ))
+            }
             None => endpoint,
         };
         let endpoint = self

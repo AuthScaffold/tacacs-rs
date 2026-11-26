@@ -106,7 +106,7 @@ TACACSD_REVOCATION_CACHE_DIRECTORY=/var/cache/tacacsrs/crl
 | `TACACSD_SERVICES_TACACS_PROXY_ENABLED` | `true` |
 | `TACACSD_SERVICES_TACACS_PROXY_ENDPOINT` | `127.0.0.1:49` |
 | `TACACSD_SERVICES_UNIX_SOCKET_MODE` | `0666` |
-| `TACACSD_SERVICES_MAX_CONNECTIONS` | `64` |
+| `TACACSD_SERVICES_MAX_CONNECTIONS` | `512` |
 | `TACACSD_SERVICES_MAX_CLIENT_API_STREAMS` | `64` |
 | `TACACSD_SERVICES_CONNECTION_LIFETIME_SECONDS` | `300` |
 | `TACACSD_PROCESS_WORKER_THREADS` | `1` |
@@ -133,6 +133,9 @@ Each canonical policy path maps to `TACACSD_POLICY_<PATH>`. Replace hyphens and 
 | `TACACSD_POLICY_CREDENTIAL_STALE_TIMEOUT_SECONDS` | `300` |
 | `TACACSD_POLICY_CREDENTIAL_REFRESH_INTERVAL_SECONDS` | `60` |
 | `TACACSD_POLICY_FAILOVER_RECOVERY_INTERVAL_SECONDS` | `30` |
+| `TACACSD_POLICY_MAX_UPSTREAM_PACKETS_PER_SECOND` | `512` |
+| `TACACSD_POLICY_MAX_PACKET_BODY_LENGTH` | `65536` |
+| `TACACSD_POLICY_MAX_PROXY_SESSIONS_PER_CONNECTION` | `64` |
 | `TACACSD_POLICY_CLIENT_API_FAILOVER_STRATEGY` | `deferred-failover` |
 | `TACACSD_POLICY_TACACS_PROXY_FAILOVER_STRATEGY` | `deferred-failover` |
 | `TACACSD_POLICY_CONNECT_PREFLIGHT` | `disabled` |
@@ -142,11 +145,12 @@ Each canonical policy path maps to `TACACSD_POLICY_<PATH>`. Replace hyphens and 
 
 The `TACACSD_POLICY_AUTHENTICATION_`, `TACACSD_POLICY_AUTHORIZATION_`, and `TACACSD_POLICY_ACCOUNTING_` families each support these suffixes:
 
-| Suffix | Authentication default | Authorization and accounting default |
-| --- | --- | --- |
-| `REQUEST_TIMEOUT_SECONDS` | `30` | `30` |
-| `MAX_BODY_LENGTH` | `4096` | `16384` |
-| `MAX_CONCURRENT_REQUESTS` | `64` | `64` |
+| Suffix | Authentication default | Authorization default | Accounting default |
+| --- | --- | --- | --- |
+| `REQUEST_TIMEOUT_SECONDS` | `30` | `30` | `30` |
+| `MAX_BODY_LENGTH` | `4096` | `16384` | `16384` |
+| `MAX_IN_FLIGHT_REQUESTS` | `64` | `64` | `64` |
+| `MAX_PACKETS_PER_SECOND` | `128` | `256` | `512` |
 
 Limits must be positive. Body length cannot exceed the protocol maximum. Failover strategy accepts `deferred-failover` or `ordered-safe-retry`. Connect preflight accepts `disabled` or `accounting-watchdog`. Canonical validators and generated types own defaults and ranges.
 

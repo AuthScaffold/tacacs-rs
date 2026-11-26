@@ -58,6 +58,10 @@ impl SharedSession {
         self.duplex_channel.send_packet(packet).await
     }
 
+    pub(crate) async fn send_abort_packet(&self, packet: Packet) -> anyhow::Result<()> {
+        self.duplex_channel.send_packet(packet).await
+    }
+
     pub(crate) async fn receive_packet(&self) -> anyhow::Result<Packet> {
         let result = self.duplex_channel.receive_packet().await;
         if result.is_err() {
