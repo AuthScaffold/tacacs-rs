@@ -76,6 +76,10 @@ pub fn map_rows(rows: Vec<ServerRow>, settings: &SourceSettings) -> anyhow::Resu
         .with_single_connection(settings.single_connection)
         .with_tls_server_authentication()
         .build();
+        if let Some(name) = &settings.tls_server_name {
+            server.domain_name = Some(name.as_ref().to_owned());
+            server.sni_enabled = Some(true);
+        }
         server.client_identity = Some(TlsClientClientIdentity {
             certificate: Some(ClientIdentityCertificate {
                 central_keystore_reference: Some(EndEntityCertWithKeyCentralKeystoreReference {
@@ -407,6 +411,40 @@ mod tests {
             let source = map_rows(rows, &settings).unwrap();
             assert_eq!(source.certificate_revocation, settings.certificate_revocation);
             assert!(source.certificate_revocation.is_some());
+        }
+    }
+
+    #[test]
+    fn shared_tls_server_name_preserves_each_destination() {
+        for name in [None, Some("Upstream.example")] {
+            let settings = Environment::parse(
+                name.map(|name| BTreeMap::from([("TACACSD_TLS_SERVER_NAME".into(), name.into())]))
+                    .unwrap_or_default(),
+            )
+            .unwrap()
+            .source;
+            let source = map_rows(
+                ["192.0.2.1", "2001:db8::1", "server.example"]
+                    .into_iter()
+                    .map(|address| ServerRow {
+                        address: address.into(),
+                        port: Some("300".into()),
+                        priority: None,
+                        valid_hash: true,
+                    })
+                    .collect(),
+                &settings,
+            )
+            .unwrap();
+            assert_eq!(source.server.len(), 3);
+            for server in &source.server {
+                assert!(["192.0.2.1", "2001:db8::1", "server.example"]
+                    .contains(&server.address.as_str()));
+                assert_eq!(server.name, server.address);
+                assert_eq!(server.port, 300);
+                assert_eq!(server.domain_name.as_deref(), name);
+                assert_eq!(server.sni_enabled, name.map(|_| true));
+            }
         }
     }
 

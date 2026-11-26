@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{bail, ensure, Context};
+use rustls_pki_types::DnsName;
 use serde_json::{json, Map, Value};
 
 use tacacsrs_config::local_services::parse_local_services;
@@ -29,6 +30,9 @@ pub struct SourceSettings {
     pub empty_servers: EmptyServerPolicy,
     pub upstream_timeout_seconds: u16,
     pub single_connection: bool,
+    /// Shared DNS identity for server certificate verification and SNI.
+    /// `None` keeps verification against each server's address without SNI.
+    pub tls_server_name: Option<DnsName<'static>>,
     pub debounce: Duration,
     pub max_delay: Duration,
     pub retry_interval: Duration,
@@ -293,6 +297,11 @@ impl Environment {
             empty_servers,
             upstream_timeout_seconds,
             single_connection: inputs.boolean("UPSTREAM_SINGLE_CONNECTION", true)?,
+            tls_server_name: inputs
+                .take("TLS_SERVER_NAME")
+                .map(DnsName::try_from)
+                .transpose()
+                .map_err(|_| anyhow::anyhow!("TACACSD_TLS_SERVER_NAME must be a DNS name"))?,
             debounce: inputs.duration("CONFIGDB_WATCH_DEBOUNCE_MILLISECONDS", 500, true)?,
             max_delay: inputs.duration("CONFIGDB_WATCH_MAX_DELAY_MILLISECONDS", 2000, true)?,
             retry_interval: inputs.duration("CONFIGDB_WATCH_RETRY_INTERVAL_SECONDS", 5, false)?,
@@ -592,6 +601,25 @@ mod tests {
             &[("REVOCATION_UNKNOWN", "value")][..],
         ] {
             assert!(parse(pairs).is_err(), "{pairs:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_tls_server_names_without_echoing_values() {
+        for value in [
+            "",
+            " ",
+            " upstream.example",
+            "upstream.example ",
+            "private-sentinel:300",
+            "*.example",
+            "192.0.2.1",
+            "2001:db8::1",
+        ] {
+            let error = parse(&[("TLS_SERVER_NAME", value)]).unwrap_err();
+            let message = format!("{error:#}");
+            assert!(message.contains("TACACSD_TLS_SERVER_NAME"));
+            assert!(!message.contains("private-sentinel"));
         }
     }
 
