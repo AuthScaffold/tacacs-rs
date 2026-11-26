@@ -27,9 +27,10 @@ module tacacsrs {
 
   revision 2026-11-25 {
     description
-      "Raises the default listener connection limit and adds runtime
-       controls for packet body length, proxy sessions per connection,
-       and upstream packet rate limits.";
+      "Renames per-operation concurrency limits to max-in-flight-requests,
+       raises the default listener connection limit, and adds runtime controls
+       for packet body length, proxy sessions per connection, and upstream
+       packet rate limits.";
   }
 
   revision 2026-11-20 {
@@ -263,11 +264,14 @@ module tacacsrs {
         "Maximum encoded TACACS+ request body length for one operation.
          Must not exceed max-packet-body-length.";
     }
-    leaf max-concurrent-requests {
+    leaf max-in-flight-requests {
       type uint32 { range "1..max"; }
       default 64;
       description
-        "Maximum concurrent requests for one operation.";
+        "Maximum concurrent in-flight upstream requests awaiting a server
+         reply for one operation. Multi-packet proxy sessions hold a slot
+         only during each upstream round trip and release that slot while
+         waiting for downstream client input.";
     }
     leaf max-packets-per-second {
       type uint32 { range "1..max"; }

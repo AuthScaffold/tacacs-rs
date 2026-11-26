@@ -293,15 +293,15 @@ module: tacacsrs
        +--rw authentication
        |  +--rw request-timeout-seconds?   uint32
        |  +--rw max-body-length?           uint32
-       |  +--rw max-concurrent-requests?   uint32
+       |  +--rw max-in-flight-requests?    uint32
        |  +--rw max-packets-per-second?    uint32
        +--rw authorization
        |  +--rw request-timeout-seconds?   uint32
        |  +--rw max-body-length?           uint32
-       |  +--rw max-concurrent-requests?   uint32
+       |  +--rw max-in-flight-requests?    uint32
        |  +--rw max-packets-per-second?    uint32
        +--rw accounting
           +--rw request-timeout-seconds?   uint32
           +--rw max-body-length?           uint32
-          +--rw max-concurrent-requests?   uint32
+          +--rw max-in-flight-requests?    uint32
           +--rw max-packets-per-second?    uint32

@@ -94,25 +94,25 @@ pub fn validate_runtime_policy(policy: &RuntimePolicy) -> anyhow::Result<()> {
     let authentication = policy.authentication.clone().unwrap_or_default();
     let authorization = policy.authorization.clone().unwrap_or_default();
     let accounting = policy.accounting.clone().unwrap_or_default();
-    for (operation, body, concurrency, rate, timeout) in [
+    for (operation, body, in_flight, rate, timeout) in [
         (
             "authentication",
             authentication.max_body_length,
-            authentication.max_concurrent_requests,
+            authentication.max_in_flight_requests,
             authentication.max_packets_per_second,
             authentication.request_timeout_seconds,
         ),
         (
             "authorization",
             authorization.max_body_length,
-            authorization.max_concurrent_requests,
+            authorization.max_in_flight_requests,
             authorization.max_packets_per_second,
             authorization.request_timeout_seconds,
         ),
         (
             "accounting",
             accounting.max_body_length,
-            accounting.max_concurrent_requests,
+            accounting.max_in_flight_requests,
             accounting.max_packets_per_second,
             accounting.request_timeout_seconds,
         ),
@@ -124,8 +124,8 @@ pub fn validate_runtime_policy(policy: &RuntimePolicy) -> anyhow::Result<()> {
             policy.max_packet_body_length
         );
         ensure!(
-            concurrency > 0,
-            "runtime-policy/{operation}/max-concurrent-requests must be greater than zero"
+            in_flight > 0,
+            "runtime-policy/{operation}/max-in-flight-requests must be greater than zero"
         );
         ensure!(
             rate > 0,
@@ -236,7 +236,7 @@ mod tests {
             br#"{"tacacsrs:runtime-policy":{
             "max-packet-body-length":131072,
             "max-proxy-sessions-per-connection":96,
-            "authentication":{"max-concurrent-requests":8}, "accounting":{"max-body-length":131072}
+            "authentication":{"max-in-flight-requests":8}, "accounting":{"max-body-length":131072}
         }}"#,
         )
         .unwrap();
@@ -263,7 +263,7 @@ mod tests {
             r#"{"tacacsrs:runtime-policy":{"max-proxy-sessions-per-connection":0}}"#,
             r#"{"tacacsrs:runtime-policy":{"accounting":{"max-body-length":0}}}"#,
             r#"{"tacacsrs:runtime-policy":{"accounting":{"max-body-length":65537}}}"#,
-            r#"{"tacacsrs:runtime-policy":{"authorization":{"max-concurrent-requests":0}}}"#,
+            r#"{"tacacsrs:runtime-policy":{"authorization":{"max-in-flight-requests":0}}}"#,
             r#"{"tacacsrs:runtime-policy":{"authentication":{"max-packets-per-second":0}}}"#,
             r#"{"tacacsrs:runtime-policy":{"max-upstream-packets-per-second":0}}"#,
             r#"{"tacacsrs:runtime-policy":{"authentication":{"request-timeout-seconds":0}}}"#,

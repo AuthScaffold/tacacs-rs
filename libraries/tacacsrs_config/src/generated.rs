@@ -1743,7 +1743,7 @@ pub mod tacacsrs {
 
     fn default_authentication_request_timeout_seconds() -> u32 { 30 }
     fn default_authentication_max_body_length() -> u32 { 4096 }
-    fn default_authentication_max_concurrent_requests() -> u32 { 64 }
+    fn default_authentication_max_in_flight_requests() -> u32 { 64 }
     fn default_authentication_max_packets_per_second() -> u32 { 128 }
 
     /// Shared authentication admission limits.
@@ -1762,10 +1762,13 @@ pub mod tacacsrs {
         #[serde(rename = "max-body-length")]
         #[serde(default = "default_authentication_max_body_length")]
         pub max_body_length: u32,
-        /// Maximum concurrent requests for one operation.
-        #[serde(rename = "max-concurrent-requests")]
-        #[serde(default = "default_authentication_max_concurrent_requests")]
-        pub max_concurrent_requests: u32,
+        /// Maximum concurrent in-flight upstream requests awaiting a server
+        /// reply for one operation. Multi-packet proxy sessions hold a slot
+        /// only during each upstream round trip and release that slot while
+        /// waiting for downstream client input.
+        #[serde(rename = "max-in-flight-requests")]
+        #[serde(default = "default_authentication_max_in_flight_requests")]
+        pub max_in_flight_requests: u32,
         /// Maximum steady upstream request packet rate for one operation,
         /// with a one-second burst capacity.
         #[serde(rename = "max-packets-per-second")]
@@ -1778,7 +1781,7 @@ pub mod tacacsrs {
             Self {
                 request_timeout_seconds: default_authentication_request_timeout_seconds(),
                 max_body_length: default_authentication_max_body_length(),
-                max_concurrent_requests: default_authentication_max_concurrent_requests(),
+                max_in_flight_requests: default_authentication_max_in_flight_requests(),
                 max_packets_per_second: default_authentication_max_packets_per_second(),
             }
         }
@@ -1786,7 +1789,7 @@ pub mod tacacsrs {
 
     fn default_authorization_request_timeout_seconds() -> u32 { 30 }
     fn default_authorization_max_body_length() -> u32 { 16384 }
-    fn default_authorization_max_concurrent_requests() -> u32 { 64 }
+    fn default_authorization_max_in_flight_requests() -> u32 { 64 }
     fn default_authorization_max_packets_per_second() -> u32 { 256 }
 
     /// Shared authorization admission limits.
@@ -1805,10 +1808,13 @@ pub mod tacacsrs {
         #[serde(rename = "max-body-length")]
         #[serde(default = "default_authorization_max_body_length")]
         pub max_body_length: u32,
-        /// Maximum concurrent requests for one operation.
-        #[serde(rename = "max-concurrent-requests")]
-        #[serde(default = "default_authorization_max_concurrent_requests")]
-        pub max_concurrent_requests: u32,
+        /// Maximum concurrent in-flight upstream requests awaiting a server
+        /// reply for one operation. Multi-packet proxy sessions hold a slot
+        /// only during each upstream round trip and release that slot while
+        /// waiting for downstream client input.
+        #[serde(rename = "max-in-flight-requests")]
+        #[serde(default = "default_authorization_max_in_flight_requests")]
+        pub max_in_flight_requests: u32,
         /// Maximum steady upstream request packet rate for one operation,
         /// with a one-second burst capacity.
         #[serde(rename = "max-packets-per-second")]
@@ -1821,7 +1827,7 @@ pub mod tacacsrs {
             Self {
                 request_timeout_seconds: default_authorization_request_timeout_seconds(),
                 max_body_length: default_authorization_max_body_length(),
-                max_concurrent_requests: default_authorization_max_concurrent_requests(),
+                max_in_flight_requests: default_authorization_max_in_flight_requests(),
                 max_packets_per_second: default_authorization_max_packets_per_second(),
             }
         }
@@ -1829,7 +1835,7 @@ pub mod tacacsrs {
 
     fn default_accounting_request_timeout_seconds() -> u32 { 30 }
     fn default_accounting_max_body_length() -> u32 { 16384 }
-    fn default_accounting_max_concurrent_requests() -> u32 { 64 }
+    fn default_accounting_max_in_flight_requests() -> u32 { 64 }
     fn default_accounting_max_packets_per_second() -> u32 { 512 }
 
     /// Shared accounting admission limits.
@@ -1848,10 +1854,13 @@ pub mod tacacsrs {
         #[serde(rename = "max-body-length")]
         #[serde(default = "default_accounting_max_body_length")]
         pub max_body_length: u32,
-        /// Maximum concurrent requests for one operation.
-        #[serde(rename = "max-concurrent-requests")]
-        #[serde(default = "default_accounting_max_concurrent_requests")]
-        pub max_concurrent_requests: u32,
+        /// Maximum concurrent in-flight upstream requests awaiting a server
+        /// reply for one operation. Multi-packet proxy sessions hold a slot
+        /// only during each upstream round trip and release that slot while
+        /// waiting for downstream client input.
+        #[serde(rename = "max-in-flight-requests")]
+        #[serde(default = "default_accounting_max_in_flight_requests")]
+        pub max_in_flight_requests: u32,
         /// Maximum steady upstream request packet rate for one operation,
         /// with a one-second burst capacity.
         #[serde(rename = "max-packets-per-second")]
@@ -1864,7 +1873,7 @@ pub mod tacacsrs {
             Self {
                 request_timeout_seconds: default_accounting_request_timeout_seconds(),
                 max_body_length: default_accounting_max_body_length(),
-                max_concurrent_requests: default_accounting_max_concurrent_requests(),
+                max_in_flight_requests: default_accounting_max_in_flight_requests(),
                 max_packets_per_second: default_accounting_max_packets_per_second(),
             }
         }

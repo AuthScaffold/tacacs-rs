@@ -43,7 +43,7 @@ impl AdmissionRegistry {
     pub(crate) fn new(policy: &RuntimePolicy) -> Self {
         let operations = OperationKind::ALL.map(|operation| {
             let limits = policy.limits(operation);
-            AdmissionPool::new(limits.max_concurrent_requests())
+            AdmissionPool::new(limits.max_in_flight_requests())
         });
         let operation_rates = OperationKind::ALL.map(|operation| {
             let limits = policy.limits(operation);
@@ -60,7 +60,7 @@ impl AdmissionRegistry {
     pub(crate) fn update(&self, policy: &RuntimePolicy) {
         for operation in OperationKind::ALL {
             let limits = policy.limits(operation);
-            self.operations[operation.index()].update(limits.max_concurrent_requests());
+            self.operations[operation.index()].update(limits.max_in_flight_requests());
             self.operation_rates[operation.index()].update(limits.max_packets_per_second());
         }
         self.upstream_rate
@@ -189,10 +189,10 @@ mod tests {
 
     fn policy_with_authentication_limit(
         max_body_length: usize,
-        max_concurrent_requests: usize,
+        max_in_flight_requests: usize,
     ) -> RuntimePolicy {
         let authentication =
-            RequestLimits::new(max_body_length, max_concurrent_requests).expect("test limits");
+            RequestLimits::new(max_body_length, max_in_flight_requests).expect("test limits");
         RuntimePolicy::new(
             FailoverStrategy::default(),
             FailoverStrategy::default(),

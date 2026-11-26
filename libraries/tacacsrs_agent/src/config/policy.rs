@@ -7,12 +7,12 @@ use anyhow::Context;
 
 use crate::upstream::OperationKind;
 
-/// Default admission ceiling for concurrent requests of one operation.
+/// Default admission ceiling for in-flight upstream requests of one operation.
 ///
 /// Local queue depths align with this value so that a full queue reflects real
 /// admission pressure.
-pub(crate) fn default_concurrent_request_limit() -> usize {
-    tacacsrs_config::tacacsrs::Authentication::default().max_concurrent_requests as usize
+pub(crate) fn default_in_flight_request_limit() -> usize {
+    tacacsrs_config::tacacsrs::Authentication::default().max_in_flight_requests as usize
 }
 
 /// Failover behavior for one local service.
@@ -39,7 +39,7 @@ pub enum PolicyService {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct RequestLimits {
     max_body_length: usize,
-    max_concurrent_requests: usize,
+    max_in_flight_requests: usize,
     max_packets_per_second: NonZeroU32,
     request_timeout: Duration,
 }
@@ -51,7 +51,7 @@ impl RequestLimits {
     ///
     /// Returns an error if either limit is zero or the body limit exceeds the
     /// 32-bit TACACS+ packet header field or platform allocation range.
-    pub fn new(max_body_length: usize, max_concurrent_requests: usize) -> anyhow::Result<Self> {
+    pub fn new(max_body_length: usize, max_in_flight_requests: usize) -> anyhow::Result<Self> {
         if max_body_length == 0 {
             anyhow::bail!("The maximum request body length must be greater than zero");
         }
@@ -59,12 +59,12 @@ impl RequestLimits {
             .context("The maximum request body length exceeds the 32-bit TACACS+ header field")?;
         isize::try_from(max_body_length)
             .context("The maximum request body length exceeds the platform allocation limit")?;
-        if max_concurrent_requests == 0 {
-            anyhow::bail!("The maximum concurrent request count must be greater than zero");
+        if max_in_flight_requests == 0 {
+            anyhow::bail!("The maximum in-flight request count must be greater than zero");
         }
         Ok(Self {
             max_body_length,
-            max_concurrent_requests,
+            max_in_flight_requests,
             max_packets_per_second: NonZeroU32::new(
                 tacacsrs_config::tacacsrs::Authorization::default().max_packets_per_second,
             )
@@ -112,10 +112,10 @@ impl RequestLimits {
         self.max_body_length
     }
 
-    /// Returns the maximum number of concurrent requests.
+    /// Returns the maximum number of concurrent in-flight requests awaiting an upstream reply.
     #[must_use]
-    pub const fn max_concurrent_requests(self) -> usize {
-        self.max_concurrent_requests
+    pub const fn max_in_flight_requests(self) -> usize {
+        self.max_in_flight_requests
     }
 
     /// Returns the steady upstream packet rate and one-second burst ceiling.
@@ -242,7 +242,7 @@ impl RuntimePolicy {
             operations: OperationPolicies::new(
                 RequestLimits {
                     max_body_length: authentication.max_body_length as usize,
-                    max_concurrent_requests: authentication.max_concurrent_requests as usize,
+                    max_in_flight_requests: authentication.max_in_flight_requests as usize,
                     max_packets_per_second: NonZeroU32::new(authentication.max_packets_per_second)
                         .unwrap_or(NonZeroU32::MIN),
                     request_timeout: Duration::from_secs(u64::from(
@@ -251,7 +251,7 @@ impl RuntimePolicy {
                 },
                 RequestLimits {
                     max_body_length: authorization.max_body_length as usize,
-                    max_concurrent_requests: authorization.max_concurrent_requests as usize,
+                    max_in_flight_requests: authorization.max_in_flight_requests as usize,
                     max_packets_per_second: NonZeroU32::new(authorization.max_packets_per_second)
                         .unwrap_or(NonZeroU32::MIN),
                     request_timeout: Duration::from_secs(u64::from(
@@ -260,7 +260,7 @@ impl RuntimePolicy {
                 },
                 RequestLimits {
                     max_body_length: accounting.max_body_length as usize,
-                    max_concurrent_requests: accounting.max_concurrent_requests as usize,
+                    max_in_flight_requests: accounting.max_in_flight_requests as usize,
                     max_packets_per_second: NonZeroU32::new(accounting.max_packets_per_second)
                         .unwrap_or(NonZeroU32::MIN),
                     request_timeout: Duration::from_secs(u64::from(
@@ -581,7 +581,7 @@ mod tests {
         assert_eq!(
             policy
                 .limits(OperationKind::Accounting)
-                .max_concurrent_requests(),
+                .max_in_flight_requests(),
             64
         );
         assert_eq!(
@@ -658,7 +658,7 @@ mod tests {
                 "client-api-failover-strategy": "ordered-safe-retry",
                 "connect-preflight": "accounting-watchdog",
                 "authentication": {},
-                "authorization": {"max-body-length":8192,"max-concurrent-requests":16,"request-timeout-seconds":12}
+                "authorization": {"max-body-length":8192,"max-in-flight-requests":16,"request-timeout-seconds":12}
             }
         }"#,
         )

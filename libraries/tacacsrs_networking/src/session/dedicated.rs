@@ -90,6 +90,27 @@ impl DedicatedSession {
         Ok(())
     }
 
+    pub(crate) async fn send_abort_packet(&self, packet: Packet) -> anyhow::Result<()> {
+        if packet.header().session_id != self.session_id {
+            anyhow::bail!(
+                "dedicated session {} cannot send packet for session {}",
+                self.session_id,
+                packet.header().session_id,
+            );
+        }
+        if self.expected_response_sequence.lock().await.is_some() {
+            anyhow::bail!(
+                "dedicated TACACS+ session {} already has a request awaiting response",
+                self.session_id,
+            );
+        }
+        let mut connection = self.connection.lock().await;
+        match connection.as_mut() {
+            Some(connection) => connection.write_packet(packet).await,
+            None => Err(anyhow::anyhow!("dedicated TACACS+ session is already complete")),
+        }
+    }
+
     pub(crate) async fn receive_packet(&self) -> anyhow::Result<Packet> {
         let mut connection = self.connection.lock().await;
         let packet = match connection

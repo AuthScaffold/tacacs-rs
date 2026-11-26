@@ -171,7 +171,7 @@ Proxy mode preserves TACACS+ packet bodies while managing session routing:
 - The proxy advertises single-connect support based on its own downstream multiplexer.
 - The downstream client and proxy negotiate single-connect mode in the first request and reply. Later packets on a negotiated single-connect stream can omit the flag without ending connection reuse.
 - When the first packet on a downstream connection omits `TAC_PLUS_SINGLE_CONNECT_FLAG`, the proxy accepts only that session ID on the connection and closes the socket immediately after delivering the session's terminal reply.
-- Accounting and authorization conversations close after one reply. Authentication conversations continue across challenge replies, release upstream concurrency capacity while waiting for the client's next `CONTINUE` packet, and close when the reply status is terminal.
+- Accounting and authorization conversations close after one reply. Authentication conversations continue across challenge replies, release upstream concurrency capacity while waiting for the client's next `CONTINUE` packet, and close when the reply status is terminal or when the client sends `CONTINUE` with `TAC_PLUS_CONTINUE_FLAG_ABORT` (which terminates the session without a server `REPLY`, per RFC 8907 section 5.3).
 - `FOLLOW` replies are forwarded to the downstream client and complete that session. Per RFC 8907, authorization and accounting `FOLLOW` use the authentication `FOLLOW` behavior. Authentication `FOLLOW` is treated like `FAIL`.
 - Authentication `RESTART` replies are forwarded and complete that session. A restarted sequence uses a new session ID and sequence number 1, as required by RFC 8907. Single-connect downstream connections remain open for the restarted session, while non-single-connect connections close so the client opens a new connection.
 
@@ -448,19 +448,19 @@ failover for both local services:
         "connect-preflight": "disabled",
         "authentication": {
             "max-body-length": 4096,
-            "max-concurrent-requests": 64,
+            "max-in-flight-requests": 64,
             "max-packets-per-second": 128,
             "request-timeout-seconds": 30
         },
         "authorization": {
             "max-body-length": 16384,
-            "max-concurrent-requests": 64,
+            "max-in-flight-requests": 64,
             "max-packets-per-second": 256,
             "request-timeout-seconds": 30
         },
         "accounting": {
             "max-body-length": 16384,
-            "max-concurrent-requests": 64,
+            "max-in-flight-requests": 64,
             "max-packets-per-second": 512,
             "request-timeout-seconds": 30
         }
@@ -471,7 +471,7 @@ failover for both local services:
 This replaces the old flat policy JSON format. Wrap existing fields in `tacacsrs:runtime-policy` before upgrading.
 The default document is `{"tacacsrs:runtime-policy":{}}`; a bare `{}` is no longer accepted.
 Unknown fields, trailing JSON, zero intervals, zero packet rates, zero body or session limits, and operation body limits that exceed `max-packet-body-length` are rejected.
-Recovery seconds, packet rates, body lengths, and concurrent-request limits are unsigned 32-bit values; `max-proxy-sessions-per-connection` is an unsigned 16-bit value.
+Recovery seconds, packet rates, body lengths, and in-flight request limits are unsigned 32-bit values; `max-proxy-sessions-per-connection` is an unsigned 16-bit value.
 An omitted operation or field uses the corresponding YANG default, including authentication's smaller body and packet-rate limits. `max-packet-body-length` (default: 65536) bounds raw frame allocations on downstream proxy connections and upstream server replies, and updates apply at runtime.
 
 The resource is defined by the [project YANG augmentation](../libraries/tacacsrs_config/yang/modules/tacacsrs@2026-11-25.yang) under `ietf-system:system`.
@@ -504,9 +504,9 @@ An established connection continues after an authentication certificate expires.
 Certificate dates do not withdraw a catalog or shorten a request deadline.
 Provider validity, source staleness, and administrative revocation remain independent limits. CRL freshness affects only new connections. See [certificate revocation](#certificate-revocation).
 
-IPC and proxy clients share each operation's active capacity, bounded FIFO admission queue, and token-bucket packet rate limiters. The pending queue limit equals `max-concurrent-requests`. When both active slots and the pending queue are full, the service returns an immediate overload error without upstream I/O. Reducing `max-concurrent-requests` retains existing work and waiters while preventing new admissions above the updated active limit.
+IPC and proxy clients share each operation's in-flight request capacity, bounded FIFO admission queue, and token-bucket packet rate limiters. `max-in-flight-requests` caps the number of requests currently awaiting an upstream server reply for that operation, and the pending FIFO wait queue holds at most `max-in-flight-requests` additional callers. When both active in-flight slots and the pending queue are full, the service returns an immediate overload error without upstream I/O. Reducing `max-in-flight-requests` retains existing work and waiters while preventing new admissions above the updated active limit.
 
-After acquiring a concurrency slot, each upstream request packet acquires one token from its operation's `max-packets-per-second` limiter (defaults: 128 for authentication, 256 for authorization, 512 for accounting) and one token from `max-upstream-packets-per-second` (default: 512). Each limiter provides a one-second burst capacity and paces sustained traffic in FIFO order within the request's admission wait budget. Evaluating the operation limiter before the aggregate upstream limiter prevents a sustained flood in one operation from exhausting the aggregate budget needed by other operations. Interactive proxy sessions acquire and release admission per round trip, so connections waiting on downstream `CONTINUE` input hold no upstream concurrency permits and still apply admission and rate limits to every `CONTINUE` packet.
+After acquiring an in-flight slot, each upstream request packet acquires one token from its operation's `max-packets-per-second` limiter (defaults: 128 for authentication, 256 for authorization, 512 for accounting) and one token from `max-upstream-packets-per-second` (default: 512). Each limiter provides a one-second burst capacity and paces sustained traffic in FIFO order within the request's admission wait budget. Evaluating the operation limiter before the aggregate upstream limiter prevents a sustained flood in one operation from exhausting the aggregate budget needed by other operations. Interactive multi-packet proxy sessions hold an in-flight slot only while awaiting an upstream server reply, release that slot while waiting on downstream `CONTINUE` input, and acquire a new slot and rate token for each `CONTINUE` packet. Open session counts on downstream proxy connections are bounded separately by `local-services/max-connections` and `runtime-policy/max-proxy-sessions-per-connection`.
 
 Each operation also has a total `request-timeout-seconds` budget, with a generated default of 30 seconds and a minimum of one second.
 The request captures its deadline before admission. Admission, connection setup, retries, and proxy continuations consume that same budget.

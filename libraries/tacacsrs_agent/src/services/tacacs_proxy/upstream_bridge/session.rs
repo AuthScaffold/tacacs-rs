@@ -11,6 +11,8 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use tacacsrs_protocol::authentication::continue_packet::AuthenticationContinue;
+use tacacsrs_protocol::enumerations::{TacacsAuthenticationContinueFlags, TacacsType};
 use tacacsrs_protocol::header::Header;
 use tacacsrs_protocol::packet::{Packet, PacketTrait};
 use tacacsrs_networking::RequestDeadline;
@@ -379,7 +381,26 @@ where
             }
         };
         let request_header = request_packet.header().clone();
+        let is_abort = is_authentication_continue_abort(&request_packet);
         let upstream_packet = rewrite_session_id(request_packet, upstream_session_id);
+        if is_abort {
+            channel.pending = None;
+            match conversation.send_abort(upstream_packet).await {
+                Ok(()) => conversation.note_success().await,
+                Err(error) => {
+                    log::warn!(
+                        "Failed to forward TACACS+ authentication CONTINUE abort upstream: {:#}",
+                        error.context("Failed to send TACACS+ abort packet")
+                    );
+                    provider
+                        .deadline(routing)
+                        .check()
+                        .map_err(|error| ProxyConnectionError::Upstream(error.into()))?;
+                }
+            }
+            drop(continuation_permit);
+            return Ok(());
+        }
         let upstream_reply = match conversation.round_trip(upstream_packet).await {
             Ok(reply) => reply,
             Err(error) => {
@@ -434,6 +455,18 @@ where
         }
     }
     Ok(())
+}
+
+fn is_authentication_continue_abort(packet: &Packet) -> bool {
+    let header = packet.header();
+    header.tacacs_type == TacacsType::TacPlusAuthentication
+        && header.seq_no >= 3
+        && header.seq_no % 2 == 1
+        && AuthenticationContinue::from_packet(packet).is_ok_and(|continuation| {
+            continuation
+                .flags
+                .contains(TacacsAuthenticationContinueFlags::TAC_PLUS_CONTINUE_FLAG_ABORT)
+        })
 }
 
 /// Sends a local `ERROR` reply when no server completed a request.

@@ -149,7 +149,7 @@ The `TACACSD_POLICY_AUTHENTICATION_`, `TACACSD_POLICY_AUTHORIZATION_`, and `TACA
 | --- | --- | --- | --- |
 | `REQUEST_TIMEOUT_SECONDS` | `30` | `30` | `30` |
 | `MAX_BODY_LENGTH` | `4096` | `16384` | `16384` |
-| `MAX_CONCURRENT_REQUESTS` | `64` | `64` | `64` |
+| `MAX_IN_FLIGHT_REQUESTS` | `64` | `64` | `64` |
 | `MAX_PACKETS_PER_SECOND` | `128` | `256` | `512` |
 
 Limits must be positive. Body length cannot exceed the protocol maximum. Failover strategy accepts `deferred-failover` or `ordered-safe-retry`. Connect preflight accepts `disabled` or `accounting-watchdog`. Canonical validators and generated types own defaults and ranges.

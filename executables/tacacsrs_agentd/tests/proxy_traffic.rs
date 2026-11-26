@@ -1058,7 +1058,7 @@ async fn truncated_upstream_reply_is_bounded_and_recovers_without_single_connect
 async fn admission_limit_bounds_upstream_concurrency_and_sheds_excess_load() {
     const LIMIT: usize = 4;
     let upstream = Upstream::start(SingleConnect::Accept).await;
-    let limits = serde_json::json!({ "max-concurrent-requests": LIMIT });
+    let limits = serde_json::json!({ "max-in-flight-requests": LIMIT });
     let daemon = Daemon::start(
         upstream.address(),
         Options {

@@ -129,7 +129,7 @@ where
     let (reader, writer) = tokio::io::split(stream);
     let mut downstream = DownstreamReader::new(reader, timeout, obfuscation_key.clone());
     let (reply_sender, reply_receiver) =
-        mpsc::channel(crate::config::default_concurrent_request_limit());
+        mpsc::channel(crate::config::default_in_flight_request_limit());
     let writer_task = run_downstream_writer(writer, obfuscation_key, reply_receiver);
     tokio::pin!(writer_task);
     let mut writer_finished = false;
@@ -535,10 +535,17 @@ mod tests {
                 .ok_or_else(|| anyhow::anyhow!("The fake proxy reply is missing"))
         }
 
+        async fn send_abort(&mut self, packet: Packet) -> anyhow::Result<()> {
+            self.received_packets.lock().await.push(packet);
+            self.complete().await;
+            Ok(())
+        }
+
         async fn complete(&mut self) {
-            self.complete.store(true, Ordering::Release);
-            if let Some(completions) = &self.completions {
-                completions.fetch_add(1, Ordering::AcqRel);
+            if !self.complete.swap(true, Ordering::AcqRel) {
+                if let Some(completions) = &self.completions {
+                    completions.fetch_add(1, Ordering::AcqRel);
+                }
             }
         }
     }
@@ -2462,5 +2469,73 @@ mod tests {
         for task in stalled_tasks {
             let _ = task.await;
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn authentication_continue_abort_completes_without_awaiting_reply() {
+        use tacacsrs_protocol::authentication::continue_packet::AuthenticationContinue;
+        use tacacsrs_protocol::enumerations::TacacsAuthenticationContinueFlags;
+        use tokio::io::AsyncReadExt;
+
+        let completions = Arc::new(AtomicUsize::new(0));
+        let session = FakeProxySession::new(
+            0x2222,
+            vec![test_packet(
+                TacacsType::TacPlusAuthentication,
+                0x2222,
+                authentication_reply_body(TacacsAuthenticationStatus::TacPlusAuthenStatusGetpass),
+            )],
+        )
+        .with_completion_counter(Arc::clone(&completions));
+        let provider = Arc::new(FakeConversationProvider::new(vec![session]));
+        let (proxy_stream, mut client_stream) = tokio::io::duplex(2048);
+        let started = tokio::time::Instant::now();
+        let proxy_task = tokio::spawn(proxy_multiplexed_connection(
+            proxy_stream,
+            Duration::from_secs(30),
+            None,
+            provider,
+        ));
+
+        write_packet(
+            &mut client_stream,
+            &test_packet_with_sequence(
+                TacacsType::TacPlusAuthentication,
+                0x1111,
+                1,
+                TacacsFlags::empty(),
+                b"start".to_vec(),
+            ),
+        )
+        .await;
+        let prompt = read_packet(&mut client_stream).await;
+        assert_eq!(
+            AuthenticationReply::status_from_packet(&prompt),
+            Some(TacacsAuthenticationStatus::TacPlusAuthenStatusGetpass as u8)
+        );
+
+        let abort_body = AuthenticationContinue {
+            user_msg: String::new(),
+            data: b"cancelled".to_vec(),
+            flags: TacacsAuthenticationContinueFlags::TAC_PLUS_CONTINUE_FLAG_ABORT,
+        }
+        .to_bytes()
+        .unwrap();
+        write_packet(
+            &mut client_stream,
+            &test_packet_with_sequence(
+                TacacsType::TacPlusAuthentication,
+                0x1111,
+                3,
+                TacacsFlags::empty(),
+                abort_body,
+            ),
+        )
+        .await;
+
+        proxy_task.await.unwrap().unwrap();
+        assert_eq!(started.elapsed(), Duration::ZERO);
+        assert_eq!(client_stream.read(&mut [0; 1]).await.unwrap(), 0);
+        assert_eq!(completions.load(Ordering::Acquire), 1);
     }
 }

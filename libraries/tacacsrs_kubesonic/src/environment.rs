@@ -201,7 +201,7 @@ const POLICY_ENUMS: &[&str] = &[
 const OPERATION_LIMITS: &[&str] = &[
     "request-timeout-seconds",
     "max-body-length",
-    "max-concurrent-requests",
+    "max-in-flight-requests",
     "max-packets-per-second",
 ];
 const CANDIDATE_LIMITS: &[&str] = &[
@@ -534,7 +534,7 @@ mod tests {
             ("POLICY_MAX_UPSTREAM_PACKETS_PER_SECOND", "240"),
             ("POLICY_MAX_PACKET_BODY_LENGTH", "131072"),
             ("POLICY_MAX_PROXY_SESSIONS_PER_CONNECTION", "96"),
-            ("POLICY_AUTHENTICATION_MAX_CONCURRENT_REQUESTS", "7"),
+            ("POLICY_AUTHENTICATION_MAX_IN_FLIGHT_REQUESTS", "7"),
             ("POLICY_AUTHENTICATION_MAX_PACKETS_PER_SECOND", "16"),
             ("POLICY_AUTHORIZATION_MAX_BODY_LENGTH", "131072"),
             ("POLICY_TACACS_PROXY_FAILOVER_STRATEGY", "ordered-safe-retry"),
@@ -545,7 +545,7 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(input.process.upstream_watchdog_interval, Some(Duration::from_secs(30)));
-        let expected = parse_runtime_policy(br#"{"tacacsrs:runtime-policy":{"shutdown-timeout-seconds":20,"max-upstream-packets-per-second":240,"max-packet-body-length":131072,"max-proxy-sessions-per-connection":96,"authentication":{"max-concurrent-requests":7,"max-packets-per-second":16},"authorization":{"max-body-length":131072},"tacacs-proxy-failover-strategy":"ordered-safe-retry","connect-preflight":"accounting-watchdog"}}"#).unwrap();
+        let expected = parse_runtime_policy(br#"{"tacacsrs:runtime-policy":{"shutdown-timeout-seconds":20,"max-upstream-packets-per-second":240,"max-packet-body-length":131072,"max-proxy-sessions-per-connection":96,"authentication":{"max-in-flight-requests":7,"max-packets-per-second":16},"authorization":{"max-body-length":131072},"tacacs-proxy-failover-strategy":"ordered-safe-retry","connect-preflight":"accounting-watchdog"}}"#).unwrap();
         assert_eq!(input.runtime_policy, expected);
         assert_eq!(input.local_services.unix_socket_mode, 0o600);
         assert_eq!(input.source.retry_initial, Duration::from_millis(125));

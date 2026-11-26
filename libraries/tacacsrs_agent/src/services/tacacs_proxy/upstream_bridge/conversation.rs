@@ -19,6 +19,7 @@ use crate::upstream::UpstreamConnection;
 pub(super) trait ProxyConversation: Send + Sync {
     fn session_id(&self) -> Option<u32>;
     async fn round_trip(&mut self, packet: Packet) -> anyhow::Result<Packet>;
+    async fn send_abort(&mut self, packet: Packet) -> anyhow::Result<()>;
     async fn complete(&mut self);
     async fn note_success(&self) {}
     async fn note_server_failure(&self) {}
@@ -169,6 +170,22 @@ impl<Connector: EndpointConnector> ProxyConversation for ManagedProxyConversatio
             .run(async {
                 let mut observation = self.bound_server.observe_failure(deadline);
                 let result = self.conversation.round_trip(packet).await;
+                if result.is_ok() {
+                    observation.disarm();
+                } else {
+                    observation.fail();
+                }
+                result
+            })
+            .await?
+    }
+
+    async fn send_abort(&mut self, packet: Packet) -> anyhow::Result<()> {
+        let deadline = self.deadline.capped(self.bound_server.timeout_duration());
+        deadline
+            .run(async {
+                let mut observation = self.bound_server.observe_failure(deadline);
+                let result = self.conversation.send_abort(packet).await;
                 if result.is_ok() {
                     observation.disarm();
                 } else {
