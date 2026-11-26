@@ -69,7 +69,7 @@ pub use statistics::{
     StatisticsSnapshot, TlsDetails,
 };
 pub use deadline::{DeadlineElapsed, RequestDeadline};
-pub use codec::{PacketReadResult, PacketReader, PacketWriteResult, PacketWriter};
+pub use codec::{PacketBodyLimit, PacketReadResult, PacketReader, PacketWriteResult, PacketWriter};
 pub use endpoint::{ConnectionGuard, PreparedEndpoint};
 pub use preparation_payload::{PreparationPayload, PreparationPayloadLedger};
 pub use destination::ServerAddress;

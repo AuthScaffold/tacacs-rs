@@ -64,6 +64,8 @@ pub struct ConnectOptions {
     timeout: Option<Duration>,
     /// Optional preflight operation performed by `TacacsClient::connect_prepared`.
     preflight: ConnectPreflight,
+    /// Maximum encoded TACACS+ packet body length accepted when reading replies.
+    packet_body_limit: crate::PacketBodyLimit,
 }
 
 impl ConnectOptions {
@@ -102,6 +104,17 @@ impl ConnectOptions {
 
     pub(crate) const fn preflight(&self) -> ConnectPreflight {
         self.preflight
+    }
+
+    /// Sets the maximum TACACS+ packet body length accepted by reply readers.
+    #[must_use]
+    pub fn with_packet_body_limit(mut self, packet_body_limit: crate::PacketBodyLimit) -> Self {
+        self.packet_body_limit = packet_body_limit;
+        self
+    }
+
+    pub(crate) fn packet_body_limit(&self) -> crate::PacketBodyLimit {
+        self.packet_body_limit.clone()
     }
 }
 

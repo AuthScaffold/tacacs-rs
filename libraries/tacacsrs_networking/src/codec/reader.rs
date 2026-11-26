@@ -1,9 +1,70 @@
+use std::fmt;
+use std::num::NonZeroU32;
+use std::sync::Arc;
+
 use tacacsrs_protocol::constants::{TACACS_HEADER_LENGTH, TACACS_MAX_BODY_LENGTH};
 use tacacsrs_protocol::enumerations::TacacsFlags;
 use tacacsrs_protocol::packet::PacketTrait;
 use tacacsrs_protocol::{header::Header, packet::Packet};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tacacsrs_secrets::SecretBytes;
+
+const DEFAULT_PACKET_BODY_LIMIT: NonZeroU32 = match NonZeroU32::new(TACACS_MAX_BODY_LENGTH) {
+    Some(limit) => limit,
+    None => unreachable!(),
+};
+
+#[derive(Clone)]
+enum PacketBodyLimitSource {
+    Fixed(NonZeroU32),
+    Dynamic(Arc<dyn Fn() -> NonZeroU32 + Send + Sync>),
+}
+
+/// Upper bound on decoded TACACS+ packet body bytes accepted by [`PacketReader`].
+///
+/// Standalone callers use [`PacketBodyLimit::default`] or [`PacketBodyLimit::fixed`].
+/// Long-lived services use [`PacketBodyLimit::dynamic`] so established
+/// single-connection transports apply runtime policy updates without reconnecting.
+#[derive(Clone)]
+pub struct PacketBodyLimit(PacketBodyLimitSource);
+
+impl PacketBodyLimit {
+    /// Creates a fixed packet body byte limit.
+    #[must_use]
+    pub const fn fixed(max_bytes: NonZeroU32) -> Self {
+        Self(PacketBodyLimitSource::Fixed(max_bytes))
+    }
+
+    /// Creates a limit backed by a live runtime policy source.
+    #[must_use]
+    pub fn dynamic(source: impl Fn() -> NonZeroU32 + Send + Sync + 'static) -> Self {
+        Self(PacketBodyLimitSource::Dynamic(Arc::new(source)))
+    }
+
+    /// Returns the active maximum packet body length in bytes.
+    #[must_use]
+    pub fn get(&self) -> u32 {
+        match &self.0 {
+            PacketBodyLimitSource::Fixed(limit) => limit.get(),
+            PacketBodyLimitSource::Dynamic(source) => source().get(),
+        }
+    }
+}
+
+impl Default for PacketBodyLimit {
+    fn default() -> Self {
+        Self::fixed(DEFAULT_PACKET_BODY_LIMIT)
+    }
+}
+
+impl fmt::Debug for PacketBodyLimit {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("PacketBodyLimit")
+            .field(&self.get())
+            .finish()
+    }
+}
 
 /// Result of reading a packet from a connection.
 #[derive(Debug)]
@@ -38,6 +99,7 @@ pub enum PacketReadResult {
 /// Reads TACACS+ packets, including optional body deobfuscation.
 pub struct PacketReader {
     obfuscation_key: Option<SecretBytes>,
+    max_body_length: PacketBodyLimit,
     counters: Option<crate::ServerCounters>,
 }
 
@@ -52,8 +114,16 @@ impl PacketReader {
     pub const fn new(obfuscation_key: Option<SecretBytes>) -> Self {
         Self {
             obfuscation_key,
+            max_body_length: PacketBodyLimit::fixed(DEFAULT_PACKET_BODY_LIMIT),
             counters: None,
         }
+    }
+
+    /// Sets the maximum body length accepted when reading packets.
+    #[must_use]
+    pub fn with_max_body_length(mut self, max_body_length: PacketBodyLimit) -> Self {
+        self.max_body_length = max_body_length;
+        self
     }
 
     pub(crate) fn with_counters(mut self, counters: Option<crate::ServerCounters>) -> Self {
@@ -104,20 +174,21 @@ impl PacketReader {
 
         let session_id = header.session_id;
         let correlation = tacacsrs_protocol::header::wire_correlation(session_id);
+        let max_body_length = self.max_body_length.get();
 
         // Check the body length before allocation. This check prevents:
         // 1. Memory-exhaustion denial-of-service attacks from malicious peers.
-        // 2. Truncation on 32-bit platforms when the length is cast to usize.
-        if header.length > TACACS_MAX_BODY_LENGTH {
+        // 2. Allocation panics on 32-bit platforms or oversized frames.
+        if header.length > max_body_length {
             log::warn!(
                 target: "tacacsrs_networking::codec::reader::read_packet",
                 "Rejected packet with excessive body length: correlation {}, body length {}, maximum {}",
-                correlation, header.length, TACACS_MAX_BODY_LENGTH
+                correlation, header.length, max_body_length
             );
             return PacketReadResult::BodyLengthExceeded {
                 session_id,
                 body_length: header.length,
-                max_length: TACACS_MAX_BODY_LENGTH,
+                max_length: max_body_length,
             };
         }
 
@@ -127,12 +198,22 @@ impl PacketReader {
             correlation, header.length
         );
 
-        // The check above makes this cast safe. TACACS_MAX_BODY_LENGTH (65536)
-        // fits in usize on all supported platforms.
-        let body_length = header.length as usize;
+        let Ok(body_length) = usize::try_from(header.length) else {
+            return PacketReadResult::BodyLengthExceeded {
+                session_id,
+                body_length: header.length,
+                max_length: max_body_length,
+            };
+        };
 
-        // Read the body.
-        let mut body_buffer = vec![0_u8; body_length];
+        // Allocate the body buffer without panicking on allocator or
+        // address-space exhaustion. Allocation runs before `read_exact` drains
+        // the body from `reader`, so any failure must surface as `BodyReadError`
+        // to close the desynchronized connection rather than continuing.
+        let mut body_buffer = match Self::allocate_body_buffer(session_id, body_length) {
+            Ok(buffer) => buffer,
+            Err(result) => return result,
+        };
         if let Err(e) = reader.read_exact(&mut body_buffer).await {
             return PacketReadResult::BodyReadError {
                 session_id,
@@ -179,6 +260,24 @@ impl PacketReader {
             }
         }
         PacketReadResult::Success(packet)
+    }
+
+    fn allocate_body_buffer(
+        session_id: u32,
+        body_length: usize,
+    ) -> Result<Vec<u8>, PacketReadResult> {
+        let mut body_buffer = Vec::new();
+        if let Err(error) = body_buffer.try_reserve_exact(body_length) {
+            return Err(PacketReadResult::BodyReadError {
+                session_id,
+                error: std::io::Error::new(
+                    std::io::ErrorKind::OutOfMemory,
+                    anyhow::Error::new(error).context("failed to allocate TACACS+ packet body"),
+                ),
+            });
+        }
+        body_buffer.resize(body_length, 0);
+        Ok(body_buffer)
     }
 }
 
@@ -326,6 +425,57 @@ mod tests {
                 assert_eq!(packet.body().len(), TACACS_MAX_BODY_LENGTH as usize);
             }
             _ => panic!("expected success for the maximum body length"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_read_packet_honors_dynamic_packet_body_limit() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let live_limit = Arc::new(AtomicU32::new(8192));
+        let source = Arc::clone(&live_limit);
+        let packet_reader =
+            PacketReader::new(None).with_max_body_length(PacketBodyLimit::dynamic(move || {
+                NonZeroU32::new(source.load(Ordering::Acquire)).unwrap()
+            }));
+
+        let large_length = 80 * 1024_u32;
+        let header = create_test_header(777, large_length, TacacsFlags::TAC_PLUS_UNENCRYPTED_FLAG);
+        let mut rejected_reader = Cursor::new(header.to_bytes().to_vec());
+        assert!(matches!(
+            packet_reader.read_packet(&mut rejected_reader).await,
+            PacketReadResult::BodyLengthExceeded {
+                session_id: 777,
+                body_length,
+                max_length: 8192,
+            } if body_length == large_length
+        ));
+
+        live_limit.store(128 * 1024, Ordering::Release);
+        let mut frame = header.to_bytes().to_vec();
+        frame.resize(TACACS_HEADER_LENGTH + large_length as usize, 0x33);
+        let mut accepted_reader = Cursor::new(frame);
+        match packet_reader.read_packet(&mut accepted_reader).await {
+            PacketReadResult::Success(packet) => {
+                assert_eq!(packet.header().session_id, 777);
+                assert_eq!(packet.body().len(), large_length as usize);
+            }
+            other => panic!("expected raised dynamic limit to accept frame, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_body_allocation_failure_returns_body_read_error_to_close_connection() {
+        // `usize::MAX` triggers `TryReserveError` (`CapacityOverflow`) without
+        // invoking the OS allocator. Because body bytes remain unread in the
+        // stream, the failure must be reported as `BodyReadError` rather than
+        // `PacketCreateError` so multiplexed connections terminate cleanly.
+        match PacketReader::allocate_body_buffer(0x0102_0304, usize::MAX) {
+            Err(PacketReadResult::BodyReadError { session_id, error }) => {
+                assert_eq!(session_id, 0x0102_0304);
+                assert_eq!(error.kind(), std::io::ErrorKind::OutOfMemory);
+            }
+            other => panic!("expected BodyReadError(OutOfMemory), got {other:?}"),
         }
     }
 }

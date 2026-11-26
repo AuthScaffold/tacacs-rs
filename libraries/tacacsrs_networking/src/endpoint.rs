@@ -129,6 +129,17 @@ impl PreparedEndpoint {
         self.options.preflight()
     }
 
+    /// Overrides the maximum packet body length accepted when reading replies.
+    #[must_use]
+    pub fn with_packet_body_limit(mut self, packet_body_limit: crate::PacketBodyLimit) -> Self {
+        self.options = self.options.with_packet_body_limit(packet_body_limit);
+        self
+    }
+
+    pub(crate) fn packet_body_limit(&self) -> crate::PacketBodyLimit {
+        self.options.packet_body_limit()
+    }
+
     /// Retains accounting for endpoint strings, keys, and native callback payload.
     #[must_use]
     pub fn with_preparation_payload(mut self, payload: crate::PreparationPayload) -> Self {

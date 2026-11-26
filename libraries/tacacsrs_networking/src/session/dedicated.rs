@@ -25,10 +25,23 @@ pub(crate) struct DedicatedSession {
 }
 
 impl DedicatedSession {
+    #[cfg(test)]
     pub(crate) fn new(transport: BoxedTransport, obfuscation_key: Option<&[u8]>) -> Self {
+        Self::new_with_limit(transport, obfuscation_key, crate::PacketBodyLimit::default())
+    }
+
+    pub(crate) fn new_with_limit(
+        transport: BoxedTransport,
+        obfuscation_key: Option<&[u8]>,
+        max_body_length: crate::PacketBodyLimit,
+    ) -> Self {
         Self {
             counters: transport.counters(),
-            connection: Mutex::new(Some(DedicatedConnection::new(transport, obfuscation_key))),
+            connection: Mutex::new(Some(DedicatedConnection::new_with_limit(
+                transport,
+                obfuscation_key,
+                max_body_length,
+            ))),
             session_id: random_nonzero_session_id(),
             expected_response_sequence: Mutex::new(None),
             complete: AtomicBool::new(false),
@@ -75,6 +88,27 @@ impl DedicatedSession {
         }
 
         Ok(())
+    }
+
+    pub(crate) async fn send_abort_packet(&self, packet: Packet) -> anyhow::Result<()> {
+        if packet.header().session_id != self.session_id {
+            anyhow::bail!(
+                "dedicated session {} cannot send packet for session {}",
+                self.session_id,
+                packet.header().session_id,
+            );
+        }
+        if self.expected_response_sequence.lock().await.is_some() {
+            anyhow::bail!(
+                "dedicated TACACS+ session {} already has a request awaiting response",
+                self.session_id,
+            );
+        }
+        let mut connection = self.connection.lock().await;
+        match connection.as_mut() {
+            Some(connection) => connection.write_packet(packet).await,
+            None => Err(anyhow::anyhow!("dedicated TACACS+ session is already complete")),
+        }
     }
 
     pub(crate) async fn receive_packet(&self) -> anyhow::Result<Packet> {

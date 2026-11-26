@@ -38,7 +38,19 @@ where
     ///
     /// If `obfuscation_key` is provided, outgoing packets are obfuscated and
     /// incoming packets are deobfuscated using the TACACS+ MD5-based XOR pad.
+    #[cfg(test)]
     pub(crate) fn new<T>(transport: T, obfuscation_key: Option<&[u8]>) -> Self
+    where
+        T: Transport<ReadHalf = R, WriteHalf = W>,
+    {
+        Self::new_with_limit(transport, obfuscation_key, crate::PacketBodyLimit::default())
+    }
+
+    pub(crate) fn new_with_limit<T>(
+        transport: T,
+        obfuscation_key: Option<&[u8]>,
+        max_body_length: crate::PacketBodyLimit,
+    ) -> Self
     where
         T: Transport<ReadHalf = R, WriteHalf = W>,
     {
@@ -48,7 +60,9 @@ where
         Self {
             reader_half,
             writer_half,
-            reader: PacketReader::new(key.clone()).with_counters(counters.clone()),
+            reader: PacketReader::new(key.clone())
+                .with_max_body_length(max_body_length)
+                .with_counters(counters.clone()),
             writer: PacketWriter::new(key).with_counters(counters),
         }
     }

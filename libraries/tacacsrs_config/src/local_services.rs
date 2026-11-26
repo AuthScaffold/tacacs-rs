@@ -340,7 +340,7 @@ mod tests {
         assert_eq!(prepared.client_api(), Some(Path::new("/run/tacacs/tacacs.sock")));
         assert_eq!(prepared.tacacs_proxy(), None);
         assert_eq!(prepared.unix_socket_mode(), 0o660);
-        assert_eq!(prepared.max_connections(), 64);
+        assert_eq!(prepared.max_connections(), 512);
         assert_eq!(prepared.max_client_api_streams(), 64);
         assert_eq!(prepared.connection_lifetime(), std::time::Duration::from_secs(300));
         assert_eq!(source, original);

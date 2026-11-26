@@ -98,10 +98,6 @@ impl<Connector: EndpointConnector> RequestRouting<Connector> {
     ) -> Result<AdmissionPermit, AdmissionError> {
         self.lease.admit(body_length).await
     }
-
-    pub(crate) fn validate_body_length(&self, body_length: usize) -> Result<(), AdmissionError> {
-        self.lease.validate_body_length(body_length)
-    }
 }
 
 impl<Connector: EndpointConnector> OperationRouter<Connector> {
@@ -119,5 +115,13 @@ impl<Connector: EndpointConnector> OperationRouter<Connector> {
             lease: self.manager.capture_request(self.service, operation),
             attempted_servers: Mutex::new(Vec::new()),
         }
+    }
+
+    pub(crate) fn max_packet_body_length(&self) -> std::num::NonZeroU32 {
+        self.manager.max_packet_body_length()
+    }
+
+    pub(crate) fn max_proxy_sessions_per_connection(&self) -> usize {
+        self.manager.max_proxy_sessions_per_connection()
     }
 }

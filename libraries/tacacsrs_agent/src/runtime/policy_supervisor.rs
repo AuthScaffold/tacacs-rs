@@ -205,7 +205,7 @@ mod tests {
         tokio::pin!(older);
         assert!(futures_util::poll!(&mut older).is_pending());
         let source = tacacsrs_config::policy::parse_runtime_policy(
-            br#"{"tacacsrs:runtime-policy":{"accounting":{"max-concurrent-requests":7}}}"#,
+            br#"{"tacacsrs:runtime-policy":{"accounting":{"max-in-flight-requests":7}}}"#,
         )
         .unwrap();
         let original = source.clone();

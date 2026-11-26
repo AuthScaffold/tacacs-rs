@@ -101,6 +101,16 @@ impl ClientSession {
         }
     }
 
+    pub(crate) async fn send_abort_packet(&self, packet: Packet) -> anyhow::Result<()> {
+        match &self.inner {
+            ClientSessionInner::Shared(session) => session.send_abort_packet(packet).await,
+            ClientSessionInner::SharedFixed(_) => {
+                anyhow::bail!("fixed TACACS+ sessions do not support separate packet writes")
+            }
+            ClientSessionInner::Dedicated(session) => session.send_abort_packet(packet).await,
+        }
+    }
+
     pub(crate) async fn receive_packet(&self) -> anyhow::Result<Packet> {
         match &self.inner {
             ClientSessionInner::Shared(session) => session.receive_packet().await,

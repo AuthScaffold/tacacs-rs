@@ -1633,7 +1633,7 @@ pub mod tacacsrs {
         }
     }
 
-    fn default_local_services_max_connections() -> u16 { 64 }
+    fn default_local_services_max_connections() -> u16 { 512 }
     fn default_local_services_max_client_api_streams() -> u16 { 64 }
     fn default_local_services_connection_lifetime_seconds() -> u32 { 300 }
     fn default_local_services_client_api_enabled() -> bool { true }
@@ -1743,7 +1743,8 @@ pub mod tacacsrs {
 
     fn default_authentication_request_timeout_seconds() -> u32 { 30 }
     fn default_authentication_max_body_length() -> u32 { 4096 }
-    fn default_authentication_max_concurrent_requests() -> u32 { 64 }
+    fn default_authentication_max_in_flight_requests() -> u32 { 64 }
+    fn default_authentication_max_packets_per_second() -> u32 { 128 }
 
     /// Shared authentication admission limits.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1756,14 +1757,23 @@ pub mod tacacsrs {
         #[serde(rename = "request-timeout-seconds")]
         #[serde(default = "default_authentication_request_timeout_seconds")]
         pub request_timeout_seconds: u32,
-        /// Maximum encoded TACACS+ request body length.
+        /// Maximum encoded TACACS+ request body length for one operation.
+        /// Must not exceed max-packet-body-length.
         #[serde(rename = "max-body-length")]
         #[serde(default = "default_authentication_max_body_length")]
         pub max_body_length: u32,
-        /// Maximum concurrent requests for one operation.
-        #[serde(rename = "max-concurrent-requests")]
-        #[serde(default = "default_authentication_max_concurrent_requests")]
-        pub max_concurrent_requests: u32,
+        /// Maximum concurrent in-flight upstream requests awaiting a server
+        /// reply for one operation. Multi-packet proxy sessions hold a slot
+        /// only during each upstream round trip and release that slot while
+        /// waiting for downstream client input.
+        #[serde(rename = "max-in-flight-requests")]
+        #[serde(default = "default_authentication_max_in_flight_requests")]
+        pub max_in_flight_requests: u32,
+        /// Maximum steady upstream request packet rate for one operation,
+        /// with a one-second burst capacity.
+        #[serde(rename = "max-packets-per-second")]
+        #[serde(default = "default_authentication_max_packets_per_second")]
+        pub max_packets_per_second: u32,
     }
 
     impl Default for Authentication {
@@ -1771,14 +1781,16 @@ pub mod tacacsrs {
             Self {
                 request_timeout_seconds: default_authentication_request_timeout_seconds(),
                 max_body_length: default_authentication_max_body_length(),
-                max_concurrent_requests: default_authentication_max_concurrent_requests(),
+                max_in_flight_requests: default_authentication_max_in_flight_requests(),
+                max_packets_per_second: default_authentication_max_packets_per_second(),
             }
         }
     }
 
     fn default_authorization_request_timeout_seconds() -> u32 { 30 }
     fn default_authorization_max_body_length() -> u32 { 16384 }
-    fn default_authorization_max_concurrent_requests() -> u32 { 64 }
+    fn default_authorization_max_in_flight_requests() -> u32 { 64 }
+    fn default_authorization_max_packets_per_second() -> u32 { 256 }
 
     /// Shared authorization admission limits.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1791,14 +1803,23 @@ pub mod tacacsrs {
         #[serde(rename = "request-timeout-seconds")]
         #[serde(default = "default_authorization_request_timeout_seconds")]
         pub request_timeout_seconds: u32,
-        /// Maximum encoded TACACS+ request body length.
+        /// Maximum encoded TACACS+ request body length for one operation.
+        /// Must not exceed max-packet-body-length.
         #[serde(rename = "max-body-length")]
         #[serde(default = "default_authorization_max_body_length")]
         pub max_body_length: u32,
-        /// Maximum concurrent requests for one operation.
-        #[serde(rename = "max-concurrent-requests")]
-        #[serde(default = "default_authorization_max_concurrent_requests")]
-        pub max_concurrent_requests: u32,
+        /// Maximum concurrent in-flight upstream requests awaiting a server
+        /// reply for one operation. Multi-packet proxy sessions hold a slot
+        /// only during each upstream round trip and release that slot while
+        /// waiting for downstream client input.
+        #[serde(rename = "max-in-flight-requests")]
+        #[serde(default = "default_authorization_max_in_flight_requests")]
+        pub max_in_flight_requests: u32,
+        /// Maximum steady upstream request packet rate for one operation,
+        /// with a one-second burst capacity.
+        #[serde(rename = "max-packets-per-second")]
+        #[serde(default = "default_authorization_max_packets_per_second")]
+        pub max_packets_per_second: u32,
     }
 
     impl Default for Authorization {
@@ -1806,7 +1827,54 @@ pub mod tacacsrs {
             Self {
                 request_timeout_seconds: default_authorization_request_timeout_seconds(),
                 max_body_length: default_authorization_max_body_length(),
-                max_concurrent_requests: default_authorization_max_concurrent_requests(),
+                max_in_flight_requests: default_authorization_max_in_flight_requests(),
+                max_packets_per_second: default_authorization_max_packets_per_second(),
+            }
+        }
+    }
+
+    fn default_accounting_request_timeout_seconds() -> u32 { 30 }
+    fn default_accounting_max_body_length() -> u32 { 16384 }
+    fn default_accounting_max_in_flight_requests() -> u32 { 64 }
+    fn default_accounting_max_packets_per_second() -> u32 { 512 }
+
+    /// Shared accounting admission limits.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct Accounting {
+        /// Total request budget from capture before admission through completion.
+        /// Includes admission, connection setup, retries, and proxy continuations.
+        /// Server timeouts can shorten individual stages but cannot extend this budget.
+        /// Reload does not change the deadline of an existing request.
+        #[serde(rename = "request-timeout-seconds")]
+        #[serde(default = "default_accounting_request_timeout_seconds")]
+        pub request_timeout_seconds: u32,
+        /// Maximum encoded TACACS+ request body length for one operation.
+        /// Must not exceed max-packet-body-length.
+        #[serde(rename = "max-body-length")]
+        #[serde(default = "default_accounting_max_body_length")]
+        pub max_body_length: u32,
+        /// Maximum concurrent in-flight upstream requests awaiting a server
+        /// reply for one operation. Multi-packet proxy sessions hold a slot
+        /// only during each upstream round trip and release that slot while
+        /// waiting for downstream client input.
+        #[serde(rename = "max-in-flight-requests")]
+        #[serde(default = "default_accounting_max_in_flight_requests")]
+        pub max_in_flight_requests: u32,
+        /// Maximum steady upstream request packet rate for one operation,
+        /// with a one-second burst capacity.
+        #[serde(rename = "max-packets-per-second")]
+        #[serde(default = "default_accounting_max_packets_per_second")]
+        pub max_packets_per_second: u32,
+    }
+
+    impl Default for Accounting {
+        fn default() -> Self {
+            Self {
+                request_timeout_seconds: default_accounting_request_timeout_seconds(),
+                max_body_length: default_accounting_max_body_length(),
+                max_in_flight_requests: default_accounting_max_in_flight_requests(),
+                max_packets_per_second: default_accounting_max_packets_per_second(),
             }
         }
     }
@@ -1816,6 +1884,9 @@ pub mod tacacsrs {
     fn default_runtime_policy_credential_refresh_interval_seconds() -> u32 { 60 }
     fn default_runtime_policy_source_stale_timeout_seconds() -> u32 { 300 }
     fn default_runtime_policy_failover_recovery_interval_seconds() -> u32 { 30 }
+    fn default_runtime_policy_max_upstream_packets_per_second() -> u32 { 512 }
+    fn default_runtime_policy_max_packet_body_length() -> u32 { 65536 }
+    fn default_runtime_policy_max_proxy_sessions_per_connection() -> u16 { 64 }
     fn default_runtime_policy_client_api_failover_strategy() -> FailoverStrategy { FailoverStrategy::DeferredFailover }
     fn default_runtime_policy_tacacs_proxy_failover_strategy() -> FailoverStrategy { FailoverStrategy::DeferredFailover }
     fn default_runtime_policy_connect_preflight() -> ConnectPreflight { ConnectPreflight::Disabled }
@@ -1864,6 +1935,21 @@ pub mod tacacsrs {
         #[serde(rename = "failover-recovery-interval-seconds")]
         #[serde(default = "default_runtime_policy_failover_recovery_interval_seconds")]
         pub failover_recovery_interval_seconds: u32,
+        /// Maximum steady upstream request packet rate across all operations,
+        /// with a one-second burst capacity.
+        #[serde(rename = "max-upstream-packets-per-second")]
+        #[serde(default = "default_runtime_policy_max_upstream_packets_per_second")]
+        pub max_upstream_packets_per_second: u32,
+        /// Maximum encoded TACACS+ packet body length accepted when reading
+        /// downstream proxy requests or upstream server replies.
+        #[serde(rename = "max-packet-body-length")]
+        #[serde(default = "default_runtime_policy_max_packet_body_length")]
+        pub max_packet_body_length: u32,
+        /// Maximum concurrent active TACACS+ sessions on one single-connect
+        /// proxy connection.
+        #[serde(rename = "max-proxy-sessions-per-connection")]
+        #[serde(default = "default_runtime_policy_max_proxy_sessions_per_connection")]
+        pub max_proxy_sessions_per_connection: u16,
         /// Failover policy for requests received through the local client API.
         #[serde(rename = "client-api-failover-strategy")]
         #[serde(default = "default_runtime_policy_client_api_failover_strategy")]
@@ -1888,7 +1974,7 @@ pub mod tacacsrs {
         /// Shared accounting admission limits.
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
-        pub accounting: Option<Authorization>,
+        pub accounting: Option<Accounting>,
     }
 
     impl Default for RuntimePolicy {
@@ -1900,6 +1986,9 @@ pub mod tacacsrs {
                 credential_refresh_interval_seconds: default_runtime_policy_credential_refresh_interval_seconds(),
                 source_stale_timeout_seconds: default_runtime_policy_source_stale_timeout_seconds(),
                 failover_recovery_interval_seconds: default_runtime_policy_failover_recovery_interval_seconds(),
+                max_upstream_packets_per_second: default_runtime_policy_max_upstream_packets_per_second(),
+                max_packet_body_length: default_runtime_policy_max_packet_body_length(),
+                max_proxy_sessions_per_connection: default_runtime_policy_max_proxy_sessions_per_connection(),
                 client_api_failover_strategy: default_runtime_policy_client_api_failover_strategy(),
                 tacacs_proxy_failover_strategy: default_runtime_policy_tacacs_proxy_failover_strategy(),
                 connect_preflight: default_runtime_policy_connect_preflight(),

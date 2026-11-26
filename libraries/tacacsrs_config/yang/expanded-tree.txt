@@ -284,18 +284,24 @@ module: tacacsrs
        +--rw credential-refresh-interval-seconds?   uint32
        +--rw source-stale-timeout-seconds?          uint32
        +--rw failover-recovery-interval-seconds?    uint32
+       +--rw max-upstream-packets-per-second?       uint32
+       +--rw max-packet-body-length?                uint32
+       +--rw max-proxy-sessions-per-connection?     uint16
        +--rw client-api-failover-strategy?          failover-strategy
        +--rw tacacs-proxy-failover-strategy?        failover-strategy
        +--rw connect-preflight?                     connect-preflight
        +--rw authentication
        |  +--rw request-timeout-seconds?   uint32
        |  +--rw max-body-length?           uint32
-       |  +--rw max-concurrent-requests?   uint32
+       |  +--rw max-in-flight-requests?    uint32
+       |  +--rw max-packets-per-second?    uint32
        +--rw authorization
        |  +--rw request-timeout-seconds?   uint32
        |  +--rw max-body-length?           uint32
-       |  +--rw max-concurrent-requests?   uint32
+       |  +--rw max-in-flight-requests?    uint32
+       |  +--rw max-packets-per-second?    uint32
        +--rw accounting
           +--rw request-timeout-seconds?   uint32
           +--rw max-body-length?           uint32
-          +--rw max-concurrent-requests?   uint32
+          +--rw max-in-flight-requests?    uint32
+          +--rw max-packets-per-second?    uint32

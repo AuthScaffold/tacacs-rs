@@ -2,7 +2,9 @@
 
 use std::time::Duration;
 
-use tacacsrs_networking::admission::{AdmissionPool, AdmissionReservation, AdmissionError as PoolError};
+use tacacsrs_networking::admission::{
+    AdmissionError as PoolError, AdmissionPool, AdmissionReservation, RateLimiter,
+};
 use tacacsrs_networking::RequestDeadline;
 use tacacsrs_protocol::failure::{DeliveryState, FailureCategory, FailureFacts, FailurePhase};
 use tacacsrs_protocol::failure::ServiceError;
@@ -12,9 +14,19 @@ use crate::config::RuntimePolicy;
 
 use super::OperationKind;
 
-/// Shared operation capacity retained across routing generations.
+/// Shared operation concurrency and packet rate capacity retained across routing generations.
 pub(crate) struct AdmissionRegistry {
     operations: [AdmissionPool; 3],
+    operation_rates: [RateLimiter; 3],
+    upstream_rate: RateLimiter,
+}
+
+fn map_wait_error(error: PoolError, wait_timeout: Duration) -> AdmissionError {
+    match error {
+        PoolError::Full => AdmissionError::Full,
+        PoolError::Closed => AdmissionError::Closed,
+        PoolError::Expired => AdmissionError::CapacityTimeout { wait_timeout },
+    }
 }
 
 impl AdmissionRegistry {
@@ -22,21 +34,37 @@ impl AdmissionRegistry {
         for operation in &self.operations {
             operation.close();
         }
+        for limiter in &self.operation_rates {
+            limiter.close();
+        }
+        self.upstream_rate.close();
     }
 
     pub(crate) fn new(policy: &RuntimePolicy) -> Self {
         let operations = OperationKind::ALL.map(|operation| {
             let limits = policy.limits(operation);
-            AdmissionPool::new(limits.max_concurrent_requests())
+            AdmissionPool::new(limits.max_in_flight_requests())
         });
-        Self { operations }
+        let operation_rates = OperationKind::ALL.map(|operation| {
+            let limits = policy.limits(operation);
+            RateLimiter::new(limits.max_packets_per_second())
+        });
+        let upstream_rate = RateLimiter::new(policy.max_upstream_packets_per_second());
+        Self {
+            operations,
+            operation_rates,
+            upstream_rate,
+        }
     }
 
     pub(crate) fn update(&self, policy: &RuntimePolicy) {
         for operation in OperationKind::ALL {
             let limits = policy.limits(operation);
-            self.operations[operation.index()].update(limits.max_concurrent_requests());
+            self.operations[operation.index()].update(limits.max_in_flight_requests());
+            self.operation_rates[operation.index()].update(limits.max_packets_per_second());
         }
+        self.upstream_rate
+            .update(policy.max_upstream_packets_per_second());
     }
 
     #[cfg(test)]
@@ -57,14 +85,32 @@ impl AdmissionRegistry {
         deadline: RequestDeadline,
         wait_timeout: Duration,
     ) -> Result<AdmissionPermit, AdmissionError> {
-        self.operations[operation.index()]
-            .acquire(deadline.capped(wait_timeout))
+        let reservation = self.reserve(operation, deadline)?;
+        self.admit_reserved(operation, reservation, deadline, wait_timeout)
             .await
-            .map_err(|error| match error {
-                PoolError::Full => AdmissionError::Full,
-                PoolError::Closed => AdmissionError::Closed,
-                PoolError::Expired => AdmissionError::CapacityTimeout { wait_timeout },
-            })
+    }
+
+    pub(crate) async fn admit_reserved(
+        &self,
+        operation: OperationKind,
+        reservation: AdmissionReservation,
+        deadline: RequestDeadline,
+        wait_timeout: Duration,
+    ) -> Result<AdmissionPermit, AdmissionError> {
+        let wait_deadline = deadline.capped(wait_timeout);
+        let permit = reservation
+            .wait_until(wait_deadline)
+            .await
+            .map_err(|error| map_wait_error(error, wait_timeout))?;
+        self.operation_rates[operation.index()]
+            .acquire(wait_deadline)
+            .await
+            .map_err(|error| map_wait_error(error, wait_timeout))?;
+        self.upstream_rate
+            .acquire(wait_deadline)
+            .await
+            .map_err(|error| map_wait_error(error, wait_timeout))?;
+        Ok(permit)
     }
 
     pub(crate) fn reserve(
@@ -143,10 +189,10 @@ mod tests {
 
     fn policy_with_authentication_limit(
         max_body_length: usize,
-        max_concurrent_requests: usize,
+        max_in_flight_requests: usize,
     ) -> RuntimePolicy {
         let authentication =
-            RequestLimits::new(max_body_length, max_concurrent_requests).expect("test limits");
+            RequestLimits::new(max_body_length, max_in_flight_requests).expect("test limits");
         RuntimePolicy::new(
             FailoverStrategy::default(),
             FailoverStrategy::default(),
@@ -264,5 +310,129 @@ mod tests {
             .acquire(OperationKind::Authentication, Duration::from_secs(1))
             .await
             .expect("new limit permits one request");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn authentication_flood_is_paced_without_starving_accounting() {
+        let auth = RequestLimits::new(1024, 8)
+            .unwrap()
+            .with_max_packets_per_second(2)
+            .unwrap();
+        let accounting = RequestLimits::new(1024, 8)
+            .unwrap()
+            .with_max_packets_per_second(10)
+            .unwrap();
+        let policy = RuntimePolicy::new(
+            FailoverStrategy::default(),
+            FailoverStrategy::default(),
+            OperationPolicies::new(auth, accounting, accounting),
+            Duration::from_secs(30),
+        )
+        .unwrap()
+        .with_max_upstream_packets_per_second(10)
+        .unwrap();
+        let registry = Arc::new(AdmissionRegistry::new(&policy));
+
+        // Exhaust the 2-packet authentication burst immediately.
+        drop(
+            registry
+                .acquire(OperationKind::Authentication, Duration::from_secs(5))
+                .await
+                .unwrap(),
+        );
+        drop(
+            registry
+                .acquire(OperationKind::Authentication, Duration::from_secs(5))
+                .await
+                .unwrap(),
+        );
+
+        // Queue several more authentication requests that must pace at 500 ms each.
+        let mut auth_waiters = Vec::new();
+        for _ in 0..4 {
+            let registry = Arc::clone(&registry);
+            auth_waiters.push(tokio::spawn(async move {
+                let start = tokio::time::Instant::now();
+                let _permit = registry
+                    .acquire(OperationKind::Authentication, Duration::from_secs(5))
+                    .await
+                    .unwrap();
+                start.elapsed()
+            }));
+        }
+        tokio::task::yield_now().await;
+
+        // Accounting still has 8 of the 10 aggregate burst tokens available immediately.
+        let acct_start = tokio::time::Instant::now();
+        for _ in 0..8 {
+            drop(
+                registry
+                    .acquire(OperationKind::Accounting, Duration::from_secs(1))
+                    .await
+                    .unwrap(),
+            );
+        }
+        assert_eq!(
+            acct_start.elapsed(),
+            Duration::ZERO,
+            "throttled authentication waiters must not block accounting at the global limiter"
+        );
+
+        let mut elapsed = Vec::new();
+        for waiter in auth_waiters {
+            elapsed.push(waiter.await.unwrap());
+        }
+        assert_eq!(
+            elapsed,
+            vec![
+                Duration::from_millis(500),
+                Duration::from_millis(1000),
+                Duration::from_millis(1500),
+                Duration::from_millis(2000),
+            ]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn aggregate_upstream_rate_caps_combined_multi_operation_bursts() {
+        let per_op = RequestLimits::new(1024, 8)
+            .unwrap()
+            .with_max_packets_per_second(10)
+            .unwrap();
+        let policy = RuntimePolicy::new(
+            FailoverStrategy::default(),
+            FailoverStrategy::default(),
+            OperationPolicies::new(per_op, per_op, per_op),
+            Duration::from_secs(30),
+        )
+        .unwrap()
+        .with_max_upstream_packets_per_second(4)
+        .unwrap();
+        let registry = AdmissionRegistry::new(&policy);
+
+        let start = tokio::time::Instant::now();
+        for operation in [
+            OperationKind::Authentication,
+            OperationKind::Authorization,
+            OperationKind::Accounting,
+            OperationKind::Accounting,
+        ] {
+            drop(
+                registry
+                    .acquire(operation, Duration::from_secs(5))
+                    .await
+                    .unwrap(),
+            );
+        }
+        assert_eq!(start.elapsed(), Duration::ZERO);
+
+        // A 5th request in any operation must wait 250 ms for the 4 pkt/s aggregate limiter.
+        drop(
+            registry
+                .acquire(OperationKind::Authorization, Duration::from_secs(5))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(start.elapsed(), Duration::from_millis(250));
     }
 }

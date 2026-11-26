@@ -1,9 +1,12 @@
-//! Bounded FIFO admission shared across routing generations.
+//! Bounded FIFO concurrency and token-bucket rate admission shared across routing generations.
 
 use std::collections::VecDeque;
+use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use tokio::sync::Notify;
+use tokio::sync::{Mutex as AsyncMutex, Notify};
+use tokio::time::Instant;
 
 use crate::RequestDeadline;
 
@@ -257,6 +260,142 @@ impl std::fmt::Display for AdmissionError {
 
 impl std::error::Error for AdmissionError {}
 
+const TOKEN_COST: u128 = 1_000_000_000;
+
+struct BucketState {
+    rate: u128,
+    used: u128,
+    last_update: Instant,
+    closed: bool,
+}
+
+impl BucketState {
+    const fn max_used(&self) -> u128 {
+        self.rate * TOKEN_COST
+    }
+
+    fn drain(&mut self, now: Instant) {
+        let elapsed = now.saturating_duration_since(self.last_update).as_nanos();
+        self.used = self.used.saturating_sub(elapsed.saturating_mul(self.rate));
+        self.last_update = now;
+    }
+
+    fn try_take(&mut self, now: Instant) -> Result<(), Duration> {
+        self.drain(now);
+        let max_used = self.max_used();
+        if self.used + TOKEN_COST <= max_used {
+            self.used += TOKEN_COST;
+            return Ok(());
+        }
+        let excess = (self.used + TOKEN_COST) - max_used;
+        let wait_nanos = u64::try_from(excess.div_ceil(self.rate)).unwrap_or(u64::MAX);
+        Err(Duration::from_nanos(wait_nanos))
+    }
+}
+
+struct Limiter {
+    queue: AsyncMutex<()>,
+    state: Mutex<BucketState>,
+    changed: Notify,
+}
+
+/// Shared FIFO token-bucket rate limiter with a one-second burst window.
+///
+/// Clones share token state and waiter order. Tasks that exceed the immediate
+/// burst capacity wait in FIFO order until tokens drain or their
+/// [`RequestDeadline`] expires. Dropping a waiting future releases its queue
+/// position without consuming tokens.
+#[derive(Clone)]
+pub struct RateLimiter(Arc<Limiter>);
+
+impl RateLimiter {
+    /// Creates a rate limiter that permits `rate_per_second` operations per
+    /// second with a one-second burst capacity.
+    #[must_use]
+    pub fn new(rate_per_second: NonZeroU32) -> Self {
+        Self(Arc::new(Limiter {
+            queue: AsyncMutex::new(()),
+            state: Mutex::new(BucketState {
+                rate: u128::from(rate_per_second.get()),
+                used: 0,
+                last_update: Instant::now(),
+                closed: false,
+            }),
+            changed: Notify::new(),
+        }))
+    }
+
+    /// Permanently rejects new acquisitions and wakes pending waiters.
+    pub fn close(&self) {
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .closed = true;
+        self.0.changed.notify_waiters();
+    }
+
+    /// Updates the steady rate and one-second burst ceiling in place.
+    pub fn update(&self, rate_per_second: NonZeroU32) {
+        {
+            let mut state = self
+                .0
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.drain(Instant::now());
+            state.rate = u128::from(rate_per_second.get());
+            let max_used = state.max_used();
+            state.used = state.used.min(max_used);
+        }
+        self.0.changed.notify_waiters();
+    }
+
+    /// Acquires one token, pacing in FIFO order when the burst window is full.
+    ///
+    /// # Errors
+    /// Returns [`AdmissionError::Closed`] when the limiter is closed or
+    /// [`AdmissionError::Expired`] when the next token will not arrive before
+    /// `deadline`.
+    pub async fn acquire(&self, deadline: RequestDeadline) -> Result<(), AdmissionError> {
+        deadline.check().map_err(|_| AdmissionError::Expired)?;
+        let _turn = deadline
+            .run(self.0.queue.lock())
+            .await
+            .map_err(|_| AdmissionError::Expired)?;
+        loop {
+            let changed = self.0.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            let wait = {
+                let mut state = self
+                    .0
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if state.closed {
+                    return Err(AdmissionError::Closed);
+                }
+                deadline.check().map_err(|_| AdmissionError::Expired)?;
+                match state.try_take(Instant::now()) {
+                    Ok(()) => return Ok(()),
+                    Err(wait) => wait,
+                }
+            };
+            let ready_at = Instant::now()
+                .checked_add(wait)
+                .ok_or(AdmissionError::Expired)?;
+            if ready_at >= deadline.expires_at() {
+                return Err(AdmissionError::Expired);
+            }
+            tokio::select! {
+                () = tokio::time::sleep_until(ready_at) => {}
+                () = &mut changed => {}
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -370,5 +509,100 @@ mod tests {
         assert!(matches!(pool.acquire(expires).await, Err(AdmissionError::Expired)));
         assert_eq!(pool.0.state.lock().unwrap().active, 0);
         assert!(pool.0.state.lock().unwrap().pending.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_limiter_allows_burst_then_paces_in_fifo_order() {
+        let limiter = RateLimiter::new(NonZeroU32::new(4).unwrap());
+        let start = Instant::now();
+        for _ in 0..4 {
+            limiter.acquire(deadline()).await.unwrap();
+        }
+        assert_eq!(start.elapsed(), Duration::ZERO);
+
+        let fifth = {
+            let limiter = limiter.clone();
+            tokio::spawn(async move {
+                limiter.acquire(deadline()).await.unwrap();
+                Instant::now()
+            })
+        };
+        tokio::task::yield_now().await;
+        let sixth = {
+            let limiter = limiter.clone();
+            tokio::spawn(async move {
+                limiter.acquire(deadline()).await.unwrap();
+                Instant::now()
+            })
+        };
+
+        let fifth_at = fifth.await.unwrap();
+        let sixth_at = sixth.await.unwrap();
+        assert_eq!(fifth_at.duration_since(start), Duration::from_millis(250));
+        assert_eq!(sixth_at.duration_since(start), Duration::from_millis(500));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_limiter_rejects_immediately_when_token_exceeds_deadline_and_cancels_cleanly() {
+        let limiter = RateLimiter::new(NonZeroU32::new(2).unwrap());
+        limiter.acquire(deadline()).await.unwrap();
+        limiter.acquire(deadline()).await.unwrap();
+
+        let start = Instant::now();
+        let short = RequestDeadline::after(Duration::from_millis(200)).unwrap();
+        assert_eq!(limiter.acquire(short).await, Err(AdmissionError::Expired));
+        assert_eq!(
+            start.elapsed(),
+            Duration::ZERO,
+            "requests whose deadline precedes the next token must fail without blocking the queue"
+        );
+
+        {
+            let cancelled = limiter.acquire(deadline());
+            tokio::pin!(cancelled);
+            assert!(futures::poll!(&mut cancelled).is_pending());
+            tokio::time::advance(Duration::from_millis(250)).await;
+        }
+
+        // The cancelled waiter must not consume the half-refilled token.
+        let waited_start = Instant::now();
+        limiter.acquire(deadline()).await.unwrap();
+        assert_eq!(waited_start.elapsed(), Duration::from_millis(250));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_limiter_live_update_and_close_wake_sleeping_waiters() {
+        let limiter = RateLimiter::new(NonZeroU32::new(1).unwrap());
+        limiter.acquire(deadline()).await.unwrap();
+
+        let start = Instant::now();
+        let waiter = {
+            let limiter = limiter.clone();
+            tokio::spawn(async move { limiter.acquire(deadline()).await })
+        };
+        tokio::task::yield_now().await;
+
+        // Raising the rate from 1/s to 10/s wakes the sleeper and grants an available burst slot.
+        limiter.update(NonZeroU32::new(10).unwrap());
+        waiter.await.unwrap().unwrap();
+        assert_eq!(start.elapsed(), Duration::ZERO);
+
+        // Exhaust the new 10-token window (2 already used above + 8 more), then lower to 2/s.
+        for _ in 0..8 {
+            limiter.acquire(deadline()).await.unwrap();
+        }
+        limiter.update(NonZeroU32::new(2).unwrap());
+        let paced_start = Instant::now();
+        limiter.acquire(deadline()).await.unwrap();
+        assert_eq!(paced_start.elapsed(), Duration::from_millis(500));
+
+        // Closing wakes a sleeping waiter immediately.
+        let closed_waiter = {
+            let limiter = limiter.clone();
+            tokio::spawn(async move { limiter.acquire(deadline()).await })
+        };
+        tokio::task::yield_now().await;
+        limiter.close();
+        assert_eq!(closed_waiter.await.unwrap(), Err(AdmissionError::Closed));
     }
 }

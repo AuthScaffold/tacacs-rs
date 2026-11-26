@@ -25,6 +25,14 @@ module tacacsrs {
   description
     "Project-owned TACACS+ configuration extensions for tacacs-rs.";
 
+  revision 2026-11-25 {
+    description
+      "Renames per-operation concurrency limits to max-in-flight-requests,
+       raises the default listener connection limit, and adds runtime controls
+       for packet body length, proxy sessions per connection, and upstream
+       packet rate limits.";
+  }
+
   revision 2026-11-20 {
     description
       "Replaces per-server CRL and OCSP evidence with global CRL
@@ -249,17 +257,29 @@ module tacacsrs {
          Reload does not change the deadline of an existing request.";
     }
     leaf max-body-length {
-      type uint32 { range "1..65536"; }
+      type uint32 { range "1..max"; }
       units "bytes";
       default 16384;
       description
-        "Maximum encoded TACACS+ request body length.";
+        "Maximum encoded TACACS+ request body length for one operation.
+         Must not exceed max-packet-body-length.";
     }
-    leaf max-concurrent-requests {
+    leaf max-in-flight-requests {
       type uint32 { range "1..max"; }
       default 64;
       description
-        "Maximum concurrent requests for one operation.";
+        "Maximum concurrent in-flight upstream requests awaiting a server
+         reply for one operation. Multi-packet proxy sessions hold a slot
+         only during each upstream round trip and release that slot while
+         waiting for downstream client input.";
+    }
+    leaf max-packets-per-second {
+      type uint32 { range "1..max"; }
+      units "packets-per-second";
+      default 256;
+      description
+        "Maximum steady upstream request packet rate for one operation,
+         with a one-second burst capacity.";
     }
   }
 
@@ -418,7 +438,7 @@ module tacacsrs {
         "Local listener configuration. The agent applies changes at runtime.";
       leaf max-connections {
         type uint16 { range "1..max"; }
-        default 64;
+        default 512;
         description "Maximum served connections per enabled listener.";
       }
       leaf max-client-api-streams {
@@ -482,6 +502,9 @@ module tacacsrs {
     container runtime-policy {
       description
         "Failover and admission controls for local client API and proxy services.";
+      must "authentication/max-body-length <= max-packet-body-length";
+      must "authorization/max-body-length <= max-packet-body-length";
+      must "accounting/max-body-length <= max-packet-body-length";
       container candidate-preparation {
         description
           "Limits one configuration preparation through publication commit.
@@ -553,6 +576,29 @@ module tacacsrs {
            operation, the agent uses the failed server without
            waiting.";
       }
+      leaf max-upstream-packets-per-second {
+        type uint32 { range "1..max"; }
+        units "packets-per-second";
+        default 512;
+        description
+          "Maximum steady upstream request packet rate across all operations,
+           with a one-second burst capacity.";
+      }
+      leaf max-packet-body-length {
+        type uint32 { range "1..max"; }
+        units "bytes";
+        default 65536;
+        description
+          "Maximum encoded TACACS+ packet body length accepted when reading
+           downstream proxy requests or upstream server replies.";
+      }
+      leaf max-proxy-sessions-per-connection {
+        type uint16 { range "1..max"; }
+        default 64;
+        description
+          "Maximum concurrent active TACACS+ sessions on one single-connect
+           proxy connection.";
+      }
       leaf client-api-failover-strategy {
         type failover-strategy;
         default deferred-failover;
@@ -577,6 +623,7 @@ module tacacsrs {
           "Shared authentication admission limits.";
         uses request-limits {
           refine max-body-length { default 4096; }
+          refine max-packets-per-second { default 128; }
         }
       }
       container authorization {
@@ -587,7 +634,9 @@ module tacacsrs {
       container accounting {
         description
           "Shared accounting admission limits.";
-        uses request-limits;
+        uses request-limits {
+          refine max-packets-per-second { default 512; }
+        }
       }
     }
   }

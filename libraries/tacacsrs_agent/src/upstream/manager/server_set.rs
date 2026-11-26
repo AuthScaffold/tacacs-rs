@@ -112,13 +112,10 @@ impl<Connector: EndpointConnector> RoutingLease<Connector> {
             .await
             .and_then(|endpoint| endpoint.prepared().connection_timeout())
             .unwrap_or(Duration::ZERO);
-        reservation
-            .wait_until(self.deadline().capped(wait_timeout))
+        runtime
+            .admission
+            .admit_reserved(operation, reservation, self.deadline(), wait_timeout)
             .await
-            .map_err(|error| match error {
-                tacacsrs_networking::admission::AdmissionError::Closed => AdmissionError::Closed,
-                _ => AdmissionError::CapacityTimeout { wait_timeout },
-            })
     }
 
     pub(crate) async fn admit(

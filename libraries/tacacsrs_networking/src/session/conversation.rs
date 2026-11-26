@@ -54,6 +54,25 @@ impl ClientConversation {
         result
     }
 
+    /// Sends an RFC 8907 authentication `CONTINUE` abort packet and completes the conversation.
+    ///
+    /// Per RFC 8907 Section 5.3, setting `TAC_PLUS_CONTINUE_FLAG_ABORT` terminates
+    /// the session without a server `REPLY`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an inactive conversation, invalid request metadata,
+    /// or packet write failure.
+    pub async fn send_abort(&mut self, request: Packet) -> anyhow::Result<()> {
+        self.state.validate_request(request.header())?;
+        let result = match self.session.as_ref() {
+            Some(session) => session.send_abort_packet(request).await,
+            None => Err(anyhow::anyhow!("TACACS+ conversation is complete")),
+        };
+        self.complete().await;
+        result
+    }
+
     /// Completes the conversation and releases its session route.
     pub async fn complete(&mut self) {
         if let Some(session) = self.session.take() {
